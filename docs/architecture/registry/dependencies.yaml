@@ -1,0 +1,59 @@
+# 模块间允许的依赖关系（机器可校验真理源）
+#
+# 规则: 上层依赖下层, 下层绝不依赖上层。
+# 同层互相依赖必须显式列出, 避免环。
+
+version: 1
+
+# 层级排序（rank 越大越上层）
+allowed_cross_layer: "lower_to_upper_only"
+
+# 显式声明的依赖关系（feature → core → core）
+edges:
+  # app → 全部 feature
+  - from: ":app"
+    to: [":feature:scan", ":feature:gallery", ":feature:calibration", ":feature:settings"]
+  # app → 部分 core 直依赖（少用，UI 框架壳层）
+  - from: ":app"
+    to: [":core:common", ":core:model", ":core:domain", ":core:data",
+         ":core:designsystem", ":core:ui", ":core:native-bridge"]
+
+  # feature → core
+  - from: ":feature:scan"
+    to: [":core:ui", ":core:designsystem", ":core:domain", ":core:model", ":core:common",
+         ":core:native-bridge", ":core:data"]
+  - from: ":feature:gallery"
+    to: [":core:ui", ":core:designsystem", ":core:domain", ":core:model", ":core:common",
+         ":core:data"]
+  - from: ":feature:calibration"
+    to: [":core:ui", ":core:designsystem", ":core:domain", ":core:model", ":core:common",
+         ":core:native-bridge"]
+  - from: ":feature:settings"
+    to: [":core:ui", ":core:designsystem", ":core:domain", ":core:model", ":core:common"]
+
+  # core 之间
+  - from: ":core:domain"
+    to: [":core:common", ":core:model", ":core:data"]
+  - from: ":core:data"
+    to: [":core:common", ":core:model", ":core:database", ":core:network"]
+  - from: ":core:database"
+    to: [":core:model"]
+  - from: ":core:ui"
+    to: [":core:designsystem", ":core:model"]
+  - from: ":core:native-bridge"
+    to: [":core:model"]
+
+# 禁止的依赖（即使上面没显式列出，也要硬编码这些反模式）
+forbidden:
+  - from: ":core:designsystem"
+    to: [":core:ui"]
+    reason: "designsystem 是底层 token 库，不能反向依赖 ui"
+  - from_pattern: "^:core:.*"
+    to_pattern: "^:feature:.*"
+    reason: "core 模块禁止依赖 feature 模块"
+  - from_pattern: "^:feature:[^:]+$"
+    to_pattern: "^:feature:[^:]+$"
+    reason: "feature 之间禁止互相依赖（共享走 core 层）"
+  - from_pattern: "^:(?!core:native-bridge$).*"
+    to_pattern: "berxel"
+    reason: "Berxel SDK 必须通过 core:native-bridge 暴露，业务模块不得直接 import"

@@ -1,0 +1,100 @@
+# 模块清单 + 归属层（机器可校验真理源）
+#
+# 后续 scripts/archgov.kts（占位）会读这份配置:
+#   - 校验 settings.gradle.kts 的 include 与本表一致
+#   - 校验 dependencies.yaml 的依赖关系不违反层规则
+#
+# 层定义见 docs/architecture/00-overview.md
+
+version: 1
+
+layers:
+  - id: device
+    name: 设备/硬件层
+    rank: 1
+  - id: capture
+    name: 同步采集层
+    rank: 2
+  - id: geometry
+    name: 几何层
+    rank: 3
+  - id: fusion
+    name: 配准与融合层
+    rank: 4
+  - id: reconstruction
+    name: 重建层
+    rank: 5
+  - id: application
+    name: 应用层
+    rank: 6
+  - id: presentation
+    name: 表现层
+    rank: 7
+
+modules:
+  - path: ":app"
+    layer: presentation
+    type: application
+    description: "应用入口"
+
+  - path: ":core:common"
+    layer: application
+    type: android-library
+  - path: ":core:model"
+    layer: application
+    type: android-library
+    description: "跨层数据契约（最底层 core 模块）"
+  - path: ":core:data"
+    layer: application
+    type: android-library
+  - path: ":core:database"
+    layer: application
+    type: android-library
+  - path: ":core:domain"
+    layer: application
+    type: android-library
+  - path: ":core:designsystem"
+    layer: presentation
+    type: android-library-compose
+  - path: ":core:ui"
+    layer: presentation
+    type: android-library-compose
+  - path: ":core:network"
+    layer: application
+    type: android-library
+  - path: ":core:native-bridge"
+    layer: device
+    type: android-library-native
+    description: "JNI 唯一入口"
+
+  - path: ":feature:scan"
+    layer: presentation
+    type: android-library-feature
+  - path: ":feature:gallery"
+    layer: presentation
+    type: android-library-feature
+  - path: ":feature:calibration"
+    layer: presentation
+    type: android-library-feature
+  - path: ":feature:settings"
+    layer: presentation
+    type: android-library-feature
+
+native_modules:
+  - path: "native/depth"
+    layer: geometry
+    description: "深度反投影 / 滤波"
+  - path: "native/fusion"
+    layer: fusion
+    description: "外参投影 / 颜色回填"
+  - path: "native/reconstruction"
+    layer: reconstruction
+    description: "TSDF / MC / 纹理"
+  - path: "native/jni"
+    layer: device
+    description: "JNI extern \"C\" 入口集中点"
+
+third_party:
+  - path: "third_party/berxel-android"
+    description: "Berxel 官方 Android SDK 投放点（aar + jniLibs + include）"
+    license: "厂商私有 — 不入 git"

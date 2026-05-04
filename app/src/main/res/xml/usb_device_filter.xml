@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        Berxel iHawk 系列深度相机 USB VID/PID 占位。
+        正确的 VID/PID 在拿到 Berxel Android SDK 后从 sample manifest 摘出来填入。
+        现在写 0x0000 占位以确保 manifest schema 合法、可编译。
+    -->
+    <usb-device vendor-id="0" product-id="0" />
+</resources>
