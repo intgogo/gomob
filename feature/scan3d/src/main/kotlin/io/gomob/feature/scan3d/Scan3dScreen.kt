@@ -1,179 +1,141 @@
 package io.gomob.feature.scan3d
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import io.gomob.designsystem.component.GlassCard
-import io.gomob.designsystem.theme.Accent
-import io.gomob.designsystem.theme.AccentDim
-import io.gomob.designsystem.theme.BorderGlow
-import io.gomob.designsystem.theme.Primary
-import io.gomob.designsystem.theme.PrimaryDim
-import io.gomob.designsystem.theme.StateInfo
-import io.gomob.designsystem.theme.StateSuccess
-import io.gomob.designsystem.theme.StateWarning
-import io.gomob.designsystem.theme.SurfaceCard
-import io.gomob.designsystem.theme.SurfaceCardHigh
-import io.gomob.designsystem.theme.SurfaceDeep
-import io.gomob.designsystem.theme.TextPrimary
-import io.gomob.designsystem.theme.TextSecondary
-import io.gomob.designsystem.theme.TextTertiary
+import io.gomob.designsystem.component.HairlineCard
+import io.gomob.designsystem.component.ScreenHeader
+import io.gomob.designsystem.component.StatusTag
+import io.gomob.designsystem.component.StatusTone
+import io.gomob.designsystem.theme.Gomob
 
 const val SCAN3D_ROUTE = "scan3d"
 
+/**
+ * 3D Tab — 包含「标定」和「扫描」两个入口（按用户产品规格）。
+ *
+ * 视觉骨架：
+ *   1. 顶部 ScreenHeader（设备状态 trailing）
+ *   2. 相机/预览主区（预留 cameraSlot）
+ *   3. 仪表行：帧率 / 重投影误差
+ *   4. 双入口卡：标定 / 扫描
+ */
 @Composable
 fun Scan3dRoute(
+    cameraSlot: @Composable () -> Unit = {},
     onOpenCalibration: () -> Unit = {},
     onOpenScan: () -> Unit = {},
 ) {
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(SurfaceDeep),
-        contentPadding = PaddingValues(top = 24.dp, bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(20.dp),
+    Column(
+        Modifier.fillMaxSize().background(Gomob.colors.bg0),
+        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
     ) {
-        item { Header() }
-        item { DeviceStatusCard() }
-        item { TwoEntryCards(onOpenCalibration, onOpenScan) }
-        item { CalibrationStatusCard() }
-        item { RecentAssetsCard() }
-    }
-}
-
-@Composable
-private fun Header() {
-    Column(modifier = Modifier.padding(horizontal = 20.dp)) {
-        Text(text = "3D 扫描", style = MaterialTheme.typography.headlineLarge)
-        Text(
-            text = "Berxel iHawk · 主摄合一采集",
-            style = MaterialTheme.typography.bodySmall,
+        ScreenHeader(
+            title = "3D 扫描",
+            eyebrow = "采集 · Berxel iHawk-072",
+            trailing = { StatusTag(text = "已连接", tone = StatusTone.Ok, showDot = true) },
         )
-    }
-}
 
-@Composable
-private fun DeviceStatusCard() {
-    GlassCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp),
-        background = Brush.linearGradient(
-            listOf(SurfaceCard, AccentDim.copy(alpha = 0.4f)),
-        ),
-        borderColor = BorderGlow,
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        // 预览主区
+        Box(
+            Modifier
+                .padding(horizontal = Gomob.spacing.s16)
+                .fillMaxWidth()
+                .aspectRatio(4f / 3f)
+                .clip(Gomob.shapes.r3)
+                .background(Gomob.colors.bg2)
+                .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r3),
         ) {
-            Box(
-                modifier = Modifier
-                    .size(56.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(
-                        Brush.linearGradient(
-                            listOf(Primary.copy(alpha = 0.4f), Accent.copy(alpha = 0.3f)),
-                        ),
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(Icons.Filled.Usb, contentDescription = null, tint = Primary)
+            cameraSlot()
+            // 角落 ID 标签
+            Box(Modifier.align(Alignment.TopStart).padding(Gomob.spacing.s8)) {
+                StatusTag(text = "ZAA0120230001", tone = StatusTone.Accent)
             }
-            Spacer(Modifier.width(14.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "Berxel iHawk-072",
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    Spacer(Modifier.width(8.dp))
+            // 中心十字提示（待真实预览覆盖）
+            if (true) {
+                Box(
+                    Modifier.align(Alignment.Center),
+                    contentAlignment = Alignment.Center,
+                ) {
                     Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(StateSuccess.copy(alpha = 0.18f))
-                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                        Modifier
+                            .padding(Gomob.spacing.s8)
+                            .clip(CircleShape)
+                            .background(Gomob.colors.bg3)
+                            .padding(Gomob.spacing.s12),
                     ) {
                         Text(
-                            text = "已连接",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = StateSuccess,
+                            "USB-C 接 Berxel 深度相机",
+                            style = Gomob.type.bodySm,
+                            color = Gomob.colors.fg2,
                         )
                     }
                 }
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = "USB-C OTG · MixHD 1280×800 · 8 fps",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = "FW 1.2.3 · SDK v2.0.190",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextTertiary,
-                )
             }
         }
-    }
-}
 
-@Composable
-private fun TwoEntryCards(onOpenCalibration: () -> Unit, onOpenScan: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        EntryCard(
-            modifier = Modifier.weight(1f),
-            title = "标定",
-            subtitle = "双摄外参 / 内参",
-            description = "Charuco 标定向导\n3 分钟完成",
-            icon = Icons.Filled.Tune,
-            accent = Primary,
-            onClick = onOpenCalibration,
-        )
-        EntryCard(
-            modifier = Modifier.weight(1f),
-            title = "扫描",
-            subtitle = "RGBD 同步采集",
-            description = "实时点云预览\n智能预审上链",
-            icon = Icons.Filled.ViewInAr,
-            accent = Accent,
-            onClick = onOpenScan,
-        )
+        // 仪表行
+        Row(
+            Modifier.padding(horizontal = Gomob.spacing.s16),
+            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
+        ) {
+            HairlineCard(modifier = Modifier.weight(1f)) {
+                Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4)) {
+                    Text("帧率", style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
+                    Text("28", style = Gomob.type.metricLg, color = Gomob.colors.accentStrong)
+                    Text("Mix HD 1280×800 · 8 fps", style = Gomob.type.caption, color = Gomob.colors.fg3)
+                }
+            }
+            HairlineCard(modifier = Modifier.weight(1f)) {
+                Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4)) {
+                    Text("重投影误差", style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
+                    Text("0.42 px", style = Gomob.type.metricMd, color = Gomob.colors.fg0)
+                    Text("上次标定 2024/05/09 18:32", style = Gomob.type.caption, color = Gomob.colors.fg3)
+                }
+            }
+        }
+
+        // 入口双卡 — 用户产品规格：3D = 标定 + 扫描
+        Row(
+            Modifier.padding(horizontal = Gomob.spacing.s16),
+            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
+        ) {
+            EntryCard(
+                modifier = Modifier.weight(1f),
+                title = "标定",
+                subtitle = "双摄外参 / 内参",
+                description = "Charuco 标定向导 · 3 分钟",
+                icon = Icons.Filled.Tune,
+                onClick = onOpenCalibration,
+            )
+            EntryCard(
+                modifier = Modifier.weight(1f),
+                title = "扫描",
+                subtitle = "RGBD 同步采集",
+                description = "实时点云 · 智能预审",
+                icon = Icons.Filled.ViewInAr,
+                onClick = onOpenScan,
+            )
+        }
     }
 }
 
@@ -184,128 +146,18 @@ private fun EntryCard(
     subtitle: String,
     description: String,
     icon: ImageVector,
-    accent: Color,
     onClick: () -> Unit,
 ) {
-    GlassCard(
-        modifier = modifier.height(192.dp),
-        onClick = onClick,
-        background = Brush.verticalGradient(
-            listOf(accent.copy(alpha = 0.22f), SurfaceCard),
-        ),
-        borderColor = accent.copy(alpha = 0.5f),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(accent.copy(alpha = 0.25f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(icon, contentDescription = null, tint = accent)
+    HairlineCard(modifier = modifier, onClick = onClick) {
+        Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, contentDescription = null, tint = Gomob.colors.accent)
+                Box(Modifier.padding(start = Gomob.spacing.s8)) {
+                    Text(text = title, style = Gomob.type.title, color = Gomob.colors.fg0)
+                }
             }
-            Column {
-                Text(text = title, style = MaterialTheme.typography.headlineSmall)
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = accent,
-                )
-            }
-            Text(
-                text = description,
-                style = MaterialTheme.typography.bodySmall,
-                color = TextTertiary,
-            )
-        }
-    }
-}
-
-@Composable
-private fun CalibrationStatusCard() {
-    GlassCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp),
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = StateSuccess)
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(text = "标定状态：已校准", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    text = "上次标定 2024/05/09 18:32 · 重投影误差 0.42 px",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            Text(
-                text = "查看 →",
-                style = MaterialTheme.typography.labelLarge,
-                color = Primary,
-            )
-        }
-    }
-}
-
-@Composable
-private fun RecentAssetsCard() {
-    Column(modifier = Modifier.padding(horizontal = 20.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(text = "最近 3D 资产", style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.weight(1f))
-            Text(text = "查看全部 →", style = MaterialTheme.typography.labelLarge, color = Primary)
-        }
-        Spacer(Modifier.height(12.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            repeat(3) { idx ->
-                AssetThumb(
-                    modifier = Modifier.weight(1f),
-                    label = "VIN-${idx + 1}",
-                    badge = listOf("0.7M 点", "1.2M 点", "0.9M 点")[idx],
-                    color = listOf(Primary, Accent, StateInfo)[idx],
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun AssetThumb(
-    modifier: Modifier = Modifier,
-    label: String,
-    badge: String,
-    color: Color,
-) {
-    GlassCard(
-        modifier = modifier.height(108.dp),
-        background = Brush.linearGradient(
-            listOf(color.copy(alpha = 0.4f), SurfaceCardHigh),
-        ),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(color.copy(alpha = 0.25f))
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
-            ) {
-                Text(text = badge, style = MaterialTheme.typography.labelSmall, color = color)
-            }
-            Text(text = label, style = MaterialTheme.typography.titleSmall)
+            Text(text = subtitle, style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
+            Text(text = description, style = Gomob.type.caption, color = Gomob.colors.fg3)
         }
     }
 }

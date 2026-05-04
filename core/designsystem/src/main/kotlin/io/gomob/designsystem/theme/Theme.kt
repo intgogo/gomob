@@ -1,51 +1,80 @@
 package io.gomob.designsystem.theme
 
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.staticCompositionLocalOf
 
 /**
- * gomob 全局主题 — 强制深色科技风，不接系统 Material You。
+ * gomob · Theme entry point
  *
- * Why: 工作 App 视觉一致性高于"跟随系统"。检测站工位光照不稳定，
- * 让用户在浅色 / 深色随机切换会带来认知成本。
+ * 用法：
+ * ```
+ * setContent {
+ *   GomobTheme {                                // 跟随系统
+ *     // …
+ *   }
+ * }
+ * ```
+ * 强制单一主题：`GomobTheme(darkTheme = true) { … }`
+ *
+ * 设计原则：
+ * - 全局只暴露 [Gomob] 一个对象，组件用 `Gomob.colors.bg1` / `Gomob.type.body` 取值
+ * - Material3 仍然挂着 — 三方组件（BottomSheetScaffold / DatePicker…）落色不会瞎
+ *   它的 ColorScheme 是从我们的语义 token 派生的，不是另一套真相
  */
+
+private val LocalColors = staticCompositionLocalOf<GomobColors> { error("GomobTheme not applied: missing colors") }
+private val LocalType = staticCompositionLocalOf<GomobType> { error("GomobTheme not applied: missing type") }
+private val LocalShapes = staticCompositionLocalOf<GomobShapes> { error("GomobTheme not applied: missing shapes") }
+private val LocalSpacing = staticCompositionLocalOf<GomobSpacing> { error("GomobTheme not applied: missing spacing") }
+
+object Gomob {
+    val colors: GomobColors @Composable @ReadOnlyComposable get() = LocalColors.current
+    val type: GomobType @Composable @ReadOnlyComposable get() = LocalType.current
+    val shapes: GomobShapes @Composable @ReadOnlyComposable get() = LocalShapes.current
+    val spacing: GomobSpacing @Composable @ReadOnlyComposable get() = LocalSpacing.current
+}
+
 @Composable
-fun GomobTheme(content: @Composable () -> Unit) {
-    val scheme = darkColorScheme(
-        primary = Primary,
-        onPrimary = SurfaceDeep,
-        primaryContainer = PrimaryDim,
-        onPrimaryContainer = TextPrimary,
+fun GomobTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    content: @Composable () -> Unit,
+) {
+    val colors = if (darkTheme) DarkColors else LightColors
 
-        secondary = Accent,
-        onSecondary = SurfaceDeep,
-        secondaryContainer = AccentDim,
-        onSecondaryContainer = TextPrimary,
+    val m3Scheme = if (darkTheme) {
+        darkColorScheme(
+            background = colors.bg0, onBackground = colors.fg0,
+            surface = colors.bg1, onSurface = colors.fg0,
+            surfaceVariant = colors.bg2, onSurfaceVariant = colors.fg1,
+            primary = colors.accent, onPrimary = colors.bg0,
+            secondary = colors.accentStrong, onSecondary = colors.bg0,
+            error = colors.danger, onError = colors.bg0,
+            outline = colors.lineStrong, outlineVariant = colors.line2,
+        )
+    } else {
+        lightColorScheme(
+            background = colors.bg0, onBackground = colors.fg0,
+            surface = colors.bg1, onSurface = colors.fg0,
+            surfaceVariant = colors.bg2, onSurfaceVariant = colors.fg1,
+            primary = colors.accent, onPrimary = colors.bg1,
+            secondary = colors.accentStrong, onSecondary = colors.bg1,
+            error = colors.danger, onError = colors.bg1,
+            outline = colors.lineStrong, outlineVariant = colors.line2,
+        )
+    }
 
-        tertiary = StateInfo,
-        onTertiary = SurfaceDeep,
-
-        background = SurfaceDeep,
-        onBackground = TextPrimary,
-
-        surface = SurfaceCard,
-        onSurface = TextPrimary,
-        surfaceVariant = SurfaceCardHigh,
-        onSurfaceVariant = TextSecondary,
-        surfaceTint = Primary,
-
-        outline = BorderSubtle,
-        outlineVariant = BorderGlow,
-
-        error = StateDanger,
-        onError = TextPrimary,
-    )
-
-    MaterialTheme(
-        colorScheme = scheme,
-        typography = GomobTypography,
-        shapes = GomobShapes,
-        content = content,
-    )
+    CompositionLocalProvider(
+        LocalColors provides colors,
+        LocalType provides DefaultType,
+        LocalShapes provides DefaultShapes,
+        LocalSpacing provides DefaultSpacing,
+    ) {
+        MaterialTheme(colorScheme = m3Scheme, content = content)
+    }
 }

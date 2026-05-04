@@ -6,11 +6,14 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.ui.Modifier
 import dagger.hilt.android.AndroidEntryPoint
+import io.gomob.designsystem.theme.Gomob
 import io.gomob.designsystem.theme.GomobTheme
-import io.gomob.designsystem.theme.SurfaceDeep
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -18,11 +21,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            GomobTheme {
+            GomobTheme(darkTheme = true) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(SurfaceDeep),
+                        .background(Gomob.colors.bg0)
+                        .windowInsetsPadding(WindowInsets.systemBars),
                 ) {
                     AppRoot()
                 }

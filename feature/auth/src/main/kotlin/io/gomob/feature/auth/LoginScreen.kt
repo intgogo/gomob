@@ -1,11 +1,11 @@
 package io.gomob.feature.auth
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -14,19 +14,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Person
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -34,25 +25,17 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import io.gomob.designsystem.component.GlassCard
-import io.gomob.designsystem.component.PrimaryButton
-import io.gomob.designsystem.component.TechTextField
-import io.gomob.designsystem.theme.Accent
-import io.gomob.designsystem.theme.AccentDim
-import io.gomob.designsystem.theme.Primary
-import io.gomob.designsystem.theme.PrimaryDim
-import io.gomob.designsystem.theme.StateDanger
-import io.gomob.designsystem.theme.SurfaceCard
-import io.gomob.designsystem.theme.SurfaceDeep
-import io.gomob.designsystem.theme.TextPrimary
-import io.gomob.designsystem.theme.TextSecondary
-import io.gomob.designsystem.theme.TextTertiary
+import io.gomob.designsystem.component.HairlineCard
+import io.gomob.designsystem.component.StatusTag
+import io.gomob.designsystem.component.StatusTone
+import io.gomob.designsystem.theme.Gomob
 
 const val LOGIN_ROUTE = "auth/login"
 
@@ -70,7 +53,6 @@ fun LoginRoute(
         state = state,
         onUsername = vm::setUsername,
         onPassword = vm::setPassword,
-        onRemember = vm::setRemember,
         onSubmit = vm::submit,
         onGoRegister = onGoRegister,
     )
@@ -81,144 +63,133 @@ private fun LoginContent(
     state: LoginUiState,
     onUsername: (String) -> Unit,
     onPassword: (String) -> Unit,
-    onRemember: (Boolean) -> Unit,
     onSubmit: () -> Unit,
     onGoRegister: () -> Unit,
 ) {
-    Box(
-        modifier = Modifier
+    Column(
+        Modifier
             .fillMaxSize()
-            .background(SurfaceDeep)
-            .windowInsetsPadding(WindowInsets.statusBars),
+            .background(Gomob.colors.bg0)
+            .padding(horizontal = Gomob.spacing.s24),
+        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s20),
     ) {
-        // 顶部装饰
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(280.dp)
-                .background(
-                    Brush.linearGradient(
-                        listOf(
-                            PrimaryDim.copy(alpha = 0.4f),
-                            AccentDim.copy(alpha = 0.4f),
-                            SurfaceDeep,
-                        ),
-                    ),
-                ),
+        Spacer(Modifier.height(Gomob.spacing.s32))
+
+        Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2)) {
+            Text("gomob", style = Gomob.type.display, color = Gomob.colors.fg0)
+            Text("v0.1.0 · 机动车检测站查验员工作台", style = Gomob.type.numInline, color = Gomob.colors.fg3)
+        }
+
+        HairlineCard(padding = Gomob.spacing.s12) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+            ) {
+                Box(Modifier.size(6.dp).clip(CircleShape).background(Gomob.colors.ok))
+                Text("服务端", style = Gomob.type.bodySm, color = Gomob.colors.fg1)
+                Spacer(Modifier.weight(1f))
+                StatusTag(text = "DEV · 127.0.0.1:8808", tone = StatusTone.Ok)
+            }
+        }
+
+        HairlineInput(
+            label = "账号",
+            value = state.username,
+            placeholder = "工号或邮箱",
+            onChange = onUsername,
+        )
+        HairlineInput(
+            label = "密码",
+            value = state.password,
+            placeholder = "请输入密码",
+            isPassword = true,
+            onChange = onPassword,
         )
 
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp),
+        if (state.errorMessage != null) {
+            HairlineCard(padding = Gomob.spacing.s12) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(6.dp).clip(CircleShape).background(Gomob.colors.danger))
+                    Spacer(Modifier.width(Gomob.spacing.s8))
+                    Text(state.errorMessage, style = Gomob.type.bodySm, color = Gomob.colors.danger)
+                }
+            }
+        }
+
+        Spacer(Modifier.height(Gomob.spacing.s4))
+
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(Gomob.spacing.touchMin)
+                .clip(Gomob.shapes.r2)
+                .background(Gomob.colors.accentSoft)
+                .border(Gomob.spacing.hairline, Gomob.colors.accentLine, Gomob.shapes.r2)
+                .clickable(enabled = !state.loading, onClick = onSubmit),
+            contentAlignment = Alignment.Center,
         ) {
-            Spacer(Modifier.height(64.dp))
-            Text(text = "你好！", style = MaterialTheme.typography.displayMedium)
-            Spacer(Modifier.height(4.dp))
-            Text(text = "欢迎登录 gomob", style = MaterialTheme.typography.headlineMedium)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = "机动车检测站查验员工作台",
-                style = MaterialTheme.typography.bodyMedium,
-                color = TextSecondary,
-            )
-
-            Spacer(Modifier.height(48.dp))
-
-            TechTextField(
-                value = state.username,
-                onValueChange = onUsername,
-                placeholder = "请输入账号",
-                leading = { Icon(Icons.Filled.Person, null, tint = TextTertiary) },
-            )
-            Spacer(Modifier.height(12.dp))
-            TechTextField(
-                value = state.password,
-                onValueChange = onPassword,
-                placeholder = "请输入密码",
-                leading = { Icon(Icons.Filled.Lock, null, tint = TextTertiary) },
-                isPassword = true,
-                isError = state.errorMessage != null,
-            )
-
-            Spacer(Modifier.height(12.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(18.dp)
-                        .clip(CircleShape)
-                        .background(if (state.rememberMe) Primary else SurfaceCard)
-                        .clickable { onRemember(!state.rememberMe) },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    if (state.rememberMe) {
-                        Text("✓", color = SurfaceDeep, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = "记住账号",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary,
-                    modifier = Modifier.clickable { onRemember(!state.rememberMe) },
-                )
-                Spacer(Modifier.weight(1f))
-                Text(
-                    text = "没账号? 去注册",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Primary,
-                    modifier = Modifier.clickable { onGoRegister() },
-                )
-            }
-
-            if (state.errorMessage != null) {
-                Spacer(Modifier.height(12.dp))
-                GlassCard(
-                    borderColor = StateDanger.copy(alpha = 0.5f),
-                    background = Brush.horizontalGradient(
-                        listOf(
-                            StateDanger.copy(alpha = 0.18f),
-                            SurfaceCard,
-                        ),
-                    ),
-                ) {
-                    Text(
-                        text = state.errorMessage,
-                        modifier = Modifier.padding(14.dp),
-                        color = StateDanger,
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(32.dp))
             if (state.loading) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(Brush.horizontalGradient(listOf(Primary, Accent))),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator(
-                        color = TextPrimary,
-                        modifier = Modifier.size(24.dp),
-                        strokeWidth = 2.dp,
-                    )
-                }
+                CircularProgressIndicator(
+                    color = Gomob.colors.accent,
+                    modifier = Modifier.size(20.dp),
+                    strokeWidth = 2.dp,
+                )
             } else {
-                PrimaryButton(text = "登 录", onClick = onSubmit)
+                Text("登 录", style = Gomob.type.body, color = Gomob.colors.accent)
             }
+        }
 
-            Spacer(Modifier.height(48.dp))
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text("记住账号", style = Gomob.type.caption, color = Gomob.colors.fg2)
             Text(
-                text = "服务端 10.0.2.2:8808 (DEV)",
-                style = MaterialTheme.typography.labelSmall,
-                color = TextTertiary,
-                modifier = Modifier.fillMaxWidth(),
+                text = "没账号? 去注册",
+                style = Gomob.type.caption,
+                color = Gomob.colors.accent,
+                modifier = Modifier.clickable(onClick = onGoRegister),
             )
-            Spacer(Modifier.height(24.dp))
+        }
+
+        Spacer(Modifier.height(Gomob.spacing.s32))
+    }
+}
+
+@Composable
+private fun HairlineInput(
+    label: String,
+    value: String,
+    placeholder: String,
+    isPassword: Boolean = false,
+    onChange: (String) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6)) {
+        Text(label, style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(Gomob.spacing.touchMin)
+                .clip(Gomob.shapes.r2)
+                .background(Gomob.colors.bg2)
+                .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
+                .padding(horizontal = Gomob.spacing.s12),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            if (value.isEmpty()) {
+                Text(placeholder, style = Gomob.type.body, color = Gomob.colors.fg3)
+            }
+            BasicTextField(
+                value = value,
+                onValueChange = onChange,
+                singleLine = true,
+                textStyle = Gomob.type.body.copy(color = Gomob.colors.fg0),
+                cursorBrush = SolidColor(Gomob.colors.accent),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = if (isPassword) KeyboardType.Password else KeyboardType.Text,
+                ),
+                visualTransformation = if (isPassword) PasswordVisualTransformation() else VisualTransformation.None,
+            )
         }
     }
 }
