@@ -1,4 +1,4 @@
-package io.gomob.feature.scan
+package io.gomob.feature.gallery
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -20,15 +20,15 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
 
-const val SCAN_ROUTE = "scan"
+const val GALLERY_ROUTE = "gallery"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ScanRoute(onBack: () -> Unit) {
+fun GalleryRoute(onBack: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("扫描") },
+                title = { Text("历史扫描") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
@@ -42,13 +42,13 @@ fun ScanRoute(onBack: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            Text("扫描主流程", style = MaterialTheme.typography.headlineSmall)
-            Text("M1 阶段实现 — USB OTG 设备发现 + RGBD 同步采集 + 实时点云预览",
+            Text("扫描历史", style = MaterialTheme.typography.headlineSmall)
+            Text("M3 阶段实现 — 列表 + Filament 3D 回看",
                 style = MaterialTheme.typography.bodyMedium)
         }
     }
 }
 
-fun NavGraphBuilder.scanScreen(onBack: () -> Unit) {
-    composable(SCAN_ROUTE) { ScanRoute(onBack = onBack) }
+fun NavGraphBuilder.galleryScreen(onBack: () -> Unit) {
+    composable(GALLERY_ROUTE) { GalleryRoute(onBack = onBack) }
 }

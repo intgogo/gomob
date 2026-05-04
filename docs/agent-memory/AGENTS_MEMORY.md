@@ -25,4 +25,5 @@
 
 ## 历史决策（finding / design）
 
-（暂空 — 后续随着 M0 工程基线 / M1 深度相机接入会陆续填入）
+- [模拟器在本机的可工作配置 2026-05-04](finding_emulator_setup_2026-05-04.md) — SwiftShader SIGSEGV；必须 `-gpu host` + `DISPLAY=:1` 走 NVIDIA。
+- [KSP2 + Hilt 2.53.x 不兼容](finding_ksp1_required_for_hilt_2_53.md) — `ksp.useKSP2=false` 是当前唯一解。

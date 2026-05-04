@@ -9,6 +9,6 @@ android {
 
 dependencies {
     implementation(project(":core:data"))
-    implementation(libs.filament.android)
-    implementation(libs.gltfio.android)
+    // Filament 在 M3 历史回看（glTF 渲染）时再加
+
 }

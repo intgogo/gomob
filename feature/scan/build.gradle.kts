@@ -13,6 +13,6 @@ dependencies {
     implementation(libs.androidx.camera.camera2)
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
-    implementation(libs.filament.android)
-    implementation(libs.filament.utils.android)
+    // Filament 在 M3 重建预览时再加（点云 / mesh 实时渲染）
+
 }

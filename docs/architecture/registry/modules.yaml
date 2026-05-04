@@ -67,6 +67,10 @@ modules:
     type: android-library-native
     description: "JNI 唯一入口"
 
+  - path: ":feature:home"
+    layer: presentation
+    type: android-library-feature
+    description: "App 落地页 / 主入口（4 张卡片：扫描/历史/标定/设置）"
   - path: ":feature:scan"
     layer: presentation
     type: android-library-feature

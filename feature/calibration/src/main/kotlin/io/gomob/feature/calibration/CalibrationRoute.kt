@@ -1,4 +1,4 @@
-package io.gomob.feature.scan
+package io.gomob.feature.calibration
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -20,15 +20,15 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
 
-const val SCAN_ROUTE = "scan"
+const val CALIBRATION_ROUTE = "calibration"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ScanRoute(onBack: () -> Unit) {
+fun CalibrationRoute(onBack: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("扫描") },
+                title = { Text("双摄标定") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
@@ -42,13 +42,13 @@ fun ScanRoute(onBack: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            Text("扫描主流程", style = MaterialTheme.typography.headlineSmall)
-            Text("M1 阶段实现 — USB OTG 设备发现 + RGBD 同步采集 + 实时点云预览",
+            Text("双摄外参标定", style = MaterialTheme.typography.headlineSmall)
+            Text("M2 阶段实现 — Charuco 标定向导 + 内/外参求解",
                 style = MaterialTheme.typography.bodyMedium)
         }
     }
 }
 
-fun NavGraphBuilder.scanScreen(onBack: () -> Unit) {
-    composable(SCAN_ROUTE) { ScanRoute(onBack = onBack) }
+fun NavGraphBuilder.calibrationScreen(onBack: () -> Unit) {
+    composable(CALIBRATION_ROUTE) { CalibrationRoute(onBack = onBack) }
 }

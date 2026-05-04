@@ -14,6 +14,9 @@
 #   ./dev.sh shot <name>  截图当前屏幕到 .dev/screenshots/<name>.png
 #   ./dev.sh adb-wifi ... 转发到 scripts/adb-wifi.sh
 #   ./dev.sh harness <名> 跑指定 harness（tests/harness/<名>/run.sh）
+#   ./dev.sh emu-start    headless 启动 gomob_test AVD（DISPLAY=:1, -gpu host）
+#   ./dev.sh emu-stop     杀 emulator
+#   ./dev.sh avd-create   创建 gomob_test AVD（首次）
 #
 # 环境变量:
 #   ANDROID_HOME  默认 /opt/android-sdk 或 ~/Android/Sdk
@@ -100,6 +103,28 @@ case "$cmd" in
         [[ -x "$runsh" ]] || { echo "harness 不存在: $runsh"; exit 2; }
         shift
         OUTPUT_DIR="${OUTPUT_DIR:-$DEV_DIR/$name}" "$runsh" "$@"
+        ;;
+    avd-create)
+        : "${ANDROID_HOME:?}"
+        echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
+            -n gomob_test -k "system-images;android-34;default;x86_64" -d pixel_7 --force
+        ;;
+    emu-start)
+        : "${ANDROID_HOME:?}"
+        # 关键：headless 必须用 -gpu host + DISPLAY=:1（详见 docs/agent-memory/finding_emulator_setup_2026-05-04.md）
+        DISPLAY="${DISPLAY:-:1}" setsid "$ANDROID_HOME/emulator/emulator" -avd gomob_test \
+            -no-window -no-audio -no-snapshot -no-boot-anim \
+            -gpu host -accel on -port 5556 \
+            < /dev/null > "$DEV_DIR/emulator.log" 2>&1 & disown
+        echo "emulator started (log: $DEV_DIR/emulator.log)"
+        echo "等 boot: until [ \"\$(adb -s emulator-5556 shell getprop sys.boot_completed)\" = 1 ]; do sleep 5; done"
+        ;;
+    emu-stop)
+        # 注意: 不能用 pkill -f 'qemu-system' — 会匹配自身 bash 命令行把当前会话杀掉
+        pkill -x qemu-system-x86_64-headless 2>/dev/null
+        pkill -x qemu-system-x86_64 2>/dev/null
+        adb kill-server >/dev/null 2>&1
+        echo "emulator stopped"
         ;;
     *)
         sed -n '2,21p' "$0"

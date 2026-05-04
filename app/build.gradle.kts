@@ -51,6 +51,7 @@ dependencies {
     implementation(project(":core:ui"))
     implementation(project(":core:native-bridge"))
 
+    implementation(project(":feature:home"))
     implementation(project(":feature:scan"))
     implementation(project(":feature:gallery"))
     implementation(project(":feature:calibration"))

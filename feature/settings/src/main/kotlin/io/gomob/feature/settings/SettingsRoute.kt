@@ -1,4 +1,4 @@
-package io.gomob.feature.scan
+package io.gomob.feature.settings
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -20,15 +20,15 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
 
-const val SCAN_ROUTE = "scan"
+const val SETTINGS_ROUTE = "settings"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ScanRoute(onBack: () -> Unit) {
+fun SettingsRoute(onBack: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("扫描") },
+                title = { Text("设置") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
@@ -42,13 +42,13 @@ fun ScanRoute(onBack: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            Text("扫描主流程", style = MaterialTheme.typography.headlineSmall)
-            Text("M1 阶段实现 — USB OTG 设备发现 + RGBD 同步采集 + 实时点云预览",
+            Text("设置", style = MaterialTheme.typography.headlineSmall)
+            Text("M0 收尾时实现 — DataStore 偏好 + 设备信息 + 关于页",
                 style = MaterialTheme.typography.bodyMedium)
         }
     }
 }
 
-fun NavGraphBuilder.scanScreen(onBack: () -> Unit) {
-    composable(SCAN_ROUTE) { ScanRoute(onBack = onBack) }
+fun NavGraphBuilder.settingsScreen(onBack: () -> Unit) {
+    composable(SETTINGS_ROUTE) { SettingsRoute(onBack = onBack) }
 }

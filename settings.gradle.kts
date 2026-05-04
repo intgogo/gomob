@@ -36,6 +36,7 @@ include(":core:ui")
 include(":core:network")
 include(":core:native-bridge")
 
+include(":feature:home")
 include(":feature:scan")
 include(":feature:gallery")
 include(":feature:calibration")
