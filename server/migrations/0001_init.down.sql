@@ -1,0 +1,13 @@
+BEGIN;
+DROP TABLE IF EXISTS audit_log;
+DROP TABLE IF EXISTS call_logs;
+DROP TABLE IF EXISTS messages;
+DROP TABLE IF EXISTS conversation_members;
+DROP TABLE IF EXISTS conversations;
+DROP TABLE IF EXISTS reviews;
+DROP TABLE IF EXISTS inspection_assets;
+DROP TABLE IF EXISTS inspections;
+DROP TABLE IF EXISTS vehicles;
+DROP TABLE IF EXISTS users;
+DROP TABLE IF EXISTS stations;
+COMMIT;

@@ -51,11 +51,12 @@ dependencies {
     implementation(project(":core:ui"))
     implementation(project(":core:native-bridge"))
 
+    implementation(project(":feature:auth"))
     implementation(project(":feature:home"))
-    implementation(project(":feature:scan"))
-    implementation(project(":feature:gallery"))
-    implementation(project(":feature:calibration"))
-    implementation(project(":feature:settings"))
+    implementation(project(":feature:message"))
+    implementation(project(":feature:collaboration"))
+    implementation(project(":feature:scan3d"))
+    implementation(project(":feature:profile"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)

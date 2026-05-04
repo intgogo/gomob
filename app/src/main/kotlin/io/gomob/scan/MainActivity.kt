@@ -4,12 +4,13 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import dagger.hilt.android.AndroidEntryPoint
 import io.gomob.designsystem.theme.GomobTheme
+import io.gomob.designsystem.theme.SurfaceDeep
 import io.gomob.scan.navigation.GomobNavHost
 
 @AndroidEntryPoint
@@ -19,7 +20,11 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             GomobTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
+                androidx.compose.foundation.layout.Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(SurfaceDeep),
+                ) {
                     GomobNavHost()
                 }
             }

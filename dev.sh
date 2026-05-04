@@ -104,6 +104,17 @@ case "$cmd" in
         shift
         OUTPUT_DIR="${OUTPUT_DIR:-$DEV_DIR/$name}" "$runsh" "$@"
         ;;
+    server)
+        sub="${1:-doctor}"; shift || true
+        case "$sub" in
+            doctor) "$PROJ_DIR/server/scripts/ensure-go.sh" ;;
+            up) (cd "$PROJ_DIR/server" && docker compose -f configs/dev/docker-compose.yml up -d) ;;
+            down) (cd "$PROJ_DIR/server" && docker compose -f configs/dev/docker-compose.yml down) ;;
+            build) (cd "$PROJ_DIR/server" && make build) ;;
+            run) (cd "$PROJ_DIR/server/cmd/devserver" && go run .) ;;
+            *) echo "用法: $0 server {doctor|up|down|build|run}"; exit 2 ;;
+        esac
+        ;;
     avd-create)
         : "${ANDROID_HOME:?}"
         echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
