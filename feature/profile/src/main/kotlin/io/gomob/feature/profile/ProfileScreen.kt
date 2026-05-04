@@ -50,6 +50,10 @@ import io.gomob.designsystem.theme.SurfaceCard
 import io.gomob.designsystem.theme.SurfaceDeep
 import io.gomob.designsystem.theme.TextSecondary
 import io.gomob.designsystem.theme.TextTertiary
+import io.gomob.model.user.UserProfile
+import androidx.compose.runtime.getValue
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 const val PROFILE_ROUTE = "profile"
 
@@ -70,7 +74,8 @@ private val SETTINGS_ITEMS = listOf(
 )
 
 @Composable
-fun ProfileRoute() {
+fun ProfileRoute(vm: ProfileViewModel = hiltViewModel()) {
+    val state by vm.state.collectAsStateWithLifecycle()
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -78,15 +83,15 @@ fun ProfileRoute() {
         contentPadding = PaddingValues(top = 24.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item { ProfileHeader() }
+        item { ProfileHeader(profile = state.profile) }
         item { ShiftStatsCard() }
         item { SettingsList() }
-        item { BottomActions() }
+        item { BottomActions(onLogout = vm::logout) }
     }
 }
 
 @Composable
-private fun ProfileHeader() {
+private fun ProfileHeader(profile: UserProfile?) {
     GlassCard(
         modifier = Modifier
             .fillMaxWidth()
@@ -109,7 +114,7 @@ private fun ProfileHeader() {
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    text = "沈",
+                    text = profile?.avatarInitial ?: "?",
                     fontSize = 28.sp,
                     fontWeight = FontWeight.Bold,
                 )
@@ -118,32 +123,34 @@ private fun ProfileHeader() {
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = "沈海明",
+                        text = profile?.realName ?: "加载中…",
                         style = MaterialTheme.typography.headlineSmall,
                     )
                     Spacer(Modifier.width(8.dp))
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(Primary.copy(alpha = 0.2f))
-                            .padding(horizontal = 6.dp, vertical = 2.dp),
-                    ) {
-                        Text(
-                            text = "查验员",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Primary,
-                        )
+                    if (profile != null) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(Primary.copy(alpha = 0.2f))
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                        ) {
+                            Text(
+                                text = profile.roleLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Primary,
+                            )
+                        }
                     }
                 }
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text = "工号 ZAA0120230001",
+                    text = "工号 " + (profile?.employeeId ?: "—"),
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary,
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    text = "杭州市西湖区车管所检测站",
+                    text = profile?.stationName ?: "未绑定检测站",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextTertiary,
                 )
@@ -245,7 +252,7 @@ private fun SettingsList() {
 }
 
 @Composable
-private fun BottomActions() {
+private fun BottomActions(onLogout: () -> Unit) {
     Column(
         modifier = Modifier.padding(horizontal = 20.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -254,19 +261,22 @@ private fun BottomActions() {
             text = "切换账号",
             icon = Icons.Filled.SwapHoriz,
             color = TextSecondary,
+            onClick = onLogout, // 切换账号 = 登出 + 回到登录页
         )
         ActionRow(
             text = "退出登录",
             icon = Icons.Filled.Settings,
             color = StateDanger,
+            onClick = onLogout,
         )
     }
 }
 
 @Composable
-private fun ActionRow(text: String, icon: ImageVector, color: Color) {
+private fun ActionRow(text: String, icon: ImageVector, color: Color, onClick: () -> Unit) {
     GlassCard(
         modifier = Modifier.fillMaxWidth().height(52.dp),
+        onClick = onClick,
     ) {
         Row(
             modifier = Modifier

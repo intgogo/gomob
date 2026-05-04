@@ -64,6 +64,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.startup)
+    implementation(libs.hilt.navigation.compose)
     implementation(libs.timber)
 
     testImplementation(libs.junit)
