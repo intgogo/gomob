@@ -129,6 +129,23 @@ object GomobIcons {
         moveTo(7f, 12f)
         horizontalLineTo(20f)
     }
+
+    val Search: ImageVector = stroked("Search") {
+        circle(11f, 11f, 6.5f)
+        moveTo(16f, 16f)
+        lineTo(20f, 20f)
+    }
+
+    val Compose: ImageVector = stroked("Compose") {
+        moveTo(4f, 20f)
+        horizontalLineTo(8f)
+        lineTo(19f, 9f)
+        lineTo(15f, 5f)
+        lineTo(4f, 16f)
+        close()
+        moveTo(14f, 6f)
+        lineTo(18f, 10f)
+    }
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────
