@@ -18,6 +18,18 @@
 #   ./dev.sh emu-stop     杀 emulator
 #   ./dev.sh avd-create   创建 gomob_test AVD（首次）
 #
+#   ./dev.sh server doctor   服务端工具链自检（Go/docker/compose/protoc/git）
+#   ./dev.sh server up       起 docker-compose dev 栈（PG/Redis/MinIO/NATS）
+#   ./dev.sh server down     停 dev 栈
+#   ./dev.sh server ps       看 dev 栈状态
+#   ./dev.sh server logs     跟 dev 栈日志
+#   ./dev.sh server build    编译所有服务二进制到 server/.dev/bin/
+#   ./dev.sh server test     跑 server/ 单元测试
+#   ./dev.sh server run      单进程跑 devserver（聚合开发模式）
+#   ./dev.sh server migrate  跑 PG migrations
+#   ./dev.sh server proto    生成 .pb.go
+#   ./dev.sh server clean    清理 server/.dev/bin/
+#
 # 环境变量:
 #   ANDROID_HOME  默认 /opt/android-sdk 或 ~/Android/Sdk
 #   ADB_DEVICE    指定 adb 目标（默认随便挑一个）
@@ -102,17 +114,31 @@ case "$cmd" in
         runsh="$PROJ_DIR/tests/harness/$name/run.sh"
         [[ -x "$runsh" ]] || { echo "harness 不存在: $runsh"; exit 2; }
         shift
-        OUTPUT_DIR="${OUTPUT_DIR:-$DEV_DIR/$name}" "$runsh" "$@"
+        out_dir="${OUTPUT_DIR:-$DEV_DIR/$name}"
+        OUTPUT_DIR="$out_dir" "$runsh" "$@"
+        # 跑完采样自动调分析器（CLAUDE.md "分析器必须输出可判定结论"）
+        analyze="$PROJ_DIR/tests/harness/$name/analyze.py"
+        if [[ -x "$analyze" || -f "$analyze" ]]; then
+            echo
+            echo "── analyze ──"
+            python3 "$analyze" "$out_dir"
+        fi
         ;;
     server)
         sub="${1:-doctor}"; shift || true
         case "$sub" in
-            doctor) "$PROJ_DIR/server/scripts/ensure-go.sh" ;;
-            up) (cd "$PROJ_DIR/server" && docker compose -f configs/dev/docker-compose.yml up -d) ;;
-            down) (cd "$PROJ_DIR/server" && docker compose -f configs/dev/docker-compose.yml down) ;;
-            build) (cd "$PROJ_DIR/server" && make build) ;;
-            run) (cd "$PROJ_DIR/server/cmd/devserver" && go run .) ;;
-            *) echo "用法: $0 server {doctor|up|down|build|run}"; exit 2 ;;
+            doctor)  "$PROJ_DIR/server/scripts/server-doctor.sh" ;;
+            up)      (cd "$PROJ_DIR/server" && docker compose -f configs/dev/docker-compose.yml up -d) ;;
+            down)    (cd "$PROJ_DIR/server" && docker compose -f configs/dev/docker-compose.yml down) ;;
+            ps)      (cd "$PROJ_DIR/server" && docker compose -f configs/dev/docker-compose.yml ps) ;;
+            logs)    (cd "$PROJ_DIR/server" && docker compose -f configs/dev/docker-compose.yml logs -f "$@") ;;
+            build)   (cd "$PROJ_DIR/server" && make build) ;;
+            test)    (cd "$PROJ_DIR/server" && go test ./...) ;;
+            run)     (cd "$PROJ_DIR/server/cmd/devserver" && go run .) ;;
+            migrate) (cd "$PROJ_DIR/server" && ./scripts/migrate.sh "${1:-up}") ;;
+            proto)   (cd "$PROJ_DIR/server" && ./scripts/proto-gen.sh) ;;
+            clean)   (cd "$PROJ_DIR/server" && rm -rf .dev/bin && echo "→ server/.dev/bin cleaned") ;;
+            *) echo "用法: $0 server {doctor|up|down|ps|logs|build|test|run|migrate|proto|clean}"; exit 2 ;;
         esac
         ;;
     avd-create)

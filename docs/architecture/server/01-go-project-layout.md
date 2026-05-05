@@ -17,8 +17,16 @@ server/
 │   ├── api/                      业务 API
 │   ├── auth/                     认证
 │   ├── asset/                    资产
-│   ├── signaling/                消息 + 视频信令
+│   ├── signaling/                消息 + 视频信令（仅 wss 在线推送）
 │   ├── worker/                   AI 预审 / 异步任务
+│   ├── device/                   相机绑定 + 标定参数云同步
+│   ├── modelregistry/            AI 模型版本元数据 / 灰度 / 回滚
+│   ├── admin/                    管理后台 BFF（注册审核 / 用户管理 / 模型切换 / 参考库审核）
+│   ├── catalog/                  车型档案库（vehicle-catalog）
+│   ├── vinref/                   车驾号字形参考库
+│   ├── shaperef/                 车型 3D 外廓参考库
+│   ├── cvengine/                 CV 算法引擎（VIN 检测 / 比对，从 gosmart 迁移）
+│   ├── llmgateway/               LLM 大模型网关（DeepSeek 起步）
 │   └── devserver/                单进程跑全部（开发模式）
 │
 ├── internal/                     私有（不可被 server/ 外部 import）
@@ -27,7 +35,15 @@ server/
 │   ├── asset/                    asset 服务实现
 │   ├── signaling/                signaling 服务实现
 │   ├── worker/                   worker 服务实现
-│   └── gateway/                  gateway 服务实现
+│   ├── gateway/                  gateway 服务实现
+│   ├── device/                   device 服务实现
+│   ├── modelregistry/            model-registry 服务实现
+│   ├── admin/                    admin BFF 实现
+│   ├── catalog/                  vehicle-catalog 服务实现
+│   ├── vinref/                   vin-ref 服务实现
+│   ├── shaperef/                 shape-ref 服务实现
+│   ├── cvengine/                 cv-engine 服务实现（含从 gosmart 迁移的 ivv 处理流水线）
+│   └── llmgateway/               llm-gateway 服务实现（provider adapter / 模板编排 / 流式）
 │
 ├── pkg/                          可复用业务模块（service-agnostic）
 │   ├── ent/                      数据模型（Go struct，PG 映射）
@@ -48,6 +64,14 @@ server/
 │   ├── api.proto
 │   ├── asset.proto
 │   ├── signaling.proto
+│   ├── device.proto
+│   ├── modelregistry.proto
+│   ├── admin.proto
+│   ├── catalog.proto
+│   ├── vinref.proto
+│   ├── shaperef.proto
+│   ├── cvengine.proto
+│   ├── llmgateway.proto
 │   └── common.proto              CommonHeader / Pagination 等
 │
 ├── configs/                      YAML 配置 + dev/prod 区分
@@ -57,6 +81,14 @@ server/
 │   ├── asset.yaml
 │   ├── signaling.yaml
 │   ├── worker.yaml
+│   ├── device.yaml
+│   ├── modelregistry.yaml
+│   ├── admin.yaml
+│   ├── catalog.yaml
+│   ├── vinref.yaml
+│   ├── shaperef.yaml
+│   ├── cvengine.yaml
+│   ├── llmgateway.yaml
 │   └── dev/
 │       └── docker-compose.yml
 │
@@ -79,8 +111,22 @@ server/
 
 - 模块名：`io.gomob/server`
 - 包路径：`io.gomob/server/internal/api`、`io.gomob/server/pkg/repo`
-- 二进制：`gomob-<service>`（gomob-api / gomob-gateway / ...）
-- 端口：gateway 8808（暴露） / api 50051 / auth 50052 / asset 50053 / signaling 50054 / worker 50055（gRPC，仅内网）
+- 二进制：`gomob-<service>`（gomob-api / gomob-gateway / gomob-cvengine / gomob-llmgateway / ...）
+- 端口（gRPC 仅内网；gateway 与 admin HTTP 走外 / 管理网；cv-engine HTTP 沿用 gosmart 兼容路径仅内网）：
+  - **生产端口**：
+    - gateway 8808（HTTPS，App 唯一暴露入口）
+    - admin 9090（HTTPS / mTLS，仅内网管理网段访问；BFF）
+    - cv-engine HTTP 8810（仅内网，兼容 `/cv/ocr/v1/*`）
+    - llm-gateway HTTP 8811（仅内网，流式 SSE）
+    - gRPC：api 50051 / auth 50052 / asset 50053 / signaling 50054 / worker 50055
+    - gRPC：device 50056 / modelregistry 50057 / admin 50058
+    - gRPC：catalog 50059 / vinref 50060 / shaperef 50061
+    - gRPC：cvengine 50062 / llmgateway 50063
+  - **开发端口**（默认；统一 18000 段，避免 8080 / 8808 等常用端口与其它项目冲突）：
+    - gateway 18808 / api 18080 / auth 18082 / asset 18083
+    - signaling 18084 / device 18086
+    - cv-engine HTTP 18810 / llm-gateway HTTP 18811
+    - 各服务由 `GOMOB_<SVC>_HTTP_ADDR` 环境变量覆盖；harness / dev.sh 已对齐 18000 段
 
 ## 与 App 仓库的关系
 

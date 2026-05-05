@@ -104,9 +104,124 @@ func (r *UserRepo) Activate(ctx context.Context, id int64) error {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
+		// 区分不存在 vs 状态不对
+		var exists bool
+		_ = r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id=$1)`, id).Scan(&exists)
+		if !exists {
+			return ErrNotFound
+		}
+		return ErrStateConflict
+	}
+	return nil
+}
+
+// Reject pending 用户审核驳回 → status=disabled（保留记录便于审计）。
+func (r *UserRepo) Reject(ctx context.Context, id int64) error {
+	const q = `UPDATE users SET status='disabled' WHERE id=$1 AND status='pending'`
+	tag, err := r.pool.Exec(ctx, q, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		var exists bool
+		_ = r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id=$1)`, id).Scan(&exists)
+		if !exists {
+			return ErrNotFound
+		}
+		return ErrStateConflict
+	}
+	return nil
+}
+
+// Disable / Enable 已激活用户的禁用 / 恢复（管理员人工干预）。
+func (r *UserRepo) Disable(ctx context.Context, id int64) error {
+	tag, err := r.pool.Exec(ctx, `UPDATE users SET status='disabled' WHERE id=$1 AND status='active'`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		var exists bool
+		_ = r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id=$1)`, id).Scan(&exists)
+		if !exists {
+			return ErrNotFound
+		}
+		return ErrStateConflict
+	}
+	return nil
+}
+
+// UpdateRoleAndStation 改用户的 role / station_id（任一可空）。
+//
+// stationID 语义：
+//
+//	nil  → 不变
+//	*v=-1 → 显式置 NULL
+//	*v>0 → 改为指定 station
+func (r *UserRepo) UpdateRoleAndStation(ctx context.Context, id int64, role *string, stationID *int64) error {
+	const q = `
+		UPDATE users
+		SET role       = COALESCE($2::text, role),
+		    station_id = CASE
+		                   WHEN $3::bigint IS NULL THEN station_id
+		                   WHEN $3::bigint = -1   THEN NULL
+		                   ELSE $3::bigint
+		                 END
+		WHERE id = $1`
+	tag, err := r.pool.Exec(ctx, q, id, role, stationID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// ListUsersFilter 列表过滤。
+type ListUsersFilter struct {
+	Status string // pending / active / disabled / "" = 不限
+	Role   string
+	Limit  int
+	Cursor int64
+}
+
+// ListUsers 按 (status, role) 过滤；按 id DESC 分页。
+func (r *UserRepo) ListUsers(ctx context.Context, f ListUsersFilter) ([]User, int64, error) {
+	limit := f.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	const q = `
+		SELECT id, username, real_name, employee_id, station_id, password_hash, role, status, note, created_at, activated_at
+		FROM users
+		WHERE ($1 = '' OR status = $1)
+		  AND ($2 = '' OR role = $2)
+		  AND ($3 = 0 OR id < $3)
+		ORDER BY id DESC
+		LIMIT $4`
+	rows, err := r.pool.Query(ctx, q, f.Status, f.Role, f.Cursor, limit+1)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]User, 0, limit+1)
+	for rows.Next() {
+		var u User
+		if err := rows.Scan(&u.ID, &u.Username, &u.RealName, &u.EmployeeID, &u.StationID,
+			&u.PasswordHash, &u.Role, &u.Status, &u.Note, &u.CreatedAt, &u.ActivatedAt); err != nil {
+			return nil, 0, err
+		}
+		items = append(items, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	var next int64
+	if len(items) > limit {
+		next = items[limit-1].ID
+		items = items[:limit]
+	}
+	return items, next, nil
 }
 
 func (r *UserRepo) UpdatePassword(ctx context.Context, id int64, newHash string) error {

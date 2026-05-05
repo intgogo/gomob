@@ -1,0 +1,250 @@
+# 服务端 Go monorepo（gomob/server/）的服务清单 — 机器可校验真理源
+#
+# 与 App 端 modules.yaml 并列，因为两者工程语义完全不同：
+#   - App: Gradle multi-project，模块边界 = Kotlin package + 依赖图
+#   - Server: Go monorepo，模块边界 = 独立二进制 + gRPC/HTTP 端点
+#
+# 后续 scripts/archgov 会读本表：
+#   - 校验 server/cmd/<name> 与 server/internal/<name> 与本表一致
+#   - 校验 server-dependencies.yaml 的服务调用图不违反"上游不调下游"规则
+#   - 校验端口分配无冲突
+#
+# 详见 docs/architecture/server/00-server-overview.md
+
+version: 1
+
+categories:
+  - id: ingress
+    name: 接入层
+  - id: identity
+    name: 身份与会话
+  - id: business
+    name: 业务主域
+  - id: realtime
+    name: 实时通信
+  - id: asset
+    name: 资产与存储
+  - id: ai
+    name: AI / 异步 / 算法
+  - id: device
+    name: 设备管理
+  - id: catalog
+    name: 厂商参考库
+  - id: management
+    name: 管理面
+
+services:
+  # —— 接入层 ——
+  - name: gateway
+    cmd: server/cmd/gateway
+    impl: server/internal/gateway
+    category: ingress
+    binary: gomob-gateway
+    expose:
+      - { protocol: https, port: 8808, scope: public, purpose: "App 唯一对外入口" }
+    storage: []
+    description: "TLS / 路由 / 限流 / wss 升级 / JWT 校验 / 注入 X-Gomob-User-Id"
+
+  # —— 身份与会话 ——
+  - name: auth
+    cmd: server/cmd/auth
+    impl: server/internal/auth
+    category: identity
+    binary: gomob-auth
+    expose:
+      - { protocol: grpc, port: 50052, scope: internal }
+    storage:
+      - { kind: postgres, used_for: "users / register_audit" }
+      - { kind: redis,    used_for: "refresh_token persist (7d)" }
+    description: "注册（含审核流）/ 登录 / 改密 / token 颁发 / RBAC（casbin）"
+
+  # —— 业务主域 ——
+  - name: api
+    cmd: server/cmd/api
+    impl: server/internal/api
+    category: business
+    binary: gomob-api
+    expose:
+      - { protocol: grpc, port: 50051, scope: internal }
+      - { protocol: http, port: 8080,  scope: internal, purpose: "对 gateway 反代的 HTTP 端点" }
+    storage:
+      - { kind: postgres, used_for: "inspections / reviews / messages / call_logs" }
+      - { kind: redis,    used_for: "unread counters" }
+    bff_for:
+      - vehicle-catalog
+      - vin-ref
+      - shape-ref
+    description: "查验 / 复核 / 消息 / 用户档案。同时承担 catalog 三件套的只读 BFF 透传"
+
+  # —— 资产与存储 ——
+  - name: asset
+    cmd: server/cmd/asset
+    impl: server/internal/asset
+    category: asset
+    binary: gomob-asset
+    expose:
+      - { protocol: grpc, port: 50053, scope: internal }
+      - { protocol: http, port: 8083,  scope: internal, purpose: "对 gateway 反代的分片上传端点" }
+    storage:
+      - { kind: postgres, used_for: "assets metadata (CAS index)" }
+      - { kind: minio,    used_for: "binary blobs (inspection / scan3d / models / vin-refs / shapes)" }
+    description: "分片上传 / CAS / 签名 URL / 多 bucket（inspection/, models/, vin-refs/, shapes/）"
+
+  # —— 实时通信 ——
+  - name: signaling
+    cmd: server/cmd/signaling
+    impl: server/internal/signaling
+    category: realtime
+    binary: gomob-signaling
+    expose:
+      - { protocol: grpc, port: 50054, scope: internal }
+      - { protocol: wss,  port: 8084,  scope: internal, purpose: "对 gateway 反代的 WebSocket 端点" }
+    storage:
+      - { kind: redis, used_for: "online presence / pending_calls / unread" }
+    nats:
+      subscribe: ["inspection.preliminary_done", "model.version.activated"]
+    description: "wss 双向通道 / WebRTC SDP+ICE 转发 / 待接来电（仅 wss 在线推送）"
+
+  # —— AI / 异步 / 算法 ——
+  - name: worker
+    cmd: server/cmd/worker
+    impl: server/internal/worker
+    category: ai
+    binary: gomob-worker
+    expose:
+      - { protocol: grpc, port: 50055, scope: internal }
+    storage:
+      - { kind: postgres, used_for: "tasks / inspections (write_back results)" }
+    nats:
+      subscribe: ["inspection.created", "asset.uploaded", "model.version.activated"]
+      publish:   ["inspection.preliminary_done"]
+    description: "异步任务消费者：智能预审 4 子模型 / 缩略图 / PDF 生成"
+
+  - name: cv-engine
+    cmd: server/cmd/cvengine
+    impl: server/internal/cvengine
+    category: ai
+    binary: gomob-cvengine
+    expose:
+      - { protocol: grpc, port: 50062, scope: internal }
+      - { protocol: http, port: 8810,  scope: internal, purpose: "/cv/ocr/v1/* 沿用 gosmart 路径，由 gateway 反代到公网" }
+    storage: []
+    nats:
+      subscribe: ["model.version.activated"]
+    auth: dual_track   # JWT + HMAC 验签
+    gpu: optional
+    description: "CV 算法引擎（VIN 检测 / 字形比对 / 拓印），从 gosmart 迁移；启动时拉 active 模型"
+
+  - name: llm-gateway
+    cmd: server/cmd/llmgateway
+    impl: server/internal/llmgateway
+    category: ai
+    binary: gomob-llmgateway
+    expose:
+      - { protocol: grpc, port: 50063, scope: internal }
+      - { protocol: http, port: 8811,  scope: internal, purpose: "/v1/llm/* 由 gateway 反代；SSE 流式" }
+    storage:
+      - { kind: postgres, used_for: "llm_templates / llm_call_logs" }
+    external:
+      - { name: deepseek, kind: llm_provider, key_storage: "kms_sealed_secret" }
+    description: "LLM 大模型网关：provider-agnostic adapter / prompt 模板版本化 / 流式 SSE / 调用审计"
+
+  - name: model-registry
+    cmd: server/cmd/modelregistry
+    impl: server/internal/modelregistry
+    category: ai
+    binary: gomob-modelregistry
+    expose:
+      - { protocol: grpc, port: 50057, scope: internal }
+    storage:
+      - { kind: postgres, used_for: "models metadata / model_routes / canary policies" }
+    nats:
+      publish: ["model.version.activated"]
+    description: "AI 模型版本元数据 / 灰度 / 回滚；二进制存 asset bucket models/"
+
+  # —— 设备管理 ——
+  - name: device
+    cmd: server/cmd/device
+    impl: server/internal/device
+    category: device
+    binary: gomob-device
+    expose:
+      - { protocol: grpc, port: 50056, scope: internal }
+      - { protocol: http, port: 8086,  scope: internal, purpose: "对 gateway 反代的设备管理端点" }
+    storage:
+      - { kind: postgres, used_for: "devices / calibrations(versioned) / device_bindings" }
+    description: "Berxel 相机绑定 / 双摄标定参数版本化云同步 / 多设备配对"
+
+  # —— 厂商参考库 ——
+  - name: vehicle-catalog
+    cmd: server/cmd/catalog
+    impl: server/internal/catalog
+    category: catalog
+    binary: gomob-catalog
+    expose:
+      - { protocol: grpc, port: 50059, scope: internal }
+    storage:
+      - { kind: postgres, used_for: "vehicle_models (主数据)" }
+      - { kind: redis,    used_for: "LRU cache by vehicle_model_id" }
+    nats:
+      publish: ["catalog.invalidated"]
+    description: "车型档案库主数据：写少读多；HTTP 入口由 api 服务 BFF 承担（/v1/catalog/vehicles*）"
+
+  - name: vin-ref
+    cmd: server/cmd/vinref
+    impl: server/internal/vinref
+    category: catalog
+    binary: gomob-vinref
+    expose:
+      - { protocol: grpc, port: 50060, scope: internal }
+    storage:
+      - { kind: postgres, used_for: "vin_glyph_samples / annotations" }
+    description: "车驾号字形参考库：cv-engine vin_compare 时按 vehicle_model_id 拉对照样本；图像走 asset bucket vin-refs/"
+
+  - name: shape-ref
+    cmd: server/cmd/shaperef
+    impl: server/internal/shaperef
+    category: catalog
+    binary: gomob-shaperef
+    expose:
+      - { protocol: grpc, port: 50061, scope: internal }
+    storage:
+      - { kind: postgres, used_for: "vehicle_shapes (元数据 / qc_score)" }
+    description: "车型 3D 外廓参考库：mesh / 点云走 asset bucket shapes/，单文件 GB 级"
+
+  # —— 管理面 ——
+  - name: admin
+    cmd: server/cmd/admin
+    impl: server/internal/admin
+    category: management
+    binary: gomob-admin
+    expose:
+      - { protocol: https, port: 9090,  scope: management, purpose: "管理网段 mTLS HTTPS BFF" }
+      - { protocol: grpc,  port: 50058, scope: management }
+    storage:
+      - { kind: postgres, used_for: "audit_log 聚合查询（共享 users / casbin 策略）" }
+    description: "管理后台 BFF（注册审核 / 用户与组织管理 / 模型版本切换 / 参考库审核 / LLM 模板管理 / 审计聚合）"
+
+# 跨服务共用的存储
+storage_instances:
+  - name: postgres-primary
+    kind: postgres
+    description: "主库；按 schema 隔离不同服务的表（auth/api/device/catalog/...）"
+  - name: redis-primary
+    kind: redis
+    description: "在线状态 / 缓存 / 限流计数 / refresh_token"
+  - name: minio-primary
+    kind: minio
+    description: "对象存储；按 bucket 隔离（inspection/ scan3d/ models/ vin-refs/ shapes/）"
+  - name: nats-primary
+    kind: nats
+    description: "服务间异步事件总线"
+
+external_dependencies:
+  - name: deepseek
+    kind: llm_provider
+    consumed_by: [llm-gateway]
+  - name: coturn
+    kind: turn_server
+    consumed_by: [signaling]
+    description: "WebRTC NAT 穿透 fallback"

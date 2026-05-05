@@ -48,3 +48,158 @@
 | M4.2 | fusion_quality harness | ☐ |
 | M4.3 | recon_quality harness | ☐ |
 | M4.4 | `docs/architecture/registry/` 机器可校验真理源（modules / dependencies） | ☐ |
+
+---
+
+# 服务端主线（M-S，与端侧 M0–M4 并行推进）
+
+> 目录在仓内 `server/`；契约见 `docs/architecture/server/`。
+> **每条任务以"可独立 curl / harness / 单元测试验收"为切分边界**，不按时间切。
+
+## M-S0 — 服务端基线（已完成 2026-05-04）
+
+| ID | 项 | 验收标准 | 文档 |
+|----|----|---------|------|
+| ✅ M-S0.1 | `server/` 仓内骨架 + go.mod (`io.gomob/server`) + Makefile（15 个服务二进制） | `make build` 全部 15 个二进制产出（gateway/api/auth/asset/signaling/worker/device/modelregistry/admin/catalog/vinref/shaperef/cvengine/llmgateway/devserver） | `docs/architecture/server/01-go-project-layout.md` |
+| ✅ M-S0.2 | `./dev.sh server doctor` — 校验 Go 1.23+ / docker / docker compose / protoc / git | 缺任一项明确报错并给安装提示；`server/scripts/server-doctor.sh` | 同上 §开发主入口 |
+| 🟡 M-S0.3 | docker-compose（dev）：postgres + redis + minio + nats | yaml 已通过 python yaml 校验；**实际起栈待用户装 docker compose v2 plugin** | 同上 |
+| ✅ M-S0.4 | `migrations/0001_init.up.sql` — 11 张基线表 | 已存在（stations/users/vehicles/inspections/inspection_assets/reviews/conversations/conversation_members/messages/call_logs/audit_log），各 M-S 阶段在自己的 0002+ 增量加表 | `docs/architecture/server/00-server-overview.md` §3 |
+| ✅ M-S0.5 | `pkg/{logger,token,httpx,repo,audit,rbac,metric,trace}` 公共包骨架 + 单测 | `go test ./pkg/...` 全绿（audit/metric/rbac/trace 含完整单测） | 同 §F2/§B4 |
+| ✅ M-S0.6 | `scripts/{server-doctor.sh, migrate.sh, proto-gen.sh}` | 缺 migrate / protoc 时给出具体安装命令 | 同 §01-go-project-layout |
+
+## M-S1 — gateway + auth（已完成 2026-05-04）
+
+| ID | 项 | 验收标准 | 文档 |
+|----|----|---------|------|
+| ✅ M-S1.1 | `cmd/auth` 注册接口（写 `users` `status=pending`；dev 模式自动激活） | curl POST /v1/auth/register → code=0 user_id 返回；DEV 模式 status=active；`internal/auth/handler.go` Register | `02-api-contract.md` §3.1 |
+| ✅ M-S1.2 | `cmd/auth` 登录 + token 颁发（access 2h / refresh 7d） | active 用户拿到双 token；refresh 接口拿新 access；harness S2/S5 通过 | 同 §3.2/§3.3 |
+| ✅ M-S1.3 | `cmd/auth` 改密 + GET /v1/me | 旧密码错返 40101；旧密码对成功；旧密码不能再登录；新密码登录返新 token；harness S6a-d 通过 | 同 §3.4/§3.5 |
+| ✅ M-S1.4 | `cmd/gateway` 反代 + JWT 校验 + 注入 `X-Gomob-User-Id` / `X-Gomob-Roles` + Redis 限流 | gateway:8808 反代到 auth:8082；公开路径白名单（register/login/refresh）；token 失效返 40102；超 limit 返 429；下游 fallback Bearer | `00-server-overview.md` §8 / §6.app |
+| 🟡 M-S1.5 | RBAC：M-S0.5 已交付 `pkg/rbac.Baseline()`（4 角色策略 + 单测） | `pkg/rbac` 单测覆盖 inspector/supervisor/reviewer/admin；**casbin 接入留 M-S2** 与具体业务接口一起 | 同 §5 |
+| ✅ M-S1.6 | `tests/harness/auth_flow/` 全链路自验 | `./dev.sh harness auth_flow` → 10/10 场景通过；S1-S6d 业务正确性 + S7 限流触发；analyze.py 输出"正常"判定 | `CLAUDE.md` 自分析规范 |
+
+## M-S2 — api + asset 业务主域（已完成 2026-05-04）
+
+| ID | 项 | 验收标准 | 文档 |
+|----|----|---------|------|
+| ✅ M-S2.1 | `cmd/api` + `internal/api` 查验 CRUD（列表/详情/创建/状态机/关闭/写预审/提交复核） | 状态机 5 状态 PG CAS（`UPDATE ... WHERE status=ANY($from)`），非法跳转返 40401；inspections_test.go 覆盖 11 个状态对组合 | `02-api-contract.md` §4 / §9.2 |
+| ✅ M-S2.2 | `cmd/api` 抽查复核：bucket 列表（pending/done/expired）+ 详情 + decide CAS | reviewer/inspector 角色区分（rbac.Baseline）；重复 decide 返 40401；audit 入表 | 同 §6 / §9.3 |
+| ✅ M-S2.3 | `cmd/asset` 分片上传：init / part / complete / abort，复用 MinIO multipart + Redis 存 part etag | 24 MB 文件 8 MB×3 片端到端通过；CAS sha256 + size 双校验；S3 part 最小 5 MB 约束已对齐（默认 8 MB） | 同 §5 |
+| ✅ M-S2.4 | `cmd/asset` 签名 URL 下载：`PresignedGetObject` 5 分钟 TTL | URL `expires_in=300`；下载文件 sha256 与原文件全匹配；权限：自己的 OR supervisor/reviewer/admin | `00-server-overview.md` §11 |
+| ✅ M-S2.5 | `audit_log` 接入：api 全部写路径 + asset.upload_complete | `pkg/audit.PG` 写 users/action/target/before/after JSON；harness 验证 7 条事件 | 同 §11 |
+| ✅ M-S2.6 | `tests/harness/inspection_lifecycle/` — 23 场景全链路自验 | `./dev.sh harness inspection_lifecycle` → 23/23 通过；含 sha256 下载校验 + 状态机一致性 + audit 数量 | `CLAUDE.md` 自分析规范 |
+
+## M-S3 — device（相机绑定 + 标定云同步）（未启动）
+
+| ID | 项 | 验收标准 | 文档 |
+|----|----|---------|------|
+| M-S3.1 | `cmd/device` 设备绑定：序列号 + 固件版本 → `devices` 表 | 重复序列号绑定返 409；同一用户多设备列表正确 | `docs/architecture/server/00-server-overview.md` §6.x |
+| M-S3.2 | 标定参数版本化云同步：POST 上报 / GET `?version=latest` | 版本号单调递增；旧版本可按号拉取 | 同 §6.x |
+| M-S3.3 | App 端 `core:data` 接入：扫描启动前自动比对本地 vs 云端 version | 差异时拉取、相同时跳过；离线退化到本地 Room | `docs/architecture/05-calibration-pipeline.md` |
+| M-S3.4 | `tests/harness/calibration_sync/` — 多设备多版本场景下同步一致性 | analyze.py 校验"任一终端在线后能收敛到 latest" | 同 §M4 自分析规范 |
+
+## M-S4 — signaling（消息 + WebRTC 信令）（已完成 2026-05-04）
+
+| ID | 项 | 验收标准 | 文档 |
+|----|----|---------|------|
+| ✅ M-S4.0 | migration 0006：`conversations.next_seq` + `conversations.p2p_key` partial unique + `pending_calls` 表 + 索引 | up/down 可逆；schema 落盘 | `migrations/0006_signaling.{up,down}.sql` |
+| ✅ M-S4.1 | `cmd/signaling` wss 双向通道（gorilla/websocket）+ 心跳（25s ping / 60s pong）+ Hub 多端登录索引 | harness S2/S3 hello 投递 ≤3ms；S15 `/v1/signaling/online` 暴露在线列表 | `internal/signaling/{hub,conn,handler}.go` |
+| ✅ M-S4.2 | 单聊消息：发送 → 落 `messages` → server_seq 严格单调（`UPDATE conversations SET next_seq=next_seq+1` 行锁分配）+ p2p 自动建会话 | harness S4 单条 seq=1；S5 顺序 50 条 [2..51]；S6 并发 100 条 [52..151] 无重无空；S7 fetch since=0 拿全部 152 条升序 | `pkg/repo/messages.go` / `internal/signaling/router.go` handleMsgSend |
+| ✅ M-S4.3 | WebRTC 信令：call.invite/answer/ice/bye 透传到对端所有在线连接 | harness S11 answer / S12 ICE 双向 / S13 bye 全 ≤4ms 转发 | `internal/signaling/router.go` handleCall* |
+| ✅ M-S4.4 | 离线兜底：被叫不在线时 invite → `pending_calls`（默认 60s TTL）；callee 上线 → `DeliverPending` 一次性补发 + MarkDelivered；后台 `SweepLoop` 把过期标 expired | harness S9 invite_ack online=false；S10 重连 5s 内收 pending=true；S14 TTL=3s sweep=1s 过期后不再投递 | `pkg/repo/calls.go` / `internal/signaling/router.go` |
+| ✅ M-S4.5 | `tests/harness/ws_message_order/` — 16 场景全链路自验（注册/登录/双 ws/单条/顺序/并发/fetch/错误帧/离线/重连/answer/ice/bye/TTL/online） | `./dev.sh harness ws_message_order` → **16/16 通过**；burst=100 conc=5 单调严格无重复 | `tests/harness/ws_message_order/{run.sh,analyze.py}` + `cmd/wsharness/main.go` |
+|     | gateway 端：`/v1/ws` 路由声明 Public（浏览器/RN 不能设 Authorization；signaling 自校 `?token=` query）；`httputil.NewSingleHostReverseProxy` 自动透传 ws upgrade | `internal/gateway/route.go` 已加 `Public: true` | 同 |
+
+## M-S5 — model-registry（已完成 2026-05-04） + worker（待 cv-engine）
+
+| ID | 项 | 验收标准 | 文档 |
+|----|----|---------|------|
+| ✅ M-S5.1 | `cmd/modelregistry` 元数据 CRUD + 状态机（draft→canary→active→archived）；同 name 至多 1 active + 1 canary（PG 部分唯一索引） | (name, version) 重复返 40201；非法跳转返 40401；harness 18 场景通过 | `00-server-overview.md` §6.y |
+| 🟡 M-S5.2 | sha256 一致性：metadata 字段已存；二进制实际校验由 worker / cv-engine 加载时做 | 当前仅 schema 就绪；M-S10 cv-engine 实施时验证 | 同 §6.y |
+|     | M-S5.3 worker 4 子模型推理任务 | 待 cv-engine + worker 同时实施（依赖 M-S10） | 同 §6 |
+| ✅ M-S5.4 | 灰度策略：`model_routes` 表 + `/admin/v1/models/{name}/route` PUT；resolve 算法：白名单 > 比例（FNV hash 确定性 + 50% 分布偏差 ≤ 2.5%） | harness S7 200 user 测试 canary=100/199；S8 user42 命中白名单 → reason="user_whitelist"；S9 同 user 多次 resolve 一致 | 同 §6.y |
+| ✅ M-S5.5 | NATS 广播：状态变更（promote/activate/archive）发 `model.version.activated`，worker / cv-engine 据此热更 | harness S12 NATS 订阅器收 3 事件；payload 含 name/version/status/asset_uri/sha256/ts | 同 §6.y / `server-dependencies.yaml` |
+| ✅ M-S5.6 | `tests/harness/model_canary_switch/` 全链路 | `./dev.sh harness model_canary_switch` → **18/18 通过** | `CLAUDE.md` 自分析规范 |
+
+## M-S6 — admin BFF（管理面）（已完成 2026-05-04）
+
+| ID | 项 | 验收标准 | 文档 |
+|----|----|---------|------|
+| ✅ M-S6.1 | `/admin/v1/users/{id}/{approve,reject,disable}` + 列表 + RBAC | mustAdmin middleware（缺 header 40102 / 非 admin 40103）；状态机 pending→active/disabled；harness S1-S10 通过 | `00-server-overview.md` §7.x |
+| ✅ M-S6.2 | 用户管理：`PATCH /admin/v1/users/{id}` 改 role / station_id | 4 角色合法性校验（hacker→10002）；station_id=-1 显式置 NULL | 同 §7.x |
+| ✅ M-S6.3 | 模型版本切换：反代 `/admin/v1/models/*` 到 model-registry（含子路径 /{id}/activate） | mountProxy 同时注册末尾斜杠 + 无尾斜杠（避免 ServeMux 默认 301）；harness S12 通过 | 同 §7.x / `01-go-project-layout.md` |
+| ✅ M-S6.4/5 | 反代 `/admin/v1/catalog/*` + `/admin/v1/llm/*` 到对应服务 | harness S11 / S13 通过；admin 单一入口聚合三套 admin API | 同 §7.x / §6.z / §6.v |
+| ✅ M-S6.6 | `GET /admin/v1/audit` 聚合查询 + 多维度过滤（user_id / action 精确 / action ILIKE 含 % / from / to / target / cursor 分页） | harness S14-S18 通过 | 同 §11 |
+|     | M-S6.7 mTLS 内网部署 + 管理网段隔离 | 由部署层（haproxy / istio sidecar）做；本服务做应用层 RBAC | 同 `01-go-project-layout.md` §端口 |
+| ✅ M-S6.harness | `tests/harness/admin_lifecycle/` 全链路 | `./dev.sh harness admin_lifecycle` → **25/25 通过**；含 8 反代场景 + 5 audit 维度 | `CLAUDE.md` 自分析规范 |
+
+## M-S7 — vehicle-catalog（车型档案库）（已完成 2026-05-04）
+
+| ID | 项 | 验收标准 | 文档 |
+|----|----|---------|------|
+| ✅ M-S7.1 | migration 0003 vehicle_models（含 (make, series, year) 三元组唯一约束 + status 索引 + updated_at 触发器） | up/down 可逆；重复三元组返 ErrConflict | `00-server-overview.md` §6.z |
+| ✅ M-S7.2 | `/admin/v1/catalog/vehicles*` admin 写路径：create / patch / publish / archive；状态机 draft→published→archived | mustAdmin RBAC；patch 在 published 上返 40401；harness S7-S13 通过 | 同 §6.z / `02-api-contract.md` §13 |
+| ✅ M-S7.3 | catalog 内部 HTTP（:18059）+ api BFF 透传 `/v1/catalog/vehicles*` 反代（§6.app 决策） | gateway → api BFF → catalog 完整链路通过；`httputil.NewSingleHostReverseProxy` | 同 §6.app |
+| ✅ M-S7.4 | Redis LRU 缓存按 vehicle_model_id（默认 10m TTL）+ patch/transition 时失效（DEL 单 key） | `X-Gomob-Cache: hit/miss` header 验证；harness S5/S6 通过 | 同 §6.z |
+| ✅ M-S7.5 | `tests/harness/catalog_lifecycle/` 24 场景全链路 | `./dev.sh harness catalog_lifecycle` → **24/24 通过**；含状态机 + 缓存 hit/miss + 三元组冲突 + audit≥8 | `CLAUDE.md` 自分析规范 |
+|     | NATS 广播失效（多节点）+ keyword GIN（pg_trgm）扩展 | M-S6 admin 完整接入或多节点部署时再补 | — |
+
+## M-S8 — vin-ref（车驾号字形参考库）（已完成 2026-05-04 schema/admin/读路径；与 cv-engine 对接留 M-S10）
+
+> 设计第一性：拒绝 stub，schema 字段对齐 gosmart `apps/api/ivv/item.go` `VinMore`（character / arr_mode /
+> font_id / font_family_id / alpha_image_data / origin_image_data），并按"车型 × 批次 × 字符"三层索引升级到字符级 lookup，
+> 让 M-S10 cv-engine 把 `doCompareVin` 改成"拉对照样本与本次扫描字符比对"成为单点改动。
+
+| ID | 项 | 验收标准 | 文档 |
+|----|----|---------|------|
+| ✅ M-S8.1 | migration 0007：`vin_glyph_batches`（按 vehicle_model 分批 + 状态机 draft→published→archived，partial unique 同车型至多 1 published）+ `vin_glyph_samples`（CHECK character ∈ VIN 33 字符；arr_mode 0-3；qc_score 0-1；触发器自动维护 sample_count） | up/down 可逆；migration 直应用 PG 通过 | `migrations/0007_vin_ref.{up,down}.sql` |
+| ✅ M-S8.2 | `pkg/repo/vinref.go`：VinGlyphBatch（Create / FindByID / FindActive / List / Patch / Publish / Archive / DeleteDraft）+ VinGlyphSample（Insert / Delete / ListByBatch / CountByCharacter）；Publish 事务里 `FOR UPDATE` + 旧 active archive；非 draft 写样本返 ErrStateConflict | harness S5 重名 40201 / S10 publish 自动 sample_count=11 status=published / S11 published 写样本 40401 / S15 invalid character 10002 / S16 publish batch2 → batch1 auto archived 全通 | `pkg/repo/vinref.go` |
+| ✅ M-S8.3 | `cmd/vinref` HTTP :18058 + `internal/vinref/handler.go`：admin 写路径 + App / cv-engine 读路径（`/v1/catalog/vehicles/{vmid}/vin-refs/active`+`/active/samples` 查 active 批次按字符过滤） | harness S13 active counts_by_char A=2 Z=3 / S14 character=A 拿到 ≥2 条 / S20 App 走 gateway → api BFF → vinref 拿到样本 | `cmd/vinref/main.go` / `internal/vinref/handler.go` |
+| ✅ M-S8.4 | admin BFF：`/admin/v1/catalog/vehicles/{vmid}/vin-refs/...` subtree 反代到 vinref（路径比 catalog 更具体，Go 1.22 ServeMux 优先匹配最具体）；api BFF：同前缀的 App 路径反代 vinref，其它 `/v1/catalog/*` 走 catalog | `MountCatalogBFF(catalog, vinref)` 双反代 | `internal/admin/handler.go:80` / `internal/api/catalog_bff.go` |
+| ✅ M-S8.5 | `tests/harness/vinref_lifecycle/` — 27 场景全链路自验（鉴权 / 三元组冲突 / 状态机 5 跳变 / 样本 CRUD / 字符校验 / 自动 archive / App 读路径 / audit≥8 vinref.* 事件） | `./dev.sh harness vinref_lifecycle` → **27/27 通过** | `tests/harness/vinref_lifecycle/{run.sh,analyze.py}` |
+|     | M-S10 cv-engine 对接：`doCompareVin` 改成按 (vehicle_model_id, character) gRPC 拉 active 批次的对照样本与本次扫描字符比对 | 留 M-S10 cv-engine 迁移时实施 | `docs/architecture/server/03-cvengine-migration.md` |
+|     | `tests/harness/vinref_compare_quality/` — 含/不含厂商参考的字形比对 precision/recall 对比 | 留 M-S10 cv-engine 实施后 | 同 §M4 |
+
+## M-S9 — shape-ref（车型 3D 外廓参考库）（未启动）
+
+| ID | 项 | 验收标准 | 文档 |
+|----|----|---------|------|
+| M-S9.1 | `cmd/shaperef` schema：vehicle_shapes（vehicle_model_id / mesh_asset_uri / point_count / coverage / qc_score / status） | GB 级 mesh 通过 asset 分片上传写入；元数据完整 | `docs/architecture/server/00-server-overview.md` §6.z |
+| M-S9.2 | 质检流程：density / coverage / qc_score 阈值校验 + admin publish | 质检不通过的样本无法 publish | 同 §6.z |
+| M-S9.3 | shape-ref 内部 gRPC + **api BFF 透传 `/v1/catalog/vehicles/:id/shape`**（含签名 URL 直链，asset 大文件 Range 续传） | App 端按 vehicle_model_id 下载到本地缓存 | 同 §6.z / §6.app |
+| M-S9.4 | App 端 `feature:gallery` 接入：扫描完成后下载对照模型并 Filament 双窗口渲染 | 用户能直观看到本次扫描 vs 标准外廓差异 | `docs/architecture/06-product-features.md` §3.4 |
+| M-S9.5 | `tests/harness/shaperef_io/` — 大文件上传 / 续传 / 下载 / 缓存命中率 | analyze.py 校验断网恢复后续传一致性 | 同 §M4 |
+
+## M-S10 — cv-engine（CV 算法引擎，从 gosmart 迁移）（未启动）
+
+> **实施细化见 `docs/architecture/server/03-cvengine-migration.md`**（含闭包审计 / cgo 阻塞点 / 风险登记）。
+> 阻塞性发现：gosmart 的 `engine/gocv` 是 cgo binding，依赖 554 MB 的 `engine/ccv/`（含 OpenCV / ONNX / libccv），cv-engine 必须独立 Dockerfile + 独立 CI。
+
+| ID | 项 | 验收标准 | 文档 |
+|----|----|---------|------|
+| M-S10.1a | 拷贝 `gosmart/engine/ccv/` 整目录到 `server/internal/cvengine/ccv/`，含 `.a` `.so` `include/` `src/` `Makefile` | `libccv.so` `libopencv_world.so` 等关键 .so 完整可见 | `03-cvengine-migration.md` §6 |
+| 🟢 M-S10.1b | **spike 已通过**（2026-05-04）：本机 CentOS 9 + gcc 11.5 + cgo 链接 libccv / libopencv_world / libonnxruntime 全通过；M-S10 实施时拷贝 `engine/gocv/` 到 `server/internal/cvengine/gocv/`，cgo 头文件相对路径修正 | spike 报告：[.dev/spike-cgo/REPORT.md](../.dev/spike-cgo/REPORT.md)；正式拷贝时 `go build -tags=cv ./internal/cvengine/gocv` 通过 | 同上 |
+| M-S10.1c | 拷贝 `apps/api/ivv/` 到 `server/internal/cvengine/ivv/`；全局替换 `gosmart/...` → `io.gomob/server/internal/cvengine/...` | `go build ./internal/cvengine/ivv` 通过，无残留旧 import | 同上 |
+| M-S10.1d | 拷贝 `engine/image/` + `util/{conv,crypt,datetime,fs,json,levenshtein,pack}`；剔除 license / xorm / sqlite 相关 import | `go vet ./internal/cvengine/...` 全绿 | 同上 §3 |
+| M-S10.2a | `cmd/cvengine/main.go`：gin 注册 `/cv/ocr/v1/*` + JWT 中间件 + HMAC 验签中间件（迁 `apps/apps.go` 路由片段） | curl 6 个 VIN 接口与 gosmart 同输入产出一致 | `02-api-contract.md` §14 |
+| M-S10.2b | 替换 `apps/data` 按车型拉对照样本逻辑：从 sqlite/xorm 改为 gRPC 调 vin-ref（M-S8 已交付） | 同样本集输出 char_similarity 一致 | `03-cvengine-migration.md` §3 |
+| M-S10.2c | `Dockerfile.cvengine`：base `centos:stream9`，COPY ccv/.so + 设置 `LD_LIBRARY_PATH`；产 `gomob-cvengine:cpu` | `docker run` 启动后 `/healthz` 模型加载完成返 200 | 同上 §5 |
+| M-S10.3 | **gateway 直达**：HTTP 端口 8810 仅内网，对外通过 gateway 反代；JWT + 验签双轨 | gosmart 时代 curl 加 JWT header 后全部通过 | `02-api-contract.md` §14 / `00-server-overview.md` §6.app |
+| M-S10.4 | 模型加载：启动时调 model-registry 拉 active 版本 → 调 asset 下载 .onnx → 加载到 onnxruntime | 模型缺失时 /readyz 返 503；加载完成 /healthz 200 | `00-server-overview.md` §6.y |
+| M-S10.5 | 热更：订阅 NATS `model.version.activated` 触发模型切换，无任务丢失 | 切换瞬间正在跑的请求用旧模型完成，新请求用新模型 | 同 §6.y |
+| M-S10.6 | 内部 gRPC 包装（cvengine.proto）：worker / api 调用替代 HTTP（共享 handler） | gRPC 单测覆盖 6 个 VIN 接口 | 同 §6.w |
+| M-S10.7 | 与 vin-ref 对接：vin_compare 时按 vehicle_model_id gRPC 调 vin-ref（M-S8） | M-S8.4 验收用例覆盖 | 同 §6.w / §6.z |
+| M-S10.8 | `tests/harness/cv_vin_pipeline/` — 端到端 vin_detect → vin_compare 在已知样本集上的 precision/recall 回归 | analyze.py 给出"是否达到 gosmart 时代基线"判定 | `CLAUDE.md` 自分析规范 |
+
+## M-S11 — llm-gateway（LLM 大模型网关）（已完成 2026-05-04）
+
+| ID | 项 | 验收标准 | 文档 |
+|----|----|---------|------|
+| ✅ M-S11.1 | provider-agnostic adapter `Provider interface { Chat / ChatStream }` + DeepSeek（OpenAI 兼容协议）+ Mock provider（无外网时使用） | `Registry.Pick(name)` 选择；harness 用 mock 跑全链路；DeepSeek key 设置时自动启用 | `00-server-overview.md` §6.v |
+| ✅ M-S11.2 | API key 由 GOMOB_DEEPSEEK_API_KEY 环境变量托管；空 → 仅启用 mock | 业务服务无 DeepSeek 凭证；harness 默认 mock 不需 key | 同 §6.v |
+| ✅ M-S11.3 | `llm_templates` 表（migration 0004）+ admin CRUD + 状态机 draft→active→archived；activate v2 时自动 archive 旧 active；text/template 渲染缺 var 报详细错 | harness S1/S3/S10 通过；S10c 验证 v1 自动 archived | `02-api-contract.md` §15 |
+| ✅ M-S11.4 | SSE 流式：event: meta / delta×N / done；`http.Flusher` 即时刷出；client cancel → ctx.Done → provider stream 中止 + 写 status=cancelled audit | harness S5 看到 meta=1 delta=12 done=1；S6 客户端早断后 llm_call_logs 出现 cancelled 记录 | 同 §6.v |
+| ✅ M-S11.5 | `llm_call_logs` 表 + 独立 ctx 写入（绕开 client cancel） | harness S12 验证 ≥3 条记录；含 ok / cancelled 两类 status | 同 §11 |
+|     | M-S11.6 限流 / 配额（按 user / 按 template_id 日预算） | 当前由 gateway 全局限流兜底；按模板维度 budget 留 M-S6 admin 配置端 + worker 累计 | — |
+|     | M-S11.7 多 provider 故障 fallback | 接口已预留（Registry 可注册多 provider）；当前未实现自动 failover | — |
+| ✅ M-S11.8 | `tests/harness/llm_streaming/` — 流式 / 取消 / 状态机 / 审计 全链路 | `./dev.sh harness llm_streaming` → **18/18 通过** | `CLAUDE.md` 自分析规范 |

@@ -8,8 +8,8 @@
 ### 1.1 Base URL
 
 - 生产：`https://<gateway-domain>:8808/v1/...`
-- 开发（模拟器）：`http://10.0.2.2:8808/v1/...`（10.0.2.2 是 emulator 看到的宿主机）
-- 开发（真机 ADB Wi-Fi）：`http://<电脑局域网 IP>:8808/v1/...`
+- 开发（模拟器）：`http://10.0.2.2:18808/v1/...`（10.0.2.2 是 emulator 看到的宿主机；本机 dev 端口在 18000 段，避免与其它 8080/8808 项目冲突）
+- 开发（真机 ADB Wi-Fi）：`http://<电脑局域网 IP>:18808/v1/...`
 
 ### 1.2 Headers
 
@@ -20,6 +20,10 @@
 | `X-Gomob-Trace-Id` | 客户端可选生成；用于服务端 trace 关联 |
 | `Content-Type: application/json; charset=utf-8` | 默认 |
 | `Accept-Language: zh-CN` | 错误消息本地化（暂只支持 zh-CN） |
+| `X-Gomob-AppId` | **仅 cv-engine 接口** `/cv/ocr/v1/*`：调用方应用 ID |
+| `X-Gomob-Sign` | **仅 cv-engine 接口**：请求体签名（HMAC-SHA256(secret, body+ts+nonce)）|
+| `X-Gomob-Ts` | **仅 cv-engine 接口**：UNIX 毫秒时间戳；服务端拒收偏差 > 5 分钟 |
+| `X-Gomob-Nonce` | **仅 cv-engine 接口**：本次请求随机串；服务端按 `appid+nonce` 在 5 分钟窗口内防重放 |
 
 ### 1.3 响应统一信封
 
@@ -97,6 +101,14 @@ Cursor 是不透明字符串（base64 编码内部状态），客户端不解析
 | `40202` | 409 | 工号已存在 |
 | `40301` | 404 | 资源不存在 |
 | `40401` | 409 | 状态机不允许（如已关闭的查验不能再改） |
+| `40501` | 401 | cv-engine 验签失败（sign / ts / nonce 三选一异常） |
+| `40502` | 409 | cv-engine 重放检测（nonce 已使用） |
+| `40601` | 422 | LLM 模板不存在 / 已下线 |
+| `40602` | 429 | LLM 配额超限（按模板 / 按用户） |
+| `40603` | 502 | LLM 上游供应商不可用 |
+| `40701` | 404 | 车型档案不存在或未发布 |
+| `40702` | 404 | 字形参考样本不存在或未发布 |
+| `40703` | 404 | 3D 外廓资产不存在或未发布 |
 | `50001` | 500 | 服务端内部错误（看 trace_id） |
 | `50002` | 502 | 上游不可用（DB / 对象存储） |
 | `50003` | 504 | 上游超时 |
@@ -416,29 +428,67 @@ Body：原始字节流（非 multipart，简化）。Header：`Content-Length: <
 
 返回服务端 `server_seq` 等。
 
-## 8. WebSocket 通道
+## 8. WebSocket 通道（M-S4 已实施）
 
 `WS /v1/ws?token=<access_token>` —— 单连接复用消息推送 + 视频信令。
 
-### 8.1 协议帧
+**鉴权**：浏览器 / RN WebSocket 不能设自定义 header，约定 `?token=<access JWT>` query；
+gateway 路由声明 `Public:true` 透传 ws upgrade，token 校验由 signaling 自己做。
+
+### 8.1 帧外壳
+
+所有帧统一 `Envelope`：
 
 ```json
-{ "type": "msg.new", "payload": <Message 结构> }
-{ "type": "msg.read", "payload": { "conversation_id": "c_1", "up_to_seq": 1234 } }
-{ "type": "call.invite", "payload": { "call_id": "...", "from": "...", "sdp": "..." } }
-{ "type": "call.answer", "payload": { "call_id": "...", "sdp": "..." } }
-{ "type": "call.ice", "payload": { "call_id": "...", "candidate": "..." } }
-{ "type": "call.bye", "payload": { "call_id": "...", "reason": "..." } }
-{ "type": "ai.preliminary_done", "payload": { "inspection_id": "...", "verdict": "warning" } }
-{ "type": "review.assigned", "payload": { "review_id": "...", "expire_at": "..." } }
-{ "type": "ping" } / { "type": "pong" }   // 30s 心跳
+{ "type": "<事件类型>", "payload": { ... }, "frame_seq": 12 }
 ```
 
-### 8.2 重连策略
+`frame_seq` 是连接级单调递增（不同于消息 server_seq），便于客户端调试。
+错误帧额外含 `code` / `message`。
 
-- 客户端：指数退避（1s → 30s 上限），最多 30 次后弹"网络异常"
-- 服务端：每 30s 推 `ping`，60s 没收到客户端任何帧就 close
-- 重连后客户端发 `{"type":"sync","payload":{"last_seqs":{"c_1":1234,...}}}` 拉离线增量
+### 8.2 客户端 → 服务端
+
+| type | payload | 说明 |
+|------|---------|------|
+| `msg.send` | `{to_user_id, kind, content, client_msg_id?}` | 单聊；服务端自动建 / 拿 p2p 会话 |
+| `msg.fetch` | `{conversation_id, since_seq, limit}` | 离线补齐 |
+| `call.invite` | `{to_user_id, sdp}` | 视频呼叫；离线时入 `pending_calls` |
+| `call.answer` | `{call_id, to_user_id, sdp}` | 应答 |
+| `call.ice` | `{call_id, to_user_id, candidate}` | ICE 透传 |
+| `call.bye` | `{call_id, to_user_id, reason}` | 挂断 |
+
+### 8.3 服务端 → 客户端
+
+| type | payload | 说明 |
+|------|---------|------|
+| `hello` | `{user_id, role, server_ts}` | 握手成功 |
+| `msg.delivered` | `{client_msg_id?, conversation_id, server_seq, message_id, created_at}` | 发送方回执 |
+| `msg.recv` | `{conversation_id, server_seq, sender_id, kind, content, created_at}` | 推给收件人 |
+| `msg.fetch_result` | `{conversation_id, items[], next_since_seq}` | 离线补齐结果（升序） |
+| `call.invite` | `{call_id, from_user_id, sdp, pending?, created_at}` | 收到邀请；`pending=true` 表示来自离线缓存 |
+| `call.invite_ack` | `{call_id, online, ttl_sec?}` | 主叫回执；`online=false` 表示已入 `pending_calls` |
+| `call.answer` | `{call_id, from_user_id, sdp}` | 收到应答 |
+| `call.ice` | `{call_id, from_user_id, candidate}` | 收到 ICE |
+| `call.bye` | `{call_id, from_user_id, reason}` | 收到挂断 |
+| `error` | `{in_reply_to}` + `code` + `message` | 错误帧 |
+
+### 8.4 server_seq 单调保证
+
+- 每个 `conversations` 行有 `next_seq BIGINT NOT NULL DEFAULT 1`
+- 写消息时 `UPDATE conversations SET next_seq=next_seq+1 WHERE id=$1 RETURNING next_seq-1` 行锁分配 → 严格单调，不依赖 SELECT MAX(seq)+1 的竞争窗口
+- `UNIQUE(conversation_id, server_seq)` 约束兜底重复检测
+- harness `ws_message_order` S6 验证：5 goroutine × 20 msg = 100 条并发，seq 严格 [52..151] 无重复无空洞
+
+### 8.5 离线 invite 兜底
+
+- `call.invite` 时 `Hub.Push` 返回 0 → 写 `pending_calls`（默认 60s TTL）
+- callee 上线 → `DeliverPending` 拉未过期 invite 一次性下发并 `MarkDelivered`
+- 后台 `SweepLoop`（默认 30s）把过期 pending → `expired`
+
+### 8.6 心跳 / 重连
+
+- 服务端：`pingPeriod=25s` 主动推 ws ping；`pongWait=60s` 内未收到 pong 关连接
+- 客户端建议：指数退避重连（1s→30s 上限）；重连后发 `msg.fetch` 按 `since_seq=last_known` 补齐
 
 ## 9. 状态机
 
@@ -476,6 +526,10 @@ assigned ──复核完成──▶ done
 | 注册 | 1 次/分钟 / IP | 同上 |
 | 上传分片 | 20 MB/s / user | 自然带宽限制 |
 | WS 帧 | 100 帧/s / connection | 超过断连 |
+| `/v1/catalog/*` GET | 600 次/分钟 / user | 触限 `40703` 统一 |
+| `/cv/ocr/v1/vin_*` | 60 次/分钟 / user + 10 次/秒 / appid | 触限 `10003` |
+| `/v1/llm/chat` 调用次数 | 模板级 day budget（admin 配置）+ 30 次/分钟 / user | 触限 `40602` |
+| `/v1/llm/chat` token 配额 | 模板级 day token budget；超时返 `40602` | 同上 |
 
 ## 11. 安全
 
@@ -484,12 +538,372 @@ assigned ──复核完成──▶ done
 - JWT：HS256 + 服务端密钥；access 2h，refresh 7d
 - 资产签名 URL 5 分钟过期；不直接暴露对象存储
 - CSRF：不需要（移动 App，不用浏览器 cookie）
+- **cv-engine 双轨鉴权**：JWT（用户身份）+ HMAC-SHA256 验签（防重放 / 防伪造）；secret 由 admin 颁发，5 分钟时间窗 + nonce 去重，详见 §14.1
+- **LLM 凭证不下发到客户端**：DeepSeek 等供应商 API key 仅存 llm-gateway configs（通过 KMS / sealed secret 注入），App 端无任何上游凭证
+- **审计完整性**：cv-engine 调用与 llm-gateway 调用都落 `audit_log` + 各自专表（`cv_call_logs` / `llm_call_logs`），便于成本归因与异常溯源
 
 ## 12. 版本演进
 
 - 路径前缀 `/v1` 锁定；不兼容改动出 `/v2`
 - 字段新增不破坏老客户端（下发更多字段允许，旧客户端忽略）
 - 删除字段：先 `deprecated` 标记 + 公告 1 个月，再下线
+
+## 13. Catalog（车型档案 / 字形参考 / 3D 外廓 — 参考库三件套）
+
+> 通路：HTTP 入口由 **api 服务**承担（`/v1/catalog/*`），api 内部 gRPC 转发到 vehicle-catalog / vinref / shaperef。
+> App 端鉴权统一 JWT，无需验签。
+
+### 13.1 车型档案查询
+
+`GET /v1/catalog/vehicles?make=&series=&year=&keyword=&cursor=&limit=`
+
+**Response**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "items": [
+      {
+        "id": "vm_10001",
+        "make": "比亚迪",
+        "series": "汉",
+        "year": 2024,
+        "engine_type": "EV",
+        "outline_features": {
+          "length_mm": 4995, "width_mm": 1910, "height_mm": 1495,
+          "wheelbase_mm": 2920
+        },
+        "compliance_check_list": ["合规项-001", "合规项-007"],
+        "updated_at": "2026-04-21T08:00:00.000Z"
+      }
+    ],
+    "next_cursor": "...",
+    "has_more": false
+  }
+}
+```
+
+### 13.2 车型档案详情
+
+`GET /v1/catalog/vehicles/:id`
+
+**Response**：在 13.1 字段基础上额外返回：
+
+```json
+{
+  "vin_ref_count": 3,
+  "shape_ref_id": "vs_50001",
+  "manufacturer_doc_url": "https://.../signed?exp=..."
+}
+```
+
+### 13.3 字形参考样本（M-S8 已实施）
+
+> 设计第一性：字段对齐 gosmart `apps/api/ivv/item.go` `VinMore`（character / arr_mode /
+> font_id / font_family_id / alpha_image_data / origin_image_data），按"车型 × 批次 × 字符"三层索引到字符级。
+> M-S10 cv-engine 把 `doCompareVin` 改成"按 vehicle_model_id+character 拉对照样本与本次扫描字符比对"是单点改动。
+
+#### 13.3.1 数据模型
+
+```
+vehicle_models ─< vin_glyph_batches ─< vin_glyph_samples
+                  ├ name (UNIQUE per vehicle_model)
+                  ├ status: draft → published → archived
+                  ├ partial unique: 同 vehicle_model 至多 1 published
+                  └ sample_count（触发器自动维护）
+```
+
+每个样本字段（CHECK：character ∈ VIN 33 字符 0-9 + A-Z 去 I/O/Q；arr_mode ∈ {0,1,2,3}；qc_score ∈ [0,1]）：
+
+| 字段 | 类型 | 说明（对应 gosmart） |
+|------|------|---------------------|
+| `character` | CHAR(1) | VIN 字符（VinMore.Character） |
+| `arr_mode` | int16 | 0 unknown / 1 line / 2 dline / 3 arc（VinMore.ArrMode） |
+| `font_id` | text | 模板 / 厂家字体 ID（VinMore.FontId，默认 `*`） |
+| `font_family_id` | text | 字体族 ID（多字体批次分组） |
+| `position_hint` | int16 | 1..17 VIN 位置（NULL = 通用） |
+| `alpha_object_key/sha256/size_bytes` | text/text/int64 | 掩膜 webp（VinMore.AlphaImageData，落 MinIO 不入库） |
+| `origin_object_key/sha256/size_bytes` | text/text/int64 | 原始彩色图 webp（VinMore.OriginImageData，可选） |
+| `feature_vector_uri` | text | M-S10 cv-engine 预提的特征向量（可选） |
+| `qc_score` | float32 | 入库质检分 0-1 |
+
+#### 13.3.2 App 读路径（仅 published）
+
+`GET /v1/catalog/vehicles/{vmid}/vin-refs/active` —— active 批次摘要 + 按字符样本计数
+
+```json
+{
+  "code": 0,
+  "data": {
+    "batch": {
+      "id": "vrb_42", "vehicle_model_id": "vm_10001",
+      "name": "factory_2024Q1", "sample_count": 11,
+      "status": "published", "published_at": "2026-05-04T..."
+    },
+    "counts_by_char": {"A": 2, "B": 2, "1": 2, "9": 2, "Z": 3}
+  }
+}
+```
+
+`GET /v1/catalog/vehicles/{vmid}/vin-refs/active/samples?character=A&position_hint=&limit=200` —— 拿对照样本集
+
+```json
+{
+  "code": 0,
+  "data": {
+    "batch_id": "vrb_42", "batch_name": "factory_2024Q1", "status": "published",
+    "items": [
+      {
+        "id": "vrs_103", "batch_id": "vrb_42",
+        "character": "A", "arr_mode": 1, "font_id": "*",
+        "font_family_id": null, "position_hint": null,
+        "alpha_object_key": "vin-refs/vm_10001/A/abcdef.webp",
+        "alpha_sha256": "...", "alpha_size_bytes": 4096,
+        "origin_object_key": null, "origin_sha256": null, "origin_size_bytes": null,
+        "feature_vector_uri": null,
+        "qc_score": 0.95,
+        "created_at": "2026-05-04T..."
+      }
+    ]
+  }
+}
+```
+
+`GET /v1/catalog/vehicles/{vmid}/vin-refs/batches/{bid}/samples?character=...` —— 指定批次（仅 published 对 App 可见，admin 全状态）
+
+> 图片字节流走 asset 签名 URL（`alpha_object_key` 用 asset `/v1/assets/presign?key=...` 拿 5 分钟签名）。
+
+#### 13.3.3 admin 写路径
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/admin/v1/catalog/vehicles/{vmid}/vin-refs/batches` | 创建 draft 批次 |
+| `GET` | `/admin/v1/catalog/vehicles/{vmid}/vin-refs/batches?status=&limit=&cursor=` | 列批次（全状态） |
+| `GET` | `/admin/v1/catalog/vehicles/{vmid}/vin-refs/batches/{bid}` | 批次详情 |
+| `PATCH` | `/admin/v1/catalog/vehicles/{vmid}/vin-refs/batches/{bid}` | 改 draft 元数据；非 draft → 40401 |
+| `POST` | `/admin/v1/catalog/vehicles/{vmid}/vin-refs/batches/{bid}/publish` | 发布；旧 active 自动 archive（事务 + 行锁） |
+| `POST` | `/admin/v1/catalog/vehicles/{vmid}/vin-refs/batches/{bid}/archive` | 归档 |
+| `DELETE` | `/admin/v1/catalog/vehicles/{vmid}/vin-refs/batches/{bid}` | 仅 draft 可删（CASCADE 删样本） |
+| `POST` | `/admin/v1/catalog/vehicles/{vmid}/vin-refs/batches/{bid}/samples` | 写样本；非 draft 批次返 40401；非法字符 / arr_mode 越界 → 10002 |
+| `DELETE` | `/admin/v1/catalog/vehicles/{vmid}/vin-refs/samples/{sid}` | 删样本（仅 draft 批次） |
+
+错误码：`40201` 重名；`40401` 状态机不允许；`40701` vehicle_model 不存在 / 无 active 批次；`10002` CHECK 约束（字符不在 VIN 33 字符集 / arr_mode 越界 / qc_score 越界）。
+
+### 13.4 车型 3D 外廓详情
+
+`GET /v1/catalog/vehicles/:id/shape`
+
+**Response**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "id": "vs_50001",
+    "vehicle_model_id": "vm_10001",
+    "mesh_url": "https://.../signed?exp=...",
+    "mesh_format": "glb",
+    "size_bytes": 1342177280,
+    "point_count": 8500000,
+    "coverage": 0.97,
+    "qc_score": 0.92,
+    "published_at": "2026-04-10T03:00:00.000Z"
+  }
+}
+```
+
+> 大文件下载：客户端可通过 HTTP `Range` 请求分段拉取（asset 服务支持）。
+
+### 13.5 写入路径（仅 admin）
+
+录入 / 修订 / 发布全部走 admin BFF，详见 `00-server-overview.md` §10 admin 路径，App 不可见。
+
+## 14. cv-engine（VIN 检测 / 字形比对）
+
+> 通路：gateway 直达。**双轨鉴权**：`Authorization: Bearer ...` (JWT) + `X-Gomob-AppId/Sign/Ts/Nonce` (验签)。
+> 路径与 gosmart 时代保持一致以兼容已有客户端。详细字段见 `gosmart/docs/vin-detect-compare-capability.md`。
+
+### 14.1 验签算法
+
+```
+sign = base64( HMAC-SHA256(
+    secret,
+    method + "\n" + path + "\n" + ts + "\n" + nonce + "\n" + sha256_hex(body)
+))
+```
+
+- `secret` 由 admin 后台为每个 `appid` 颁发，下发到 App 时通过 KMS 加密
+- 服务端窗口：`|server_ts - X-Gomob-Ts| < 5 分钟`，超出返 `40501`
+- 重放：`(appid, nonce)` 在 5 分钟内不可重复，触发返 `40502`
+
+### 14.2 VIN 检测识别
+
+`POST /cv/ocr/v1/vin_detect`
+
+```json
+{
+  "image": "<base64 或 url 或 multipart 文件>",
+  "vehicle_model_id": "vm_10001",
+  "expected_vin": "LGBH12E0XJB123456",
+  "options": { "return_crop": true, "return_chars": true }
+}
+```
+
+**Response**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "version": "vin-2.3.1",
+    "vin": [
+      {
+        "value": "LGBH12E0XJB123456",
+        "confidence": 0.987,
+        "rect_xyxy": [120, 480, 980, 540],
+        "rect_xywh": [120, 480, 860, 60],
+        "crop_image": "<base64 webp>",
+        "chars": [
+          { "ch": "L", "confidence": 0.99, "bbox": [...] }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### 14.3 VIN 双图比对
+
+`POST /cv/ocr/v1/vin_compare`
+
+```json
+{
+  "image_a": "<图 A>",
+  "image_b": "<图 B>",
+  "vehicle_model_id": "vm_10001"
+}
+```
+
+**Response**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "vin": "LGBH12E0XJB123456",
+    "match": true,
+    "string_equal": true,
+    "char_similarity": [
+      { "ch": "L", "score": 0.96 }
+      // ...
+    ],
+    "overall_score": 0.93
+  }
+}
+```
+
+> 当 `vehicle_model_id` 提供时，cv-engine 内部 gRPC 调 vin-ref 拉对照样本，比对结果会带 `manufacturer_match: true|false`。
+
+### 14.4 其它接口
+
+字段细节同 gosmart 文档 §2.3 ~ §2.6：
+- `POST /cv/ocr/v1/vin_more_compare`
+- `POST /cv/ocr/v1/vin_character_compare`
+- `POST /cv/ocr/v1/vin_character_detect`
+- `POST /cv/ocr/v1/vin_rubbing`
+
+迁移过程中保持请求 / 响应字段不变，仅鉴权从"仅验签"升级为"JWT + 验签双轨"。
+
+## 15. LLM 大模型网关
+
+> 通路：gateway 直达。鉴权：JWT。流式：HTTP SSE（`Accept: text/event-stream`）。
+
+### 15.1 对话（流式 / 非流式）
+
+`POST /v1/llm/chat`
+
+```json
+{
+  "template_id": "tmpl_vin_audit_v1",
+  "vars": {
+    "vin": "LGBH12E0XJB123456",
+    "ocr_confidence": 0.93,
+    "manufacturer_match": true
+  },
+  "stream": true,
+  "preferred_provider": "deepseek"
+}
+```
+
+**非流式 Response**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "request_id": "llm_a1b2",
+    "provider": "deepseek",
+    "model": "deepseek-chat",
+    "content": "建议人工复核车驾号字形 ...",
+    "token_in": 312,
+    "token_out": 198,
+    "latency_ms": 1842
+  }
+}
+```
+
+**流式 Response**（SSE）：
+
+```
+event: meta
+data: {"request_id":"llm_a1b2","provider":"deepseek","model":"deepseek-chat"}
+
+event: delta
+data: {"content":"建议"}
+
+event: delta
+data: {"content":"人工"}
+
+...
+
+event: done
+data: {"token_in":312,"token_out":198,"latency_ms":1842}
+```
+
+客户端关闭 SSE 连接时，网关向上游发送取消信号（节省成本）。
+
+### 15.2 模板列表
+
+`GET /v1/llm/templates?cursor=&limit=`
+
+**Response**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "items": [
+      {
+        "id": "tmpl_vin_audit_v1",
+        "name": "VIN 字形比对辅助研判",
+        "version": 3,
+        "preferred_provider": "deepseek",
+        "vars_schema": {
+          "vin": "string",
+          "ocr_confidence": "number",
+          "manufacturer_match": "boolean"
+        },
+        "updated_at": "2026-05-01T10:00:00.000Z"
+      }
+    ]
+  }
+}
+```
+
+### 15.3 写入路径（仅 admin）
+
+模板上传 / 修订 / 下线由 admin BFF 承担，App 不可见。
 
 ---
 

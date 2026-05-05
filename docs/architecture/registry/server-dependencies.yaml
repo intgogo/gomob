@@ -1,0 +1,124 @@
+# 服务端服务间允许的调用 / 订阅关系 — 机器可校验真理源
+#
+# 规则：
+#   1. 边显式声明，未列出的调用关系视为禁止
+#   2. forbidden 段额外锁死反模式（即使将来谁要写代码也跑不过校验）
+#   3. NATS 发布 / 订阅在 server-modules.yaml 里已声明，本文件交叉校验
+#
+# 详见 docs/architecture/server/00-server-overview.md §6.app
+
+version: 1
+
+# 服务间同步调用边（gRPC / HTTP）
+edges:
+  # gateway 反代到下游
+  - { from: gateway, to: auth,           kind: http,  reason: "/v1/auth/* 反代；JWT 校验链路" }
+  - { from: gateway, to: api,            kind: http,  reason: "/v1/inspections|reviews|messages|catalog/* 反代" }
+  - { from: gateway, to: asset,          kind: http,  reason: "/v1/assets/* 分片上传反代" }
+  - { from: gateway, to: signaling,      kind: wss,   reason: "/v1/ws WebSocket 升级反代" }
+  - { from: gateway, to: device,         kind: http,  reason: "/v1/devices/* 反代" }
+  - { from: gateway, to: cv-engine,      kind: http,  reason: "/cv/ocr/v1/* 直达反代（实时 OCR）" }
+  - { from: gateway, to: llm-gateway,    kind: http,  reason: "/v1/llm/* 直达反代（流式 SSE）" }
+
+  # api 作为参考库三件套的 BFF
+  - { from: api, to: vehicle-catalog,    kind: grpc,  reason: "/v1/catalog/vehicles* BFF 透传" }
+  - { from: api, to: vin-ref,            kind: grpc,  reason: "/v1/catalog/vehicles/:id/vin-refs BFF 透传" }
+  - { from: api, to: shape-ref,          kind: grpc,  reason: "/v1/catalog/vehicles/:id/shape BFF 透传" }
+  - { from: api, to: asset,              kind: grpc,  reason: "查验创建后授权资产上传 / 拉签名 URL" }
+  - { from: api, to: auth,               kind: grpc,  reason: "查询用户档案 / 校验角色变更" }
+
+  # worker 异步消费者 → 调用算法 / 拿模型
+  - { from: worker, to: cv-engine,       kind: grpc,  reason: "智能预审异步任务调 vin_detect / vin_compare" }
+  - { from: worker, to: model-registry,  kind: grpc,  reason: "拉 active 模型版本元数据" }
+  - { from: worker, to: asset,           kind: grpc,  reason: "下载模型二进制 / 上传缩略图与 PDF" }
+  - { from: worker, to: api,             kind: grpc,  reason: "推理结果回写 inspection.preliminary_result" }
+
+  # cv-engine 同步算法 → 厂商参考 / 模型
+  - { from: cv-engine, to: vin-ref,       kind: grpc,  reason: "vin_compare 时按 vehicle_model_id 拉对照样本" }
+  - { from: cv-engine, to: model-registry, kind: grpc, reason: "启动 + 热更时拉 active 模型版本元数据" }
+  - { from: cv-engine, to: asset,         kind: grpc,  reason: "下载模型二进制（启动时）" }
+
+  # signaling → 业务元信息（最小化）
+  - { from: signaling, to: api,          kind: grpc,  reason: "查询用户元信息 / 写 call_logs" }
+
+  # admin → 全部业务服务（管理面）
+  - { from: admin, to: auth,             kind: grpc,  reason: "审核用户 / 修改角色" }
+  - { from: admin, to: api,              kind: grpc,  reason: "用户 / 组织 / 检测站管理" }
+  - { from: admin, to: device,           kind: grpc,  reason: "设备元信息查阅" }
+  - { from: admin, to: model-registry,   kind: grpc,  reason: "切换模型 active 版本" }
+  - { from: admin, to: vehicle-catalog,  kind: grpc,  reason: "车型档案录入 / 审核 / 发布" }
+  - { from: admin, to: vin-ref,          kind: grpc,  reason: "字形样本审核发布" }
+  - { from: admin, to: shape-ref,        kind: grpc,  reason: "3D 外廓审核发布" }
+  - { from: admin, to: llm-gateway,      kind: grpc,  reason: "prompt 模板上传 / 修订 / 下线" }
+
+# NATS 异步事件流（topic 级别的发布 / 订阅）
+nats_topics:
+  - topic: inspection.created
+    publisher: api
+    subscribers: [worker]
+    description: "新建查验后触发预审任务"
+  - topic: asset.uploaded
+    publisher: asset
+    subscribers: [worker]
+    description: "扫描资产上传完成 → 触发缩略图 / 后处理"
+  - topic: inspection.preliminary_done
+    publisher: worker
+    subscribers: [signaling]
+    description: "预审完成 → 推 wss 给查验员"
+  - topic: model.version.activated
+    publisher: model-registry
+    subscribers: [worker, cv-engine, signaling]
+    description: "模型版本切换 → 触发热更（worker / cv-engine 切版；signaling 用于 UI 通知）"
+  - topic: catalog.invalidated
+    publisher: vehicle-catalog
+    subscribers: [api]
+    description: "车型档案变更 → api 失效本地 LRU 缓存"
+
+# 禁止的调用关系
+forbidden:
+  - from_pattern: "^(?!gateway$).*"
+    to: gateway
+    reason: "下游服务不得反向调用 gateway"
+
+  - from: api
+    to: cv-engine
+    reason: "cv-engine 走 gateway 直达，不经 api 中转（避免 api 变成肥 BFF）"
+
+  - from: api
+    to: llm-gateway
+    reason: "LLM 同上：流式响应 / 错误域 / 计费域应隔离在 api 之外"
+
+  - from: cv-engine
+    to: api
+    reason: "cv-engine 是无状态算法引擎，不感知 inspection / 用户业务"
+
+  - from: cv-engine
+    to: shape-ref
+    reason: "cv-engine 只跑 VIN 字形比对；3D 外廓比对是另一计算管线（M2 后再设计），现在不允许跨"
+
+  - from: llm-gateway
+    to_pattern: "^(api|cv-engine|worker|signaling|asset|device|catalog|vin-ref|shape-ref|admin|model-registry)$"
+    reason: "llm-gateway 仅做外部 LLM 代理，不调任何内部业务服务"
+
+  - from_pattern: ".*"
+    to: deepseek
+    reason: "外部 LLM 仅由 llm-gateway 触达；其它服务想用 LLM 必须走 llm-gateway"
+    except: [llm-gateway]
+
+  - from_pattern: "^(?!admin$).*"
+    to: vehicle-catalog
+    kind: write
+    reason: "参考库三件套写路径仅 admin 可达；业务服务只能读"
+    except: [vehicle-catalog]
+
+  - from_pattern: "^(?!admin$).*"
+    to: vin-ref
+    kind: write
+    reason: "同上：vin-ref 写仅 admin"
+    except: [vin-ref]
+
+  - from_pattern: "^(?!admin$).*"
+    to: shape-ref
+    kind: write
+    reason: "同上：shape-ref 写仅 admin"
+    except: [shape-ref]

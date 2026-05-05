@@ -4,10 +4,14 @@ ROOT := $(shell pwd)
 DEV_DIR := $(ROOT)/.dev
 BIN_DIR := $(DEV_DIR)/bin
 
-SERVICES := gateway api auth asset signaling worker devserver
+SERVICES := gateway api auth asset signaling worker \
+            device modelregistry admin \
+            catalog vinref shaperef \
+            cvengine llmgateway \
+            devserver
 
 doctor:
-	@./scripts/ensure-go.sh
+	@./scripts/server-doctor.sh
 
 build: $(addprefix build-,$(SERVICES))
 
