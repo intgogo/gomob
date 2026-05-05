@@ -14,7 +14,9 @@
 #   ./dev.sh shot <name>  截图当前屏幕到 .dev/screenshots/<name>.png
 #   ./dev.sh adb-wifi ... 转发到 scripts/adb-wifi.sh
 #   ./dev.sh harness <名> 跑指定 harness（tests/harness/<名>/run.sh）
-#   ./dev.sh emu-start    headless 启动 gomob_test AVD（DISPLAY=:1, -gpu host）
+#   ./dev.sh emu-start    启动 gomob_test AVD（默认带 GUI 窗口走 DISPLAY=:1, -gpu host;
+#                         头像式开发请求看 VNC 桌面里的 emulator 窗口。
+#                         若需 headless（CI / 截图 only）传 HEADLESS=1）
 #   ./dev.sh emu-stop     杀 emulator
 #   ./dev.sh avd-create   创建 gomob_test AVD（首次）
 #
@@ -148,12 +150,20 @@ case "$cmd" in
         ;;
     emu-start)
         : "${ANDROID_HOME:?}"
-        # 关键：headless 必须用 -gpu host + DISPLAY=:1（详见 docs/agent-memory/finding_emulator_setup_2026-05-04.md）
+        # 关键：必须 -gpu host + DISPLAY=:1 走 NVIDIA / VNC 桌面
+        # 详见 docs/agent-memory/finding_emulator_setup_2026-05-04.md +
+        # docs/agent-memory/feedback_vnc_remote_dev.md
+        # 默认带 GUI 窗口（用户走 TigerVNC 远程, 需在 :1 桌面看到 emulator）
+        # 设 HEADLESS=1 可切回无窗口（CI / 截图脚本场景）
+        WIN_FLAG=""
+        [[ "${HEADLESS:-0}" == "1" ]] && WIN_FLAG="-no-window"
         DISPLAY="${DISPLAY:-:1}" setsid "$ANDROID_HOME/emulator/emulator" -avd gomob_test \
-            -no-window -no-audio -no-snapshot -no-boot-anim \
+            $WIN_FLAG -no-audio -no-snapshot -no-boot-anim \
             -gpu host -accel on -port 5556 \
             < /dev/null > "$DEV_DIR/emulator.log" 2>&1 & disown
         echo "emulator started (log: $DEV_DIR/emulator.log)"
+        [[ -z "$WIN_FLAG" ]] && echo "GUI 模式 — 在 VNC :1 桌面里能看到 emulator 窗口" \
+            || echo "headless 模式 (HEADLESS=1)"
         echo "等 boot: until [ \"\$(adb -s emulator-5556 shell getprop sys.boot_completed)\" = 1 ]; do sleep 5; done"
         ;;
     emu-stop)
