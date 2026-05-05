@@ -231,6 +231,81 @@ object GomobIcons {
         verticalLineTo(17f)
         horizontalLineTo(10f)
     }
+
+    val Settings: ImageVector = stroked("Settings") {
+        // 简化齿轮（中心圆 + 外圈 8 齿）
+        circle(12f, 12f, 3f)
+        // 8 个短齿
+        moveTo(12f, 4f); verticalLineTo(6f)
+        moveTo(12f, 18f); verticalLineTo(20f)
+        moveTo(4f, 12f); horizontalLineTo(6f)
+        moveTo(18f, 12f); horizontalLineTo(20f)
+        moveTo(6.3f, 6.3f); lineTo(7.7f, 7.7f)
+        moveTo(16.3f, 16.3f); lineTo(17.7f, 17.7f)
+        moveTo(6.3f, 17.7f); lineTo(7.7f, 16.3f)
+        moveTo(16.3f, 7.7f); lineTo(17.7f, 6.3f)
+    }
+
+    val ID: ImageVector = stroked("ID") {
+        roundRect(3.5f, 6f, 17f, 12f, 1.5f)
+        circle(9f, 11f, 1.8f)
+        moveTo(6f, 15.5f); curveToRelative(0.6f, -1.4f, 1.8f, -2f, 3f, -2f)
+        reflectiveCurveToRelative(2.4f, 0.6f, 3f, 2f)
+        moveTo(14f, 10f); horizontalLineTo(18f)
+        moveTo(14f, 13f); horizontalLineTo(17f)
+    }
+
+    val Cache: ImageVector = stroked("Cache") {
+        // 简化数据库圆柱
+        moveTo(5f, 6f); arcToRelative(7f, 2.5f, 0f, true, true, 14f, 0f)
+        arcToRelative(7f, 2.5f, 0f, true, true, -14f, 0f)
+        moveTo(5f, 6f); verticalLineTo(12f)
+        curveToRelative(0f, 1.4f, 3.1f, 2.5f, 7f, 2.5f)
+        reflectiveCurveToRelative(7f, -1.1f, 7f, -2.5f)
+        verticalLineTo(6f)
+        moveTo(5f, 12f); verticalLineTo(18f)
+        curveToRelative(0f, 1.4f, 3.1f, 2.5f, 7f, 2.5f)
+        reflectiveCurveToRelative(7f, -1.1f, 7f, -2.5f)
+        verticalLineTo(12f)
+    }
+
+    val Wifi: ImageVector = stroked("Wifi") {
+        moveTo(3.5f, 9f); arcToRelative(14f, 14f, 0f, false, true, 17f, 0f)
+        moveTo(6.5f, 12.5f); arcToRelative(10f, 10f, 0f, false, true, 11f, 0f)
+        moveTo(9.5f, 16f); arcToRelative(6f, 6f, 0f, false, true, 5f, 0f)
+        moveTo(12f, 19.5f); arcToRelative(0.5f, 0.5f, 0f, false, true, 0.01f, 0f)
+    }
+
+    val Bell: ImageVector = stroked("Bell") {
+        moveTo(6f, 9f); arcToRelative(6f, 6f, 0f, false, true, 12f, 0f)
+        curveToRelative(0f, 4f, 1.5f, 5.5f, 2f, 6.5f)
+        horizontalLineTo(4f)
+        curveToRelative(0.5f, -1f, 2f, -2.5f, 2f, -6.5f)
+        close()
+        moveTo(10f, 18.5f); arcToRelative(2f, 2f, 0f, false, false, 4f, 0f)
+    }
+
+    val Info: ImageVector = stroked("Info") {
+        circle(12f, 12f, 8.5f)
+        moveTo(12f, 11f); verticalLineTo(17f)
+        moveTo(12f, 8f); arcToRelative(0.1f, 0.1f, 0f, false, true, 0.01f, 0f)
+    }
+
+    val ArrowSwap: ImageVector = stroked("ArrowSwap") {
+        moveTo(3f, 8f); horizontalLineTo(17f)
+        lineToRelative(-3f, -3f)
+        moveTo(21f, 16f); horizontalLineTo(7f)
+        lineToRelative(3f, 3f)
+    }
+
+    val Filter: ImageVector = stroked("Filter") {
+        moveTo(3.5f, 5f); horizontalLineTo(20.5f)
+        lineToRelative(-6.5f, 8f)
+        verticalLineTo(19f)
+        lineToRelative(-4f, -2f)
+        verticalLineTo(13f)
+        close()
+    }
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────
