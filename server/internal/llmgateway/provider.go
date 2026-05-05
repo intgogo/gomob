@@ -79,3 +79,25 @@ func (r *Registry) Names() []string {
 	}
 	return out
 }
+
+// AllProviders 返回所有已注册 provider（无序）。
+//
+// 用于上层在不知道名字时拿全集（如 main.go 重建 registry 时保留单 provider 入口）。
+func (r *Registry) AllProviders() []Provider {
+	out := make([]Provider, 0, len(r.providers))
+	for _, p := range r.providers {
+		out = append(out, p)
+	}
+	return out
+}
+
+// NewRegistryWithFallback 用一个明确的 fallback Provider（可能是 FallbackProvider 链）
+// 替换默认 fallback 行为。其它 providers 仍按 Name() 注册（Pick 单走时用）。
+func NewRegistryWithFallback(fallback Provider, others ...Provider) *Registry {
+	r := &Registry{providers: map[string]Provider{}, fallback: fallback}
+	// 不把 fallback 自己注册到 providers（它的 Name() 是 "fallback(...)" 不该被模板指名）
+	for _, p := range others {
+		r.providers[p.Name()] = p
+	}
+	return r
+}

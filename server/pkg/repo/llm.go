@@ -56,12 +56,12 @@ func NewLLMTemplateRepo(pool *pgxpool.Pool) *LLMTemplateRepo {
 }
 
 // Create 写入新版本（status=draft）。同 (name,version) 冲突 → ErrConflict。
+//
+// PreferredProvider 留空表示"由 registry 默认决定"——这样开了 fallback chain 时
+// 模板会自动享受 fallback；显式指定的 provider 名仍 honor 优先（用 Pick 单走）。
 func (r *LLMTemplateRepo) Create(ctx context.Context, t *LLMTemplate) error {
 	if len(t.VarsSchema) == 0 {
 		t.VarsSchema = []byte("{}")
-	}
-	if t.PreferredProvider == "" {
-		t.PreferredProvider = "deepseek"
 	}
 	const q = `
 		INSERT INTO llm_templates (name, version, preferred_provider, preferred_model,

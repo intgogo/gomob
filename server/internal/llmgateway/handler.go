@@ -39,6 +39,7 @@ type Handler struct {
 	calls     *repo.LLMCallLogRepo
 	registry  *Registry
 	audit     audit.Recorder
+	quota     *QuotaChecker // 可空；nil 时不限额
 	log       *slog.Logger
 }
 
@@ -52,6 +53,9 @@ func NewHandler(pool *pgxpool.Pool, registry *Registry, audit audit.Recorder) *H
 		log:       logger.New("llmgateway.handler"),
 	}
 }
+
+// SetQuota 注入配额检查器（M-S11.6）。Handler 在 Chat 入口处校验。
+func (h *Handler) SetQuota(q *QuotaChecker) { h.quota = q }
 
 func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/llm/chat", h.Chat)
@@ -163,6 +167,19 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 		pref = tpl.PreferredProvider
 	}
 	provider := h.registry.Pick(pref)
+
+	// 配额检查（M-S11.6）：超限返 40602；放行则 INCR 计数
+	if h.quota != nil && !h.quota.Disabled() {
+		counts, qerr := h.quota.CheckAndIncr(r.Context(), uid, tpl.ID)
+		if qerr != nil {
+			h.log.Warn("LLM 配额超限",
+				"err", qerr, "uid", uid, "tpl_id", tpl.ID,
+				"user_current", counts.UserCurrent, "user_budget", counts.UserBudget,
+				"tpl_current", counts.TplCurrent, "tpl_budget", counts.TplBudget)
+			httpx.WriteError(w, httpx.NewError(40602, http.StatusTooManyRequests, "LLM 配额超限"))
+			return
+		}
+	}
 
 	model := ""
 	if tpl.PreferredModel != nil {

@@ -228,7 +228,7 @@ cd "$PROJ_DIR"
 
 # 重启 cvengine 在 HMAC required=false（非 required，缺签头放行）
 log "10. 重启 cvengine（HMAC secret 设但 required=false）"
-kill $PID 2>/dev/null; wait 2>/dev/null
+kill -9 $PID 2>/dev/null; wait 2>/dev/null
 
 LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib64:/usr/local/onnxruntime/lib \
 GOMOB_CVENGINE_HTTP_ADDR=:18810 \
@@ -246,7 +246,7 @@ step "S11.lax_partial_still_rejected_40110" 401 40110 -X GET "$CV/cv/v1/version"
 
 # 重启 cvengine 在无 HMAC 模式
 log "12. 重启 cvengine（HMAC secret 空 → 完全 noop）"
-kill $PID 2>/dev/null; wait 2>/dev/null
+kill -9 $PID 2>/dev/null; wait 2>/dev/null
 
 LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib64:/usr/local/onnxruntime/lib \
 GOMOB_CVENGINE_HTTP_ADDR=:18810 \

@@ -158,7 +158,7 @@
 | ✅ M-S8.4 | admin BFF：`/admin/v1/catalog/vehicles/{vmid}/vin-refs/...` subtree 反代到 vinref（路径比 catalog 更具体，Go 1.22 ServeMux 优先匹配最具体）；api BFF：同前缀的 App 路径反代 vinref，其它 `/v1/catalog/*` 走 catalog | `MountCatalogBFF(catalog, vinref)` 双反代 | `internal/admin/handler.go:80` / `internal/api/catalog_bff.go` |
 | ✅ M-S8.5 | `tests/harness/vinref_lifecycle/` — 27 场景全链路自验（鉴权 / 三元组冲突 / 状态机 5 跳变 / 样本 CRUD / 字符校验 / 自动 archive / App 读路径 / audit≥8 vinref.* 事件） | `./dev.sh harness vinref_lifecycle` → **27/27 通过** | `tests/harness/vinref_lifecycle/{run.sh,analyze.py}` |
 |     | M-S10 cv-engine 对接：`doCompareVin` 改成按 (vehicle_model_id, character) gRPC 拉 active 批次的对照样本与本次扫描字符比对 | 留 M-S10 cv-engine 迁移时实施 | `docs/architecture/server/03-cvengine-migration.md` |
-|     | `tests/harness/vinref_compare_quality/` — 含/不含厂商参考的字形比对 precision/recall 对比 | 留 M-S10 cv-engine 实施后 | 同 §M4 |
+| ✅ M-S8.x quality | **`tests/harness/vinref_compare_quality/`** — 5 字符厂家库（A/B/C/0/8）+ scan 自比 + 平移 + 不存在字符的端到端精度基线；调 `/cv/ocr/v1/vin_character_compare_with_ref` 比对 best.character 命中 + similarity 区间，`expected.json` 基线偏离即 FAIL；改算法跑此 harness 看精度抖动 | 9/9 通过：5 个字符自比 sim=1.000；A_shift→A sim=0.295（区间 0.25-0.40）；'Z' 字符未注册→40701；改 promote 把 baseline_observed.json 回填 expected.json | `tests/harness/vinref_compare_quality/{run.sh,analyze.py,expected.json}` |
 
 ## M-S9 — shape-ref（车型 3D 外廓参考库）（已完成 2026-05-04 schema/admin/读路径；端侧 Filament 对照留 M3 重建管线）
 
@@ -215,6 +215,6 @@
 | ✅ M-S11.3 | `llm_templates` 表（migration 0004）+ admin CRUD + 状态机 draft→active→archived；activate v2 时自动 archive 旧 active；text/template 渲染缺 var 报详细错 | harness S1/S3/S10 通过；S10c 验证 v1 自动 archived | `02-api-contract.md` §15 |
 | ✅ M-S11.4 | SSE 流式：event: meta / delta×N / done；`http.Flusher` 即时刷出；client cancel → ctx.Done → provider stream 中止 + 写 status=cancelled audit | harness S5 看到 meta=1 delta=12 done=1；S6 客户端早断后 llm_call_logs 出现 cancelled 记录 | 同 §6.v |
 | ✅ M-S11.5 | `llm_call_logs` 表 + 独立 ctx 写入（绕开 client cancel） | harness S12 验证 ≥3 条记录；含 ok / cancelled 两类 status | 同 §11 |
-|     | M-S11.6 限流 / 配额（按 user / 按 template_id 日预算） | 当前由 gateway 全局限流兜底；按模板维度 budget 留 M-S6 admin 配置端 + worker 累计 | — |
-|     | M-S11.7 多 provider 故障 fallback | 接口已预留（Registry 可注册多 provider）；当前未实现自动 failover | — |
+| ✅ M-S11.6 | **LLM 配额** —— `internal/llmgateway/quota.go` Redis INCR 计数器：按 user 日预算 + 按 template 日预算（UTC 日切，48h key TTL）；INCR 后 > budget 自减回滚 + 返 ErrQuotaExceeded → handler 转 40602；redis 不可达自动降级"放行 + 日志告警"（不阻塞业务） | harness `llm_quota` 16/16：user_budget=3 → 第 4 次 40602；user A 超额不影响 B；tpl_budget=2 跨用户共享；budget=0 不限；bad redis addr → 健康启动 + 调用放行 | `internal/llmgateway/quota.go` / `cmd/llmgateway/main.go` / `tests/harness/llm_quota/` |
+| ✅ M-S11.7 | **多 provider fallback** —— `internal/llmgateway/fallback.go` `FallbackProvider`：Chat 顺序尝试链上 provider 直到一个成功；ChatStream 在首 chunk 之前 fail → 切下一个，已吐 chunk 后 fail 不切（避风格突变）；ctx 取消立即返不重试。env `GOMOB_LLM_FALLBACK_CHAIN="deepseek,mock"` 配置链；repo 取消"PreferredProvider 默认 deepseek"行为，让空模板 provider 自动享用 fallback | unit test 12/12 通过；harness `llm_fallback` 13/13：deepseek 不可达时自动 fallback 到 mock，content 完整；流式 SSE 也 fallback；显式 provider=mock 走单 mock；显式 provider=deepseek 失败不 fallback；无 chain 配置时 deepseek-only 失败返 502 | `internal/llmgateway/fallback.go` / `pkg/repo/llm.go` / `tests/harness/llm_fallback/` |
 | ✅ M-S11.8 | `tests/harness/llm_streaming/` — 流式 / 取消 / 状态机 / 审计 全链路 | `./dev.sh harness llm_streaming` → **18/18 通过** | `CLAUDE.md` 自分析规范 |
