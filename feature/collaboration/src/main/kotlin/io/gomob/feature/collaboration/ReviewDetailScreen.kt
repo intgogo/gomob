@@ -22,7 +22,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.dp
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.HairlineCard
 import io.gomob.designsystem.component.StatusTag
@@ -72,7 +71,7 @@ fun ReviewDetailRoute(reviewId: String, onBack: () -> Unit) {
                             Box(
                                 Modifier
                                     .weight(1f)
-                                    .height(28.dp)
+                                    .height(Gomob.spacing.cellH28)
                                     .clip(Gomob.shapes.r1)
                                     .background(if (w == 28) Gomob.colors.accentSoft else Gomob.colors.bg2)
                                     .border(
@@ -96,7 +95,7 @@ fun ReviewDetailRoute(reviewId: String, onBack: () -> Unit) {
                             Column(
                                 Modifier.weight(1f),
                                 horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                                verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2),
                             ) {
                                 Text(
                                     d.day.toString().padStart(2, '0'),
@@ -105,7 +104,7 @@ fun ReviewDetailRoute(reviewId: String, onBack: () -> Unit) {
                                 )
                                 Box(
                                     Modifier
-                                        .size(4.dp)
+                                        .size(Gomob.spacing.dot4)
                                         .clip(CircleShape)
                                         .background(if (d.warn) Gomob.colors.danger else Gomob.colors.ok),
                                 )

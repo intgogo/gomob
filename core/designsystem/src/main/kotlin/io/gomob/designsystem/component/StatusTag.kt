@@ -15,7 +15,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.dp
 import io.gomob.designsystem.theme.Gomob
 
 enum class StatusTone { Neutral, Accent, Warn, Danger, Ok }
@@ -44,7 +43,7 @@ fun StatusTag(
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
     ) {
         if (showDot) {
-            Box(Modifier.size(6.dp).clip(CircleShape).background(fg))
+            Box(Modifier.size(Gomob.spacing.dot6).clip(CircleShape).background(fg))
         }
         Text(text = text, style = Gomob.type.caption, color = fg)
     }
@@ -54,7 +53,7 @@ fun StatusTag(
 private fun colorsFor(tone: StatusTone): Triple<Color, Color, Color> = when (tone) {
     StatusTone.Neutral -> Triple(Gomob.colors.fg1, Gomob.colors.line2, Color.Transparent)
     StatusTone.Accent -> Triple(Gomob.colors.accent, Gomob.colors.accentLine, Gomob.colors.accentSoft)
-    StatusTone.Warn -> Triple(Gomob.colors.warn, Gomob.colors.warn.copy(alpha = 0.32f), Gomob.colors.warnSoft)
-    StatusTone.Danger -> Triple(Gomob.colors.danger, Gomob.colors.danger.copy(alpha = 0.32f), Gomob.colors.dangerSoft)
-    StatusTone.Ok -> Triple(Gomob.colors.ok, Gomob.colors.ok.copy(alpha = 0.32f), Gomob.colors.okSoft)
+    StatusTone.Warn -> Triple(Gomob.colors.warn, Gomob.colors.warnLine, Gomob.colors.warnSoft)
+    StatusTone.Danger -> Triple(Gomob.colors.danger, Gomob.colors.dangerLine, Gomob.colors.dangerSoft)
+    StatusTone.Ok -> Triple(Gomob.colors.ok, Gomob.colors.okLine, Gomob.colors.okSoft)
 }

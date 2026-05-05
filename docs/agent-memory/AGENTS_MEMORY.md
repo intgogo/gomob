@@ -27,3 +27,4 @@
 
 - [模拟器在本机的可工作配置 2026-05-04](finding_emulator_setup_2026-05-04.md) — SwiftShader SIGSEGV；必须 `-gpu host` + `DISPLAY=:1` 走 NVIDIA。
 - [KSP2 + Hilt 2.53.x 不兼容](finding_ksp1_required_for_hilt_2_53.md) — `ksp.useKSP2=false` 是当前唯一解。
+- [mob3d 设计最新交付核对 2026-05-05](finding_mob3d_handoff_realign_2026-05-05.md) — 现仓本就是 handoff 业务化升级版；本次只补 token + 微观对齐 + FirstPersonViewer 重写 + 删 PlaceholderScreen。

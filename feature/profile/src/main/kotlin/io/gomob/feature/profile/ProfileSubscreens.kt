@@ -321,7 +321,7 @@ private fun ToggleRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2)) {
             Text(title, style = Gomob.type.body, color = Gomob.colors.fg0)
             Text(subtitle, style = Gomob.type.caption, color = Gomob.colors.fg3)
         }
@@ -329,8 +329,8 @@ private fun ToggleRow(
         Box(
             Modifier
                 .padding(start = Gomob.spacing.s12)
-                .width(40.dp)
-                .height(20.dp)
+                .width(Gomob.spacing.switchW)
+                .height(Gomob.spacing.switchH)
                 .clip(Gomob.shapes.pill)
                 .background(if (value) Gomob.colors.accentSoft else Gomob.colors.bg2)
                 .border(
@@ -342,9 +342,9 @@ private fun ToggleRow(
         ) {
             Box(
                 Modifier
-                    .padding(2.dp)
-                    .height(16.dp)
-                    .width(16.dp)
+                    .padding(Gomob.spacing.switchPad)
+                    .height(Gomob.spacing.switchThumb)
+                    .width(Gomob.spacing.switchThumb)
                     .clip(Gomob.shapes.pill)
                     .background(if (value) Gomob.colors.accent else Gomob.colors.fg3),
             )
@@ -423,13 +423,13 @@ private fun ThemeOptionRow(
     Row(
         Modifier
             .fillMaxWidth()
-            .height(64.dp)
+            .height(Gomob.spacing.rowSettingTall)
             .clickable(onClick = onClick)
             .padding(horizontal = Gomob.spacing.s16),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2)) {
             Text(title, style = Gomob.type.body, color = Gomob.colors.fg0)
             Text(subtitle, style = Gomob.type.caption, color = Gomob.colors.fg3)
         }
@@ -437,8 +437,8 @@ private fun ThemeOptionRow(
         Box(
             Modifier
                 .padding(start = Gomob.spacing.s12)
-                .width(20.dp)
-                .height(20.dp)
+                .width(Gomob.spacing.radioOuter)
+                .height(Gomob.spacing.radioOuter)
                 .clip(Gomob.shapes.pill)
                 .background(if (selected) Gomob.colors.accentSoft else Gomob.colors.bg2)
                 .border(
@@ -451,8 +451,8 @@ private fun ThemeOptionRow(
             if (selected) {
                 Box(
                     Modifier
-                        .height(8.dp)
-                        .width(8.dp)
+                        .height(Gomob.spacing.radioInner)
+                        .width(Gomob.spacing.radioInner)
                         .clip(Gomob.shapes.pill)
                         .background(Gomob.colors.accent),
                 )

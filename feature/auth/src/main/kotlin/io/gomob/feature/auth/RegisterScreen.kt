@@ -29,7 +29,6 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
-import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.designsystem.component.BackHeader
@@ -98,7 +97,7 @@ fun RegisterRoute(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
                             Modifier
-                                .size(6.dp)
+                                .size(Gomob.spacing.dot6)
                                 .clip(CircleShape)
                                 .background(Gomob.colors.danger),
                         )
@@ -112,7 +111,7 @@ fun RegisterRoute(
                     Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
-                                Modifier.size(6.dp).clip(CircleShape).background(Gomob.colors.ok),
+                                Modifier.size(Gomob.spacing.dot6).clip(CircleShape).background(Gomob.colors.ok),
                             )
                             Spacer(Modifier.padding(start = Gomob.spacing.s8))
                             Text(state.successMessage!!, style = Gomob.type.body, color = Gomob.colors.ok)
@@ -135,8 +134,8 @@ fun RegisterRoute(
                 if (state.loading) {
                     CircularProgressIndicator(
                         color = Gomob.colors.accent,
-                        modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(Gomob.spacing.icon20),
+                        strokeWidth = Gomob.spacing.s2,
                     )
                 } else {
                     Text("提交注册", style = Gomob.type.body, color = Gomob.colors.accent)

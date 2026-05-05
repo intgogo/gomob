@@ -31,7 +31,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.unit.dp
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
@@ -137,7 +136,7 @@ private fun BubbleRow(b: Bubble) {
             b.time,
             style = Gomob.type.numInline,
             color = Gomob.colors.fg3,
-            modifier = Modifier.padding(top = 2.dp, start = 4.dp, end = 4.dp),
+            modifier = Modifier.padding(top = Gomob.spacing.s2, start = Gomob.spacing.s4, end = Gomob.spacing.s4),
         )
     }
 }

@@ -93,10 +93,10 @@ private fun MessageRow(m: MessageItem, onClick: () -> Unit) {
                 Box(
                     Modifier
                         .padding(start = Gomob.spacing.s12)
-                        .defaultMinSize(minWidth = 18.dp, minHeight = 18.dp)
+                        .defaultMinSize(minWidth = Gomob.spacing.icon16, minHeight = Gomob.spacing.icon16)
                         .clip(CircleShape)
                         .background(badgeColor)
-                        .padding(horizontal = 5.dp),
+                        .padding(horizontal = Gomob.spacing.s4),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(

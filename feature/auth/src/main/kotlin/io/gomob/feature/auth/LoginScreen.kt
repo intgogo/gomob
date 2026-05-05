@@ -85,7 +85,7 @@ private fun LoginContent(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
             ) {
-                Box(Modifier.size(6.dp).clip(CircleShape).background(Gomob.colors.ok))
+                Box(Modifier.size(Gomob.spacing.dot6).clip(CircleShape).background(Gomob.colors.ok))
                 Text("服务端", style = Gomob.type.bodySm, color = Gomob.colors.fg1)
                 Spacer(Modifier.weight(1f))
                 StatusTag(text = "DEV · 127.0.0.1:8808", tone = StatusTone.Ok)
@@ -109,7 +109,7 @@ private fun LoginContent(
         if (state.errorMessage != null) {
             HairlineCard(padding = Gomob.spacing.s12) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(6.dp).clip(CircleShape).background(Gomob.colors.danger))
+                    Box(Modifier.size(Gomob.spacing.dot6).clip(CircleShape).background(Gomob.colors.danger))
                     Spacer(Modifier.width(Gomob.spacing.s8))
                     Text(state.errorMessage, style = Gomob.type.bodySm, color = Gomob.colors.danger)
                 }
@@ -131,11 +131,11 @@ private fun LoginContent(
             if (state.loading) {
                 CircularProgressIndicator(
                     color = Gomob.colors.accent,
-                    modifier = Modifier.size(20.dp),
-                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(Gomob.spacing.icon20),
+                    strokeWidth = Gomob.spacing.s2,
                 )
             } else {
-                Text("登 录", style = Gomob.type.body, color = Gomob.colors.accent)
+                Text("登录", style = Gomob.type.body, color = Gomob.colors.accent)
             }
         }
 

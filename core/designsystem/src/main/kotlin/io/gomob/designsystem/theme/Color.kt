@@ -64,13 +64,14 @@ internal object Palette {
     val AccentLightLine = Color(0x521F7FAF)
 
     // ─── Status (hue-shifted siblings of accent) ────────────────────────────
-    val WarnDark = Color(0xFFE7B25E); val WarnDarkSoft = Color(0x1FE7B25E)
-    val DangerDark = Color(0xFFE07560); val DangerDarkSoft = Color(0x1FE07560)
-    val OkDark = Color(0xFF7CC9B8); val OkDarkSoft = Color(0x1F7CC9B8)
+    // soft = 0x1F (12%) 内填，line = 0x52 (32%) 描边 — 与 AccentLine 同 alpha
+    val WarnDark = Color(0xFFE7B25E); val WarnDarkSoft = Color(0x1FE7B25E); val WarnDarkLine = Color(0x52E7B25E)
+    val DangerDark = Color(0xFFE07560); val DangerDarkSoft = Color(0x1FE07560); val DangerDarkLine = Color(0x52E07560)
+    val OkDark = Color(0xFF7CC9B8); val OkDarkSoft = Color(0x1F7CC9B8); val OkDarkLine = Color(0x527CC9B8)
 
-    val WarnLight = Color(0xFFB17518); val WarnLightSoft = Color(0x1FB17518)
-    val DangerLight = Color(0xFFB04030); val DangerLightSoft = Color(0x1FB04030)
-    val OkLight = Color(0xFF2C7A6A); val OkLightSoft = Color(0x1F2C7A6A)
+    val WarnLight = Color(0xFFB17518); val WarnLightSoft = Color(0x1FB17518); val WarnLightLine = Color(0x52B17518)
+    val DangerLight = Color(0xFFB04030); val DangerLightSoft = Color(0x1FB04030); val DangerLightLine = Color(0x52B04030)
+    val OkLight = Color(0xFF2C7A6A); val OkLightSoft = Color(0x1F2C7A6A); val OkLightLine = Color(0x522C7A6A)
 }
 
 /**
@@ -84,9 +85,9 @@ data class GomobColors(
     val fg0: Color, val fg1: Color, val fg2: Color, val fg3: Color,
     val line1: Color, val line2: Color, val lineStrong: Color, val hlTop: Color,
     val accent: Color, val accentStrong: Color, val accentSoft: Color, val accentLine: Color,
-    val warn: Color, val warnSoft: Color,
-    val danger: Color, val dangerSoft: Color,
-    val ok: Color, val okSoft: Color,
+    val warn: Color, val warnSoft: Color, val warnLine: Color,
+    val danger: Color, val dangerSoft: Color, val dangerLine: Color,
+    val ok: Color, val okSoft: Color, val okLine: Color,
     val isLight: Boolean,
 )
 
@@ -97,9 +98,9 @@ internal val DarkColors = GomobColors(
     lineStrong = Palette.LineOnDarkStrong, hlTop = Palette.HlTopDark,
     accent = Palette.AccentDark, accentStrong = Palette.AccentDarkStrong,
     accentSoft = Palette.AccentDarkSoft, accentLine = Palette.AccentDarkLine,
-    warn = Palette.WarnDark, warnSoft = Palette.WarnDarkSoft,
-    danger = Palette.DangerDark, dangerSoft = Palette.DangerDarkSoft,
-    ok = Palette.OkDark, okSoft = Palette.OkDarkSoft,
+    warn = Palette.WarnDark, warnSoft = Palette.WarnDarkSoft, warnLine = Palette.WarnDarkLine,
+    danger = Palette.DangerDark, dangerSoft = Palette.DangerDarkSoft, dangerLine = Palette.DangerDarkLine,
+    ok = Palette.OkDark, okSoft = Palette.OkDarkSoft, okLine = Palette.OkDarkLine,
     isLight = false,
 )
 
@@ -110,8 +111,8 @@ internal val LightColors = GomobColors(
     lineStrong = Palette.LineOnLightStrong, hlTop = Palette.HlTopLight,
     accent = Palette.AccentLight, accentStrong = Palette.AccentLightStrong,
     accentSoft = Palette.AccentLightSoft, accentLine = Palette.AccentLightLine,
-    warn = Palette.WarnLight, warnSoft = Palette.WarnLightSoft,
-    danger = Palette.DangerLight, dangerSoft = Palette.DangerLightSoft,
-    ok = Palette.OkLight, okSoft = Palette.OkLightSoft,
+    warn = Palette.WarnLight, warnSoft = Palette.WarnLightSoft, warnLine = Palette.WarnLightLine,
+    danger = Palette.DangerLight, dangerSoft = Palette.DangerLightSoft, dangerLine = Palette.DangerLightLine,
+    ok = Palette.OkLight, okSoft = Palette.OkLightSoft, okLine = Palette.OkLightLine,
     isLight = true,
 )

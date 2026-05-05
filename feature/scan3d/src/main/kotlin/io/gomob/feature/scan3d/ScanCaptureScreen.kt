@@ -22,7 +22,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.unit.dp
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.HairlineCard
 import io.gomob.designsystem.component.StatusTag
@@ -132,7 +131,7 @@ fun ScanCaptureRoute(
                         Icons.Filled.PictureAsPdf,
                         contentDescription = null,
                         tint = Gomob.colors.fg2,
-                        modifier = Modifier.size(16.dp),
+                        modifier = Modifier.size(Gomob.spacing.icon16),
                     )
                     Text("查验单 PDF", style = Gomob.type.caption, color = Gomob.colors.fg1)
                 }
@@ -141,7 +140,7 @@ fun ScanCaptureRoute(
             // 中:大圆拍摄按钮
             Box(
                 Modifier
-                    .size(72.dp)
+                    .size(Gomob.spacing.btnCircle72)
                     .clip(CircleShape)
                     .background(Gomob.colors.accentSoft)
                     .border(Gomob.spacing.hairline * 2, Gomob.colors.accentLine, CircleShape)
@@ -150,7 +149,7 @@ fun ScanCaptureRoute(
             ) {
                 Box(
                     Modifier
-                        .size(48.dp)
+                        .size(Gomob.spacing.avatar48)
                         .clip(CircleShape)
                         .background(Gomob.colors.accent),
                 )
@@ -173,7 +172,7 @@ fun ScanCaptureRoute(
                         Icons.Filled.SwapHoriz,
                         contentDescription = null,
                         tint = Gomob.colors.fg2,
-                        modifier = Modifier.size(16.dp),
+                        modifier = Modifier.size(Gomob.spacing.icon16),
                     )
                     Text("RGB / 深度", style = Gomob.type.caption, color = Gomob.colors.fg1)
                 }
