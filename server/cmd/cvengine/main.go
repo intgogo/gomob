@@ -11,9 +11,13 @@
 //
 // 环境变量：
 //
-//	GOMOB_CVENGINE_HTTP_ADDR  HTTP 监听地址（默认 :18810）
-//	LD_LIBRARY_PATH           需含 .so 路径（dev 默认 /usr/local/lib:/usr/local/lib64:/usr/local/onnxruntime/lib，
-//	                          也可指向 server/internal/cvengine/ccv/）
+//	GOMOB_CVENGINE_HTTP_ADDR    HTTP 监听地址（默认 :18810）
+//	GOMOB_CVENGINE_REQUIRE_AUTH true 时强制 X-Gomob-User-Id 头（默认 false，dev 直连方便）
+//	GOMOB_VINREF_TARGET         vin-ref baseURL（默认 http://127.0.0.1:18058）
+//	GOMOB_CVENGINE_MODELS       启动期模型注册：
+//	                              "VMET=/data/vmet1.onnx,VINS=/data/vins0.onnx"
+//	                            缺省时 /cv/v1/models 返 items=[]；M-S10.4 后由 model-registry 接管
+//	LD_LIBRARY_PATH             需含 .so 路径（dev 默认 /usr/local/lib:/usr/local/lib64:/usr/local/onnxruntime/lib）
 package main
 
 import (
@@ -37,6 +41,17 @@ func main() {
 	_ = rootCtx
 
 	h := cvengine.NewHandler()
+	// 启动期模型加载（M-S10.4 后将由 model-registry → asset 拉 .onnx 替代）
+	if env := os.Getenv("GOMOB_CVENGINE_MODELS"); env != "" {
+		results := h.Models().LoadFromEnv(env)
+		for _, s := range results {
+			if s.Loaded {
+				log.Info("model 加载成功", "tag", s.Tag, "path", s.Path, "size_bytes", s.SizeBytes)
+			} else {
+				log.Warn("model 加载失败", "tag", s.Tag, "path", s.Path, "err", s.Error)
+			}
+		}
+	}
 	mux := http.NewServeMux()
 	h.Mount(mux)
 

@@ -29,6 +29,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -36,6 +37,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 
 	"io.gomob/server/pkg/audit"
 	"io.gomob/server/pkg/httpx"
@@ -44,22 +47,60 @@ import (
 	"io.gomob/server/pkg/repo"
 )
 
+// Config —— vin-ref MinIO 客户端，与 asset / shape-ref 共用 bucket。
+//
+// 仅用于给 sample 响应附带签名 URL（5 分钟），让 App / cv-engine 直接拿到下载链接。
+type Config struct {
+	MinIOEndpoint   string
+	MinIOAccessKey  string
+	MinIOSecretKey  string
+	MinIOUseSSL     bool
+	Bucket          string
+	PresignDuration time.Duration
+}
+
+func DefaultConfig() Config {
+	return Config{
+		MinIOEndpoint:   "127.0.0.1:9000",
+		MinIOAccessKey:  "gomob",
+		MinIOSecretKey:  "gomob_dev_minio",
+		MinIOUseSSL:     false,
+		Bucket:          "gomob-assets",
+		PresignDuration: 5 * time.Minute,
+	}
+}
+
 type Handler struct {
+	cfg     Config
 	pool    *pgxpool.Pool
 	batches *repo.VinGlyphBatchRepo
 	samples *repo.VinGlyphSampleRepo
 	audit   audit.Recorder
+	mc      *minio.Client // 可为 nil；nil 时签名 URL 字段省略
 	log     *slog.Logger
 }
 
-func NewHandler(pool *pgxpool.Pool, auditRec audit.Recorder) *Handler {
+func NewHandler(cfg Config, pool *pgxpool.Pool, auditRec audit.Recorder) (*Handler, error) {
+	var mc *minio.Client
+	if cfg.MinIOEndpoint != "" {
+		c, err := minio.New(cfg.MinIOEndpoint, &minio.Options{
+			Creds:  credentials.NewStaticV4(cfg.MinIOAccessKey, cfg.MinIOSecretKey, ""),
+			Secure: cfg.MinIOUseSSL,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("vinref minio client: %w", err)
+		}
+		mc = c
+	}
 	return &Handler{
+		cfg:     cfg,
 		pool:    pool,
 		batches: repo.NewVinGlyphBatchRepo(pool),
 		samples: repo.NewVinGlyphSampleRepo(pool),
 		audit:   auditRec,
+		mc:      mc,
 		log:     logger.New("vinref.handler"),
-	}
+	}, nil
 }
 
 func (h *Handler) Mount(mux *http.ServeMux) {
@@ -171,16 +212,33 @@ type sampleDTO struct {
 	AlphaObjectKey    string   `json:"alpha_object_key"`
 	AlphaSHA256       string   `json:"alpha_sha256"`
 	AlphaSizeBytes    int64    `json:"alpha_size_bytes"`
+	AlphaURL          *string  `json:"alpha_url,omitempty"`     // 5 分钟签名 URL（与 shape-ref 同套语义）
+	AlphaURLExpireAt  *string  `json:"alpha_url_expire_at,omitempty"`
 	OriginObjectKey   *string  `json:"origin_object_key,omitempty"`
 	OriginSHA256      *string  `json:"origin_sha256,omitempty"`
 	OriginSizeBytes   *int64   `json:"origin_size_bytes,omitempty"`
+	OriginURL         *string  `json:"origin_url,omitempty"`
+	OriginURLExpireAt *string  `json:"origin_url_expire_at,omitempty"`
 	FeatureVectorURI  *string  `json:"feature_vector_uri,omitempty"`
 	QCScore           *float32 `json:"qc_score,omitempty"`
 	CreatedAt         string   `json:"created_at"`
 }
 
-func toSampleDTO(s *repo.VinGlyphSample) sampleDTO {
-	return sampleDTO{
+// presign 生成 5 分钟签名 URL；mc 为 nil（dev 不配 minio）时返回空字符串。
+func (h *Handler) presign(ctx context.Context, objectKey string) (url string, expireAt time.Time) {
+	if h.mc == nil || objectKey == "" {
+		return "", time.Time{}
+	}
+	u, err := h.mc.PresignedGetObject(ctx, h.cfg.Bucket, objectKey, h.cfg.PresignDuration, nil)
+	if err != nil {
+		h.log.Warn("vinref presign 失败", "err", err, "object_key", objectKey)
+		return "", time.Time{}
+	}
+	return u.String(), time.Now().Add(h.cfg.PresignDuration)
+}
+
+func (h *Handler) toSampleDTO(ctx context.Context, s *repo.VinGlyphSample, withURL bool) sampleDTO {
+	d := sampleDTO{
 		ID:               strconv.FormatInt(s.ID, 10),
 		BatchID:          strconv.FormatInt(s.BatchID, 10),
 		Character:        s.Character,
@@ -198,6 +256,22 @@ func toSampleDTO(s *repo.VinGlyphSample) sampleDTO {
 		QCScore:          s.QCScore,
 		CreatedAt:        s.CreatedAt.UTC().Format(time.RFC3339Nano),
 	}
+	if !withURL || h.mc == nil {
+		return d
+	}
+	if u, exp := h.presign(ctx, s.AlphaObjectKey); u != "" {
+		d.AlphaURL = &u
+		s := exp.UTC().Format(time.RFC3339Nano)
+		d.AlphaURLExpireAt = &s
+	}
+	if s.OriginObjectKey != nil {
+		if u, exp := h.presign(ctx, *s.OriginObjectKey); u != "" {
+			d.OriginURL = &u
+			ex := exp.UTC().Format(time.RFC3339Nano)
+			d.OriginURLExpireAt = &ex
+		}
+	}
+	return d
 }
 
 // ============================================================================
@@ -508,7 +582,8 @@ func (h *Handler) CreateSample(w http.ResponseWriter, r *http.Request) {
 	}
 	h.recordAudit(r, "vinref.sample.create",
 		"vin_glyph_sample:"+strconv.FormatInt(s.ID, 10), nil, s)
-	httpx.OK(w, toSampleDTO(s))
+	// admin 创建样本：不带 URL（admin 一般直接拿 object_key 用，URL 可二次拉）
+	httpx.OK(w, h.toSampleDTO(r.Context(), s, false))
 }
 
 func (h *Handler) DeleteSample(w http.ResponseWriter, r *http.Request) {
@@ -619,9 +694,10 @@ func (h *Handler) writeSamplesByBatch(w http.ResponseWriter, r *http.Request, bi
 		httpx.WriteError(w, httpx.ErrInternal)
 		return
 	}
+	// 读路径默认带签名 URL（App / cv-engine 同一份）
 	out := make([]sampleDTO, 0, len(items))
 	for i := range items {
-		out = append(out, toSampleDTO(&items[i]))
+		out = append(out, h.toSampleDTO(r.Context(), &items[i], true))
 	}
 	httpx.OK(w, map[string]any{
 		"batch_id":   strconv.FormatInt(bid, 10),

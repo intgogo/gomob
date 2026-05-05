@@ -10,6 +10,12 @@
 //
 //	GOMOB_VINREF_HTTP_ADDR  HTTP 监听地址（默认 :18058）
 //	GOMOB_DB_DSN            PG 连接串
+//	GOMOB_MINIO_ENDPOINT    默认 127.0.0.1:9000（用于 sample alpha/origin 签名 URL）
+//	GOMOB_MINIO_ACCESS_KEY  默认 gomob
+//	GOMOB_MINIO_SECRET_KEY  默认 gomob_dev_minio
+//	GOMOB_MINIO_BUCKET      默认 gomob-assets
+//	GOMOB_MINIO_USE_SSL     true / false（默认 false）
+//	GOMOB_VINREF_PRESIGN    签名 URL TTL（默认 5m）
 package main
 
 import (
@@ -40,8 +46,20 @@ func main() {
 	}
 	defer pool.Close()
 
+	cfg := vinref.DefaultConfig()
+	cfg.MinIOEndpoint = envOr("GOMOB_MINIO_ENDPOINT", cfg.MinIOEndpoint)
+	cfg.MinIOAccessKey = envOr("GOMOB_MINIO_ACCESS_KEY", cfg.MinIOAccessKey)
+	cfg.MinIOSecretKey = envOr("GOMOB_MINIO_SECRET_KEY", cfg.MinIOSecretKey)
+	cfg.Bucket = envOr("GOMOB_MINIO_BUCKET", cfg.Bucket)
+	cfg.MinIOUseSSL = os.Getenv("GOMOB_MINIO_USE_SSL") == "true"
+	cfg.PresignDuration = parseDuration("GOMOB_VINREF_PRESIGN", cfg.PresignDuration)
+
 	auditRec := audit.NewPG(pool)
-	h := vinref.NewHandler(pool, auditRec)
+	h, err := vinref.NewHandler(cfg, pool, auditRec)
+	if err != nil {
+		log.Error("vinref handler 初始化失败", "err", err)
+		os.Exit(1)
+	}
 
 	addr := envOr("GOMOB_VINREF_HTTP_ADDR", ":18058")
 	mux := http.NewServeMux()
@@ -89,6 +107,15 @@ func main() {
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+func parseDuration(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
 	}
 	return def
 }
