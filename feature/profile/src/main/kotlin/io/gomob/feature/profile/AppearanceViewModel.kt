@@ -25,7 +25,7 @@ class AppearanceViewModel @Inject constructor(
     val mode: StateFlow<ThemeMode> = store.modeFlow.stateIn(
         scope = viewModelScope,
         started = SharingStarted.Eagerly,
-        initialValue = ThemeMode.System,
+        initialValue = ThemeMode.Dark,
     )
 
     fun setMode(value: ThemeMode) {

@@ -14,10 +14,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -26,19 +29,32 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import io.gomob.designsystem.component.HairlineCard
-import io.gomob.designsystem.component.StatusTag
-import io.gomob.designsystem.component.StatusTone
+import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 
 const val LOGIN_ROUTE = "auth/login"
 
+/**
+ * 01 登录屏 — 严格对齐 jsx login.jsx 排版。
+ *
+ * 视觉骨架（自上而下）：
+ *   1. 顶部 Brand 行（padding 14/20/0）：左 Logo 28dp + "mob3d / v0.1.0" 横排 / 右 DEV tag
+ *   2. 欢迎区（padding 60/24/0）："你好" / "登录工作台" 28sp / 副标题
+ *   3. 输入区（padding 36/24/0 gap 14）：Field × 2 + 记住账号 / 去注册同行
+ *   4. 主按钮（padding 24/24/0）：48dp 高 + accentSoft + "登 录" 字距 0.3em + ArrowRight
+ *   5. flex:1 spacer
+ *   6. 底部诊断条（margin 0/20/24/20）：mono 10sp "服务端 10.0.2.2:8808 · 已连接 · 28ms"
+ */
 @Composable
 fun LoginRoute(
     onLoggedIn: () -> Unit,
@@ -53,6 +69,7 @@ fun LoginRoute(
         state = state,
         onUsername = vm::setUsername,
         onPassword = vm::setPassword,
+        onRemember = vm::setRemember,
         onSubmit = vm::submit,
         onGoRegister = onGoRegister,
     )
@@ -63,6 +80,7 @@ private fun LoginContent(
     state: LoginUiState,
     onUsername: (String) -> Unit,
     onPassword: (String) -> Unit,
+    onRemember: (Boolean) -> Unit,
     onSubmit: () -> Unit,
     onGoRegister: () -> Unit,
 ) {
@@ -70,125 +88,416 @@ private fun LoginContent(
         Modifier
             .fillMaxSize()
             .background(Gomob.colors.bg0)
-            .padding(horizontal = Gomob.spacing.s24),
-        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s20),
+            .verticalScroll(rememberScrollState()),
     ) {
-        Spacer(Modifier.height(Gomob.spacing.s32))
-
-        Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2)) {
-            Text("gomob", style = Gomob.type.display, color = Gomob.colors.fg0)
-            Text("v0.1.0 · 机动车检测站查验员工作台", style = Gomob.type.numInline, color = Gomob.colors.fg3)
+        BrandRow()
+        WelcomeBlock()
+        InputBlock(
+            state = state,
+            onUsername = onUsername,
+            onPassword = onPassword,
+            onRemember = onRemember,
+            onGoRegister = onGoRegister,
+        )
+        if (state.errorMessage != null) {
+            ErrorBanner(message = state.errorMessage)
         }
+        PrimaryButton(loading = state.loading, onClick = onSubmit)
+        Spacer(Modifier.weight(1f, fill = true).height(Gomob.spacing.s24))
+        DiagnosticStrip()
+    }
+}
 
-        HairlineCard(padding = Gomob.spacing.s12) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+// ─── 1. Brand 行 ────────────────────────────────────────────────────────────
+@Composable
+private fun BrandRow() {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20, top = Gomob.spacing.s14),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            // Logo 容器 28dp：accentSoft 底 + accentLine 边 + 内嵌 Cube SVG
+            Box(
+                Modifier
+                    .size(Gomob.spacing.avatar28)
+                    .clip(Gomob.shapes.r2)
+                    .background(Gomob.colors.accentSoft)
+                    .border(Gomob.spacing.hairline, Gomob.colors.accentLine, Gomob.shapes.r2),
+                contentAlignment = Alignment.Center,
             ) {
-                Box(Modifier.size(Gomob.spacing.dot6).clip(CircleShape).background(Gomob.colors.ok))
-                Text("服务端", style = Gomob.type.bodySm, color = Gomob.colors.fg1)
-                Spacer(Modifier.weight(1f))
-                StatusTag(text = "DEV · 127.0.0.1:8808", tone = StatusTone.Ok)
+                Icon(
+                    imageVector = GomobIcons.Logo,
+                    contentDescription = null,
+                    tint = Gomob.colors.accent,
+                )
+            }
+            Column {
+                Text(
+                    "mob3d",
+                    fontSize = 14.sp,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
+                    letterSpacing = 0.04.em,
+                    color = Gomob.colors.fg0,
+                )
+                Spacer(Modifier.height(Gomob.spacing.s2))
+                Text(
+                    "v0.1.0",
+                    style = Gomob.type.numInline.copy(
+                        fontSize = 10.sp,
+                        letterSpacing = 0.08.em,
+                    ),
+                    color = Gomob.colors.fg3,
+                )
             }
         }
+        // DEV tag — mono 11sp + line2 边 + 透明底
+        DevTag()
+    }
+}
 
-        HairlineInput(
+@Composable
+private fun DevTag() {
+    Box(
+        Modifier
+            .height(Gomob.spacing.chipHeight)
+            .clip(Gomob.shapes.r1)
+            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r1)
+            .padding(horizontal = Gomob.spacing.s8),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            "DEV",
+            style = Gomob.type.caption.copy(
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                letterSpacing = 0.04.em,
+            ),
+            color = Gomob.colors.fg1,
+        )
+    }
+}
+
+// ─── 2. 欢迎区 ──────────────────────────────────────────────────────────────
+@Composable
+private fun WelcomeBlock() {
+    Spacer(Modifier.height(60.dp - Gomob.spacing.s14))   // jsx padding "60px 24px 0" 减去 BrandRow 已用的 14
+    Column(
+        Modifier.padding(horizontal = Gomob.spacing.s24),
+    ) {
+        Text(
+            "你好",
+            fontSize = 14.sp,
+            color = Gomob.colors.fg2,
+        )
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "登录工作台",
+            fontSize = 28.sp,
+            fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
+            lineHeight = 32.sp,                               // 28 × 1.15
+            letterSpacing = (-0.01).em,
+            color = Gomob.colors.fg0,
+        )
+        Spacer(Modifier.height(Gomob.spacing.s8))
+        Text(
+            "机动车检测站 · 查验员协同工作台",
+            fontSize = 13.sp,
+            lineHeight = 19.sp,                               // 13 × 1.5 ≈ 19
+            color = Gomob.colors.fg2,
+        )
+    }
+}
+
+// ─── 3. 输入区 ──────────────────────────────────────────────────────────────
+@Composable
+private fun InputBlock(
+    state: LoginUiState,
+    onUsername: (String) -> Unit,
+    onPassword: (String) -> Unit,
+    onRemember: (Boolean) -> Unit,
+    onGoRegister: () -> Unit,
+) {
+    Spacer(Modifier.height(36.dp))
+    Column(
+        Modifier.padding(horizontal = Gomob.spacing.s24),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        InlineField(
+            icon = GomobIcons.User,
             label = "账号",
             value = state.username,
             placeholder = "工号或邮箱",
             onChange = onUsername,
         )
-        HairlineInput(
+        InlineField(
+            icon = GomobIcons.Lock,
             label = "密码",
             value = state.password,
             placeholder = "请输入密码",
-            isPassword = true,
             onChange = onPassword,
+            isPassword = true,
+            trailing = {
+                Icon(
+                    GomobIcons.Eye,
+                    contentDescription = null,
+                    tint = Gomob.colors.fg2,
+                    modifier = Modifier.size(Gomob.spacing.icon16),
+                )
+            },
         )
 
-        if (state.errorMessage != null) {
-            HairlineCard(padding = Gomob.spacing.s12) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(Gomob.spacing.dot6).clip(CircleShape).background(Gomob.colors.danger))
-                    Spacer(Modifier.width(Gomob.spacing.s8))
-                    Text(state.errorMessage, style = Gomob.type.bodySm, color = Gomob.colors.danger)
-                }
-            }
-        }
-
-        Spacer(Modifier.height(Gomob.spacing.s4))
-
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(Gomob.spacing.touchMin)
-                .clip(Gomob.shapes.r2)
-                .background(Gomob.colors.accentSoft)
-                .border(Gomob.spacing.hairline, Gomob.colors.accentLine, Gomob.shapes.r2)
-                .clickable(enabled = !state.loading, onClick = onSubmit),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (state.loading) {
-                CircularProgressIndicator(
-                    color = Gomob.colors.accent,
-                    modifier = Modifier.size(Gomob.spacing.icon20),
-                    strokeWidth = Gomob.spacing.s2,
-                )
-            } else {
-                Text("登录", style = Gomob.type.body, color = Gomob.colors.accent)
-            }
-        }
-
+        // 记住账号 / 去注册 同行
+        Spacer(Modifier.height(Gomob.spacing.s6 - Gomob.spacing.s2))
         Row(
             Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Text("记住账号", style = Gomob.type.caption, color = Gomob.colors.fg2)
+            RememberCheckbox(
+                checked = state.rememberMe,
+                onToggle = { onRemember(!state.rememberMe) },
+            )
             Text(
-                text = "没账号? 去注册",
-                style = Gomob.type.caption,
+                "没账号 ? 去注册",
+                fontSize = 12.sp,
                 color = Gomob.colors.accent,
                 modifier = Modifier.clickable(onClick = onGoRegister),
             )
         }
-
-        Spacer(Modifier.height(Gomob.spacing.s32))
     }
 }
 
 @Composable
-private fun HairlineInput(
+private fun InlineField(
+    icon: ImageVector,
     label: String,
     value: String,
     placeholder: String,
-    isPassword: Boolean = false,
     onChange: (String) -> Unit,
+    isPassword: Boolean = false,
+    trailing: (@Composable () -> Unit)? = null,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6)) {
-        Text(label, style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(Gomob.shapes.r2)
+            .background(Gomob.colors.bg1)
+            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
+            .padding(horizontal = Gomob.spacing.s14, vertical = Gomob.spacing.s8),
+    ) {
+        Column {
+            // label 内嵌顶行：11sp + fg3
+            Text(
+                label,
+                fontSize = 11.sp,
+                color = Gomob.colors.fg3,
+            )
+            Spacer(Modifier.height(Gomob.spacing.s2))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = Gomob.colors.fg2,
+                    modifier = Modifier.size(Gomob.spacing.icon16),
+                )
+                Box(Modifier.weight(1f)) {
+                    if (value.isEmpty()) {
+                        Text(
+                            placeholder,
+                            fontSize = 15.sp,
+                            color = Gomob.colors.fg3,
+                        )
+                    }
+                    BasicTextField(
+                        value = value,
+                        onValueChange = onChange,
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            fontSize = 15.sp,
+                            color = Gomob.colors.fg0,
+                            // 有值时数字/字母用 mono + 0.04em，与 jsx 一致
+                            fontFamily = if (value.isNotEmpty() && !isPassword)
+                                androidx.compose.ui.text.font.FontFamily.Monospace
+                            else
+                                androidx.compose.ui.text.font.FontFamily.Default,
+                            letterSpacing = if (value.isNotEmpty() && !isPassword) 0.04.em else 0.em,
+                        ),
+                        cursorBrush = SolidColor(Gomob.colors.accent),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = if (isPassword) KeyboardType.Password else KeyboardType.Text,
+                        ),
+                        visualTransformation = if (isPassword)
+                            PasswordVisualTransformation()
+                        else
+                            VisualTransformation.None,
+                    )
+                }
+                if (trailing != null) trailing()
+            }
+        }
+    }
+}
+
+@Composable
+private fun RememberCheckbox(checked: Boolean, onToggle: () -> Unit) {
+    Row(
+        Modifier.clickable(onClick = onToggle),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+    ) {
+        // 14×14 勾选框 — accentSoft 底 + accentLine 边 + 选中显 Check
         Box(
             Modifier
-                .fillMaxWidth()
-                .height(Gomob.spacing.touchMin)
-                .clip(Gomob.shapes.r2)
-                .background(Gomob.colors.bg2)
-                .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
-                .padding(horizontal = Gomob.spacing.s12),
-            contentAlignment = Alignment.CenterStart,
-        ) {
-            if (value.isEmpty()) {
-                Text(placeholder, style = Gomob.type.body, color = Gomob.colors.fg3)
-            }
-            BasicTextField(
-                value = value,
-                onValueChange = onChange,
-                singleLine = true,
-                textStyle = Gomob.type.body.copy(color = Gomob.colors.fg0),
-                cursorBrush = SolidColor(Gomob.colors.accent),
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = if (isPassword) KeyboardType.Password else KeyboardType.Text,
+                .size(14.dp)
+                .clip(Gomob.shapes.r1)
+                .background(if (checked) Gomob.colors.accentSoft else Gomob.colors.bg2)
+                .border(
+                    Gomob.spacing.hairline,
+                    if (checked) Gomob.colors.accentLine else Gomob.colors.line2,
+                    Gomob.shapes.r1,
                 ),
-                visualTransformation = if (isPassword) PasswordVisualTransformation() else VisualTransformation.None,
+            contentAlignment = Alignment.Center,
+        ) {
+            if (checked) {
+                Icon(
+                    GomobIcons.Check,
+                    contentDescription = null,
+                    tint = Gomob.colors.accent,
+                    modifier = Modifier.size(10.dp),
+                )
+            }
+        }
+        Text(
+            "记住账号",
+            fontSize = 12.sp,
+            color = Gomob.colors.fg1,
+        )
+    }
+}
+
+// ─── 错误条（jsx 没画但保留 — 业务真实需要） ────────────────────────────────
+@Composable
+private fun ErrorBanner(message: String) {
+    Spacer(Modifier.height(Gomob.spacing.s12))
+    Row(
+        Modifier
+            .padding(horizontal = Gomob.spacing.s24)
+            .fillMaxWidth()
+            .clip(Gomob.shapes.r2)
+            .background(Gomob.colors.dangerSoft)
+            .border(Gomob.spacing.hairline, Gomob.colors.dangerLine, Gomob.shapes.r2)
+            .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+    ) {
+        Box(
+            Modifier
+                .size(Gomob.spacing.dot6)
+                .clip(CircleShape)
+                .background(Gomob.colors.danger),
+        )
+        Text(
+            message,
+            fontSize = 12.sp,
+            color = Gomob.colors.danger,
+        )
+    }
+}
+
+// ─── 4. 主按钮 ──────────────────────────────────────────────────────────────
+@Composable
+private fun PrimaryButton(loading: Boolean, onClick: () -> Unit) {
+    Spacer(Modifier.height(Gomob.spacing.s24))
+    Box(
+        Modifier
+            .padding(horizontal = Gomob.spacing.s24)
+            .fillMaxWidth()
+            .height(Gomob.spacing.avatar48)
+            .clip(Gomob.shapes.r2)
+            .background(Gomob.colors.accentSoft)
+            .border(Gomob.spacing.hairline, Gomob.colors.accentLine, Gomob.shapes.r2)
+            .clickable(enabled = !loading, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (loading) {
+            CircularProgressIndicator(
+                color = Gomob.colors.accent,
+                modifier = Modifier.size(Gomob.spacing.icon20),
+                strokeWidth = Gomob.spacing.s2,
+            )
+        } else {
+            // 文字 "登 录" + 字距 0.3em — Box 居中 Text + 右上角箭头叠加
+            Text(
+                "登 录",
+                fontSize = 14.sp,
+                letterSpacing = 0.3.em,
+                color = Gomob.colors.accent,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center,
+            )
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(end = 18.dp),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                Icon(
+                    GomobIcons.ArrowRight,
+                    contentDescription = null,
+                    tint = Gomob.colors.accent,
+                    modifier = Modifier.size(Gomob.spacing.icon16),
+                )
+            }
+        }
+    }
+}
+
+// ─── 6. 底部诊断条 ──────────────────────────────────────────────────────────
+@Composable
+private fun DiagnosticStrip() {
+    Row(
+        Modifier
+            .padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20, bottom = Gomob.spacing.s24)
+            .fillMaxWidth()
+            .clip(Gomob.shapes.r2)
+            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r2)
+            .padding(horizontal = Gomob.spacing.s12, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(
+            "服务端  10.0.2.2:8808",
+            style = Gomob.type.numInline.copy(
+                fontSize = 10.sp,
+                letterSpacing = 0.06.em,
+            ),
+            color = Gomob.colors.fg3,
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+        ) {
+            Box(
+                Modifier
+                    .size(Gomob.spacing.dot6)
+                    .clip(CircleShape)
+                    .background(Gomob.colors.ok),
+            )
+            Text(
+                "已连接 · 28ms",
+                style = Gomob.type.numInline.copy(
+                    fontSize = 10.sp,
+                    letterSpacing = 0.06.em,
+                ),
+                color = Gomob.colors.fg3,
             )
         }
     }

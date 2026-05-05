@@ -14,6 +14,9 @@ import javax.inject.Singleton
  * 外观偏好 — 跟随系统 / 深色 / 浅色。
  *
  * 与 Token / 网络配置分开存储,避免登出时被清掉。
+ *
+ * 默认值是 [Dark] 而不是 [System] — mob3d 设计语言"工业科技风"是 dark-first,
+ * 首次安装直接给 OLED 黑底,浅色是可选退化。
  */
 enum class ThemeMode(val key: String) {
     System("system"),
@@ -22,7 +25,7 @@ enum class ThemeMode(val key: String) {
     ;
 
     companion object {
-        fun fromKey(key: String?): ThemeMode = entries.firstOrNull { it.key == key } ?: System
+        fun fromKey(key: String?): ThemeMode = entries.firstOrNull { it.key == key } ?: Dark
     }
 }
 
