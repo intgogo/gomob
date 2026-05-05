@@ -146,6 +146,82 @@ object GomobIcons {
         moveTo(14f, 6f)
         lineTo(18f, 10f)
     }
+
+    /** 立方体（与 Logo 形状同 — 但 24×24 viewport 用于 ActionTile 等）。 */
+    val Cube: ImageVector = stroked("Cube") {
+        moveTo(12f, 3f)
+        lineTo(20f, 7.5f)
+        verticalLineTo(16.5f)
+        lineTo(12f, 21f)
+        lineTo(4f, 16.5f)
+        verticalLineTo(7.5f)
+        close()
+        moveTo(4f, 7.5f)
+        lineTo(12f, 12f)
+        lineTo(20f, 7.5f)
+        moveTo(12f, 12f)
+        verticalLineTo(21f)
+    }
+
+    val USB: ImageVector = stroked("USB") {
+        // USB 接头形 — 顶部圆点 + 主线 + V 分叉 + 内圈点 / 矩形
+        circle(12f, 4f, 1.5f)
+        moveTo(12f, 5.5f)
+        verticalLineTo(20f)
+        moveTo(8f, 11f)
+        lineTo(12f, 7f)
+        lineTo(16f, 11f)
+        circle(9f, 14f, 1f)
+        moveTo(9f, 15f)
+        verticalLineTo(17f)
+        lineTo(12f, 19f)
+        roundRect(14f, 11f, 2.5f, 3f, 0.3f)
+        moveTo(15.25f, 14f)
+        verticalLineTo(16f)
+        lineTo(12f, 18f)
+    }
+
+    val Stamp: ImageVector = stroked("Stamp") {
+        roundRect(3.5f, 6f, 17f, 12f, 1.5f)
+        moveTo(3.5f, 10f)
+        horizontalLineTo(20.5f)
+        moveTo(7f, 14f)
+        horizontalLineTo(9.5f)
+        moveTo(11.5f, 14f)
+        horizontalLineTo(16.5f)
+        moveTo(7f, 17f)
+        verticalLineTo(18.5f)
+        moveTo(9f, 17f)
+        verticalLineTo(18.5f)
+        moveTo(11f, 17f)
+        verticalLineTo(18.5f)
+    }
+
+    val Calibrate: ImageVector = stroked("Calibrate") {
+        circle(12f, 12f, 8.5f)
+        moveTo(12f, 4f)
+        verticalLineTo(7f)
+        moveTo(12f, 17f)
+        verticalLineTo(20f)
+        moveTo(4f, 12f)
+        horizontalLineTo(7f)
+        moveTo(17f, 12f)
+        horizontalLineTo(20f)
+        circle(12f, 12f, 2.5f)
+    }
+
+    val Refresh: ImageVector = stroked("Refresh") {
+        moveTo(4f, 12f)
+        arcToRelative(8f, 8f, 0f, false, true, 14f, -5.3f)
+        moveTo(18f, 3f)
+        verticalLineTo(7f)
+        horizontalLineTo(14f)
+        moveTo(20f, 12f)
+        arcToRelative(8f, 8f, 0f, false, true, -14f, 5.3f)
+        moveTo(6f, 21f)
+        verticalLineTo(17f)
+        horizontalLineTo(10f)
+    }
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────
