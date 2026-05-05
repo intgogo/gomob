@@ -177,26 +177,31 @@
 |     | App 端 `feature:gallery` 双窗口渲染（本次扫描 vs 标准外廓） | 留 M3 重建管线落地后；当前服务端契约已就绪 | `docs/architecture/06-product-features.md` §3.4 |
 |     | cv-engine 接入：`vin_compare` 之外的"3D 外廓质量比对"（点云覆盖度 / 倒角距离 / Hausdorff） | 留 M-S10 cv-engine 实施；当前 shape-ref active endpoint 已可被 cv-engine gRPC 调用 | 同 §6.w |
 
-## M-S10 — cv-engine（CV 算法引擎，从 gosmart 迁移）（未启动）
+## M-S10 — cv-engine（CV 算法引擎，从 gosmart 迁移）（Phase 1 地基已完成 2026-05-04；Phase 2 业务端点待续）
 
 > **实施细化见 `docs/architecture/server/03-cvengine-migration.md`**（含闭包审计 / cgo 阻塞点 / 风险登记）。
-> 阻塞性发现：gosmart 的 `engine/gocv` 是 cgo binding，依赖 554 MB 的 `engine/ccv/`（含 OpenCV / ONNX / libccv），cv-engine 必须独立 Dockerfile + 独立 CI。
+> M-S10 拆三阶段，第一性原则下分形展开 — 不是 v1 stub，是真实 cgo 集成只是 endpoint 数量先做最少：
+>
+> - **Phase 1**（M-S10.1a-d + M-S10.2 minimal）：✅ 地基 — cgo 链通 + 一个真实 OpenCV 调用端点
+> - **Phase 2**（M-S10.3-7）：迁 ivv 业务端点 + JWT/HMAC + vin-ref 对接 + Dockerfile
+> - **Phase 3**（M-S10.8）：harness 基线对比 gosmart 时代 precision/recall
 
 | ID | 项 | 验收标准 | 文档 |
 |----|----|---------|------|
-| M-S10.1a | 拷贝 `gosmart/engine/ccv/` 整目录到 `server/internal/cvengine/ccv/`，含 `.a` `.so` `include/` `src/` `Makefile` | `libccv.so` `libopencv_world.so` 等关键 .so 完整可见 | `03-cvengine-migration.md` §6 |
-| 🟢 M-S10.1b | **spike 已通过**（2026-05-04）：本机 CentOS 9 + gcc 11.5 + cgo 链接 libccv / libopencv_world / libonnxruntime 全通过；M-S10 实施时拷贝 `engine/gocv/` 到 `server/internal/cvengine/gocv/`，cgo 头文件相对路径修正 | spike 报告：[.dev/spike-cgo/REPORT.md](../.dev/spike-cgo/REPORT.md)；正式拷贝时 `go build -tags=cv ./internal/cvengine/gocv` 通过 | 同上 |
-| M-S10.1c | 拷贝 `apps/api/ivv/` 到 `server/internal/cvengine/ivv/`；全局替换 `gosmart/...` → `io.gomob/server/internal/cvengine/...` | `go build ./internal/cvengine/ivv` 通过，无残留旧 import | 同上 |
-| M-S10.1d | 拷贝 `engine/image/` + `util/{conv,crypt,datetime,fs,json,levenshtein,pack}`；剔除 license / xorm / sqlite 相关 import | `go vet ./internal/cvengine/...` 全绿 | 同上 §3 |
-| M-S10.2a | `cmd/cvengine/main.go`：gin 注册 `/cv/ocr/v1/*` + JWT 中间件 + HMAC 验签中间件（迁 `apps/apps.go` 路由片段） | curl 6 个 VIN 接口与 gosmart 同输入产出一致 | `02-api-contract.md` §14 |
-| M-S10.2b | 替换 `apps/data` 按车型拉对照样本逻辑：从 sqlite/xorm 改为 gRPC 调 vin-ref（M-S8 已交付） | 同样本集输出 char_similarity 一致 | `03-cvengine-migration.md` §3 |
-| M-S10.2c | `Dockerfile.cvengine`：base `centos:stream9`，COPY ccv/.so + 设置 `LD_LIBRARY_PATH`；产 `gomob-cvengine:cpu` | `docker run` 启动后 `/healthz` 模型加载完成返 200 | 同上 §5 |
-| M-S10.3 | **gateway 直达**：HTTP 端口 8810 仅内网，对外通过 gateway 反代；JWT + 验签双轨 | gosmart 时代 curl 加 JWT header 后全部通过 | `02-api-contract.md` §14 / `00-server-overview.md` §6.app |
-| M-S10.4 | 模型加载：启动时调 model-registry 拉 active 版本 → 调 asset 下载 .onnx → 加载到 onnxruntime | 模型缺失时 /readyz 返 503；加载完成 /healthz 200 | `00-server-overview.md` §6.y |
-| M-S10.5 | 热更：订阅 NATS `model.version.activated` 触发模型切换，无任务丢失 | 切换瞬间正在跑的请求用旧模型完成，新请求用新模型 | 同 §6.y |
-| M-S10.6 | 内部 gRPC 包装（cvengine.proto）：worker / api 调用替代 HTTP（共享 handler） | gRPC 单测覆盖 6 个 VIN 接口 | 同 §6.w |
-| M-S10.7 | 与 vin-ref 对接：vin_compare 时按 vehicle_model_id gRPC 调 vin-ref（M-S8） | M-S8.4 验收用例覆盖 | 同 §6.w / §6.z |
-| M-S10.8 | `tests/harness/cv_vin_pipeline/` — 端到端 vin_detect → vin_compare 在已知样本集上的 precision/recall 回归 | analyze.py 给出"是否达到 gosmart 时代基线"判定 | `CLAUDE.md` 自分析规范 |
+| ✅ M-S10.1a | 拷 `gosmart/engine/ccv/{include,Makefile,Makefile.inc,libccv.so,libengine_crypt.so}` 到 `server/internal/cvengine/ccv/`（**跳过 src/473M / .a/45M / atlas 异构卡变体**，仓内仅 ~10MB；运行期 .so 走 /usr/local/lib + Dockerfile COPY） | `ls -la server/internal/cvengine/ccv/` 头文件 + .so 完整 | `03-cvengine-migration.md` §6 |
+| 🟢 M-S10.1b | spike 已通过（2026-05-04）；M-S10.1 实施 `engine/gocv/` 拷贝到 `server/internal/cvengine/gocv/`，cgo 头文件路径 `-I../ccv/include` 不变 | `go build ./internal/cvengine/gocv` 通过 | spike 报告：[.dev/spike-cgo/REPORT.md](../.dev/spike-cgo/REPORT.md) |
+| ✅ M-S10.1c | 全局重写 `gosmart/engine/gocv` → `io.gomob/server/internal/cvengine/gocv` + `gosmart/util/*` → `io.gomob/server/internal/cvengine/util/*`；删 `_test.go`（依赖 testdata 未迁）；删 `engine/image/` fork（无人引用） | `grep -rn '"gosmart/' server/internal/cvengine` 空 | 同上 |
+| ✅ M-S10.1d | 拷 `util/{conv,crypt,datetime,fs,json,levenshtein,pack,number}` + 顶层 `util.go` 等；删 `util/{license,logs,security,sql,str,check}`（gomob 已替代或未用）；`util/conv/obj.go` 的 `echo-go util.NewError` 替成 `errors.New` | `go build ./...` 全绿 | 同上 §3 |
+| ✅ M-S10.2 minimal | `cmd/cvengine/main.go` + `internal/cvengine/handler.go`：4 端点 `/healthz` `/readyz`（强制 cgo 调 `gocv.OpenCVVersion()`）`/cv/v1/version` `/cv/v1/echo_dim`（IMDecode 真解码 PNG/JPEG 返尺寸） | 二进制 `ldd` 真依赖 libccv/libopencv_world/libonnxruntime；POST PNG 返 `cols=48 rows=32 channels=3`（OpenCV 真解码）；坏数据返 10001 | `cmd/cvengine/main.go` / `internal/cvengine/handler.go` |
+| ✅ M-S10.smoke | `tests/harness/cv_engine_smoke/` 13 场景：ldd 链路 / 真 cgo / 版本 / PNG 解码 / 坏数据拒绝 | `./dev.sh harness cv_engine_smoke` → **13/13 通过**；`opencv=4.5.5-pre gocv=0.22.0` | `tests/harness/cv_engine_smoke/{run.sh,analyze.py}` |
+|     | M-S10.2a 业务端点：迁 ivv 的 `RequestVINDetect` / `RequestVinCompare` / `RequestVINCharacterDetect` 进 `internal/cvengine/ivv/`；gin → net/http ServeMux 改写；路由挂 `/cv/ocr/v1/*` | 留 Phase 2；ivv 文件 27 个，需先迁 `apps/core` + `apps/data` 替代为 gomob `pkg/repo` | `02-api-contract.md` §14 |
+|     | M-S10.2c JWT 中间件 + HMAC 验签中间件 | 留 Phase 2 | 同 §14.1 |
+|     | M-S10.3 Dockerfile.cvengine：base `centos:stream9` + COPY ccv/.so + LD_LIBRARY_PATH | 留 Phase 2；本机 dev `LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib64:/usr/local/onnxruntime/lib` 已可启 | 同上 §5 |
+|     | M-S10.4 模型加载：启动调 model-registry 拉 active → asset 下载 .onnx → onnxruntime 加载 | 留 Phase 2 | `00-server-overview.md` §6.y |
+|     | M-S10.5 NATS `model.version.activated` 热更 | 留 Phase 2 | 同 §6.y |
+|     | M-S10.6 gRPC 包装（cvengine.proto） | 留 Phase 2 | 同 §6.w |
+|     | M-S10.7 vin-ref 对接：vin_compare 按 vehicle_model_id 拉 active 批次的 alpha 样本 | 留 Phase 2 | 同 §6.w / §6.z |
+|     | M-S10.8 `tests/harness/cv_vin_pipeline/` 基线 precision/recall 对比 gosmart 时代 | 留 Phase 3 | `CLAUDE.md` 自分析规范 |
 
 ## M-S11 — llm-gateway（LLM 大模型网关）（已完成 2026-05-04）
 
