@@ -16,6 +16,7 @@
 - [设计决策风格偏好](feedback_design_style.md) — 激进决策、长期主义、严格反馈、设计/实施文档分层。
 - [Git Push 策略](feedback_git_push_policy.md) — 本地可 commit；只在用户明确要求时 push。
 - [UI 改动必须真实运行并截图自查](feedback_ui_visual_verification.md) — 涉及 Compose 界面/HUD/布局改动必须 install 真机/模拟器 + 截图复核。
+- [用户全程 VNC 远程](feedback_vnc_remote_dev.md) — emulator / 任何 GUI 必须走 DISPLAY=:1（TigerVNC 5901 端口），不能起 Xvfb headless 否则用户看不到。
 - [重要不确定模块必须建 harness](feedback_harness_mandatory.md) — 五条触发标准命中时先建 harness 再写业务代码。
 
 ## 项目 / 参考（reference）
