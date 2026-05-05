@@ -40,6 +40,7 @@ import (
 
 	"io.gomob/server/internal/cvengine"
 	"io.gomob/server/internal/cvengine/loader"
+	"io.gomob/server/pkg/hmacauth"
 	"io.gomob/server/pkg/logger"
 )
 
@@ -138,10 +139,29 @@ func main() {
 	mux := http.NewServeMux()
 	h.Mount(mux)
 
+	// HMAC 验签（M-S10.2c）：secret 空 → noop；非空时按 GOMOB_CVENGINE_HMAC_REQUIRED
+	// 决定是否强制每个请求都带签名（生产建议 true；dev / harness 直连默认 false 兼容）。
+	// /healthz / /readyz 始终绕过 HMAC（k8s probe 不签名）。
+	hmacSecret := os.Getenv("GOMOB_HMAC_SECRET")
+	hmacRequired := os.Getenv("GOMOB_CVENGINE_HMAC_REQUIRED") == "true"
+	verifier := hmacauth.NewVerifier(hmacSecret, hmacRequired, nil)
+	var rootHandler http.Handler = mux
+	if !verifier.Disabled() {
+		signed := verifier.Middleware(mux)
+		rootHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+				mux.ServeHTTP(w, r)
+				return
+			}
+			signed.ServeHTTP(w, r)
+		})
+		log.Info("HMAC 验签已启用", "required", hmacRequired)
+	}
+
 	addr := envOr("GOMOB_CVENGINE_HTTP_ADDR", ":18810")
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           rootHandler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      60 * time.Second,

@@ -28,6 +28,7 @@ import (
 
 	"io.gomob/server/internal/worker"
 	"io.gomob/server/pkg/audit"
+	"io.gomob/server/pkg/hmacauth"
 	"io.gomob/server/pkg/logger"
 	"io.gomob/server/pkg/pubsub"
 	"io.gomob/server/pkg/repo"
@@ -60,10 +61,21 @@ func main() {
 
 	pub := pubsub.NewNATSPublisher(nc)
 
+	// HTTP 客户端：若设了 GOMOB_HMAC_SECRET，自动给 cvengine 调用加签（M-S10.2c）。
+	hmacSecret := os.Getenv("GOMOB_HMAC_SECRET")
+	cvHTTP := &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: hmacauth.NewSigningTransport(http.DefaultTransport, hmacSecret),
+	}
+	if hmacSecret != "" {
+		log.Info("HMAC 客户端签名已启用（worker → cv-engine）")
+	}
+
 	w, err := worker.New(worker.Config{
 		NATSConn:        nc,
 		Pool:            pool,
 		CVEngineTarget:  envOr("GOMOB_CVENGINE_TARGET", "http://127.0.0.1:18810"),
+		HTTPClient:      cvHTTP,
 		Audit:           audit.NewPG(pool),
 		Publisher:       pub,
 		MinIOEndpoint:   envOr("GOMOB_MINIO_ENDPOINT", "127.0.0.1:9000"),

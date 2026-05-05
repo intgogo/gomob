@@ -85,7 +85,7 @@ LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib64:/usr/local/onnxruntime/lib \
 GOMOB_CVENGINE_HTTP_ADDR=:18810 \
     "$SERVER_DIR/.dev/bin/gomob-cvengine" > "$OUTPUT_DIR/cvengine.log" 2>&1 &
 PID=$!
-trap "kill $PID 2>/dev/null; wait 2>/dev/null" EXIT
+trap "kill -9 \$PID 2>/dev/null; wait 2>/dev/null" EXIT
 sleep 1
 
 hc=$(curl -s -o /dev/null -w '%{http_code}' "$CV/healthz")

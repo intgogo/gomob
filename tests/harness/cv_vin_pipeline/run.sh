@@ -86,7 +86,7 @@ GOMOB_VINREF_TARGET=http://127.0.0.1:18058 \
 GOMOB_CVENGINE_MODELS="VMASK:mask=$VMASK:0|1|2|3|4|5|6|7|8|9|A|B|C|D|E|F|G|H|J|K|L|M|N|P|R|S|T|U|V|W|X|Y|Z" \
     "$SERVER_DIR/.dev/bin/gomob-cvengine" > "$OUTPUT_DIR/cvengine.log" 2>&1 &
 PID=$!
-trap "kill $PID 2>/dev/null; wait 2>/dev/null" EXIT
+trap "kill -9 \$PID 2>/dev/null; wait 2>/dev/null" EXIT
 sleep 10
 
 hc=$(curl -s -o /dev/null -w '%{http_code}' "$CV/healthz")

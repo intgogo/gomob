@@ -134,7 +134,7 @@ pkill -9 -f gomob-cvengine 2>/dev/null
 sleep 1
 
 PIDS=()
-trap 'for p in "${PIDS[@]:-}"; do kill $p 2>/dev/null || true; done; wait 2>/dev/null || true' EXIT
+trap 'for p in "${PIDS[@]:-}"; do kill -9 $p 2>/dev/null || true; done; wait 2>/dev/null || true' EXIT
 
 log "2. 启动服务"
 GOMOB_AUTH_HTTP_ADDR=:18082 GOMOB_AUTH_DEV_AUTOACTIVATE=true \

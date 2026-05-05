@@ -67,19 +67,29 @@ type Config struct {
 	Log             *slog.Logger
 }
 
-// CharacterScan worker 收到的事件里，每个字符的扫描快照。
+// CharacterScan worker 收到的事件里，每个字符的扫描快照（端侧已分割模式）。
 type CharacterScan struct {
 	Position       int    `json:"position"`        // 1..17
 	Character      string `json:"character"`       // 检测到的字符（非合法 VIN 字符返 ""）
 	AlphaObjectKey string `json:"alpha_object_key"` // MinIO key（worker 直拉）
 }
 
-// ScanCompletedEvent NATS 入参。
+// ScanCompletedEvent NATS 入参。两种 ingest 模式：
+//
+//	1. FullImageObjectKey 非空（M-S10.2b 后的主路径）：
+//	   端侧只需上传整张 VIN 区域拍照图，worker 拉到后整张丢 cv-engine /cv/ocr/v1/vin_pipeline
+//	   走完 检测 → 字符 mask → 厂家库对照 → 聚合 verdict 全流程。
+//	2. Characters[] 非空（端侧已分割模式）：
+//	   端侧自己跑了 yolo / 字符分割，每位拿到 alpha_object_key；worker 逐字符调
+//	   /cv/ocr/v1/vin_character_compare_with_ref 比对。
+//
+// 同时给两个会优先走 vin_pipeline；都为空 → handle 报错。
 type ScanCompletedEvent struct {
-	InspectionID   int64           `json:"inspection_id"`
-	VehicleModelID int64           `json:"vehicle_model_id"`
-	VIN            string          `json:"vin"`
-	Characters     []CharacterScan `json:"characters"`
+	InspectionID       int64           `json:"inspection_id"`
+	VehicleModelID     int64           `json:"vehicle_model_id"`
+	VIN                string          `json:"vin"`
+	FullImageObjectKey string          `json:"full_image_object_key,omitempty"`
+	Characters         []CharacterScan `json:"characters,omitempty"`
 }
 
 // PreliminaryDoneEvent worker 写完 preliminary 后发出，signaling / App 监听这个推 ws 消息。
@@ -155,10 +165,94 @@ func (w *Worker) handle(ctx context.Context, data []byte) error {
 	if ev.InspectionID <= 0 {
 		return errors.New("inspection_id 必填")
 	}
-	if len(ev.Characters) == 0 {
-		return errors.New("characters 为空")
+	if ev.FullImageObjectKey == "" && len(ev.Characters) == 0 {
+		return errors.New("full_image_object_key 与 characters 至少需提供一个")
 	}
-	w.log.Info("收到 scan_completed",
+
+	// 主路径：full_image_object_key 优先，整图喂 vin_pipeline 一站式（M-S10.2b）
+	if ev.FullImageObjectKey != "" {
+		return w.handleViaPipeline(ctx, &ev)
+	}
+	return w.handleViaCharacters(ctx, &ev)
+}
+
+// handleViaPipeline 整图 → cv-engine /cv/ocr/v1/vin_pipeline → 直接拿 verdict。
+//
+// 相比 handleViaCharacters：少一次 17 轮循环 + 1 次 MinIO 拉，多 1 次大图 MinIO 拉
+// + cv-engine 内部完成检测/抠 mask；端到端延迟显著降低（17×500ms → 1×500ms）。
+func (w *Worker) handleViaPipeline(ctx context.Context, ev *ScanCompletedEvent) error {
+	w.log.Info("收到 scan_completed (pipeline 模式)",
+		"inspection_id", ev.InspectionID,
+		"vehicle_model_id", ev.VehicleModelID,
+		"vin", ev.VIN,
+		"full_image_key", ev.FullImageObjectKey)
+
+	img, err := w.fetchObject(ctx, ev.FullImageObjectKey)
+	if err != nil {
+		return fmt.Errorf("MinIO 拉取整图: %w", err)
+	}
+
+	resp, err := w.callVinPipeline(ctx, ev.VehicleModelID, img)
+	if err != nil {
+		return fmt.Errorf("cv-engine vin_pipeline: %w", err)
+	}
+
+	// vin_pipeline 已经返了 verdict / reasons / characters 全套；worker 只做落库
+	verdict := resp.Verdict
+	reasons := append([]string(nil), resp.Reasons...)
+	if len(reasons) == 0 {
+		reasons = []string{fmt.Sprintf("avg_similarity=%.3f scored=%d/%d",
+			resp.AvgSimilarity, resp.Scored, resp.Detections)}
+	}
+
+	if err := w.insps.UpdatePreliminary(ctx, ev.InspectionID, verdict, reasons); err != nil {
+		return fmt.Errorf("UpdatePreliminary: %w", err)
+	}
+	if err := w.insps.Transition(ctx, ev.InspectionID, []string{"scanning", "preliminary"}, "preliminary"); err != nil {
+		w.log.Warn("Transition scanning→preliminary 失败", "err", err, "inspection_id", ev.InspectionID)
+	}
+
+	if w.cfg.Audit != nil {
+		afterRaw, _ := audit.Encode(map[string]any{
+			"verdict":    verdict,
+			"avg":        resp.AvgSimilarity,
+			"min":        resp.MinSimilarity,
+			"scored":     resp.Scored,
+			"detections": resp.Detections,
+			"reasons":    reasons,
+			"mode":       "pipeline",
+		})
+		_ = w.cfg.Audit.Record(ctx, audit.Entry{
+			Action:   "worker.preliminary_done",
+			Target:   "inspection:" + strconv.FormatInt(ev.InspectionID, 10),
+			AfterRaw: afterRaw,
+		})
+	}
+	if w.cfg.Publisher != nil {
+		done := PreliminaryDoneEvent{
+			InspectionID: ev.InspectionID,
+			Verdict:      verdict,
+			Reasons:      reasons,
+			Score:        resp.AvgSimilarity,
+			CompletedAt:  time.Now().UTC().Format(time.RFC3339Nano),
+		}
+		if err := w.cfg.Publisher.Publish(ctx, TopicPreliminaryDone, done); err != nil {
+			w.log.Warn("publish preliminary_done 失败", "err", err)
+		}
+	}
+
+	w.log.Info("preliminary 完成 (pipeline)",
+		"inspection_id", ev.InspectionID,
+		"verdict", verdict,
+		"avg", resp.AvgSimilarity,
+		"detections", resp.Detections,
+		"scored", resp.Scored)
+	return nil
+}
+
+// handleViaCharacters 端侧已切好字符的旧路径。
+func (w *Worker) handleViaCharacters(ctx context.Context, ev *ScanCompletedEvent) error {
+	w.log.Info("收到 scan_completed (per-char 模式)",
 		"inspection_id", ev.InspectionID,
 		"vehicle_model_id", ev.VehicleModelID,
 		"vin", ev.VIN,
@@ -321,6 +415,72 @@ func (w *Worker) fetchObject(ctx context.Context, key string) ([]byte, error) {
 	}
 	defer obj.Close()
 	return io.ReadAll(io.LimitReader(obj, 16<<20))
+}
+
+// VinPipelineResp cv-engine /cv/ocr/v1/vin_pipeline 响应里 worker 关心的子集。
+type VinPipelineResp struct {
+	Verdict        string   `json:"verdict"`
+	Reasons        []string `json:"reasons"`
+	AvgSimilarity  float64  `json:"avg_similarity"`
+	MinSimilarity  float64  `json:"min_similarity"`
+	Detections     int      `json:"detections"`
+	Scored         int      `json:"scored"`
+}
+
+// callVinPipeline 把整张 VIN 拍照图喂 cv-engine 一次拿到 verdict + 全套字符结果。
+//
+// HTTP 客户端如果在 main.go 中包了 hmacauth.SigningTransport，会自动给请求加签；
+// 这里不做特殊处理。
+func (w *Worker) callVinPipeline(ctx context.Context, vmid int64, scanImg []byte) (*VinPipelineResp, error) {
+	body := &bytes.Buffer{}
+	mw := multipart.NewWriter(body)
+	if err := mw.WriteField("vehicle_model_id", strconv.FormatInt(vmid, 10)); err != nil {
+		return nil, err
+	}
+	if err := mw.WriteField("tag", "VMASK"); err != nil {
+		return nil, err
+	}
+	fw, err := mw.CreateFormFile("image_binary", "scan.jpg")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := fw.Write(scanImg); err != nil {
+		return nil, err
+	}
+	mw.Close()
+
+	rctx, cancel := context.WithTimeout(ctx, 60*time.Second) // 整图 + 17 字符比对耗时较高
+	defer cancel()
+	req, err := http.NewRequestWithContext(rctx, http.MethodPost,
+		w.cfg.CVEngineTarget+"/cv/ocr/v1/vin_pipeline", body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("X-Gomob-User-Id", "0")
+	req.Header.Set("X-Gomob-Roles", "inspector")
+	resp, err := w.cfg.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("cv-engine http=%d body=%s", resp.StatusCode, string(respBody))
+	}
+	var env struct {
+		Code int             `json:"code"`
+		Data VinPipelineResp `json:"data"`
+		Msg  string          `json:"message,omitempty"`
+	}
+	if err := json.Unmarshal(respBody, &env); err != nil {
+		return nil, err
+	}
+	if env.Code != 0 {
+		return nil, fmt.Errorf("cv-engine code=%d %s", env.Code, env.Msg)
+	}
+	return &env.Data, nil
 }
 
 // compareWithRef 调 cv-engine /cv/ocr/v1/vin_character_compare_with_ref。

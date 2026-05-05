@@ -132,7 +132,7 @@ pkill -9 -f "gomob-cvengine\|gomob-modelregistry" 2>/dev/null
 sleep 2
 
 PIDS=()
-trap 'for p in "${PIDS[@]:-}"; do kill $p 2>/dev/null || true; done; wait 2>/dev/null || true' EXIT
+trap 'for p in "${PIDS[@]:-}"; do kill -9 $p 2>/dev/null || true; done; wait 2>/dev/null || true' EXIT
 
 GOMOB_AUTH_HTTP_ADDR=:18082 GOMOB_AUTH_DEV_AUTOACTIVATE=true \
     "$SERVER_DIR/.dev/bin/gomob-auth"          > "$OUTPUT_DIR/auth.log"          2>&1 &
