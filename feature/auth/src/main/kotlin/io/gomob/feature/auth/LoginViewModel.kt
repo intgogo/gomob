@@ -13,8 +13,9 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 data class LoginUiState(
+    // dev seed 账号 — DB 里 shenhm / shenhm123 真实存在;真上线前由注册流程替换
     val username: String = "shenhm",
-    val password: String = "",
+    val password: String = "shenhm123",
     val rememberMe: Boolean = true,
     val loading: Boolean = false,
     val errorMessage: String? = null,

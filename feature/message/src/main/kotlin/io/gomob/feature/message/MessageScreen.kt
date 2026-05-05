@@ -49,7 +49,7 @@ private val MESSAGES = listOf(
 )
 
 @Composable
-fun MessageRoute() {
+fun MessageRoute(onOpenConversation: (String) -> Unit = {}) {
     Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
         ScreenHeader(
             title = "消息中心",
@@ -65,19 +65,21 @@ fun MessageRoute() {
             ),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
         ) {
-            items(MESSAGES, key = { it.id }) { MessageRow(it) }
+            items(MESSAGES, key = { it.id }) {
+                MessageRow(it, onClick = { onOpenConversation(it.id) })
+            }
         }
     }
 }
 
 @Composable
-private fun MessageRow(m: MessageItem) {
+private fun MessageRow(m: MessageItem, onClick: () -> Unit) {
     val badgeColor: Color = when (m.tone) {
         BadgeTone.Accent -> Gomob.colors.accent
         BadgeTone.Warn -> Gomob.colors.warn
         BadgeTone.Danger -> Gomob.colors.danger
     }
-    HairlineCard(padding = Gomob.spacing.s12) {
+    HairlineCard(padding = Gomob.spacing.s12, onClick = onClick) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(
                 Modifier.weight(1f),

@@ -62,7 +62,7 @@ private val TASKS = listOf(
 )
 
 @Composable
-fun HomeRoute() {
+fun HomeRoute(onOpenInspection: (String) -> Unit = {}) {
     var selected by remember { mutableStateOf("all") }
     Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
         ScreenHeader(
@@ -119,14 +119,14 @@ fun HomeRoute() {
             ),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
         ) {
-            items(TASKS, key = { it.id }) { TaskRow(it) }
+            items(TASKS, key = { it.id }) { TaskRow(it, onClick = { onOpenInspection(it.id) }) }
         }
     }
 }
 
 @Composable
-private fun TaskRow(task: TaskItem) {
-    HairlineCard(padding = Gomob.spacing.s12) {
+private fun TaskRow(task: TaskItem, onClick: () -> Unit) {
+    HairlineCard(padding = Gomob.spacing.s12, onClick = onClick) {
         Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6)) {
             Text(task.vin, style = Gomob.type.body, color = Gomob.colors.fg0)
             Row(horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8)) {

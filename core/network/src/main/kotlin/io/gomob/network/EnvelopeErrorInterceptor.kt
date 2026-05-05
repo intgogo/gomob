@@ -27,30 +27,25 @@ internal class EnvelopeErrorInterceptor : Interceptor {
             return resp.newBuilder().body(raw.toResponseBody(mt)).build()
         }
 
-        try {
+        val apiErr: ApiException? = try {
             val obj = json.parseToJsonElement(text).jsonObject
             val code = obj["code"]?.jsonPrimitive?.intOrNull
             if (code != null && code != 0) {
-                val msg = obj["message"]?.jsonPrimitive?.contentOrNull ?: "未知错误"
-                val traceId = obj["trace_id"]?.jsonPrimitive?.contentOrNull
-                throw ApiException(
+                ApiException(
                     code = code,
                     httpStatus = resp.code,
-                    message = msg,
-                    traceId = traceId,
+                    message = obj["message"]?.jsonPrimitive?.contentOrNull ?: "未知错误",
+                    traceId = obj["trace_id"]?.jsonPrimitive?.contentOrNull,
                 )
-            }
-        } catch (_: ApiException) {
-            throw it()
+            } else null
         } catch (_: Exception) {
             // JSON 解析失败 → 当成正常响应继续
+            null
         }
+        if (apiErr != null) throw apiErr
 
         return resp.newBuilder().body(raw.toResponseBody(mt)).build()
     }
-
-    @Suppress("FunctionName")
-    private fun it(): Throwable = throw IllegalStateException()
 
     private val kotlinx.serialization.json.JsonPrimitive.intOrNull
         get() = content.toIntOrNull()

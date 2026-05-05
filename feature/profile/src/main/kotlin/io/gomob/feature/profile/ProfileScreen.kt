@@ -23,7 +23,15 @@ import io.gomob.designsystem.theme.Gomob
 const val PROFILE_ROUTE = "profile"
 
 @Composable
-fun ProfileRoute(vm: ProfileViewModel = hiltViewModel()) {
+fun ProfileRoute(
+    onOpenPersonal: () -> Unit = {},
+    onOpenAccount: () -> Unit = {},
+    onOpenNetwork: () -> Unit = {},
+    onOpenNotification: () -> Unit = {},
+    onOpenAppearance: () -> Unit = {},
+    onOpenAbout: () -> Unit = {},
+    vm: ProfileViewModel = hiltViewModel(),
+) {
     val state by vm.state.collectAsStateWithLifecycle()
     Column(
         Modifier.fillMaxSize().background(Gomob.colors.bg0),
@@ -75,22 +83,34 @@ fun ProfileRoute(vm: ProfileViewModel = hiltViewModel()) {
             HairlineCard(padding = 0.dp) {
                 Column {
                     SettingRow(
+                        title = "个人信息",
+                        subtitle = "用户名 / 工号 / 检测站",
+                        onClick = onOpenPersonal,
+                    )
+                    SettingRowDivider()
+                    SettingRow(
                         title = "账号与安全",
                         subtitle = "修改密码 / 设备管理",
-                        onClick = {},
+                        onClick = onOpenAccount,
                     )
                     SettingRowDivider()
                     SettingRow(
                         title = "网络设置",
                         subtitle = "网关 127.0.0.1:8808 (DEV)",
-                        onClick = {},
+                        onClick = onOpenNetwork,
                     )
                     SettingRowDivider()
-                    SettingRow(title = "通知", onClick = {})
+                    SettingRow(title = "通知", onClick = onOpenNotification)
+                    SettingRowDivider()
+                    SettingRow(
+                        title = "外观",
+                        subtitle = "深色 / 浅色 / 跟随系统",
+                        onClick = onOpenAppearance,
+                    )
                     SettingRowDivider()
                     SettingRow(title = "缓存清理", subtitle = "31.2 MB", onClick = {})
                     SettingRowDivider()
-                    SettingRow(title = "关于 gomob", subtitle = "v0.1.0", onClick = {})
+                    SettingRow(title = "关于 gomob", subtitle = "v0.1.0", onClick = onOpenAbout)
                     SettingRowDivider()
                     SettingRow(title = "退出登录", onClick = vm::logout)
                 }

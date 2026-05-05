@@ -14,11 +14,13 @@ import androidx.compose.ui.graphics.Color
  */
 internal object Palette {
 
-    // ─── Dark surfaces (near-black with cool cast) ──────────────────────────
-    val Ink0 = Color(0xFF07080B)   // page
-    val Ink1 = Color(0xFF0C0E13)   // panel
-    val Ink2 = Color(0xFF11141A)   // raised
-    val Ink3 = Color(0xFF161A22)   // input
+    // ─── Dark surfaces (deep slate with cool cast) ──────────────────────────
+    // 不走 OLED 全黑 — 工业仪表盘的"金属/夜场"感来自深石板蓝灰,而非纯黑。
+    // 整套从 #07-#16 抬升到 #11-#26,让卡片在 page 上有明显的层次。
+    val Ink0 = Color(0xFF11141B)   // page
+    val Ink1 = Color(0xFF181C25)   // panel
+    val Ink2 = Color(0xFF1F242E)   // raised
+    val Ink3 = Color(0xFF262C38)   // input
 
     // ─── Light surfaces (paper, cool-neutral) ───────────────────────────────
     val Paper0 = Color(0xFFF6F7F9)
@@ -39,10 +41,11 @@ internal object Palette {
     val FgOnLight3 = Color(0x70808997)
 
     // ─── Hairlines (alpha over surface) ─────────────────────────────────────
-    val LineOnDark1 = Color(0x0FFFFFFF)
-    val LineOnDark2 = Color(0x1AFFFFFF)
-    val LineOnDarkStrong = Color(0x29FFFFFF)
-    val HlTopDark = Color(0x0AFFFFFF)
+    // page 抬升后,line1/2 同步抬一档,卡片间分隔不再糊
+    val LineOnDark1 = Color(0x14FFFFFF)
+    val LineOnDark2 = Color(0x24FFFFFF)
+    val LineOnDarkStrong = Color(0x33FFFFFF)
+    val HlTopDark = Color(0x14FFFFFF)
 
     val LineOnLight1 = Color(0x0F0B0F16)
     val LineOnLight2 = Color(0x1A0B0F16)
