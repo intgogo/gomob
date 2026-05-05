@@ -12,9 +12,10 @@
 //	POST /cv/ocr/v1/vin_character_compare           单字符×字符的字形相似度（IoU / Chamfer 双方法）
 //	POST /cv/ocr/v1/vin_character_compare_with_ref  单字符 vs 该车型 active 批次厂家库的所有样本，返最优匹配
 //	POST /cv/ocr/v1/vin_detect_yolo                 yolo 实例分割检测整张图里的 VIN 区域（VMASK 模型）
+//	POST /cv/ocr/v1/vin_pipeline                    一站式整图 → VMASK → 字符 mask → vin-ref 厂家库 → verdict
 //
 // Phase 2.3 已迁入：vin_detect_yolo（gocv.RunMask，真 yolo 推理）。
-// Phase 2.x 后续：完整 ProcVINDet（双行 / 弧形 / 检测+裁剪+字符 mask 整流程）+ RequestVinCompare。
+// Phase 2.x 已迁入：vin_pipeline（整图一次喂入返 verdict）。
 //
 // 鉴权：业务端点（/cv/ocr/v1/*）默认走 gateway → cvengine 的 X-Gomob-User-Id 头注入路径；
 // 直连测试时通过 GOMOB_CVENGINE_REQUIRE_AUTH=true 强制；harness 默认 false。
@@ -23,11 +24,14 @@ package cvengine
 import (
 	"encoding/base64"
 	"encoding/json"
+	"image"
+	"image/color"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -75,6 +79,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 		h.required(http.HandlerFunc(h.VinCharacterCompareWithRef)))
 	mux.Handle("POST /cv/ocr/v1/vin_detect_yolo",
 		h.required(http.HandlerFunc(h.VinDetectYolo)))
+	mux.Handle("POST /cv/ocr/v1/vin_pipeline",
+		h.required(http.HandlerFunc(h.VinPipeline)))
 }
 
 // ListModels 暴露当前注册的模型 + 加载状态。
@@ -593,6 +599,423 @@ func (h *Handler) VinDetectYolo(w http.ResponseWriter, r *http.Request) {
 	resp.Count = len(resp.Detections)
 
 	httpx.OK(w, resp)
+}
+
+// ============================================================================
+// vin_pipeline —— 整图 → VMASK → 字符 mask → vin-ref → verdict（M-S10 Phase 2.x）
+// ============================================================================
+
+// vinPipelineCharResult 一个字符位的端到端打分结果。
+type vinPipelineCharResult struct {
+	Index          int              `json:"index"`           // 0-based 排序后位置（按 cx 从左到右）
+	Character      string           `json:"character"`       // VMASK 输出的 class（即识别字符）
+	DetectionScore float32          `json:"detection_score"` // yolo box conf
+	BBox           yoloRRect        `json:"bbox"`
+	Best           *vinCharRefMatch `json:"best,omitempty"`
+	Similarity     float64          `json:"similarity"`
+	Status         string           `json:"status"` // scored / no_ref / compare_failed / encode_failed / invalid_class
+	Note           string           `json:"note,omitempty"`
+}
+
+// vinPipelineResp 一站式 VIN 比对响应。
+type vinPipelineResp struct {
+	VehicleModelID string                  `json:"vehicle_model_id"`
+	BatchID        string                  `json:"batch_id,omitempty"`
+	Tag            string                  `json:"tag"`
+	Method         int                     `json:"method"`
+	ImageRows      int                     `json:"image_rows"`
+	ImageCols      int                     `json:"image_cols"`
+	Detections     int                     `json:"detections"`
+	Scored         int                     `json:"scored"`
+	AvgSimilarity  float64                 `json:"avg_similarity"`
+	MinSimilarity  float64                 `json:"min_similarity"`
+	Verdict        string                  `json:"verdict"` // pass / warning / fail
+	PassThreshold  float64                 `json:"pass_threshold"`
+	WarnThreshold  float64                 `json:"warn_threshold"`
+	Reasons        []string                `json:"reasons,omitempty"`
+	Characters     []vinPipelineCharResult `json:"characters"`
+	LogID          string                  `json:"log_id"`
+}
+
+// VinPipeline —— 把整张 VIN 拍照图喂进 VMASK yolo seg → 拿 N 个字符检测
+// → 每个检测从 contour 抠出 alpha mask → 与 vin-ref 厂家库逐字符对照 → 聚合 verdict。
+//
+// 这是 gosmart 时代 RequestVinCompare + ProcVINDet 的端口对端；调用方（worker / 客户端）
+// 不再需要先 detect 再逐字符 compare_with_ref，一次 HTTP 调用拿端到端结果。
+//
+// 入参（multipart / form / base64 / 原始 body）：
+//
+//	image_binary       整张 VIN 拍照图（必填）
+//	vehicle_model_id   必填（int64 字符串）
+//	tag                可选，默认 "VMASK"
+//	method             0=IoU（默认）/ 1=Chamfer
+//	conf / mask_thresh / nms_thresh   yolo 阈值，默认 0.5
+//	rude_scale         rrect 缩放系数，默认 0
+//	pass_threshold     pass 阈值（avg+min），默认 0.85
+//	warn_threshold     warning 阈值（avg），默认 0.60
+//	log_id             可选
+//
+// 出参 verdict：
+//
+//	scored=0                                 → fail（reasons 包含 no_chars_detected）
+//	scored>0 且 avg>=pass 且 min>=warn      → pass
+//	scored>0 且 avg>=warn                   → warning
+//	其它                                     → fail
+func (h *Handler) VinPipeline(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(64 << 20); err != nil && err != http.ErrNotMultipart {
+		httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest, "multipart 解析失败: "+err.Error()))
+		return
+	}
+	buf, err := readImagePart(r, "image_binary")
+	if err != nil || len(buf) == 0 {
+		// 兼容裸 body
+		if buf2, err2 := io.ReadAll(io.LimitReader(r.Body, 64<<20)); err2 == nil && len(buf2) > 0 {
+			buf = buf2
+		} else {
+			httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest, "image_binary 缺失"))
+			return
+		}
+	}
+
+	vmidStr := r.FormValue("vehicle_model_id")
+	if vmidStr == "" {
+		httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest, "vehicle_model_id 必填"))
+		return
+	}
+	vmid, perr := strconv.ParseInt(vmidStr, 10, 64)
+	if perr != nil || vmid <= 0 {
+		httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest, "vehicle_model_id 非法"))
+		return
+	}
+
+	tag := strings.TrimSpace(r.FormValue("tag"))
+	if tag == "" {
+		tag = "VMASK"
+	}
+	method := judge.FONT_DIST_IOU
+	if v := r.FormValue("method"); v != "" {
+		m, perr := strconv.Atoi(v)
+		if perr != nil || (m != judge.FONT_DIST_IOU && m != judge.FONT_DIST_CHAMFER) {
+			httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest,
+				"method 必须 0(IOU) 或 1(Chamfer)"))
+			return
+		}
+		method = m
+	}
+	conf := parseFloatOr(r.FormValue("conf"), 0.5)
+	maskTh := parseFloatOr(r.FormValue("mask_thresh"), 0.5)
+	nmsTh := parseFloatOr(r.FormValue("nms_thresh"), 0.5)
+	rudeScale := parseFloatOr(r.FormValue("rude_scale"), 0.0)
+	passTh := parseFloatOr(r.FormValue("pass_threshold"), 0.85)
+	warnTh := parseFloatOr(r.FormValue("warn_threshold"), 0.60)
+	if warnTh > passTh {
+		warnTh = passTh
+	}
+
+	logID := r.FormValue("log_id")
+	if logID == "" {
+		logID = "vin_pipe_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+
+	// 1. 解码原图
+	mat, err := gocv.IMDecode(buf, gocv.IMReadColor)
+	if err != nil || mat.Empty() {
+		httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest, "OpenCV 解码失败"))
+		return
+	}
+	rows, cols := mat.Rows(), mat.Cols()
+
+	// 2. BGR → RGB → RunMask
+	rgb := gocv.NewMat()
+	gocv.CvtColor(mat, &rgb, gocv.ColorBGRToRGB)
+	contours, rrects, classes, scores, runErr := h.models.RunMask(
+		tag, rgb, float32(conf), float32(maskTh), float32(nmsTh), float32(rudeScale))
+	if runErr != nil {
+		switch runErr {
+		case core.ErrNotFound:
+			httpx.WriteError(w, httpx.NewError(40701, http.StatusNotFound,
+				"模型 tag="+tag+" 未注册"))
+		case core.ErrWrongKind:
+			httpx.WriteError(w, httpx.NewError(40701, http.StatusNotFound,
+				"模型 tag="+tag+" 不是 mask kind"))
+		default:
+			h.log.Error("RunMask 失败", "err", runErr, "tag", tag, "log_id", logID)
+			httpx.WriteError(w, httpx.NewError(50001, http.StatusInternalServerError, "RunMask: "+runErr.Error()))
+		}
+		return
+	}
+
+	// 3. 按 cx 从左到右排序
+	type det struct {
+		idx     int
+		cx      int
+		rr      gocv.RotatedRect
+		contour []image.Point
+		class   string
+		score   float32
+	}
+	dets := make([]det, 0, len(rrects))
+	for i := range rrects {
+		var cnt []image.Point
+		if i < len(contours) {
+			cnt = contours[i]
+		}
+		var cls string
+		if i < len(classes) {
+			cls = strings.ToUpper(strings.TrimSpace(classes[i]))
+		}
+		var sc float32
+		if i < len(scores) {
+			sc = scores[i]
+		}
+		dets = append(dets, det{
+			idx:     i,
+			cx:      rrects[i].Center.X,
+			rr:      rrects[i],
+			contour: cnt,
+			class:   cls,
+			score:   sc,
+		})
+	}
+	sort.Slice(dets, func(i, j int) bool { return dets[i].cx < dets[j].cx })
+
+	// 4. 按 detection 抽 alpha mask → 调 vin-ref + ProcVinCharacterCompare
+	results := make([]vinPipelineCharResult, 0, len(dets))
+	var batchID string
+	scoredCount := 0
+	sum := 0.0
+	minSim := 1.0
+	reasons := []string{}
+
+	for pos, d := range dets {
+		res := vinPipelineCharResult{
+			Index:          pos,
+			Character:      d.class,
+			DetectionScore: d.score,
+			BBox: yoloRRect{
+				CenterX: float32(d.rr.Center.X),
+				CenterY: float32(d.rr.Center.Y),
+				Width:   float32(d.rr.Width),
+				Height:  float32(d.rr.Height),
+				Angle:   float32(d.rr.Angle),
+			},
+		}
+		if d.class == "" || len(d.class) != 1 || !isVinChar(d.class[0]) {
+			res.Status = "invalid_class"
+			res.Note = "class 不是合法 VIN 字符"
+			results = append(results, res)
+			continue
+		}
+		alphaBytes, encErr := contourToAlphaPNG(d.contour, rows, cols)
+		if encErr != nil || len(alphaBytes) == 0 {
+			res.Status = "encode_failed"
+			res.Note = "contour 抠 alpha 失败"
+			if encErr != nil {
+				res.Note = encErr.Error()
+			}
+			results = append(results, res)
+			continue
+		}
+		samples, bid, listErr := h.vinRef.ListActiveSamples(r.Context(), vmid, d.class, 0, 0)
+		if listErr != nil {
+			if listErr == vinrefclient.ErrNotFound {
+				res.Status = "no_ref"
+				res.Note = "该车型无 active 批次"
+				results = append(results, res)
+				if !contains(reasons, "no_active_batch") {
+					reasons = append(reasons, "no_active_batch")
+				}
+				continue
+			}
+			h.log.Warn("vinref ListActiveSamples 失败", "err", listErr, "char", d.class, "log_id", logID)
+			res.Status = "no_ref"
+			res.Note = "vin-ref 不可用: " + listErr.Error()
+			results = append(results, res)
+			continue
+		}
+		if batchID == "" {
+			batchID = bid
+		}
+		if len(samples) == 0 {
+			res.Status = "no_ref"
+			res.Note = "active 批次中无字符 " + d.class + " 样本"
+			results = append(results, res)
+			continue
+		}
+
+		bestIdx := -1
+		var bestVal float64
+		var bestSim float64
+		var bestSample vinrefclient.Sample
+		for _, s := range samples {
+			alphaRef, ferr := h.vinRef.FetchAlpha(r.Context(), s)
+			if ferr != nil || len(alphaRef) == 0 {
+				continue
+			}
+			val, cerr := proc.ProcVinCharacterCompare(alphaBytes, alphaRef, logID+"_"+s.ID, method)
+			if cerr != nil {
+				continue
+			}
+			sim := normalizeSim(val, method)
+			if bestIdx < 0 || sim > bestSim {
+				bestIdx, bestVal, bestSim, bestSample = 0, val, sim, s
+				_ = bestIdx
+			}
+		}
+		if bestSim == 0 && bestIdx < 0 {
+			res.Status = "compare_failed"
+			res.Note = "全部 ref 样本下载或比对失败"
+			results = append(results, res)
+			continue
+		}
+		res.Best = &vinCharRefMatch{
+			SampleID:       bestSample.ID,
+			BatchID:        bestSample.BatchID,
+			AlphaObjectKey: bestSample.AlphaObjectKey,
+			FontID:         bestSample.FontID,
+			PositionHint:   bestSample.PositionHint,
+			Value:          bestVal,
+			Similarity:     bestSim,
+		}
+		res.Similarity = bestSim
+		res.Status = "scored"
+		results = append(results, res)
+		scoredCount++
+		sum += bestSim
+		if bestSim < minSim {
+			minSim = bestSim
+		}
+	}
+
+	avg := 0.0
+	if scoredCount > 0 {
+		avg = sum / float64(scoredCount)
+	}
+	if scoredCount == 0 {
+		minSim = 0
+	}
+	verdict := "fail"
+	switch {
+	case scoredCount == 0:
+		if !contains(reasons, "no_chars_detected") {
+			reasons = append(reasons, "no_chars_detected")
+		}
+	case avg >= passTh && minSim >= warnTh:
+		verdict = "pass"
+	case avg >= warnTh:
+		verdict = "warning"
+		reasons = append(reasons, "below_pass_threshold")
+	default:
+		reasons = append(reasons, "below_warn_threshold")
+	}
+	if scoredCount > 0 && scoredCount < len(dets) {
+		reasons = append(reasons, "partial_scoring")
+	}
+
+	httpx.OK(w, vinPipelineResp{
+		VehicleModelID: vmidStr,
+		BatchID:        batchID,
+		Tag:            tag,
+		Method:         method,
+		ImageRows:      rows,
+		ImageCols:      cols,
+		Detections:     len(dets),
+		Scored:         scoredCount,
+		AvgSimilarity:  avg,
+		MinSimilarity:  minSim,
+		Verdict:        verdict,
+		PassThreshold:  passTh,
+		WarnThreshold:  warnTh,
+		Reasons:        reasons,
+		Characters:     results,
+		LogID:          logID,
+	})
+}
+
+// contourToAlphaPNG 把 yolo 检测的 contour（原图坐标）抠成本字符的 alpha PNG 字节。
+//
+// 流程：
+//  1. 从 contour 算 tight bbox（带 4px 边距，clip 到 [0,W)/[0,H)）
+//  2. 新 CV8UC1 黑色 Mat (h,w)
+//  3. 把 contour 平移到本地坐标后 FillPoly 白色
+//  4. IMEncode .png → []byte
+//
+// alpha 语义：白(255) = 字符前景，黑(0) = 背景。下游 ProcVinCharacterCompare 走
+// IMReadGrayScale 解码再二值化（judge.CalculateVinFontDifference 内部 Threshold）。
+func contourToAlphaPNG(contour []image.Point, rows, cols int) ([]byte, error) {
+	if len(contour) < 3 {
+		return nil, errFewPoints
+	}
+	const pad = 4
+	minX, minY := contour[0].X, contour[0].Y
+	maxX, maxY := contour[0].X, contour[0].Y
+	for _, p := range contour[1:] {
+		if p.X < minX {
+			minX = p.X
+		}
+		if p.Y < minY {
+			minY = p.Y
+		}
+		if p.X > maxX {
+			maxX = p.X
+		}
+		if p.Y > maxY {
+			maxY = p.Y
+		}
+	}
+	minX -= pad
+	minY -= pad
+	maxX += pad
+	maxY += pad
+	if minX < 0 {
+		minX = 0
+	}
+	if minY < 0 {
+		minY = 0
+	}
+	if maxX >= cols {
+		maxX = cols - 1
+	}
+	if maxY >= rows {
+		maxY = rows - 1
+	}
+	w := maxX - minX + 1
+	h := maxY - minY + 1
+	if w <= 0 || h <= 0 {
+		return nil, errBadBBox
+	}
+	black := gocv.Scalar{Val1: 0, Val2: 0, Val3: 0, Val4: 0}
+	canvas := gocv.NewMatWithSizeFromScalar(black, h, w, gocv.MatTypeCV8UC1)
+	defer func() { _ = canvas.Release() }()
+
+	local := make([]image.Point, len(contour))
+	for i, p := range contour {
+		local[i] = image.Point{X: p.X - minX, Y: p.Y - minY}
+	}
+	gocv.FillPoly(&canvas, [][]image.Point{local}, color.RGBA{R: 255, G: 255, B: 255, A: 255})
+
+	out, err := gocv.IMEncode(gocv.PNGFileExt, canvas)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+var errFewPoints = newPipelineErr("contour 点数不足")
+var errBadBBox = newPipelineErr("contour bbox 非法")
+
+type pipelineErr struct{ msg string }
+
+func (e *pipelineErr) Error() string         { return e.msg }
+func newPipelineErr(s string) *pipelineErr   { return &pipelineErr{msg: s} }
+
+func contains(ss []string, x string) bool {
+	for _, s := range ss {
+		if s == x {
+			return true
+		}
+	}
+	return false
 }
 
 // parseFloatOr 解析 float 参数；失败用默认值。
