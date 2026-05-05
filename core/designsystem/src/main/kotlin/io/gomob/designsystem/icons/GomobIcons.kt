@@ -210,6 +210,15 @@ object GomobIcons {
         circle(12f, 12f, 2.5f)
     }
 
+    val Eyeball: ImageVector = stroked("Eyeball") {
+        // 椭圆 9×6 + 内圆 r=2.5 (jsx Eyeball)
+        moveTo(3f, 12f)
+        arcToRelative(9f, 6f, 0f, true, true, 18f, 0f)
+        arcToRelative(9f, 6f, 0f, true, true, -18f, 0f)
+        close()
+        circle(12f, 12f, 2.5f)
+    }
+
     val Refresh: ImageVector = stroked("Refresh") {
         moveTo(4f, 12f)
         arcToRelative(8f, 8f, 0f, false, true, 14f, -5.3f)

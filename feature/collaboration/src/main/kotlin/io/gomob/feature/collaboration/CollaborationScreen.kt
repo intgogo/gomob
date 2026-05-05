@@ -9,15 +9,18 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -28,6 +31,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
+import androidx.compose.ui.unit.sp
 import io.gomob.designsystem.component.Chip
 import io.gomob.designsystem.component.HairlineCard
 import io.gomob.designsystem.component.MetricTile
@@ -35,6 +40,7 @@ import io.gomob.designsystem.component.MetricTrend
 import io.gomob.designsystem.component.ScreenHeader
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
+import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 
 const val COLLAB_ROUTE = "collaboration"
@@ -315,96 +321,294 @@ private fun RecordingRow(r: Recording) {
 }
 
 // ============================================================================
-// 抽查复核 — 看板 + 待办
+// 抽查复核 — 4 KPI + 趋势柱图 + 开始复核 CTA + 即时预警三段比例条
+// jsx coop.jsx 主体内容
 // ============================================================================
+private val REVIEW_TREND = listOf(18, 22, 15, 17, 24, 31, 21)
+private val REVIEW_DAYS = listOf("一", "二", "三", "四", "五", "六", "七")
+
 @Composable
 private fun ReviewBoard(onOpenReview: (String) -> Unit) {
     Column(
         Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = Gomob.spacing.s16),
+            .padding(horizontal = Gomob.spacing.s20),
         verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12)) {
-            MetricTile(
-                label = "今日复核",
-                value = "26",
-                delta = "+24.5%",
-                trend = MetricTrend.Up,
-                caption = "环比",
-                modifier = Modifier.weight(1f),
-            )
-            MetricTile(
-                label = "待复核",
-                value = "37",
-                delta = "+8",
-                trend = MetricTrend.Down,
-                caption = "今日新增",
-                modifier = Modifier.weight(1f),
-            )
+        // 4 KPI tile 2×2 网格
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                KpiTile("今日复核", "26", "环比 ↑ 24.53%", KpiTone.Acc, Modifier.weight(1f))
+                KpiTile("待复核", "37", "今日新增 8", KpiTone.Warn, Modifier.weight(1f))
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                KpiTile("历史复核", "1132", "近 7 日 +327", KpiTone.Acc, Modifier.weight(1f))
+                KpiTile("历史过期", "3", "今日 0", KpiTone.Danger, Modifier.weight(1f))
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+
+        // 趋势柱图卡
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(Gomob.shapes.r3)
+                .background(Gomob.colors.bg1)
+                .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
+                .padding(start = 16.dp, end = 16.dp, top = Gomob.spacing.s14, bottom = Gomob.spacing.s12),
+        ) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column {
+                    Text("复核趋势", fontSize = 13.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Medium, color = Gomob.colors.fg0)
+                    Text("每日复核量", fontSize = 11.sp, color = Gomob.colors.fg2, modifier = Modifier.padding(top = Gomob.spacing.s4))
+                }
+                Text("近 7 天", fontSize = 11.sp, color = Gomob.colors.fg3)
+            }
+            Spacer(Modifier.height(14.dp))
+            BarChart(values = REVIEW_TREND, days = REVIEW_DAYS)
         }
 
-        HairlineCard {
-            Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12)) {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("每日复核量", style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
-                    Text("近 7 天", style = Gomob.type.caption, color = Gomob.colors.fg3)
-                }
-                Text("382", style = Gomob.type.metricLg, color = Gomob.colors.accentStrong)
-                Text("周环比 +6%", style = Gomob.type.numInline, color = Gomob.colors.ok)
+        // 开始复核 CTA — 字距 0.3em + 右侧 ArrowRight
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(44.dp)
+                .clip(Gomob.shapes.r2)
+                .background(Gomob.colors.accentSoft)
+                .border(Gomob.spacing.hairline, Gomob.colors.accentLine, Gomob.shapes.r2)
+                .clickable { onOpenReview("CLCY2025052089757") },
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                "开始复核",
+                fontSize = 13.sp,
+                letterSpacing = 0.3.em,
+                color = Gomob.colors.accent,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+            Box(
+                Modifier.fillMaxWidth().padding(end = 16.dp),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                Icon(
+                    GomobIcons.ArrowRight,
+                    contentDescription = null,
+                    tint = Gomob.colors.accent,
+                    modifier = Modifier.size(14.dp),
+                )
+            }
+        }
 
-                Row(
-                    Modifier.fillMaxWidth().height(80.dp),
-                    verticalAlignment = Alignment.Bottom,
-                    horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+        // 即时预警卡 (Eyeball 图标 + 大数 + 三段比例条)
+        LiveAlertCard()
+
+        Spacer(Modifier.height(Gomob.spacing.s24))
+    }
+}
+
+private enum class KpiTone { Acc, Warn, Danger, Ok }
+
+@Composable
+private fun KpiTile(
+    label: String,
+    value: String,
+    meta: String,
+    tone: KpiTone,
+    modifier: Modifier = Modifier,
+) {
+    val color = when (tone) {
+        KpiTone.Acc -> Gomob.colors.accent
+        KpiTone.Warn -> Gomob.colors.warn
+        KpiTone.Danger -> Gomob.colors.danger
+        KpiTone.Ok -> Gomob.colors.ok
+    }
+    Box(
+        modifier
+            .clip(Gomob.shapes.r3)
+            .background(Gomob.colors.bg1)
+            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3),
+    ) {
+        // 左侧 2dp 色条 (从顶 12dp 到底 12dp)
+        Box(
+            Modifier
+                .fillMaxHeightHack()
+                .padding(vertical = Gomob.spacing.s12)
+                .width(2.dp)
+                .background(color),
+        )
+        Column(
+            Modifier.padding(start = 14.dp, end = 14.dp, top = Gomob.spacing.s12, bottom = Gomob.spacing.s12),
+        ) {
+            Text(label, fontSize = 11.sp, color = Gomob.colors.fg2)
+            Spacer(Modifier.height(Gomob.spacing.s4))
+            Text(
+                value,
+                style = Gomob.type.numInline.copy(
+                    fontSize = 30.sp,
+                    letterSpacing = (-0.01).em,
+                    lineHeight = 32.sp,
+                ),
+                color = color,
+            )
+            Spacer(Modifier.height(Gomob.spacing.s6))
+            Text(meta, fontSize = 10.sp, color = Gomob.colors.fg3)
+        }
+    }
+}
+
+private fun Modifier.fillMaxHeightHack(): Modifier = this.then(Modifier.height(96.dp))
+
+@Composable
+private fun BarChart(values: List<Int>, days: List<String>) {
+    val max = values.max()
+    Column {
+        // 柱体 (height = max(8, v/max * 76))
+        Row(
+            Modifier.fillMaxWidth().height(80.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            values.forEach { v ->
+                val h = (8 + (v.toFloat() / max) * 68f).coerceAtLeast(8f)
+                Column(
+                    Modifier.weight(1f),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    BAR_VALUES.forEach { v ->
-                        Box(
-                            Modifier
-                                .weight(1f)
-                                .height(v.dp)
-                                .clip(RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp))
-                                .background(Gomob.colors.accentSoft),
+                    Text(
+                        v.toString(),
+                        style = Gomob.type.numInline.copy(fontSize = 9.sp),
+                        color = Gomob.colors.fg3,
+                    )
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(h.dp)
+                            .clip(RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp))
+                            .background(
+                                androidx.compose.ui.graphics.Brush.verticalGradient(
+                                    listOf(Gomob.colors.accent, Gomob.colors.accentSoft),
+                                ),
+                            )
+                            .border(
+                                width = 1.dp,
+                                brush = androidx.compose.ui.graphics.SolidColor(Gomob.colors.accentStrong),
+                                shape = RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp),
+                            ),
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(Gomob.spacing.s8))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(Gomob.spacing.hairline)
+                .background(Gomob.colors.line1),
+        )
+        Spacer(Modifier.height(Gomob.spacing.s6))
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            days.forEach { d ->
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    Text(d, fontSize = 10.sp, color = Gomob.colors.fg3)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LiveAlertCard() {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(Gomob.shapes.r3)
+            .background(Gomob.colors.bg1)
+            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
+            .padding(horizontal = Gomob.spacing.s14, vertical = Gomob.spacing.s12),
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+            ) {
+                Icon(
+                    GomobIcons.Eyeball,
+                    contentDescription = null,
+                    tint = Gomob.colors.danger,
+                    modifier = Modifier.size(Gomob.spacing.icon16),
+                )
+                Column {
+                    Text(
+                        "即时预警",
+                        fontSize = 13.sp,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
+                        color = Gomob.colors.fg0,
+                    )
+                    Spacer(Modifier.height(3.dp))
+                    Row {
+                        Text("最新接收 ", fontSize = 10.sp, color = Gomob.colors.fg3)
+                        Text(
+                            "2026/03/10 14:24",
+                            style = Gomob.type.numInline.copy(fontSize = 10.sp),
+                            color = Gomob.colors.fg3,
                         )
                     }
                 }
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-                ) {
-                    BAR_DAYS.forEach { d ->
-                        Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                            Text(d, style = Gomob.type.caption, color = Gomob.colors.fg3)
-                        }
-                    }
-                }
             }
+            Text(
+                "127",
+                style = Gomob.type.numInline.copy(fontSize = 22.sp, letterSpacing = (-0.01).em),
+                color = Gomob.colors.danger,
+            )
         }
-
-        HairlineCard(onClick = { onOpenReview("CLCY2025052089757") }) {
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2)) {
-                    Text("最新接收 → 开始复核", style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
-                    Text(
-                        "CLCY2025052089757 · 2026/03/10 14:24",
-                        style = Gomob.type.body,
-                        color = Gomob.colors.fg1,
-                    )
-                }
-                StatusTag(text = "实时", tone = StatusTone.Accent, showDot = true)
-            }
+        Spacer(Modifier.height(Gomob.spacing.s12))
+        // 三段比例条 4dp 高
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(4.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(Gomob.colors.bg3),
+        ) {
+            Box(Modifier.weight(0.58f).fillMaxHeight().background(Gomob.colors.ok))
+            Box(Modifier.weight(0.20f).fillMaxHeight().background(Gomob.colors.warn))
+            Box(Modifier.weight(0.22f).fillMaxHeight().background(Gomob.colors.danger))
         }
+        Spacer(Modifier.height(Gomob.spacing.s6))
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            LegendStat("正常", "74")
+            LegendStat("警示", "25")
+            LegendStat("异常", "28")
+        }
+    }
+}
 
-        Spacer(Modifier.height(Gomob.spacing.s16))
+@Composable
+private fun LegendStat(label: String, value: String) {
+    Row {
+        Text("$label ", fontSize = 10.sp, color = Gomob.colors.fg3)
+        Text(
+            value,
+            style = Gomob.type.numInline.copy(fontSize = 10.sp),
+            color = Gomob.colors.fg3,
+        )
     }
 }
 
