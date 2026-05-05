@@ -49,12 +49,14 @@ func main() {
 	h.Mount(mux)
 	catalogTarget := envOr("GOMOB_CATALOG_TARGET", "http://127.0.0.1:18059")
 	vinrefTarget := envOr("GOMOB_VINREF_TARGET", "http://127.0.0.1:18058")
-	if catalogTarget != "" || vinrefTarget != "" {
-		if err := api.MountCatalogBFF(mux, catalogTarget, vinrefTarget); err != nil {
+	shaperefTarget := envOr("GOMOB_SHAPEREF_TARGET", "http://127.0.0.1:18056")
+	if catalogTarget != "" || vinrefTarget != "" || shaperefTarget != "" {
+		if err := api.MountCatalogBFF(mux, catalogTarget, vinrefTarget, shaperefTarget); err != nil {
 			log.Error("catalog BFF 挂载失败", "err", err)
 			os.Exit(1)
 		}
-		log.Info("catalog BFF 已挂载", "catalog", catalogTarget, "vinref", vinrefTarget)
+		log.Info("catalog BFF 已挂载",
+			"catalog", catalogTarget, "vinref", vinrefTarget, "shaperef", shaperefTarget)
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"ok":true}`))

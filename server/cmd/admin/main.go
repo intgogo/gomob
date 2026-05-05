@@ -48,6 +48,7 @@ func main() {
 		LLMTarget:           envOr("GOMOB_LLM_TARGET", "http://127.0.0.1:18811"),
 		ModelRegistryTarget: envOr("GOMOB_MODELREGISTRY_TARGET", "http://127.0.0.1:18057"),
 		VinRefTarget:        envOr("GOMOB_VINREF_TARGET", "http://127.0.0.1:18058"),
+		ShapeRefTarget:      envOr("GOMOB_SHAPEREF_TARGET", "http://127.0.0.1:18056"),
 	}
 
 	auditRec := audit.NewPG(pool)
@@ -88,7 +89,8 @@ func main() {
 			"catalog", cfg.CatalogTarget,
 			"llm", cfg.LLMTarget,
 			"modelregistry", cfg.ModelRegistryTarget,
-			"vinref", cfg.VinRefTarget)
+			"vinref", cfg.VinRefTarget,
+			"shaperef", cfg.ShapeRefTarget)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("HTTP 异常退出", "err", err)
 			cancel()

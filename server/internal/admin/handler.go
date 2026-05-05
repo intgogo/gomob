@@ -42,6 +42,7 @@ type Config struct {
 	LLMTarget            string // http://127.0.0.1:18811
 	ModelRegistryTarget  string // http://127.0.0.1:18057
 	VinRefTarget         string // http://127.0.0.1:18058
+	ShapeRefTarget       string // http://127.0.0.1:18056
 }
 
 type Handler struct {
@@ -77,10 +78,15 @@ func (h *Handler) Mount(mux *http.ServeMux) error {
 
 	// 反代。
 	//
-	// 路径优先级：vinref 形如 /admin/v1/catalog/vehicles/{vmid}/vin-refs/...，比 /admin/v1/catalog/ 更具体；
-	// Go 1.22 ServeMux 多模式匹配时优先选最具体的。两个独立路径都注册即可，不依赖注册顺序。
+	// 路径优先级：vinref / shaperef 都形如 /admin/v1/catalog/vehicles/{vmid}/{vin-refs,shapes}/...，
+	// 比 /admin/v1/catalog/ 更具体；Go 1.22 ServeMux 多模式匹配时优先选最具体的。三个独立路径并存，注册顺序无关。
 	if h.cfg.VinRefTarget != "" {
 		if err := h.mountVinRefProxy(mux); err != nil {
+			return err
+		}
+	}
+	if h.cfg.ShapeRefTarget != "" {
+		if err := h.mountShapeRefProxy(mux); err != nil {
 			return err
 		}
 	}
@@ -111,9 +117,21 @@ func (h *Handler) mountVinRefProxy(mux *http.ServeMux) error {
 	proxy := httputil.NewSingleHostReverseProxy(u)
 	mux.Handle("/admin/v1/catalog/vehicles/{vmid}/vin-refs/", Required(proxy))
 	mux.Handle("/admin/v1/catalog/vehicles/{vmid}/vin-refs", Required(proxy))
-	// samples 删除路径在 vin-refs 同级（不在 batches 子树下）：
-	// DELETE /admin/v1/catalog/vehicles/{vmid}/vin-refs/samples/{sid}
-	// 已被上面的 subtree 模式覆盖。
+	return nil
+}
+
+// mountShapeRefProxy 注册 shape-ref 反代。
+//
+// 路径模式：/admin/v1/catalog/vehicles/{vmid}/shapes/* 与 /admin/v1/catalog/vehicles/{vmid}/shapes（无尾斜杠）。
+// 与 vin-ref 同构，只是路径段不同。
+func (h *Handler) mountShapeRefProxy(mux *http.ServeMux) error {
+	u, err := url.Parse(h.cfg.ShapeRefTarget)
+	if err != nil {
+		return err
+	}
+	proxy := httputil.NewSingleHostReverseProxy(u)
+	mux.Handle("/admin/v1/catalog/vehicles/{vmid}/shapes/", Required(proxy))
+	mux.Handle("/admin/v1/catalog/vehicles/{vmid}/shapes", Required(proxy))
 	return nil
 }
 

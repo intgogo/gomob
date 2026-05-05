@@ -160,15 +160,22 @@
 |     | M-S10 cv-engine 对接：`doCompareVin` 改成按 (vehicle_model_id, character) gRPC 拉 active 批次的对照样本与本次扫描字符比对 | 留 M-S10 cv-engine 迁移时实施 | `docs/architecture/server/03-cvengine-migration.md` |
 |     | `tests/harness/vinref_compare_quality/` — 含/不含厂商参考的字形比对 precision/recall 对比 | 留 M-S10 cv-engine 实施后 | 同 §M4 |
 
-## M-S9 — shape-ref（车型 3D 外廓参考库）（未启动）
+## M-S9 — shape-ref（车型 3D 外廓参考库）（已完成 2026-05-04 schema/admin/读路径；端侧 Filament 对照留 M3 重建管线）
+
+> 设计第一性：shape-ref 不复用 vin-ref 的 batch×sample 双层结构 — 因为 mesh 是单文件资产，没有"按字符聚合"的需求；
+> 厂家送达的就是一套完整 mesh，所以一条 vehicle_shapes 记录 = 一个完整版本，状态机 draft→published→archived 直接挂在记录上。
+> mesh 本体不入 PG（GB 级），只存 object_key + sha256 + size + format + 几何元数据；字节流走 asset MinIO，5 分钟签名 URL，
+> 客户端可 HTTP Range 续传。
 
 | ID | 项 | 验收标准 | 文档 |
 |----|----|---------|------|
-| M-S9.1 | `cmd/shaperef` schema：vehicle_shapes（vehicle_model_id / mesh_asset_uri / point_count / coverage / qc_score / status） | GB 级 mesh 通过 asset 分片上传写入；元数据完整 | `docs/architecture/server/00-server-overview.md` §6.z |
-| M-S9.2 | 质检流程：density / coverage / qc_score 阈值校验 + admin publish | 质检不通过的样本无法 publish | 同 §6.z |
-| M-S9.3 | shape-ref 内部 gRPC + **api BFF 透传 `/v1/catalog/vehicles/:id/shape`**（含签名 URL 直链，asset 大文件 Range 续传） | App 端按 vehicle_model_id 下载到本地缓存 | 同 §6.z / §6.app |
-| M-S9.4 | App 端 `feature:gallery` 接入：扫描完成后下载对照模型并 Filament 双窗口渲染 | 用户能直观看到本次扫描 vs 标准外廓差异 | `docs/architecture/06-product-features.md` §3.4 |
-| M-S9.5 | `tests/harness/shaperef_io/` — 大文件上传 / 续传 / 下载 / 缓存命中率 | analyze.py 校验断网恢复后续传一致性 | 同 §M4 |
+| ✅ M-S9.1 | migration 0008：`vehicle_shapes`（mesh_object_key/sha256/size_bytes/format + triangle_count + point_count + 3D bbox 6 字段 + coverage/qc_score 0-1 CHECK + source/format CHECK；状态机 + partial unique 同 vehicle_model 至多 1 published） | up/down 可逆；migration 直应用通过 | `migrations/0008_vehicle_shapes.{up,down}.sql` |
+| ✅ M-S9.2 | `pkg/repo/shape.go`：Create / FindByID / FindActive / List / Patch / Publish（事务内旧 active 自动 archive，FOR UPDATE 行锁）/ Archive / DeleteDraft；非 draft 改 / 写返 ErrStateConflict；CHECK 命中返 ErrFieldRange | harness S7 重名 40201 / S8 invalid format "fbx" 10002 / S11 published 改 40401 / S15 publish v2 → v1 自动 archived 全通 | `pkg/repo/shape.go` |
+| ✅ M-S9.3 | `cmd/shaperef` HTTP :18056 + `internal/shaperef/handler.go`；MinIO client 自带（与 asset 共用 bucket），App 读路径附带 5 分钟签名 mesh URL + expire_at；admin 写路径全套 CRUD + 状态机 | harness S12 active 含 url_len=330 + expire RFC3339 / S13 download URL + sha256 完全匹配 / S19 App 走 gateway → api BFF → shape-ref 拿到 URL | `cmd/shaperef/main.go` / `internal/shaperef/handler.go` |
+| ✅ M-S9.4 | admin BFF：`/admin/v1/catalog/vehicles/{vmid}/shapes/...` subtree 反代到 shape-ref；api BFF：单数 `/shape{,/url}` + 复数 `/shapes/...` 反代 shape-ref，其它 `/v1/catalog/*` 走 catalog | `MountCatalogBFF(catalog, vinref, shaperef)` 三反代并存 | `internal/admin/handler.go:88-104` / `internal/api/catalog_bff.go` |
+| ✅ M-S9.5 | `tests/harness/shaperef_lifecycle/` — 25 场景端到端（asset 分片上传 1MB → MinIO → shape-ref 注册 → publish → App 拿签名 URL → curl 下载验 sha256 + size 完全一致 / 多版本 publish 自动 archive 老版本 / audit≥5 shaperef.* 事件） | `./dev.sh harness shaperef_lifecycle` → **25/25 通过** | `tests/harness/shaperef_lifecycle/{run.sh,analyze.py}` |
+|     | App 端 `feature:gallery` 双窗口渲染（本次扫描 vs 标准外廓） | 留 M3 重建管线落地后；当前服务端契约已就绪 | `docs/architecture/06-product-features.md` §3.4 |
+|     | cv-engine 接入：`vin_compare` 之外的"3D 外廓质量比对"（点云覆盖度 / 倒角距离 / Hausdorff） | 留 M-S10 cv-engine 实施；当前 shape-ref active endpoint 已可被 cv-engine gRPC 调用 | 同 §6.w |
 
 ## M-S10 — cv-engine（CV 算法引擎，从 gosmart 迁移）（未启动）
 

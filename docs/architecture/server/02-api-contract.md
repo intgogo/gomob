@@ -690,11 +690,49 @@ vehicle_models ─< vin_glyph_batches ─< vin_glyph_samples
 
 错误码：`40201` 重名；`40401` 状态机不允许；`40701` vehicle_model 不存在 / 无 active 批次；`10002` CHECK 约束（字符不在 VIN 33 字符集 / arr_mode 越界 / qc_score 越界）。
 
-### 13.4 车型 3D 外廓详情
+### 13.4 车型 3D 外廓（M-S9 已实施）
 
-`GET /v1/catalog/vehicles/:id/shape`
+> 设计第一性：mesh 是单文件资产 ─ 不引入 vin-ref 的 batch×sample 双层结构。
+> 一条 `vehicle_shapes` = 一个完整版本，状态机 `draft→published→archived` 直接挂记录上；
+> partial unique 保证同 vehicle_model 至多 1 published。
+> mesh 本体不入 PG（GB 级），只存 `mesh_object_key`/`mesh_sha256`/`mesh_size_bytes`/`mesh_format` + 几何元数据；
+> 字节流走 asset MinIO，**5 分钟**签名 URL，客户端可 HTTP `Range` 续传。
 
-**Response**：
+#### 13.4.1 数据模型
+
+```
+vehicle_models ─< vehicle_shapes
+                  ├ version_name UNIQUE per vehicle_model
+                  ├ status: draft → published → archived
+                  ├ partial unique: 同 vehicle_model 至多 1 published
+                  ├ source: factory_cad / scan_high_res / manual_modeled / unknown （CHECK）
+                  └ mesh_format: glb / ply / stl / obj / gltf （CHECK）
+```
+
+字段（CHECK：`mesh_format`、`source` 白名单；`coverage` / `qc_score` ∈ [0,1]；`mesh_size_bytes > 0`）：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `version_name` | text | 版本名（"v1.0_2024Q1" / "factory_cad_2024_03"） |
+| `description` | text | 版本说明 |
+| `source` | text | factory_cad（厂家 CAD）/ scan_high_res（高精度扫描）/ manual_modeled（手工建模）/ unknown |
+| `captured_at` / `captured_by` | timestamptz / text | 厂家提供 / 扫描重建日期 + 上报人 |
+| `mesh_object_key` | text | asset MinIO key（admin 先用 asset 服务上传，再用 key 注册元数据） |
+| `mesh_sha256` | text | 内容寻址；下载校验用 |
+| `mesh_size_bytes` | int64 | 字节大小（CHECK > 0） |
+| `mesh_format` | text | glb / ply / stl / obj / gltf（CHECK） |
+| `triangle_count` | int64 | 网格面数 |
+| `point_count` | int64 | 点云点数（点云型 PLY 等） |
+| `bbox_min_x..z` / `bbox_max_x..z` | float32 × 6 | 局部坐标系 bbox |
+| `coverage` | float32 | 0-1 扫描覆盖度（点云 / 重建专用） |
+| `qc_score` | float32 | 0-1 质检分 |
+| `qc_notes` | text | 质检备注 |
+| `note` | text | 自由备注 |
+| `published_at` / `archived_at` | timestamptz | 状态机时间戳 |
+
+#### 13.4.2 App 读路径（仅 published）
+
+`GET /v1/catalog/vehicles/{vmid}/shape` —— active 版本元数据 + 签名 mesh URL（5 分钟）
 
 ```json
 {
@@ -702,18 +740,45 @@ vehicle_models ─< vin_glyph_batches ─< vin_glyph_samples
   "data": {
     "id": "vs_50001",
     "vehicle_model_id": "vm_10001",
-    "mesh_url": "https://.../signed?exp=...",
+    "version_name": "v1.0_2024Q1",
+    "source": "factory_cad",
+    "mesh_object_key": "orphan/scan3d/u_abc.bin",
+    "mesh_sha256": "...",
+    "mesh_size_bytes": 1342177280,
     "mesh_format": "glb",
-    "size_bytes": 1342177280,
-    "point_count": 8500000,
+    "mesh_download_url": "https://minio/.../signed?X-Amz-...&X-Amz-Expires=300",
+    "mesh_url_expire_at": "2026-05-04T22:07:24.07096506Z",
+    "triangle_count": 8500000,
+    "bbox": {"min_x": -2.5, "min_y": -1.0, "min_z": -2.5, "max_x": 2.5, "max_y": 1.5, "max_z": 2.5},
     "coverage": 0.97,
     "qc_score": 0.92,
-    "published_at": "2026-04-10T03:00:00.000Z"
+    "status": "published",
+    "published_at": "2026-04-10T03:00:00.000Z",
+    "created_at": "...",
+    "updated_at": "..."
   }
 }
 ```
 
-> 大文件下载：客户端可通过 HTTP `Range` 请求分段拉取（asset 服务支持）。
+`GET /v1/catalog/vehicles/{vmid}/shape/url` —— 只刷新签名 URL（带宽优化 / 链接过期续签）
+
+`GET /v1/catalog/vehicles/{vmid}/shapes/{sid}` —— 指定历史版本（仅 published 对 App；admin 全状态可见）
+
+> 大文件下载：客户端通过 HTTP `Range` 请求分段拉取（MinIO 原生支持）；签名 URL 5 分钟过期，客户端按需调 `/shape/url` 续签。
+
+#### 13.4.3 admin 写路径
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/admin/v1/catalog/vehicles/{vmid}/shapes` | 创建 draft（admin 先用 asset 上传 mesh 拿 object_key，再注册元数据） |
+| `GET` | `/admin/v1/catalog/vehicles/{vmid}/shapes?status=&limit=&cursor=` | 列版本（全状态） |
+| `GET` | `/admin/v1/catalog/vehicles/{vmid}/shapes/{sid}` | 版本详情 |
+| `PATCH` | `/admin/v1/catalog/vehicles/{vmid}/shapes/{sid}` | 改 draft 元数据；非 draft → 40401 |
+| `POST` | `/admin/v1/catalog/vehicles/{vmid}/shapes/{sid}/publish` | 发布；旧 active 自动 archive（事务 + 行锁） |
+| `POST` | `/admin/v1/catalog/vehicles/{vmid}/shapes/{sid}/archive` | 归档 |
+| `DELETE` | `/admin/v1/catalog/vehicles/{vmid}/shapes/{sid}` | 仅 draft 可删 |
+
+错误码：`40201` 重名 / `40401` 状态机不允许 / `40701` vehicle_model / shape 不存在 / `10002` CHECK 约束（mesh_format 不在白名单 / coverage 越界等）。
 
 ### 13.5 写入路径（仅 admin）
 

@@ -12,11 +12,14 @@ import (
 	"net/url"
 )
 
-// MountCatalogBFF 在 api 的 mux 上挂 /v1/catalog/* 反代到 catalogTarget（如 http://127.0.0.1:18059）。
+// MountCatalogBFF 在 api 的 mux 上挂 /v1/catalog/* 反代到三个后端：
 //
-// 当 vinrefTarget 非空时，优先把 /v1/catalog/vehicles/{vmid}/vin-refs/...（更具体的路径）反代到 vinref。
-// Go 1.22 ServeMux 多模式匹配时优先选最具体的，所以两个 Handle 调用顺序无关。
-func MountCatalogBFF(mux *http.ServeMux, catalogTarget, vinrefTarget string) error {
+//   - vinref：/v1/catalog/vehicles/{vmid}/vin-refs/...
+//   - shaperef：/v1/catalog/vehicles/{vmid}/shape{,/url} + /v1/catalog/vehicles/{vmid}/shapes/...
+//   - catalog：其余 /v1/catalog/...（更通用的兜底）
+//
+// Go 1.22 ServeMux 多模式匹配时优先选最具体的，所以三组 Handle 调用顺序无关。
+func MountCatalogBFF(mux *http.ServeMux, catalogTarget, vinrefTarget, shaperefTarget string) error {
 	if vinrefTarget != "" {
 		vu, err := url.Parse(vinrefTarget)
 		if err != nil {
@@ -25,6 +28,19 @@ func MountCatalogBFF(mux *http.ServeMux, catalogTarget, vinrefTarget string) err
 		vp := httputil.NewSingleHostReverseProxy(vu)
 		mux.Handle("/v1/catalog/vehicles/{vmid}/vin-refs/", vp)
 		mux.Handle("/v1/catalog/vehicles/{vmid}/vin-refs", vp)
+	}
+	if shaperefTarget != "" {
+		su, err := url.Parse(shaperefTarget)
+		if err != nil {
+			return err
+		}
+		sp := httputil.NewSingleHostReverseProxy(su)
+		// 单数 shape：active 摘要 + 子路径 /url
+		mux.Handle("/v1/catalog/vehicles/{vmid}/shape", sp)
+		mux.Handle("/v1/catalog/vehicles/{vmid}/shape/", sp)
+		// 复数 shapes：历史版本详情
+		mux.Handle("/v1/catalog/vehicles/{vmid}/shapes/", sp)
+		mux.Handle("/v1/catalog/vehicles/{vmid}/shapes", sp)
 	}
 	if catalogTarget == "" {
 		return nil
