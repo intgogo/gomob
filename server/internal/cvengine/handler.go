@@ -7,12 +7,14 @@
 //	GET  /cv/v1/version                  返回真实 gocv + opencv 版本
 //	POST /cv/v1/echo_dim                 IMDecode 真解码返尺寸
 //
-// Phase 2 已迁入（本 commit）：
+// Phase 2 已迁入：
 //
 //	POST /cv/ocr/v1/vin_character_compare           单字符×字符的字形相似度（IoU / Chamfer 双方法）
 //	POST /cv/ocr/v1/vin_character_compare_with_ref  单字符 vs 该车型 active 批次厂家库的所有样本，返最优匹配
+//	POST /cv/ocr/v1/vin_detect_yolo                 yolo 实例分割检测整张图里的 VIN 区域（VMASK 模型）
 //
-// Phase 2.x 后续：vin_detect / vin_compare（含模型加载、ProcVINDet）/ vin_more_compare 等。
+// Phase 2.3 已迁入：vin_detect_yolo（gocv.RunMask，真 yolo 推理）。
+// Phase 2.x 后续：完整 ProcVINDet（双行 / 弧形 / 检测+裁剪+字符 mask 整流程）+ RequestVinCompare。
 //
 // 鉴权：业务端点（/cv/ocr/v1/*）默认走 gateway → cvengine 的 X-Gomob-User-Id 头注入路径；
 // 直连测试时通过 GOMOB_CVENGINE_REQUIRE_AUTH=true 强制；harness 默认 false。
@@ -71,6 +73,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 		h.required(http.HandlerFunc(h.VinCharacterCompare)))
 	mux.Handle("POST /cv/ocr/v1/vin_character_compare_with_ref",
 		h.required(http.HandlerFunc(h.VinCharacterCompareWithRef)))
+	mux.Handle("POST /cv/ocr/v1/vin_detect_yolo",
+		h.required(http.HandlerFunc(h.VinDetectYolo)))
 }
 
 // ListModels 暴露当前注册的模型 + 加载状态。
@@ -439,6 +443,168 @@ func isVinChar(b byte) bool {
 		return b != 'I' && b != 'O' && b != 'Q'
 	}
 	return false
+}
+
+// ============================================================================
+// vin_detect_yolo —— yolo 实例分割检测整张图的 VIN 区域（M-S10 Phase 2.3）
+// ============================================================================
+
+type yoloRRect struct {
+	CenterX float32 `json:"cx"`
+	CenterY float32 `json:"cy"`
+	Width   float32 `json:"w"`
+	Height  float32 `json:"h"`
+	Angle   float32 `json:"angle"` // 度数
+}
+
+type yoloDetection struct {
+	Class    string      `json:"class"`
+	Score    float32     `json:"score"`
+	RRect    yoloRRect   `json:"rrect"`
+	Contour  [][2]int    `json:"contour,omitempty"` // 多边形轮廓（来自 mask）
+}
+
+type yoloDetectResp struct {
+	Tag           string          `json:"tag"`           // 用的模型 tag（默认 VMASK）
+	ImageRows     int             `json:"image_rows"`
+	ImageCols     int             `json:"image_cols"`
+	ConfThreshold float32         `json:"conf_threshold"`
+	MaskThreshold float32         `json:"mask_threshold"`
+	NMSThreshold  float32         `json:"nms_threshold"`
+	Detections    []yoloDetection `json:"detections"`
+	Count         int             `json:"count"`
+	LogID         string          `json:"log_id"`
+}
+
+// VinDetectYolo —— 把整张 VIN 拍照图喂 yolo 实例分割模型（VMASK），返检测到的 VIN 区域多边形 + 旋转矩形。
+//
+// 入参（multipart / form / base64 / 原始 body）：
+//
+//	image_binary       图片字节（必填）
+//	tag                可选，默认 "VMASK"
+//	conf               可选 0..1，默认 0.5（box confidence）
+//	mask_thresh        可选 0..1，默认 0.5（mask 二值化）
+//	nms_thresh         可选 0..1，默认 0.5
+//	rude_scale         可选；rrect 缩放（gosmart 用 0.0 不缩放）
+//
+// 失败：
+//
+//	10001 参数 / 解码错
+//	40701 模型 tag 未注册（启动期未配 VMASK 或注册失败）
+//
+// 出参：每个检测包括 class / score / rrect (cx,cy,w,h,angle) / contour（mask 多边形点）。
+//
+// 注意：在合成图（非真实 VIN 拍照）上模型大概率返 detections=[]，那是 yolo 真实输出 —— 不是 stub。
+func (h *Handler) VinDetectYolo(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(32 << 20); err != nil && err != http.ErrNotMultipart {
+		httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest, "multipart 解析失败: "+err.Error()))
+		return
+	}
+	buf, err := readImagePart(r, "image_binary")
+	if err != nil || len(buf) == 0 {
+		// 兼容裸 body 上传
+		if buf2, err2 := io.ReadAll(io.LimitReader(r.Body, 64<<20)); err2 == nil && len(buf2) > 0 {
+			buf = buf2
+		} else {
+			httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest, "image_binary 缺失"))
+			return
+		}
+	}
+
+	tag := strings.TrimSpace(r.FormValue("tag"))
+	if tag == "" {
+		tag = "VMASK"
+	}
+	conf := parseFloatOr(r.FormValue("conf"), 0.5)
+	maskTh := parseFloatOr(r.FormValue("mask_thresh"), 0.5)
+	nmsTh := parseFloatOr(r.FormValue("nms_thresh"), 0.5)
+	rudeScale := parseFloatOr(r.FormValue("rude_scale"), 0.0)
+
+	logID := r.FormValue("log_id")
+	if logID == "" {
+		logID = "yolo_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+
+	// 解码图（IMReadColor）
+	mat, err := gocv.IMDecode(buf, gocv.IMReadColor)
+	if err != nil || mat.Empty() {
+		httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest, "OpenCV 解码失败"))
+		return
+	}
+	// gocv 的 ORTSession_RunMask 期望 RGB 输入；BGR→RGB 标准转换。
+	rgb := gocv.NewMat()
+	gocv.CvtColor(mat, &rgb, gocv.ColorBGRToRGB)
+
+	contours, rrects, classes, scores, err := h.models.RunMask(tag, rgb, float32(conf), float32(maskTh), float32(nmsTh), float32(rudeScale))
+	if err != nil {
+		switch err {
+		case core.ErrNotFound:
+			httpx.WriteError(w, httpx.NewError(40701, http.StatusNotFound,
+				"模型 tag="+tag+" 未注册（启动期未配 GOMOB_CVENGINE_MODELS 含 "+tag+":mask=...）"))
+		case core.ErrWrongKind:
+			httpx.WriteError(w, httpx.NewError(40701, http.StatusNotFound,
+				"模型 tag="+tag+" 未按 mask kind 注册"))
+		default:
+			h.log.Error("RunMask 失败", "err", err, "tag", tag)
+			httpx.WriteError(w, httpx.NewError(50001, http.StatusInternalServerError, "RunMask: "+err.Error()))
+		}
+		return
+	}
+
+	resp := yoloDetectResp{
+		Tag:           tag,
+		ImageRows:     mat.Rows(),
+		ImageCols:     mat.Cols(),
+		ConfThreshold: float32(conf),
+		MaskThreshold: float32(maskTh),
+		NMSThreshold:  float32(nmsTh),
+		Detections:    make([]yoloDetection, 0, len(rrects)),
+		LogID:         logID,
+	}
+	for i, rr := range rrects {
+		var cls string
+		if i < len(classes) {
+			cls = classes[i]
+		}
+		var sc float32
+		if i < len(scores) {
+			sc = scores[i]
+		}
+		det := yoloDetection{
+			Class: cls,
+			Score: sc,
+			RRect: yoloRRect{
+				CenterX: float32(rr.Center.X),
+				CenterY: float32(rr.Center.Y),
+				Width:   float32(rr.Width),
+				Height:  float32(rr.Height),
+				Angle:   float32(rr.Angle),
+			},
+		}
+		if i < len(contours) {
+			pts := contours[i]
+			det.Contour = make([][2]int, 0, len(pts))
+			for _, p := range pts {
+				det.Contour = append(det.Contour, [2]int{p.X, p.Y})
+			}
+		}
+		resp.Detections = append(resp.Detections, det)
+	}
+	resp.Count = len(resp.Detections)
+
+	httpx.OK(w, resp)
+}
+
+// parseFloatOr 解析 float 参数；失败用默认值。
+func parseFloatOr(s string, def float64) float64 {
+	if s == "" {
+		return def
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return def
+	}
+	return v
 }
 
 // Healthz 不调 cgo，纯 Go 探活。

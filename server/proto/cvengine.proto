@@ -1,0 +1,175 @@
+syntax = "proto3";
+
+package gomob.cvengine.v1;
+
+option go_package = "io.gomob/server/proto/cvengine/v1;cvenginev1";
+
+// CVEngine —— 算法引擎对外契约（M-S10.6）。
+//
+// 当前版本（HTTP 已实施）：
+//   - VinCharacterCompare         单字符×字符
+//   - VinCharacterCompareWithRef  单字符 vs 厂家库
+//   - VinDetectYolo               yolo 实例分割检测
+//   - ListModels / Healthz / Readyz
+//
+// gRPC 实现待 protoc + protoc-gen-go + protoc-gen-go-grpc 安装后生成；
+// 当前 .proto 是**机器可读的契约**，与 02-api-contract.md §14 一致：
+//
+//   * worker 内部调用：通过 gRPC（cvengine 50062 / dev 18810 复用 HTTP/2）
+//   * App 端调用：通过 HTTP /cv/ocr/v1/* （gateway 反代，签名 JWT + HMAC 双轨）
+service CVEngine {
+  // 单字符×字符的字形相似度（IoU / Chamfer）。
+  rpc VinCharacterCompare(VinCharacterCompareRequest) returns (VinCharacterCompareResponse);
+
+  // 单字符 vs vin-ref 厂家库 active 批次的所有样本，返最优匹配。
+  rpc VinCharacterCompareWithRef(VinCharacterCompareWithRefRequest) returns (VinCharacterCompareWithRefResponse);
+
+  // yolo 实例分割检测整张图的 VIN 区域。
+  rpc VinDetectYolo(VinDetectYoloRequest) returns (VinDetectYoloResponse);
+
+  // 列模型注册状态（与 GET /cv/v1/models 等价）。
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+
+  // 健康检查 + cv runtime 版本。
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+// ============================================================================
+// 字符×字符比对
+// ============================================================================
+
+enum FontDistMethod {
+  FONT_DIST_METHOD_UNSPECIFIED = 0;
+  FONT_DIST_IOU = 1;     // 交并比 0..1，越大越相似
+  FONT_DIST_CHAMFER = 2; // 倒角距离 0+，越小越相似
+}
+
+message VinCharacterCompareRequest {
+  bytes  image_binary1  = 1; // 字符图 1（webp/png/jpg；服务端 IMReadGrayScale）
+  bytes  image_binary2  = 2; // 字符图 2
+  FontDistMethod method = 3;
+  string log_id         = 4;
+}
+
+message VinCharacterCompareResponse {
+  FontDistMethod method = 1;
+  double value          = 2; // 算法原始值
+  double similarity     = 3; // 归一化 0..1，越大越相似（IoU 直接用 / Chamfer = max(0, 1-val/8.0)）
+  string log_id         = 4;
+}
+
+// ============================================================================
+// 字符 vs 厂家库（vin-ref）
+// ============================================================================
+
+message VinCharacterCompareWithRefRequest {
+  bytes  image_binary       = 1;
+  int64  vehicle_model_id   = 2; // 用于到 vin-ref 拉对照集
+  string character          = 3; // VIN 33 字符之一（自动 ToUpper）
+  FontDistMethod method     = 4;
+  int32  position_hint      = 5; // 0=不限；1..17 按 VIN 位置过滤
+  optional double threshold = 6; // 通过此阈值时 below_threshold=false
+  string log_id             = 7;
+}
+
+message VinCharacterMatch {
+  string sample_id        = 1;
+  string batch_id         = 2;
+  string alpha_object_key = 3;
+  string font_id          = 4;
+  optional int32 position_hint = 5;
+  double value            = 6;
+  double similarity       = 7;
+}
+
+message VinCharacterCompareWithRefResponse {
+  int64  vehicle_model_id        = 1;
+  string batch_id                = 2;
+  string character               = 3;
+  FontDistMethod method          = 4;
+  VinCharacterMatch best         = 5;
+  repeated VinCharacterMatch matches = 6;
+  int32  sample_count            = 7;
+  string log_id                  = 8;
+  bool   below_threshold         = 9;
+}
+
+// ============================================================================
+// yolo 实例分割检测
+// ============================================================================
+
+message VinDetectYoloRequest {
+  bytes  image_binary    = 1;
+  string tag             = 2; // 默认 VMASK
+  double conf_threshold  = 3; // 默认 0.5
+  double mask_threshold  = 4; // 默认 0.5
+  double nms_threshold   = 5; // 默认 0.5
+  double rude_scale      = 6; // 默认 0
+  string log_id          = 7;
+}
+
+message RotatedRect {
+  float cx    = 1;
+  float cy    = 2;
+  float w     = 3;
+  float h     = 4;
+  float angle = 5; // 度数
+}
+
+message Point2D {
+  int32 x = 1;
+  int32 y = 2;
+}
+
+message Detection {
+  string class_name = 1;
+  float  score      = 2;
+  RotatedRect rrect = 3;
+  repeated Point2D contour = 4; // mask 多边形
+}
+
+message VinDetectYoloResponse {
+  string tag              = 1;
+  int32  image_rows       = 2;
+  int32  image_cols       = 3;
+  double conf_threshold   = 4;
+  double mask_threshold   = 5;
+  double nms_threshold    = 6;
+  repeated Detection detections = 7;
+  int32  count            = 8;
+  string log_id           = 9;
+}
+
+// ============================================================================
+// 模型注册表 / 健康
+// ============================================================================
+
+message ListModelsRequest {}
+
+message ModelStatus {
+  string tag         = 1;
+  string kind        = 2; // general / mask
+  string path        = 3;
+  bool   loaded      = 4;
+  int64  size_bytes  = 5;
+  string loaded_at   = 6; // RFC3339Nano
+  string error       = 7;
+  bool   opencv_empty = 8;
+  repeated string classes = 9;
+}
+
+message ListModelsResponse {
+  repeated ModelStatus items = 1;
+  int32 total                = 2;
+  int32 loaded_count         = 3;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool   ok              = 1;
+  int64  uptime_sec      = 2;
+  string opencv_version  = 3;
+  string gocv_version    = 4;
+  string go_version      = 5;
+}

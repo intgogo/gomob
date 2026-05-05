@@ -1,0 +1,116 @@
+# Dockerfile.cvengine — gomob-cvengine 容器化（M-S10.6）
+#
+# 第一性：cv-engine 不能与轻量 Go 服务塞同一镜像 — base 镜像至少 1-2 GB
+# （OpenCV + ONNX Runtime + libccv），所以独立 Dockerfile + 独立 CI workflow。
+#
+# 多阶段构建：
+#   1. builder：装 Go 工具链 + cgo 必需头文件 / .so，go build -tags=cv
+#   2. runtime：仅含运行期 .so + 二进制，瘦身镜像
+#
+# 端口：18810（HTTP）；50062（gRPC，待 M-S10.6 protoc 接通）
+#
+# 构建：
+#   docker build -t gomob-cvengine:cpu -f server/Dockerfile.cvengine server/
+#
+# 运行：
+#   docker run --rm --network host \
+#     -e GOMOB_CVENGINE_HTTP_ADDR=:18810 \
+#     -e GOMOB_CVENGINE_MODEL_NAMES=VMASK,VMET \
+#     -e GOMOB_MODELREGISTRY_TARGET=http://modelregistry:18057 \
+#     -e GOMOB_MINIO_ENDPOINT=minio:9000 \
+#     -e GOMOB_NATS_URL=nats://nats:4222 \
+#     gomob-cvengine:cpu
+
+# =============================================================================
+# Stage 1: builder
+# =============================================================================
+FROM debian:bookworm-slim AS builder
+
+ARG GO_VERSION=1.23.6
+ARG ONNX_VERSION=1.18.1
+
+# 装 Go 工具链 + cgo + cmake（构建 libccv 需要的话）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential pkg-config \
+        ca-certificates curl wget unzip git \
+        cmake make gcc g++ \
+        libgtk-3-dev libavcodec-dev libavformat-dev libswscale-dev \
+        libtbb-dev libjpeg-dev libpng-dev libtiff-dev \
+        libwebp-dev libopenexr-dev libdc1394-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Go
+RUN curl -L https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz | tar -xz -C /usr/local
+ENV PATH=/usr/local/go/bin:/root/go/bin:${PATH}
+ENV GOPATH=/root/go
+
+# OpenCV 4.5+（与本机 spike 同 ABI 4.5.5-pre；版本可调）
+ARG OPENCV_VERSION=4.5.5
+RUN cd /tmp && \
+    curl -Lo opencv.tar.gz https://github.com/opencv/opencv/archive/${OPENCV_VERSION}.tar.gz && \
+    tar xzf opencv.tar.gz && rm opencv.tar.gz && \
+    cd opencv-${OPENCV_VERSION} && mkdir build && cd build && \
+    cmake -DCMAKE_BUILD_TYPE=RELEASE -DCMAKE_INSTALL_PREFIX=/usr/local \
+          -DBUILD_EXAMPLES=OFF -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF \
+          -DBUILD_opencv_apps=OFF -DBUILD_opencv_python2=OFF -DBUILD_opencv_python3=OFF \
+          -DBUILD_opencv_java=OFF -DBUILD_opencv_objc=OFF \
+          -DBUILD_opencv_world=ON -DBUILD_LIST=core,imgcodecs,imgproc,calib3d,dnn,features2d,objdetect,video,videoio,highgui,photo,flann \
+          .. && \
+    make -j$(nproc) && make install && ldconfig && \
+    cd / && rm -rf /tmp/opencv-${OPENCV_VERSION}
+
+# ONNX Runtime（直接拉 release 二进制）
+RUN cd /tmp && \
+    curl -Lo onnxruntime.tgz https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-linux-x64-${ONNX_VERSION}.tgz && \
+    tar xzf onnxruntime.tgz && \
+    mkdir -p /usr/local/onnxruntime && \
+    cp -r onnxruntime-linux-x64-${ONNX_VERSION}/* /usr/local/onnxruntime/ && \
+    rm -rf onnxruntime.tgz onnxruntime-linux-x64-${ONNX_VERSION}
+
+# 工程源码
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# 链接 libccv：构建时直接用仓内的 .so（server/internal/cvengine/ccv/*.so）
+ENV CGO_LDFLAGS="-L/src/internal/cvengine/ccv -L/usr/local/onnxruntime/lib -L/usr/local/lib"
+ENV LD_LIBRARY_PATH="/src/internal/cvengine/ccv:/usr/local/onnxruntime/lib:/usr/local/lib"
+
+RUN go build -trimpath -ldflags='-s -w' -o /out/gomob-cvengine ./cmd/cvengine
+
+# =============================================================================
+# Stage 2: runtime
+# =============================================================================
+FROM debian:bookworm-slim AS runtime
+
+# 运行期最小 .so（OpenCV + ONNX + 一些媒体编解码）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgtk-3-0 libavcodec59 libavformat59 libswscale6 \
+        libjpeg62-turbo libpng16-16 libtiff6 libwebp7 \
+        libtbb12 libgomp1 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# 拷贝 builder 的 .so + 二进制
+COPY --from=builder /usr/local/lib/libopencv_world.so* /usr/local/lib/
+COPY --from=builder /usr/local/onnxruntime/lib/*.so* /usr/local/onnxruntime/lib/
+COPY --from=builder /src/internal/cvengine/ccv/libccv.so /usr/local/lib/
+COPY --from=builder /src/internal/cvengine/ccv/libengine_crypt.so /usr/local/lib/
+RUN ldconfig
+
+ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/onnxruntime/lib
+
+COPY --from=builder /out/gomob-cvengine /usr/local/bin/gomob-cvengine
+
+# 缓存目录（M-S10.4 loader 写入）
+RUN mkdir -p /var/lib/gomob/cvengine_models
+ENV GOMOB_CVENGINE_MODEL_CACHE=/var/lib/gomob/cvengine_models
+
+EXPOSE 18810
+EXPOSE 50062
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:18810/healthz || exit 1
+
+ENTRYPOINT ["/usr/local/bin/gomob-cvengine"]

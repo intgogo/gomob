@@ -45,6 +45,13 @@ func NewNATS(url string) (*NATSPublisher, error) {
 	return &NATSPublisher{conn: conn}, nil
 }
 
+// NewNATSPublisher 复用调用方已建立的 *nats.Conn（多路服务共享连接，不重复建连）。
+//
+// 调用方仍负责 Conn.Close() — Publisher.Close() 不会关连接。
+func NewNATSPublisher(conn *nats.Conn) *NATSPublisher {
+	return &NATSPublisher{conn: conn}
+}
+
 func (p *NATSPublisher) Publish(_ context.Context, topic string, payload any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
