@@ -20,9 +20,10 @@
 #   ./dev.sh emu-stop     杀 emulator
 #   ./dev.sh avd-create   创建 gomob_test AVD（首次）
 #
-#   ./dev.sh server doctor   服务端工具链自检（Go/docker/compose/protoc/git）
-#   ./dev.sh server up       起 docker-compose dev 栈（PG/Redis/MinIO/NATS）
-#   ./dev.sh server down     停 dev 栈
+#   ./dev.sh server doctor   服务端工具链自检（Go/podman/protoc/git）
+#   ./dev.sh server up       起 dev 栈（PG/Redis/MinIO/NATS）
+#                            默认 podman（容器名 gomob-*）；GOMOB_COMPOSE=docker 切回 docker compose
+#   ./dev.sh server down     停 dev 栈（保数据卷）
 #   ./dev.sh server ps       看 dev 栈状态
 #   ./dev.sh server logs     跟 dev 栈日志
 #   ./dev.sh server build    编译所有服务二进制到 server/.dev/bin/
@@ -31,6 +32,8 @@
 #   ./dev.sh server migrate  跑 PG migrations
 #   ./dev.sh server proto    生成 .pb.go
 #   ./dev.sh server clean    清理 server/.dev/bin/
+#
+# 部署运行时：开发 podman（gomob-* 已 named volume 持久），正式发布 docker compose
 #
 # 环境变量:
 #   ANDROID_HOME  默认 /opt/android-sdk 或 ~/Android/Sdk
@@ -128,12 +131,42 @@ case "$cmd" in
         ;;
     server)
         sub="${1:-doctor}"; shift || true
+        # GOMOB_COMPOSE：podman（默认 / dev）或 docker（正式发布）
+        # 开发栈用 podman 手动管 4 个 named-volume 持久容器（gomob-pg/redis/nats/minio），
+        # 正式发布走 docker compose 起 dev_*（仍然以 configs/dev/docker-compose.yml 为模板）
+        : "${GOMOB_COMPOSE:=podman}"
+        PODMAN_CONTAINERS="gomob-pg gomob-redis gomob-nats gomob-minio"
         case "$sub" in
             doctor)  "$PROJ_DIR/server/scripts/server-doctor.sh" ;;
-            up)      (cd "$PROJ_DIR/server" && docker compose -f configs/dev/docker-compose.yml up -d) ;;
-            down)    (cd "$PROJ_DIR/server" && docker compose -f configs/dev/docker-compose.yml down) ;;
-            ps)      (cd "$PROJ_DIR/server" && docker compose -f configs/dev/docker-compose.yml ps) ;;
-            logs)    (cd "$PROJ_DIR/server" && docker compose -f configs/dev/docker-compose.yml logs -f "$@") ;;
+            up)
+                if [[ "$GOMOB_COMPOSE" == "docker" ]]; then
+                    (cd "$PROJ_DIR/server" && docker compose -f configs/dev/docker-compose.yml up -d)
+                else
+                    podman start $PODMAN_CONTAINERS 2>&1 | tail -10
+                fi
+                ;;
+            down)
+                if [[ "$GOMOB_COMPOSE" == "docker" ]]; then
+                    (cd "$PROJ_DIR/server" && docker compose -f configs/dev/docker-compose.yml down)
+                else
+                    podman stop $PODMAN_CONTAINERS 2>&1 | tail -10
+                fi
+                ;;
+            ps)
+                if [[ "$GOMOB_COMPOSE" == "docker" ]]; then
+                    (cd "$PROJ_DIR/server" && docker compose -f configs/dev/docker-compose.yml ps)
+                else
+                    podman ps -a --filter name=gomob- --format \
+                        'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+                fi
+                ;;
+            logs)
+                if [[ "$GOMOB_COMPOSE" == "docker" ]]; then
+                    (cd "$PROJ_DIR/server" && docker compose -f configs/dev/docker-compose.yml logs -f "$@")
+                else
+                    podman logs -f "${1:-gomob-pg}"
+                fi
+                ;;
             build)   (cd "$PROJ_DIR/server" && make build) ;;
             test)    (cd "$PROJ_DIR/server" && go test ./...) ;;
             run)     (cd "$PROJ_DIR/server/cmd/devserver" && go run .) ;;

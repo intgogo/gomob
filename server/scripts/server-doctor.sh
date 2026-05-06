@@ -1,8 +1,11 @@
 #!/bin/bash
 # server-doctor.sh — gomob 服务端工具链自检
 #
-# 校验：Go 1.23+ / docker / docker-compose 或 docker compose / protoc / git
+# 校验：Go 1.23+ / podman（开发） / docker（正式发布，可选） / protoc / git
 # 缺失项给出 CentOS 9 / Debian 安装命令。
+#
+# 部署运行时策略：开发栈跑 podman（gomob-pg/redis/nats/minio 4 个 named-volume 容器，
+# `./dev.sh server up` 直接 podman start），正式发布走 docker compose。
 
 set -uo pipefail
 
@@ -37,35 +40,55 @@ check_go() {
     fi
 }
 
-check_docker() {
-    if ! command -v docker >/dev/null 2>&1; then
-        red "✗ docker 未安装"
-        echo "    建议：dnf install -y docker      （CentOS 9 自带 podman 但 podman compose 不兼容）"
+check_podman() {
+    if ! command -v podman >/dev/null 2>&1; then
+        red "✗ podman 未安装（开发栈强依赖）"
+        echo "    建议：dnf install -y podman"
         ((fail++)); return
     fi
-    green "✓ $(docker --version)"
+    green "✓ $(podman --version)"
     ((ok++))
+
+    # 校验 4 个 dev 容器是否已 ready（可缺，会引导用户起）
+    local containers="gomob-pg gomob-redis gomob-nats gomob-minio"
+    local missing=()
+    for c in $containers; do
+        podman ps -a --format '{{.Names}}' | grep -qx "$c" || missing+=("$c")
+    done
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        yellow "· dev 栈缺容器：${missing[*]}"
+        echo "    建议：手动 podman run 起一次（持久 named volume）："
+        echo "      podman run -d --name gomob-pg    -p 5432:5432 -e POSTGRES_USER=gomob -e POSTGRES_PASSWORD=gomob_dev -e POSTGRES_DB=gomob -v gomob-pg-data:/var/lib/postgresql/data postgres:16-alpine"
+        echo "      podman run -d --name gomob-redis -p 6379:6379 -v gomob-redis-data:/data redis:7-alpine"
+        echo "      podman run -d --name gomob-nats  -p 4222:4222 -p 8222:8222 nats:2-alpine"
+        echo "      podman run -d --name gomob-minio -p 9000:9000 -p 9001:9001 -v gomob-minio-data:/data minio/minio server /data --console-address :9001"
+        ((warn++))
+    else
+        local up=$(podman ps --format '{{.Names}}' | grep -cE '^gomob-(pg|redis|nats|minio)$')
+        green "✓ dev 栈容器齐 (running=$up/4)；./dev.sh server up 可一键启动"
+        ((ok++))
+    fi
 }
 
-check_compose() {
-    # 优先 docker compose 子命令（v2 plugin），降级到 docker-compose（v1 二进制）
+check_docker_optional() {
+    # 正式发布场景才需要；缺只 warn 不 fail
+    if ! command -v docker >/dev/null 2>&1; then
+        yellow "· docker 未装（正式发布用，开发不需要）"
+        echo "    需要时：dnf install -y docker  或参考 https://docs.docker.com/engine/install/centos/"
+        ((warn++)); return
+    fi
+    green "✓ $(docker --version)（正式发布用）"
+    ((ok++))
     if docker compose version >/dev/null 2>&1; then
         green "✓ $(docker compose version | head -1)"
         ((ok++))
-        return
-    fi
-    if command -v docker-compose >/dev/null 2>&1; then
+    elif command -v docker-compose >/dev/null 2>&1; then
         yellow "· docker-compose v1（建议升级到 v2 plugin）：$(docker-compose --version)"
         ((warn++))
-        return
+    else
+        yellow "· docker compose 缺（正式发布前补即可）"
+        ((warn++))
     fi
-    red "✗ docker compose 缺失"
-    echo "    建议（v2 plugin）："
-    echo "      mkdir -p ~/.docker/cli-plugins/"
-    echo "      curl -sSLo ~/.docker/cli-plugins/docker-compose \\"
-    echo "        https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64"
-    echo "      chmod +x ~/.docker/cli-plugins/docker-compose"
-    ((fail++))
 }
 
 check_protoc() {
@@ -90,8 +113,8 @@ check_git() {
 
 echo "── gomob server doctor ──"
 check_go
-check_docker
-check_compose
+check_podman
+check_docker_optional
 check_protoc
 check_git
 
