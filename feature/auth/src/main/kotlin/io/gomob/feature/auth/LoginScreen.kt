@@ -72,6 +72,12 @@ fun LoginRoute(
         onRemember = vm::setRemember,
         onSubmit = vm::submit,
         onGoRegister = onGoRegister,
+        onOpenEndpointEditor = vm::openEndpointEditor,
+        onCloseEndpointEditor = vm::closeEndpointEditor,
+        onDraftIp = vm::setDraftIp,
+        onDraftPort = vm::setDraftPort,
+        onTestDraft = vm::testDraft,
+        onSaveDraft = vm::saveDraft,
     )
 }
 
@@ -83,6 +89,12 @@ private fun LoginContent(
     onRemember: (Boolean) -> Unit,
     onSubmit: () -> Unit,
     onGoRegister: () -> Unit,
+    onOpenEndpointEditor: () -> Unit,
+    onCloseEndpointEditor: () -> Unit,
+    onDraftIp: (String) -> Unit,
+    onDraftPort: (String) -> Unit,
+    onTestDraft: () -> Unit,
+    onSaveDraft: () -> Unit,
 ) {
     Column(
         Modifier
@@ -104,7 +116,22 @@ private fun LoginContent(
         }
         PrimaryButton(loading = state.loading, onClick = onSubmit)
         Spacer(Modifier.weight(1f, fill = true).height(Gomob.spacing.s24))
-        DiagnosticStrip()
+        DiagnosticStrip(
+            endpoint = state.endpoint,
+            connectivity = state.connectivity,
+            onClick = onOpenEndpointEditor,
+        )
+    }
+    if (state.editor != null) {
+        EndpointEditorSheet(
+            editor = state.editor,
+            currentEndpoint = state.endpoint,
+            onDismiss = onCloseEndpointEditor,
+            onDraftIp = onDraftIp,
+            onDraftPort = onDraftPort,
+            onTest = onTestDraft,
+            onSave = onSaveDraft,
+        )
     }
 }
 
@@ -280,6 +307,7 @@ private fun InlineField(
     placeholder: String,
     onChange: (String) -> Unit,
     isPassword: Boolean = false,
+    keyboardType: KeyboardType = if (isPassword) KeyboardType.Password else KeyboardType.Text,
     trailing: (@Composable () -> Unit)? = null,
 ) {
     Box(
@@ -331,9 +359,7 @@ private fun InlineField(
                             letterSpacing = if (value.isNotEmpty() && !isPassword) 0.04.em else 0.em,
                         ),
                         cursorBrush = SolidColor(Gomob.colors.accent),
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = if (isPassword) KeyboardType.Password else KeyboardType.Text,
-                        ),
+                        keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
                         visualTransformation = if (isPassword)
                             PasswordVisualTransformation()
                         else
@@ -460,21 +486,27 @@ private fun PrimaryButton(loading: Boolean, onClick: () -> Unit) {
     }
 }
 
-// ─── 6. 底部诊断条 ──────────────────────────────────────────────────────────
+// ─── 6. 底部诊断条（可点击 → 弹出编辑面板） ─────────────────────────────────
 @Composable
-private fun DiagnosticStrip() {
+private fun DiagnosticStrip(
+    endpoint: io.gomob.network.ServerEndpoint,
+    connectivity: ConnectivityStatus,
+    onClick: () -> Unit,
+) {
+    val (dotColor, statusText) = connectivity.toLabel()
     Row(
         Modifier
             .padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20, bottom = Gomob.spacing.s24)
             .fillMaxWidth()
             .clip(Gomob.shapes.r2)
             .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r2)
+            .clickable(onClick = onClick)
             .padding(horizontal = Gomob.spacing.s12, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Text(
-            "服务端  10.0.2.2:8808",
+            "服务端  ${endpoint.display()}",
             style = Gomob.type.numInline.copy(
                 fontSize = 10.sp,
                 letterSpacing = 0.06.em,
@@ -489,16 +521,152 @@ private fun DiagnosticStrip() {
                 Modifier
                     .size(Gomob.spacing.dot6)
                     .clip(CircleShape)
-                    .background(Gomob.colors.ok),
+                    .background(dotColor),
             )
             Text(
-                "已连接 · 28ms",
+                statusText,
                 style = Gomob.type.numInline.copy(
                     fontSize = 10.sp,
                     letterSpacing = 0.06.em,
                 ),
                 color = Gomob.colors.fg3,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             )
         }
+    }
+}
+
+@Composable
+private fun ConnectivityStatus.toLabel(): Pair<androidx.compose.ui.graphics.Color, String> = when (this) {
+    is ConnectivityStatus.Unknown -> Gomob.colors.fg3 to "未测"
+    is ConnectivityStatus.Probing -> Gomob.colors.fg3 to "测试中…"
+    is ConnectivityStatus.Ok -> Gomob.colors.ok to "已连接 · ${latencyMs}ms"
+    is ConnectivityStatus.Failed -> Gomob.colors.danger to reason
+}
+
+// ─── 7. 端点编辑面板（ModalBottomSheet） ─────────────────────────────────────
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun EndpointEditorSheet(
+    editor: EndpointEditorState,
+    currentEndpoint: io.gomob.network.ServerEndpoint,
+    onDismiss: () -> Unit,
+    onDraftIp: (String) -> Unit,
+    onDraftPort: (String) -> Unit,
+    onTest: () -> Unit,
+    onSave: () -> Unit,
+) {
+    val sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    androidx.compose.material3.ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = Gomob.colors.bg1,
+        contentColor = Gomob.colors.fg0,
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Gomob.spacing.s24, vertical = Gomob.spacing.s12)
+                .padding(bottom = Gomob.spacing.s24),
+            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s14),
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4)) {
+                Text(
+                    "服务端网关",
+                    fontSize = 16.sp,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
+                    color = Gomob.colors.fg0,
+                )
+                Text(
+                    "App 仅配置一个网关地址,反代到内部各服务。当前已保存: ${currentEndpoint.display()}",
+                    fontSize = 12.sp,
+                    color = Gomob.colors.fg3,
+                )
+            }
+            InlineField(
+                icon = GomobIcons.Wifi,
+                label = "网关 IP",
+                value = editor.draftIp,
+                placeholder = "192.168.x.x 或 10.x.x.x",
+                onChange = onDraftIp,
+            )
+            InlineField(
+                icon = GomobIcons.Settings,
+                label = "端口",
+                value = editor.draftPort,
+                placeholder = "8808",
+                onChange = onDraftPort,
+                keyboardType = KeyboardType.Number,
+            )
+            if (editor.validationError != null) {
+                Text(
+                    editor.validationError,
+                    fontSize = 12.sp,
+                    color = Gomob.colors.danger,
+                )
+            }
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+            ) {
+                val (testDot, testText) = editor.testResult.toLabel()
+                Box(
+                    Modifier
+                        .size(Gomob.spacing.dot6)
+                        .clip(CircleShape)
+                        .background(testDot),
+                )
+                Text(
+                    testText,
+                    fontSize = 12.sp,
+                    color = Gomob.colors.fg2,
+                    modifier = Modifier.weight(1f),
+                )
+                SheetButton(
+                    label = if (editor.testing) "测试中…" else "测试连接",
+                    enabled = !editor.testing && !editor.saving,
+                    onClick = onTest,
+                    primary = false,
+                )
+            }
+            SheetButton(
+                label = if (editor.saving) "保存中…" else "保存",
+                enabled = !editor.saving && !editor.testing,
+                onClick = onSave,
+                primary = true,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SheetButton(
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    primary: Boolean,
+) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(Gomob.spacing.avatar48)
+            .clip(Gomob.shapes.r2)
+            .background(if (primary) Gomob.colors.accentSoft else Gomob.colors.bg2)
+            .border(
+                Gomob.spacing.hairline,
+                if (primary) Gomob.colors.accentLine else Gomob.colors.line2,
+                Gomob.shapes.r2,
+            )
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            fontSize = 14.sp,
+            color = if (primary) Gomob.colors.accent else Gomob.colors.fg1,
+            letterSpacing = 0.1.em,
+        )
     }
 }

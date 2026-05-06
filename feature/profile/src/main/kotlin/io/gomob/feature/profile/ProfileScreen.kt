@@ -87,9 +87,11 @@ fun ProfileRoute(
     onOpenHistory: () -> Unit = {},
     vm: ProfileViewModel = hiltViewModel(),
     appearance: AppearanceViewModel = hiltViewModel(),
+    networkVm: ProfileNetworkViewModel = hiltViewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     val themeMode by appearance.mode.collectAsStateWithLifecycle()
+    val networkState by networkVm.state.collectAsStateWithLifecycle()
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
 
     val context = LocalContext.current
@@ -158,6 +160,7 @@ fun ProfileRoute(
                     cacheSize = withContext(Dispatchers.IO) { dirSize(cacheRoot) }
                 }
             },
+            networkLabel = networkState.savedEndpoint.display(),
         )
     }
 }
@@ -518,6 +521,7 @@ private fun SettingsDrawer(
     onCycleTheme: () -> Unit,
     cacheText: String,
     onClearCache: () -> Unit,
+    networkLabel: String,
 ) {
     AnimatedVisibility(
         visible = visible,
@@ -554,6 +558,7 @@ private fun SettingsDrawer(
                 onCycleTheme = onCycleTheme,
                 cacheText = cacheText,
                 onClearCache = onClearCache,
+                networkLabel = networkLabel,
             )
         }
     }
@@ -572,13 +577,14 @@ private fun DrawerContent(
     onCycleTheme: () -> Unit,
     cacheText: String,
     onClearCache: () -> Unit,
+    networkLabel: String,
 ) {
     val items = listOf(
         SettingItem(GomobIcons.ID, "个人信息", onClick = onOpenPersonal),
         SettingItem(GomobIcons.Lock, "账号与安全", onClick = onOpenAccount),
         SettingItem(GomobIcons.Moon, "切换主题", value = themeLabel, onClick = onCycleTheme),
         SettingItem(GomobIcons.Cache, "清理缓存", value = cacheText, onClick = onClearCache),
-        SettingItem(GomobIcons.Wifi, "网络设置", value = "112.145.10.91:8808", mono = true, onClick = onOpenNetwork),
+        SettingItem(GomobIcons.Wifi, "网络设置", value = networkLabel, mono = true, onClick = onOpenNetwork),
         SettingItem(GomobIcons.Bell, "通知设置", onClick = onOpenNotification),
         SettingItem(GomobIcons.Info, "关于 mob3d", value = "v0.1.0", onClick = onOpenAbout),
     )

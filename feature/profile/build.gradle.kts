@@ -9,5 +9,6 @@ android {
 
 dependencies {
     implementation(project(":core:data"))
+    implementation(project(":core:network"))
     implementation(libs.androidx.datastore.preferences)
 }

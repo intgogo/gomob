@@ -187,9 +187,11 @@ private fun PasswordInput(
 // 网络设置
 // ============================================================================
 @Composable
-fun ProfileNetworkRoute(onBack: () -> Unit) {
-    var ip by remember { mutableStateOf("127.0.0.1") }
-    var port by remember { mutableStateOf("8808") }
+fun ProfileNetworkRoute(
+    onBack: () -> Unit,
+    vm: ProfileNetworkViewModel = hiltViewModel(),
+) {
+    val state by vm.state.collectAsStateWithLifecycle()
     Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
         BackHeader(
             title = "网络设置",
@@ -203,42 +205,86 @@ fun ProfileNetworkRoute(onBack: () -> Unit) {
         ) {
             TextInputCard(
                 label = "网关 IP",
-                value = ip,
-                placeholder = "112.145.10.91",
+                value = state.draftIp,
+                placeholder = "192.168.x.x 或 10.x.x.x",
                 keyboardType = KeyboardType.Uri,
-                onChange = { ip = it },
+                onChange = vm::setDraftIp,
             )
             TextInputCard(
                 label = "端口",
-                value = port,
+                value = state.draftPort,
                 placeholder = "8808",
                 keyboardType = KeyboardType.Number,
-                onChange = { port = it },
+                onChange = vm::setDraftPort,
             )
             HairlineCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4)) {
-                    Text("当前连接", style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
-                    Text("$ip:$port", style = Gomob.type.numInline, color = Gomob.colors.fg0)
-                    Text(
-                        "App 仅配置单一网关地址,反向代理到内部各服务。",
-                        style = Gomob.type.caption,
-                        color = Gomob.colors.fg3,
-                    )
+                    Text("当前已保存", style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
+                    Text(state.savedEndpoint.display(), style = Gomob.type.numInline, color = Gomob.colors.fg0)
+                    val testLine: String = when (val r = state.testResult) {
+                        is ProbeStatus.Unknown -> "App 仅配置单一网关地址,反向代理到内部各服务。"
+                        is ProbeStatus.Probing -> "测试中…"
+                        is ProbeStatus.Ok -> "测试通过 · ${r.latencyMs}ms"
+                        is ProbeStatus.Failed -> "测试失败: ${r.reason}"
+                    }
+                    Text(testLine, style = Gomob.type.caption, color = Gomob.colors.fg3)
+                    if (state.savedToast != null) {
+                        Text(state.savedToast!!, style = Gomob.type.caption, color = Gomob.colors.ok)
+                    }
+                    if (state.validationError != null) {
+                        Text(state.validationError!!, style = Gomob.type.caption, color = Gomob.colors.danger)
+                    }
                 }
             }
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(Gomob.spacing.touchMin)
-                    .clip(Gomob.shapes.r2)
-                    .background(Gomob.colors.accentSoft)
-                    .border(Gomob.spacing.hairline, Gomob.colors.accentLine, Gomob.shapes.r2)
-                    .clickable {},
-                contentAlignment = Alignment.Center,
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
             ) {
-                Text("测试连接 + 保存", style = Gomob.type.body, color = Gomob.colors.accent)
+                NetworkActionButton(
+                    label = if (state.testing) "测试中…" else "仅测试",
+                    enabled = !state.testing && !state.saving,
+                    onClick = vm::test,
+                    primary = false,
+                    modifier = Modifier.weight(1f),
+                )
+                NetworkActionButton(
+                    label = if (state.saving) "保存中…" else "测试 + 保存",
+                    enabled = !state.testing && !state.saving,
+                    onClick = vm::testAndSave,
+                    primary = true,
+                    modifier = Modifier.weight(1f),
+                )
             }
         }
+    }
+}
+
+@Composable
+private fun NetworkActionButton(
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    primary: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier
+            .height(Gomob.spacing.touchMin)
+            .clip(Gomob.shapes.r2)
+            .background(if (primary) Gomob.colors.accentSoft else Gomob.colors.bg2)
+            .border(
+                Gomob.spacing.hairline,
+                if (primary) Gomob.colors.accentLine else Gomob.colors.line2,
+                Gomob.shapes.r2,
+            )
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            style = Gomob.type.body,
+            color = if (primary) Gomob.colors.accent else Gomob.colors.fg1,
+        )
     }
 }
 
