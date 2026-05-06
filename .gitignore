@@ -52,3 +52,5 @@ __pycache__/
 *.swp
 *.tmp
 *~
+.VSCodeCounter
+.kotlin/
