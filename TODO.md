@@ -4,15 +4,16 @@
 >
 > 写作纪律：`docs/agent-memory/feedback_plan_writing_quality.md`（无占位符 / 任务按 harness 可验收单元切）。
 
-## M0 — 工程基线（进行中）
+## M0 — 工程基线（已完成 2026-05-05）
 
 | ID | 项 | 状态 | 文档 |
 |----|----|------|------|
-| M0.1 | Android SDK / NDK / build-tools 安装 (`/opt/android-sdk`) | ⏳ 进行中 | `scripts/ensure-android-sdk.sh` |
-| M0.2 | 多模块 Gradle 骨架 + convention 插件 | ⏳ 进行中 | `docs/architecture/02-app-architecture.md` |
-| M0.3 | gradle wrapper + `./dev.sh doctor` 通过 | ☐ | — |
-| M0.4 | git 初始化 + 首次 `./gradlew help` 同步通过 | ☐ | — |
-| M0.5 | 真机验证：`./dev.sh install && ./dev.sh shot home` 跑通 | ☐ | `CLAUDE.md` UI 验证规范 |
+| ✅ M0.1 | Android SDK / NDK / build-tools 安装 (`/opt/android-sdk`) | 已装；`./dev.sh doctor` 通过 | `scripts/ensure-android-sdk.sh` |
+| ✅ M0.2 | 多模块 Gradle 骨架 + convention 插件 | app + 7 core + 6 feature + native + designsystem 全联编 | `docs/architecture/02-app-architecture.md` |
+| ✅ M0.3 | gradle wrapper + `./dev.sh doctor` 通过 | Gradle 8.10.2 + JDK 17 + AGP/Kotlin 跑通 | `dev.sh` |
+| ✅ M0.4 | git 初始化 + 首次 `./gradlew help` 同步通过 | repo 初始化；多次 commit；远端 origin/master 落定 | — |
+| ✅ M0.5 | 真机验证：`./dev.sh install && ./dev.sh shot home` 跑通 | gomob_test AVD（GUI 模式默认）+ adb install + 5 tab 截图全收齐于 `.dev/screenshots/redesign-7/`（01-login → 07-history） | `CLAUDE.md` UI 验证规范 |
+| ✅ M0.6 | 端侧 mob3d 全屏 jsx 重做（OLED dark + 7 commit） | 01 login / 02 home AI / 03 message / 04 scan3d / 05 collab / 06 profile + 设置抽屉 + 07 history 日历 端到端通过 | 7 commit `9a8d745..8a37818` |
 
 ## M1 — 深度相机接入（未启动）
 
@@ -89,14 +90,22 @@
 | ✅ M-S2.5 | `audit_log` 接入：api 全部写路径 + asset.upload_complete | `pkg/audit.PG` 写 users/action/target/before/after JSON；harness 验证 7 条事件 | 同 §11 |
 | ✅ M-S2.6 | `tests/harness/inspection_lifecycle/` — 23 场景全链路自验 | `./dev.sh harness inspection_lifecycle` → 23/23 通过；含 sha256 下载校验 + 状态机一致性 + audit 数量 | `CLAUDE.md` 自分析规范 |
 
-## M-S3 — device（相机绑定 + 标定云同步）（未启动）
+## M-S3 — device（相机绑定 + 标定云同步）（已完成 2026-05-05 schema/admin/读路径；App 端接入留 M3 重建管线落地后）
+
+> 设计第一性：serial 全系统 active 唯一（partial unique index uq_devices_serial_active），
+> 老主人 retire 后允许转手；标定参数 version 自 devices.calibration_seq 在事务内 FOR UPDATE +1 单调；
+> 同 sha256 重传幂等不 bump（端侧网络抖动重试不浪费版本号）。
+> App 比对版本：先 GET /v1/devices/{id}/calibrations/latest 返 (version, sha256)，
+> 端侧本地 sha256 一致 → 跳；不一致 → 拉完整 params。
 
 | ID | 项 | 验收标准 | 文档 |
 |----|----|---------|------|
-| M-S3.1 | `cmd/device` 设备绑定：序列号 + 固件版本 → `devices` 表 | 重复序列号绑定返 409；同一用户多设备列表正确 | `docs/architecture/server/00-server-overview.md` §6.x |
-| M-S3.2 | 标定参数版本化云同步：POST 上报 / GET `?version=latest` | 版本号单调递增；旧版本可按号拉取 | 同 §6.x |
-| M-S3.3 | App 端 `core:data` 接入：扫描启动前自动比对本地 vs 云端 version | 差异时拉取、相同时跳过；离线退化到本地 Room | `docs/architecture/05-calibration-pipeline.md` |
-| M-S3.4 | `tests/harness/calibration_sync/` — 多设备多版本场景下同步一致性 | analyze.py 校验"任一终端在线后能收敛到 latest" | 同 §M4 自分析规范 |
+| ✅ M-S3.1 | migration 0009：`devices` + `device_calibrations` schema（partial unique active serial / 状态机 active→retired / calibration_seq FOR UPDATE 单调） | up/down 可逆；migration 直应用 PG 通过 | `migrations/0009_devices.{up,down}.sql` |
+| ✅ M-S3.2 | `pkg/repo/device.go`：DeviceRepo（Bind 幂等 + 跨用户冲突 / FindByID / ListByUser / Patch / TouchLastSeen / Retire）+ DeviceCalibrationRepo（Insert 事务内 FOR UPDATE 取 seq+1 / 同 sha256 幂等不 bump / FindLatest / FindByVersion / ListByDevice） | harness S3-S5 / S11-S14 / S18-S21 全过 | `pkg/repo/device.go` |
+| ✅ M-S3.3 | `cmd/device` HTTP :18086 + `internal/device/handler.go`：App 写/读路径（bind / list / get / patch / touch / retire / upload_calibration / list+latest+by_version）+ admin（AdminList / AdminGet / AdminListCalibrations） | harness S6-S10 / S15-S17 / S22-S23 通过 | `cmd/device/main.go` / `internal/device/handler.go` |
+| ✅ M-S3.4 | gateway `/v1/devices` 已配（既有 route.go）；admin BFF 加 `/admin/v1/devices/*` 反代到 device | harness S1（401 via gateway） / S24（gateway 反代 list） / S22（admin 反代）通过 | `internal/admin/handler.go` `mountProxy` |
+| ✅ M-S3.5 | `tests/harness/device_sync/` — 25 场景 39 断言全链路 | `./dev.sh harness device_sync` → **39/39 通过**；含幂等/转手/版本 bump/跨用户隔离/audit≥4/gateway/admin BFF | `tests/harness/device_sync/{run.sh,analyze.py}` |
+|     | App 端 `core:data` 接入（扫描启动前比对版本 + Room 离线退化） | 留 M3 重建管线落地后；当前服务端契约已就绪 | `docs/architecture/05-calibration-pipeline.md` |
 
 ## M-S4 — signaling（消息 + WebRTC 信令）（已完成 2026-05-04）
 

@@ -43,6 +43,7 @@ type Config struct {
 	ModelRegistryTarget  string // http://127.0.0.1:18057
 	VinRefTarget         string // http://127.0.0.1:18058
 	ShapeRefTarget       string // http://127.0.0.1:18056
+	DeviceTarget         string // http://127.0.0.1:18086
 }
 
 type Handler struct {
@@ -97,6 +98,9 @@ func (h *Handler) Mount(mux *http.ServeMux) error {
 		return err
 	}
 	if err := h.mountProxy(mux, "/admin/v1/models/", h.cfg.ModelRegistryTarget); err != nil {
+		return err
+	}
+	if err := h.mountProxy(mux, "/admin/v1/devices/", h.cfg.DeviceTarget); err != nil {
 		return err
 	}
 	return nil
