@@ -18,7 +18,7 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        flatDir { dirs("third_party/berxel-android/aar") }
+        // Berxel SDK 是 jar 不是 aar，模块层用 files(...) 引；这里不需要 flatDir
     }
 }
 

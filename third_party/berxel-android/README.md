@@ -1,42 +1,73 @@
 # Berxel Android SDK 投放约定
 
-本目录是给 **Berxel 官方 Android SDK** 文件保留的占位，文件本身不进 git
-（见根 `.gitignore`），需要把厂商发的二进制按下述路径放进来。
+本目录是 **Berxel 官方 Android SDK** 文件的投放点，**二进制不进 git**
+（见根 `.gitignore`），需要把厂商发的版本按下面的布局放进来。
 
 ## 目录布局
 
 ```
 third_party/berxel-android/
-├── aar/                    放厂商 .aar 整包（如有）
-│   └── berxel-sdk-x.y.z.aar
-├── include/                C++ 头文件（移植自 Windows 版的 BerxelHawk*.h；
-│                            如官方 Android 头与 Windows 头不同则以官方版为准）
-│   ├── BerxelHawkContext.h
-│   ├── BerxelHawkDevice.h
-│   ├── BerxelHawkFrame.h
-│   ├── BerxelHawkDefines.h
-│   └── BerxelHawkPlatform.h
-├── jniLibs/                每个 ABI 一份动态库
-│   ├── arm64-v8a/libberxel.so
-│   └── armeabi-v7a/libberxel.so
-└── docs/                   厂商发的 Android 端开发文档（PDF/MD）
+├── libs/
+│   └── BerxelSDK.jar              Java/Kotlin API 入口（约 14 MB）
+├── jniLibs/
+│   ├── arm64-v8a/                 8 个 .so（见下）
+│   └── armeabi-v7a/               同上 8 个文件，32 位 ABI
+└── docs/
+    ├── Berxel Android SDK 开发文档.pdf
+    └── Berxel Android SDK Developer Documentation English.pdf
+```
+
+每个 ABI 目录下需要 8 个动态库：
+
+```
+libBerxelHawk.so          相机管线
+libBerxelSdk.jni.so       Java ↔ native 桥（JNI 由 SDK 内部实现）
+libBerxelCommonDriver.so  公共驱动
+libBerxelInterface.so     接口层
+libBerxelLogDriver.so     日志驱动
+libBerxelNetDriver.so     网络驱动（联网相机/IP 路径）
+libBerxelUvcDriver.so     UVC 驱动（USB-C OTG 接 iHawk 走这里）
+libopencv_java3.so        OpenCV 3 运行时（SDK 内部使用）
 ```
 
 ## 接入流程
 
-1. 把厂商发的 SDK 解压到本目录，确保按上方布局摆放。
-2. 在 root `settings.gradle.kts` 已配置 `flatDir { dirs("third_party/berxel-android/aar") }`，AAR 自动可见。
-3. `core:native-bridge/build.gradle.kts` 视情况 `implementation(name = "berxel-sdk-x.y.z", ext = "aar")`。
-4. `native/CMakeLists.txt` 已检测 `BERXEL_SDK_DIR/include/BerxelHawkContext.h` 是否存在，
-   存在就自动 `-DGOMOB_HAS_BERXEL=1` 并把 `libberxel.so` 接进 `gomob_native` 链接。
-5. App `usb_device_filter.xml` 把 0x0000/0x0000 占位换成 Berxel 真实 VID/PID。
+1. 从厂商发布包（参考 `/root/WindowsR/berxel/BerxelSDK-Android-9.9.190/`）
+   把 `lib/BerxelSDK.jar` 复制到 `libs/`
+2. 把 `lib/<abi>/*.so` 复制到 `jniLibs/<abi>/`（8 个全要，缺一个就 dlopen 失败）
+3. 把 `Document/*.pdf` 复制到 `docs/`（可选，方便本地查 SDK API）
+4. `core:native-bridge` 已在 `build.gradle.kts` 配置：
+   - `implementation(files("$rootDir/third_party/berxel-android/libs/BerxelSDK.jar"))`
+   - `sourceSets["main"].jniLibs.srcDir(...)` 把上面 jniLibs/ 接进 APK
+5. App `usb_device_filter.xml` 把 0x0000/0x0000 占位换成 Berxel 真实 VID/PID
+
+## 重要：实际 SDK 形态 ≠ 早期假设
+
+**早期 README 假设的是 ".aar + 暴露 C++ 头给业务链接 libberxel.so"**，
+厂家实际发的是 **JAR + 内部 JNI**。差异：
+
+| 维度 | 早期假设（已废） | 实际 SDK |
+|------|----------------|---------|
+| 业务侧入口 | 我们写 C++ 调 BerxelHawk\*.h | Kotlin 直接 import Java 类 |
+| 依赖形式 | flatDir AAR | files(...) JAR |
+| .so 数量 | 1 个 libberxel.so | 8 个分工的 .so |
+| C++ 头 | 公开给业务 | SDK 私有，业务无需关心 |
+
+因此：
+- `settings.gradle.kts` 不再需要 `flatDir { ... aar }` 块
+- `native/CMakeLists.txt` 不再尝试找 `BERXEL_SDK_DIR/include/BerxelHawk*.h`
+- `core:native-bridge` 走 Kotlin → Berxel Java API → Berxel JNI 这条线，
+  我们自己的 `gomob_native.so` **不**链接 Berxel 的 .so
 
 ## 退化路径
 
-厂商 SDK 没到位之前，编译期通过 `GOMOB_HAS_BERXEL` 宏自动跳过 berxel 调用；
-`native/depth/` 走通用针孔模型 + UVC 直读路径，不阻塞工程编译和模拟跑通。
+`libs/BerxelSDK.jar` 不存在时，`core:native-bridge` 仍可编译（jar 依赖是
+"如果存在就加进来"），但运行时调用 Berxel API 会崩 ClassNotFoundException。
+对应的 feature 应该用 `core:common` 的 capability 探测后给出兜底提示。
 
 ## 参考
 
-Windows 版 SDK 在本机 SMB 挂载点 `/root/WindowsR/berxel/sdk/`，
-头文件、用法、标定流程详见 `docs/architecture/01-depth-camera-integration.md`。
+- Windows 版 SDK：本机 SMB 挂载点 `/root/WindowsR/berxel/sdk/`（含 C++ 头、
+  设计文档 `VIN_RGBD_Rectification_Design.md` / `HD_RGB_Texture_Projection_Design.md`）
+- Android 版 SDK 发布包：`/root/WindowsR/berxel/BerxelSDK-Android-9.9.190/`
+- 详细架构对接：`docs/architecture/01-depth-camera-integration.md`

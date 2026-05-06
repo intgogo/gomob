@@ -17,15 +17,10 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/reconstruction
 )
 
-# Berxel SDK（待用户放入 third_party/berxel-android/jniLibs/<abi>/libberxel.so 后启用）
-set(BERXEL_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/berxel-android")
-if(EXISTS "${BERXEL_SDK_DIR}/include/BerxelHawkContext.h")
-    add_definitions(-DGOMOB_HAS_BERXEL=1)
-    include_directories("${BERXEL_SDK_DIR}/include")
-    add_library(berxel SHARED IMPORTED)
-    set_target_properties(berxel PROPERTIES
-        IMPORTED_LOCATION "${BERXEL_SDK_DIR}/jniLibs/${ANDROID_ABI}/libberxel.so")
-endif()
+# Berxel Android SDK 不暴露 C++ 头给业务，业务侧从 Kotlin 直接调
+# BerxelSDK.jar 的 Java API（见 core:native-bridge/build.gradle.kts），
+# 我们的 gomob_native.so 不需要在 C++ 层链接 Berxel 任何 .so。
+# 所以这里没有 -DGOMOB_HAS_BERXEL，没有 IMPORTED libberxel —— 故意留空。
 
 # depth/ 子模块（占位）
 file(GLOB DEPTH_SOURCES "depth/*.cpp")
@@ -54,7 +49,3 @@ target_link_libraries(gomob_native
     GLESv3
     EGL
 )
-
-if(EXISTS "${BERXEL_SDK_DIR}/include/BerxelHawkContext.h")
-    target_link_libraries(gomob_native berxel)
-endif()
