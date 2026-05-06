@@ -62,8 +62,8 @@
 | ID | 项 | 验收标准 | 文档 |
 |----|----|---------|------|
 | ✅ M-S0.1 | `server/` 仓内骨架 + go.mod (`io.gomob/server`) + Makefile（15 个服务二进制） | `make build` 全部 15 个二进制产出（gateway/api/auth/asset/signaling/worker/device/modelregistry/admin/catalog/vinref/shaperef/cvengine/llmgateway/devserver） | `docs/architecture/server/01-go-project-layout.md` |
-| ✅ M-S0.2 | `./dev.sh server doctor` — 校验 Go 1.23+ / docker / docker compose / protoc / git | 缺任一项明确报错并给安装提示；`server/scripts/server-doctor.sh` | 同上 §开发主入口 |
-| 🟡 M-S0.3 | docker-compose（dev）：postgres + redis + minio + nats | yaml 已通过 python yaml 校验；**实际起栈待用户装 docker compose v2 plugin** | 同上 |
+| ✅ M-S0.2 | `./dev.sh server doctor` — 校验 Go 1.23+ / podman / protoc / git；自动侦测 4 个 dev 容器是否就位 | 缺任一项明确报错并给安装提示；`server/scripts/server-doctor.sh` | 同上 §开发主入口 |
+| ✅ M-S0.3 | 容器栈（dev + prod 统一 podman）：gomob-pg/redis/nats/minio 四个 named-volume 持久容器，`./dev.sh server up/down/ps/logs` 一键管 | 容器持续 running ≥ 44h 稳定；OCI 镜像可下发任意容器引擎 | 同上 |
 | ✅ M-S0.4 | `migrations/0001_init.up.sql` — 11 张基线表 | 已存在（stations/users/vehicles/inspections/inspection_assets/reviews/conversations/conversation_members/messages/call_logs/audit_log），各 M-S 阶段在自己的 0002+ 增量加表 | `docs/architecture/server/00-server-overview.md` §3 |
 | ✅ M-S0.5 | `pkg/{logger,token,httpx,repo,audit,rbac,metric,trace}` 公共包骨架 + 单测 | `go test ./pkg/...` 全绿（audit/metric/rbac/trace 含完整单测） | 同 §F2/§B4 |
 | ✅ M-S0.6 | `scripts/{server-doctor.sh, migrate.sh, proto-gen.sh}` | 缺 migrate / protoc 时给出具体安装命令 | 同 §01-go-project-layout |

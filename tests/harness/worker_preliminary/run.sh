@@ -252,7 +252,7 @@ print(json.dumps({
 }))")
 echo "$PAYLOAD" > "$OUTPUT_DIR/payload.json"
 
-# 用 docker exec 的 nats CLI 发；如果 nats CLI 不存在用 fallback 用 Go 程序
+# 用 podman exec 的 nats CLI 发；如果 nats CLI 不存在用 fallback 用 Go 程序
 if podman exec gomob-nats nats --help > /dev/null 2>&1; then
     podman exec -i gomob-nats nats pub inspection.scan_completed "$PAYLOAD" 2>&1 | head -3
 else

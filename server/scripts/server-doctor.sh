@@ -1,11 +1,11 @@
 #!/bin/bash
 # server-doctor.sh — gomob 服务端工具链自检
 #
-# 校验：Go 1.23+ / podman（开发） / docker（正式发布，可选） / protoc / git
+# 校验：Go 1.23+ / podman（容器运行时）/ protoc / git
 # 缺失项给出 CentOS 9 / Debian 安装命令。
 #
-# 部署运行时策略：开发栈跑 podman（gomob-pg/redis/nats/minio 4 个 named-volume 容器，
-# `./dev.sh server up` 直接 podman start），正式发布走 docker compose。
+# 容器策略：podman 全程负责（dev + prod）。podman 出 OCI 标准镜像，
+# 部署到任意容器引擎（docker / containerd / k8s）都跑得动，不需要双栈。
 
 set -uo pipefail
 
@@ -70,26 +70,6 @@ check_podman() {
     fi
 }
 
-check_docker_optional() {
-    # 正式发布场景才需要；缺只 warn 不 fail
-    if ! command -v docker >/dev/null 2>&1; then
-        yellow "· docker 未装（正式发布用，开发不需要）"
-        echo "    需要时：dnf install -y docker  或参考 https://docs.docker.com/engine/install/centos/"
-        ((warn++)); return
-    fi
-    green "✓ $(docker --version)（正式发布用）"
-    ((ok++))
-    if docker compose version >/dev/null 2>&1; then
-        green "✓ $(docker compose version | head -1)"
-        ((ok++))
-    elif command -v docker-compose >/dev/null 2>&1; then
-        yellow "· docker-compose v1（建议升级到 v2 plugin）：$(docker-compose --version)"
-        ((warn++))
-    else
-        yellow "· docker compose 缺（正式发布前补即可）"
-        ((warn++))
-    fi
-}
 
 check_protoc() {
     if ! command -v protoc >/dev/null 2>&1; then
@@ -114,7 +94,6 @@ check_git() {
 echo "── gomob server doctor ──"
 check_go
 check_podman
-check_docker_optional
 check_protoc
 check_git
 
