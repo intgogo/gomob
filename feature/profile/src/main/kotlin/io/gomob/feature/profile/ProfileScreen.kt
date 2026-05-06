@@ -1,5 +1,6 @@
 package io.gomob.feature.profile
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -26,15 +27,20 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -42,10 +48,15 @@ import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.gomob.data.prefs.ThemeMode
 import io.gomob.designsystem.component.ScreenHeader
 import io.gomob.designsystem.decoration.ticks
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 const val PROFILE_ROUTE = "profile"
 
@@ -72,13 +83,26 @@ fun ProfileRoute(
     onOpenAccount: () -> Unit = {},
     onOpenNetwork: () -> Unit = {},
     onOpenNotification: () -> Unit = {},
-    onOpenAppearance: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
     onOpenHistory: () -> Unit = {},
     vm: ProfileViewModel = hiltViewModel(),
+    appearance: AppearanceViewModel = hiltViewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
-    var settingsOpen by remember { mutableStateOf(false) }
+    val themeMode by appearance.mode.collectAsStateWithLifecycle()
+    var settingsOpen by rememberSaveable { mutableStateOf(false) }
+
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val cacheRoot = remember(context) { context.cacheDir }
+    var cacheSize by remember { mutableLongStateOf(-1L) }
+    LaunchedEffect(cacheRoot) {
+        cacheSize = withContext(Dispatchers.IO) { dirSize(cacheRoot) }
+    }
+
+    BackHandler(enabled = settingsOpen) {
+        settingsOpen = false
+    }
 
     Box(
         Modifier
@@ -90,7 +114,7 @@ fun ProfileRoute(
                 title = "我的",
                 eyebrow = "工号 ${state.profile?.employeeId ?: "ZAA0120230001"}",
                 trailing = {
-                    SettingsIconButton(onClick = { settingsOpen = true })
+                    SettingsIconButton(onClick = { settingsOpen = !settingsOpen })
                 },
             )
             LazyColumn(
@@ -120,14 +144,51 @@ fun ProfileRoute(
                 vm.logout()
                 settingsOpen = false
             },
-            onOpenPersonal = { settingsOpen = false; onOpenPersonal() },
-            onOpenAccount = { settingsOpen = false; onOpenAccount() },
-            onOpenNetwork = { settingsOpen = false; onOpenNetwork() },
-            onOpenNotification = { settingsOpen = false; onOpenNotification() },
-            onOpenAppearance = { settingsOpen = false; onOpenAppearance() },
-            onOpenAbout = { settingsOpen = false; onOpenAbout() },
+            onOpenPersonal = onOpenPersonal,
+            onOpenAccount = onOpenAccount,
+            onOpenNetwork = onOpenNetwork,
+            onOpenNotification = onOpenNotification,
+            onOpenAbout = onOpenAbout,
+            themeLabel = themeLabel(themeMode),
+            onCycleTheme = { appearance.setMode(nextMode(themeMode)) },
+            cacheText = formatCacheSize(cacheSize),
+            onClearCache = {
+                scope.launch {
+                    withContext(Dispatchers.IO) { clearDir(cacheRoot) }
+                    cacheSize = withContext(Dispatchers.IO) { dirSize(cacheRoot) }
+                }
+            },
         )
     }
+}
+
+private fun themeLabel(m: ThemeMode): String = when (m) {
+    ThemeMode.System -> "跟随系统"
+    ThemeMode.Light -> "浅色"
+    ThemeMode.Dark -> "深色"
+}
+
+private fun nextMode(m: ThemeMode): ThemeMode = when (m) {
+    ThemeMode.System -> ThemeMode.Light
+    ThemeMode.Light -> ThemeMode.Dark
+    ThemeMode.Dark -> ThemeMode.System
+}
+
+private fun dirSize(root: File): Long {
+    if (!root.exists()) return 0L
+    return root.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+}
+
+private fun clearDir(root: File) {
+    root.listFiles()?.forEach { it.deleteRecursively() }
+}
+
+private fun formatCacheSize(bytes: Long): String = when {
+    bytes < 0 -> "—"
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024 * 1024 -> "%.0f KB".format(bytes / 1024.0)
+    bytes < 1024 * 1024 * 1024 -> "%.1f MB".format(bytes / (1024.0 * 1024.0))
+    else -> "%.2f GB".format(bytes / (1024.0 * 1024.0 * 1024.0))
 }
 
 @Composable
@@ -452,8 +513,11 @@ private fun SettingsDrawer(
     onOpenAccount: () -> Unit,
     onOpenNetwork: () -> Unit,
     onOpenNotification: () -> Unit,
-    onOpenAppearance: () -> Unit,
     onOpenAbout: () -> Unit,
+    themeLabel: String,
+    onCycleTheme: () -> Unit,
+    cacheText: String,
+    onClearCache: () -> Unit,
 ) {
     AnimatedVisibility(
         visible = visible,
@@ -485,8 +549,11 @@ private fun SettingsDrawer(
                 onOpenAccount = onOpenAccount,
                 onOpenNetwork = onOpenNetwork,
                 onOpenNotification = onOpenNotification,
-                onOpenAppearance = onOpenAppearance,
                 onOpenAbout = onOpenAbout,
+                themeLabel = themeLabel,
+                onCycleTheme = onCycleTheme,
+                cacheText = cacheText,
+                onClearCache = onClearCache,
             )
         }
     }
@@ -500,13 +567,17 @@ private fun DrawerContent(
     onOpenAccount: () -> Unit,
     onOpenNetwork: () -> Unit,
     onOpenNotification: () -> Unit,
-    onOpenAppearance: () -> Unit,
     onOpenAbout: () -> Unit,
+    themeLabel: String,
+    onCycleTheme: () -> Unit,
+    cacheText: String,
+    onClearCache: () -> Unit,
 ) {
     val items = listOf(
         SettingItem(GomobIcons.ID, "个人信息", onClick = onOpenPersonal),
         SettingItem(GomobIcons.Lock, "账号与安全", onClick = onOpenAccount),
-        SettingItem(GomobIcons.Cache, "通用 · 缓存", value = "31.2 MB", onClick = onOpenAppearance),
+        SettingItem(GomobIcons.Moon, "切换主题", value = themeLabel, onClick = onCycleTheme),
+        SettingItem(GomobIcons.Cache, "清理缓存", value = cacheText, onClick = onClearCache),
         SettingItem(GomobIcons.Wifi, "网络设置", value = "112.145.10.91:8808", mono = true, onClick = onOpenNetwork),
         SettingItem(GomobIcons.Bell, "通知设置", onClick = onOpenNotification),
         SettingItem(GomobIcons.Info, "关于 mob3d", value = "v0.1.0", onClick = onOpenAbout),

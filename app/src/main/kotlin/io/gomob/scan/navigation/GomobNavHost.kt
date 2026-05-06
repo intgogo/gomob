@@ -33,7 +33,6 @@ import io.gomob.feature.message.MessageRoute
 import io.gomob.feature.profile.HistoryRoute
 import io.gomob.feature.profile.ProfileAboutRoute
 import io.gomob.feature.profile.ProfileAccountRoute
-import io.gomob.feature.profile.ProfileAppearanceRoute
 import io.gomob.feature.profile.ProfileNetworkRoute
 import io.gomob.feature.profile.ProfileNotificationRoute
 import io.gomob.feature.profile.ProfilePersonalRoute
@@ -136,7 +135,6 @@ fun GomobNavHost() {
                         onOpenAccount = { nav.navigate("profile/account") },
                         onOpenNetwork = { nav.navigate("profile/network") },
                         onOpenNotification = { nav.navigate("profile/notification") },
-                        onOpenAppearance = { nav.navigate("profile/appearance") },
                         onOpenAbout = { nav.navigate("profile/about") },
                         onOpenHistory = { nav.navigate("profile/history") },
                     )
@@ -155,9 +153,6 @@ fun GomobNavHost() {
                 }
                 composable("profile/notification") {
                     ProfileNotificationRoute(onBack = { nav.popBackStack() })
-                }
-                composable("profile/appearance") {
-                    ProfileAppearanceRoute(onBack = { nav.popBackStack() })
                 }
                 composable("profile/about") {
                     ProfileAboutRoute(onBack = { nav.popBackStack() })

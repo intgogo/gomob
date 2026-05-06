@@ -29,7 +29,6 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import io.gomob.data.prefs.ThemeMode
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.HairlineCard
 import io.gomob.designsystem.component.SettingRow
@@ -348,115 +347,6 @@ private fun ToggleRow(
                     .clip(Gomob.shapes.pill)
                     .background(if (value) Gomob.colors.accent else Gomob.colors.fg3),
             )
-        }
-    }
-}
-
-// ============================================================================
-// 外观(主题切换)
-// ============================================================================
-@Composable
-fun ProfileAppearanceRoute(
-    onBack: () -> Unit,
-    vm: AppearanceViewModel = hiltViewModel(),
-) {
-    val mode by vm.mode.collectAsStateWithLifecycle()
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        BackHeader(
-            title = "外观",
-            onBack = onBack,
-            eyebrow = "主题模式",
-            trailing = {
-                StatusTag(
-                    text = if (Gomob.colors.isLight) "浅色" else "深色",
-                    tone = if (Gomob.colors.isLight) StatusTone.Neutral else StatusTone.Accent,
-                    showDot = true,
-                )
-            },
-        )
-        Column(
-            Modifier.padding(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s12),
-            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
-        ) {
-            HairlineCard(padding = 0.dp) {
-                Column {
-                    ThemeOptionRow(
-                        title = "跟随系统",
-                        subtitle = "随系统深色模式自动切换",
-                        selected = mode == ThemeMode.System,
-                    ) { vm.setMode(ThemeMode.System) }
-                    SettingRowDivider()
-                    ThemeOptionRow(
-                        title = "深色",
-                        subtitle = "深石板面板 + 冷色高光,工业仪表风",
-                        selected = mode == ThemeMode.Dark,
-                    ) { vm.setMode(ThemeMode.Dark) }
-                    SettingRowDivider()
-                    ThemeOptionRow(
-                        title = "浅色",
-                        subtitle = "纸白面板 + 中性灰,室内强光环境",
-                        selected = mode == ThemeMode.Light,
-                    ) { vm.setMode(ThemeMode.Light) }
-                }
-            }
-            HairlineCard {
-                Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4)) {
-                    Text("说明", style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
-                    Text(
-                        "切换后立即生效。深浅两套色板共用同一套 accent 色相,UI 信息密度一致。",
-                        style = Gomob.type.caption,
-                        color = Gomob.colors.fg3,
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ThemeOptionRow(
-    title: String,
-    subtitle: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .height(Gomob.spacing.rowSettingTall)
-            .clickable(onClick = onClick)
-            .padding(horizontal = Gomob.spacing.s16),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2)) {
-            Text(title, style = Gomob.type.body, color = Gomob.colors.fg0)
-            Text(subtitle, style = Gomob.type.caption, color = Gomob.colors.fg3)
-        }
-        // 单选环 — 选中时填 accent,未选只描线
-        Box(
-            Modifier
-                .padding(start = Gomob.spacing.s12)
-                .width(Gomob.spacing.radioOuter)
-                .height(Gomob.spacing.radioOuter)
-                .clip(Gomob.shapes.pill)
-                .background(if (selected) Gomob.colors.accentSoft else Gomob.colors.bg2)
-                .border(
-                    Gomob.spacing.hairline,
-                    if (selected) Gomob.colors.accentLine else Gomob.colors.line2,
-                    Gomob.shapes.pill,
-                ),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (selected) {
-                Box(
-                    Modifier
-                        .height(Gomob.spacing.radioInner)
-                        .width(Gomob.spacing.radioInner)
-                        .clip(Gomob.shapes.pill)
-                        .background(Gomob.colors.accent),
-                )
-            }
         }
     }
 }

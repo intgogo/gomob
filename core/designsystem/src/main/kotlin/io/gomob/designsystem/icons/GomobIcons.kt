@@ -233,17 +233,21 @@ object GomobIcons {
     }
 
     val Settings: ImageVector = stroked("Settings") {
-        // 简化齿轮（中心圆 + 外圈 8 齿）
+        // 齿轮：内圆(轴孔 r=3) + 外圈(r=8) + 8 个外凸齿(r=8 → r=9.7)。
+        // 用外圈 + 短齿组合直接表达"齿轮"几何 — 比纯八光线的 Lucide settings 更像传统齿轮。
         circle(12f, 12f, 3f)
-        // 8 个短齿
-        moveTo(12f, 4f); verticalLineTo(6f)
-        moveTo(12f, 18f); verticalLineTo(20f)
-        moveTo(4f, 12f); horizontalLineTo(6f)
-        moveTo(18f, 12f); horizontalLineTo(20f)
-        moveTo(6.3f, 6.3f); lineTo(7.7f, 7.7f)
-        moveTo(16.3f, 16.3f); lineTo(17.7f, 17.7f)
-        moveTo(6.3f, 17.7f); lineTo(7.7f, 16.3f)
-        moveTo(16.3f, 7.7f); lineTo(17.7f, 6.3f)
+        circle(12f, 12f, 8f)
+        // 4 个正交齿(上/下/左/右)
+        moveTo(12f, 4f); verticalLineTo(2.3f)
+        moveTo(12f, 20f); verticalLineTo(21.7f)
+        moveTo(4f, 12f); horizontalLineTo(2.3f)
+        moveTo(20f, 12f); horizontalLineTo(21.7f)
+        // 4 个对角齿(45°)，齿端坐标 = 12 ± 9.7/√2 ≈ 12 ± 6.86 → 5.14 / 18.86
+        // 起点(齿根)在外圈上 = 12 ± 8/√2 ≈ 12 ± 5.66 → 6.34 / 17.66
+        moveTo(6.34f, 6.34f); lineTo(5.14f, 5.14f)
+        moveTo(17.66f, 17.66f); lineTo(18.86f, 18.86f)
+        moveTo(6.34f, 17.66f); lineTo(5.14f, 18.86f)
+        moveTo(17.66f, 6.34f); lineTo(18.86f, 5.14f)
     }
 
     val ID: ImageVector = stroked("ID") {
@@ -289,6 +293,14 @@ object GomobIcons {
         circle(12f, 12f, 8.5f)
         moveTo(12f, 11f); verticalLineTo(17f)
         moveTo(12f, 8f); arcToRelative(0.1f, 0.1f, 0f, false, true, 0.01f, 0f)
+    }
+
+    val Moon: ImageVector = stroked("Moon") {
+        // 弯月 — Lucide moon path。外圆 r=9 + 内圆 r=7 切除右半边，得到月牙轮廓。
+        moveTo(21f, 12.79f)
+        arcToRelative(9f, 9f, 0f, true, true, -9.79f, -9.79f)
+        arcToRelative(7f, 7f, 0f, false, false, 9.79f, 9.79f)
+        close()
     }
 
     val ArrowSwap: ImageVector = stroked("ArrowSwap") {
