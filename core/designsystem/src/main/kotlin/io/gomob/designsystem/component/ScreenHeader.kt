@@ -13,9 +13,12 @@ import androidx.compose.ui.Modifier
 import io.gomob.designsystem.theme.Gomob
 
 /**
- * 屏幕顶部条：左 eyebrow（小标签）+ 标题，右 trailing 槽位。
+ * 屏幕顶部条：左 大标题（title）+ 下方副标题（eyebrow），右 trailing 槽位。
  *
  * 显式组件而非隐式 padding — 每屏从这里挂能保证横向对齐和留白一致。
+ *
+ * 排版次序按最新设计：title 在上、eyebrow 在下（参数名 eyebrow 出于历史命名保留，
+ * 语义现为「副标题」）。
  */
 @Composable
 fun ScreenHeader(
@@ -33,10 +36,10 @@ fun ScreenHeader(
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2)) {
+            Text(text = title, style = Gomob.type.display, color = Gomob.colors.fg0)
             if (eyebrow != null) {
                 Text(text = eyebrow, style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
             }
-            Text(text = title, style = Gomob.type.display, color = Gomob.colors.fg0)
         }
         if (trailing != null) trailing()
     }

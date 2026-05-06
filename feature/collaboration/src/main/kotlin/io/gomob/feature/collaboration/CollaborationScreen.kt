@@ -33,11 +33,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
-import io.gomob.designsystem.component.Chip
 import io.gomob.designsystem.component.HairlineCard
 import io.gomob.designsystem.component.MetricTile
 import io.gomob.designsystem.component.MetricTrend
 import io.gomob.designsystem.component.ScreenHeader
+import io.gomob.designsystem.component.SegmentedTabItem
+import io.gomob.designsystem.component.SegmentedTabs
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
 import io.gomob.designsystem.icons.GomobIcons
@@ -45,7 +46,11 @@ import io.gomob.designsystem.theme.Gomob
 
 const val COLLAB_ROUTE = "collaboration"
 
-private val SUB_TABS = listOf("第一视角", "抽查复核", "案例公开")
+private val SUB_TABS = listOf(
+    SegmentedTabItem("第一视角"),
+    SegmentedTabItem("抽查复核"),
+    SegmentedTabItem("案例公开"),
+)
 
 // ---- 第一视角 mock 数据 ----
 private data class LiveStream(
@@ -121,14 +126,12 @@ fun CollaborationRoute(
             trailing = { StatusTag(text = badge, tone = badgeTone, showDot = true) },
         )
 
-        Row(
-            Modifier.padding(horizontal = Gomob.spacing.s16),
-            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-        ) {
-            SUB_TABS.forEachIndexed { i, label ->
-                Chip(text = label, selected = i == sub, onClick = { sub = i })
-            }
-        }
+        SegmentedTabs(
+            items = SUB_TABS,
+            selectedIndex = sub,
+            onSelect = { sub = it },
+            modifier = Modifier.padding(horizontal = Gomob.spacing.s16),
+        )
 
         Box(Modifier.fillMaxSize()) {
             when (sub) {
