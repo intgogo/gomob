@@ -44,6 +44,7 @@ namespace reconstruction {
         const float* pose7);
     bool SessionFinalize(ScanSession* s, const char* out_dir, int* out_stats3);
     void SessionClose(ScanSession* s);
+    std::vector<float> SessionPeekVertices(ScanSession* s, int max_vertices);
     // IcpRegister 的真实实现在 reconstruction/icp.h，返回 IcpResult；本文件 #include 了 icp.h
 }
 namespace vin {
@@ -249,6 +250,22 @@ Java_io_gomob_nativebridge_NativeBridge_scanSessionClose(
         JNIEnv* /*env*/, jobject /*thiz*/, jlong handle) {
     auto* s = reinterpret_cast<gomob::reconstruction::ScanSession*>(handle);
     gomob::reconstruction::SessionClose(s);
+}
+
+JNIEXPORT jfloatArray JNICALL
+Java_io_gomob_nativebridge_NativeBridge_scanSessionPeekVertices(
+        JNIEnv* env, jobject /*thiz*/, jlong handle, jint maxVertices) {
+    auto* s = reinterpret_cast<gomob::reconstruction::ScanSession*>(handle);
+    if (!s) {
+        // handle 已 close → 返空数组（不抛异常，避免高频调用产生异常风暴）
+        return env->NewFloatArray(0);
+    }
+    auto vs = gomob::reconstruction::SessionPeekVertices(s, maxVertices);
+    jfloatArray result = env->NewFloatArray(static_cast<jsize>(vs.size()));
+    if (!vs.empty()) {
+        env->SetFloatArrayRegion(result, 0, static_cast<jsize>(vs.size()), vs.data());
+    }
+    return result;
 }
 
 // ===== vin/* — 占位 =====

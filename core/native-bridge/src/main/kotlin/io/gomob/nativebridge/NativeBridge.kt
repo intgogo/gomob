@@ -111,6 +111,17 @@ object NativeBridge {
     /** 释放 session handle。 */
     external fun scanSessionClose(handle: Long)
 
+    /**
+     * 扫描中实时预览：取 TSDF 近表面体素中心点云子采样。
+     *
+     * 返回扁平 [x0,y0,z0, x1,y1,z1, ...] 至多 [maxVertices] 个点（实际可能更少）。
+     * 单位 mm，世界系。返回长度可能为 0（扫描刚开始 / 完全无观测）。
+     *
+     * 不跑 Marching Cubes（高频调用会拖累 ingest）；UI 端把这些点投到 2D Canvas 给用户看进度即可。
+     * handle 已 close → 返长度 0 数组（不抛异常）。
+     */
+    external fun scanSessionPeekVertices(handle: Long, maxVertices: Int): FloatArray
+
     // ===== vin/* — VIN 数码拓印 =====
     //
     // 详见 docs/architecture/08-vin-rectify-design.md。

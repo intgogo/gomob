@@ -1,7 +1,6 @@
 package io.gomob.feature.scan3d
 
 import android.content.Context
-import android.graphics.Bitmap
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -12,12 +11,17 @@ import io.gomob.nativebridge.berxel.BerxelDeviceState
 import io.gomob.nativebridge.berxel.BerxelService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
@@ -77,44 +81,25 @@ class Scan3dRecordingViewModel @Inject constructor(
     private val _state = MutableStateFlow<ScanRecordingState>(ScanRecordingState.Idle)
     val state: StateFlow<ScanRecordingState> = _state.asStateFlow()
 
-    private val _colorPreview = MutableStateFlow<Bitmap?>(null)
-    val colorPreview: StateFlow<Bitmap?> = _colorPreview.asStateFlow()
+    /** TSDF 累积体的实时预览点云：扁平 [x0,y0,z0, x1,y1,z1, ...]，单位 mm，世界系。
+     *  start() 后定时 peek，stop() / reset() 清空。 */
+    private val _pointCloudPreview = MutableStateFlow<FloatArray>(FloatArray(0))
+    val pointCloudPreview: StateFlow<FloatArray> = _pointCloudPreview.asStateFlow()
 
-    private val _depthPreview = MutableStateFlow<Bitmap?>(null)
-    val depthPreview: StateFlow<Bitmap?> = _depthPreview.asStateFlow()
-
-    /** SDK 设备状态（NoDevice / WaitingPermission / Streaming / Error 等），UI 顶部状态条用 */
+    /** SDK 设备状态 — UI 用来判定开始按钮是否可用 */
     val deviceState: StateFlow<BerxelDeviceState> = berxel.state
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), BerxelDeviceState.Idle)
 
     @Volatile private var sessionHandle: Long = 0L
     private var ingestJob: Job? = null
+    private var previewJob: Job? = null
     private var startedAtMs: Long = 0L
     private var framesIngested: Int = 0
     private var keyframesCount: Int = 0
 
     init {
-        // 进入扫描页即启动 SDK（幂等）+ 收预览帧
+        // 进入扫描页即启动 SDK（幂等）；扫描页不显示原始 Color/Depth 预览，只显示点云累积进度
         berxel.start()
-
-        viewModelScope.launch {
-            var counter = 0
-            berxel.colorFrames.collect { frame ->
-                counter++
-                if (counter % PREVIEW_DECIMATION != 0) return@collect
-                val bmp = withContext(Dispatchers.Default) { FrameRenderer.colorRgb24ToBitmap(frame) }
-                _colorPreview.value = bmp
-            }
-        }
-        viewModelScope.launch {
-            var counter = 0
-            berxel.depthFrames.collect { frame ->
-                counter++
-                if (counter % PREVIEW_DECIMATION != 0) return@collect
-                val bmp = withContext(Dispatchers.Default) { FrameRenderer.depth16ToBitmap(frame) }
-                _depthPreview.value = bmp
-            }
-        }
     }
 
     /** 用户点"开始扫描" — 建 native session + 启动 ingest 协程 */
@@ -139,14 +124,34 @@ class Scan3dRecordingViewModel @Inject constructor(
         _state.value = ScanRecordingState.Recording(0, 0, 0L)
         Log.i(TAG, "扫描会话已建立 handle=$sessionHandle")
 
+        // 实时点云预览协程：每 500ms peek 一次，UI 端 Canvas 画 2D top-view
+        previewJob = viewModelScope.launch {
+            while (isActive) {
+                delay(PREVIEW_PEEK_INTERVAL_MS)
+                val h = sessionHandle
+                if (h == 0L) break
+                try {
+                    val pts = withContext(Dispatchers.Default) {
+                        NativeBridge.scanSessionPeekVertices(h, MAX_PREVIEW_VERTICES)
+                    }
+                    _pointCloudPreview.value = pts
+                } catch (e: Throwable) {
+                    Log.w(TAG, "peek vertices 失败: ${e.message}")
+                }
+            }
+        }
+
         ingestJob = viewModelScope.launch {
             berxel.depthFrames.collect { frame ->
+                // 每次进入 native 前 snapshot handle；stop() 把 handle 置 0 后这里跳过
+                val h = sessionHandle
+                if (h == 0L) return@collect
                 val intr = frame.intrinsics
                 val pose = floatArrayOf(0f, 0f, 0f, 0f, 0f, 0f, 1f) // identity
                 try {
                     val kf = withContext(Dispatchers.Default) {
                         NativeBridge.scanSessionIngest(
-                            sessionHandle,
+                            h,
                             frame.data, frame.width, frame.height,
                             doubleArrayOf(intr.fx, intr.fy, intr.cx, intr.cy),
                             pose,
@@ -170,23 +175,37 @@ class Scan3dRecordingViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 停止录制：
+     *   1. **先把 sessionHandle 置 0** — ingest collect 协程下一帧 snapshot 看到 0 直接 return
+     *   2. cancelAndJoin ingest 协程 — 等当前正在 native 中的 ingest 调用返回后协程退出
+     *   3. 此时再 finalize / close 那个 local handle，不会与 ingest 抢 native 对象
+     *
+     * 修闪退：之前 `ingestJob.cancel()` 不阻塞，紧接 finalize 在同一 sessionHandle 上跑 →
+     * native 不是线程安全 → SIGSEGV → app 闪退。
+     */
     fun stop() {
         val cur = _state.value
         val ingested = when (cur) {
             is ScanRecordingState.Recording -> cur.framesIngested
             else -> return
         }
-        ingestJob?.cancel()
-        ingestJob = null
+        val handle = sessionHandle
+        if (handle == 0L) return
+        sessionHandle = 0L  // 阻断后续 ingest 进 native
         _state.value = ScanRecordingState.Finalizing(ingested)
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                ingestJob?.cancelAndJoin()  // 等 ingest 协程真正退出（含 native 调用返回）
+                ingestJob = null
+                previewJob?.cancelAndJoin()
+                previewJob = null
+
                 val sessionId = "scan-${System.currentTimeMillis()}"
                 val outDir = File(ctx.filesDir, "scans/$sessionId").apply { mkdirs() }
-                val stats = NativeBridge.scanSessionFinalize(sessionHandle, outDir.absolutePath)
-                NativeBridge.scanSessionClose(sessionHandle)
-                sessionHandle = 0L
+                val stats = NativeBridge.scanSessionFinalize(handle, outDir.absolutePath)
+                NativeBridge.scanSessionClose(handle)
                 _state.value = ScanRecordingState.Completed(
                     sessionId = sessionId,
                     outDir = outDir.absolutePath,
@@ -198,40 +217,46 @@ class Scan3dRecordingViewModel @Inject constructor(
                 Log.i(TAG, "扫描完成 v=${stats[0]} f=${stats[1]} kf=${stats[2]} → $outDir")
             } catch (e: Throwable) {
                 _state.value = ScanRecordingState.Error("finalize 失败: ${e.message}")
-                if (sessionHandle != 0L) {
-                    runCatching { NativeBridge.scanSessionClose(sessionHandle) }
-                    sessionHandle = 0L
-                }
+                runCatching { NativeBridge.scanSessionClose(handle) }
             }
         }
     }
 
     fun reset() {
+        val handle = sessionHandle
+        sessionHandle = 0L
         ingestJob?.cancel()
         ingestJob = null
-        if (sessionHandle != 0L) {
-            runCatching { NativeBridge.scanSessionClose(sessionHandle) }
-            sessionHandle = 0L
-        }
+        previewJob?.cancel()
+        previewJob = null
+        if (handle != 0L) runCatching { NativeBridge.scanSessionClose(handle) }
         framesIngested = 0
         keyframesCount = 0
+        _pointCloudPreview.value = FloatArray(0)
         _state.value = ScanRecordingState.Idle
     }
 
     override fun onCleared() {
         super.onCleared()
-        ingestJob?.cancel()
-        ingestJob = null
-        if (sessionHandle != 0L) {
-            runCatching { NativeBridge.scanSessionClose(sessionHandle) }
-            sessionHandle = 0L
+        val handle = sessionHandle
+        sessionHandle = 0L
+        val ij = ingestJob; ingestJob = null
+        val pj = previewJob; previewJob = null
+        if (handle != 0L || ij?.isActive == true || pj?.isActive == true) {
+            runCatching {
+                runBlocking(NonCancellable) {
+                    ij?.cancelAndJoin()
+                    pj?.cancelAndJoin()
+                    if (handle != 0L) NativeBridge.scanSessionClose(handle)
+                }
+            }
         }
-        // 退栈 → 停 SDK 释放 USB / 省电省热（lastKnownInfo 保留在 BerxelService 单例里）
         berxel.stop()
     }
 
     companion object {
         private const val TAG = "Scan3dRecordingVM"
-        private const val PREVIEW_DECIMATION = 5
+        private const val PREVIEW_PEEK_INTERVAL_MS = 500L
+        private const val MAX_PREVIEW_VERTICES = 5000
     }
 }

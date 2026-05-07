@@ -167,5 +167,40 @@ bool SessionFinalize(ScanSession* s, const char* out_dir, int* out_stats3) {
 
 void SessionClose(ScanSession* s) { delete s; }
 
+/**
+ * 扫描中实时预览：从 TSDF 体素里挑近表面（|sdf| 小 + weight ≥ 1）的体素中心，扁平输出 ≤ max_vertices
+ * 个 (x,y,z) — UI 端转 2D 投影画给用户看，作扫描进度可视化。
+ *
+ * 不跑 Marching Tetrahedra（那个跑一次几百毫秒到秒级，影响 ingest 实时性）；直接遍历 voxel grid 子采样。
+ */
+std::vector<float> SessionPeekVertices(ScanSession* s, int max_vertices) {
+    std::vector<float> out;
+    if (!s || max_vertices <= 0) return out;
+    const auto& tsdf = s->tsdf;
+    int N = tsdf.dim();
+    long long total = static_cast<long long>(N) * N * N;
+    // 子采样 stride：让最坏情况下扫到的体素 ≈ max_vertices × 8（先收，后裁）
+    int stride = std::max(1, static_cast<int>(total / (static_cast<long long>(max_vertices) * 8)));
+    out.reserve(static_cast<size_t>(max_vertices) * 3);
+    long long counter = 0;
+    for (int k = 0; k < N; ++k) {
+        for (int j = 0; j < N; ++j) {
+            for (int i = 0; i < N; ++i) {
+                if (counter++ % stride != 0) continue;
+                float sdf, w;
+                tsdf.Get(i, j, k, sdf, w);
+                if (w < 1.f) continue;
+                if (std::abs(sdf) > 0.4f) continue;  // 近零等值面（归一化到 ±1）
+                auto c = tsdf.VoxelCenter(i, j, k);
+                out.push_back(c[0]);
+                out.push_back(c[1]);
+                out.push_back(c[2]);
+                if (static_cast<int>(out.size() / 3) >= max_vertices) return out;
+            }
+        }
+    }
+    return out;
+}
+
 } // namespace reconstruction
 } // namespace gomob

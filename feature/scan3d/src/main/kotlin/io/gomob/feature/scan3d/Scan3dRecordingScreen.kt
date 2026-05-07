@@ -1,7 +1,6 @@
 package io.gomob.feature.scan3d
 
-import android.graphics.Bitmap
-import androidx.compose.foundation.Image
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -26,10 +25,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.FilterQuality
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -43,15 +41,15 @@ import io.gomob.nativebridge.berxel.BerxelDeviceState
 const val SCAN3D_RECORDING_ROUTE = "scan3d/recording"
 
 /**
- * 三维外廓扫描录制页 — 自包含全套：SDK lifecycle + Color/Depth 实时预览 + 录制状态机。
+ * 三维外廓扫描录制页 — 自包含全套：SDK lifecycle + 实时点云累积预览 + 录制状态机。
+ *
+ * 不显示原始 Color/Depth 摄像机画面（设计上扫描页只关心扫描进度，原始预览在深度相机详情页）。
  *
  * 布局：
- *   - 顶栏 BackHeader + SDK 设备状态 tag
- *   - Color 预览（大）
- *   - Depth 预览（小、紧贴 Color 下）
- *   - 状态卡：随 ScanRecordingState 切（Idle 引导 / Recording 帧计数 / Finalizing 转圈
- *     / Completed 统计 / Error 文案）
- *   - 底部：开始 / 停止 / 再扫 / 重试 圆按钮
+ *   - 顶栏 BackHeader
+ *   - 大画面：累积点云 top-view 投影（开始后实时刷新；未开始 / 完成 / 出错时显示对应文案）
+ *   - 状态/CTA 卡：随 ScanRecordingState 切（Idle 引导 + 开始按钮 / Recording 帧计数 + 停止按钮 /
+ *     Finalizing 转圈 / Completed 统计 + 再扫 / Error 重试）
  */
 @Composable
 fun Scan3dRecordingRoute(
@@ -60,8 +58,7 @@ fun Scan3dRecordingRoute(
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     val device by vm.deviceState.collectAsStateWithLifecycle()
-    val colorBmp by vm.colorPreview.collectAsStateWithLifecycle()
-    val depthBmp by vm.depthPreview.collectAsStateWithLifecycle()
+    val cloud by vm.pointCloudPreview.collectAsStateWithLifecycle()
 
     Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
         BackHeader(
@@ -77,14 +74,17 @@ fun Scan3dRecordingRoute(
             ),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
-            item { DeviceStatusStrip(device) }
-            item { PreviewCard(label = "COLOR", bitmap = colorBmp) }
-            item { PreviewCard(label = "DEPTH", bitmap = depthBmp, shorter = true) }
+            item {
+                PointCloudPreview(
+                    points = cloud,
+                    state = state,
+                )
+            }
             item { Spacer(Modifier.height(Gomob.spacing.s4)) }
             when (val s = state) {
                 is ScanRecordingState.Idle ->
-                    item { IdleStatePanel(deviceReady = device is BerxelDeviceState.Streaming, onStart = vm::start) }
-                is ScanRecordingState.Recording -> item { RecordingStatePanel(s, onStop = vm::stop) }
+                    item { IdleStatePanel(deviceReady = device is BerxelDeviceState.Streaming, deviceText = deviceShortText(device), onStart = vm::start) }
+                is ScanRecordingState.Recording -> item { RecordingStatePanel(s, cloud.size / 3, onStop = vm::stop) }
                 is ScanRecordingState.Finalizing -> item { FinalizingStatePanel(s) }
                 is ScanRecordingState.Completed -> item { CompletedStatePanel(s, onAgain = vm::reset) }
                 is ScanRecordingState.Error -> item { ErrorStatePanel(s, onRetry = vm::reset) }
@@ -93,71 +93,39 @@ fun Scan3dRecordingRoute(
     }
 }
 
-// ─── 设备状态条 ─────────────────────────────────────────────────────────────
+// ─── 累积点云预览（top-view 2D 投影） ────────────────────────────────────────
 
 @Composable
-private fun DeviceStatusStrip(state: BerxelDeviceState) {
-    val (text, tone) = when (state) {
-        is BerxelDeviceState.Streaming -> {
-            val color = state.info.colorMode?.let { "${it.width}×${it.height}@${it.fps}" } ?: "?"
-            val depth = state.info.depthMode?.let { "${it.width}×${it.height}@${it.fps}" } ?: "?"
-            "iHawk 在线 · Color $color · Depth $depth" to Gomob.colors.accent
-        }
-        is BerxelDeviceState.Initializing -> "正在初始化 SDK..." to Gomob.colors.fg2
-        is BerxelDeviceState.Opening -> "打开 iHawk 中..." to Gomob.colors.fg2
-        is BerxelDeviceState.WaitingPermission -> "等待 USB 权限授权..." to Gomob.colors.accentStrong
-        is BerxelDeviceState.NoDevice -> "未检测到 iHawk — 请插 USB-C OTG" to Gomob.colors.danger
-        is BerxelDeviceState.Error -> "SDK 错误：${state.reason}" to Gomob.colors.danger
-        BerxelDeviceState.Idle -> "等待设备..." to Gomob.colors.fg2
-    }
-    Box(Modifier.padding(horizontal = Gomob.spacing.s16)) {
-        HairlineCard(modifier = Modifier.fillMaxWidth()) {
-            Row(
-                Modifier.fillMaxWidth().padding(Gomob.spacing.s12),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-            ) {
-                Box(
-                    Modifier
-                        .size(8.dp)
-                        .clip(CircleShape)
-                        .background(tone),
-                )
-                Text(text, style = Gomob.type.bodySm, color = Gomob.colors.fg1)
-            }
-        }
-    }
-}
-
-// ─── 预览卡（COLOR / DEPTH） ────────────────────────────────────────────────
-
-@Composable
-private fun PreviewCard(label: String, bitmap: Bitmap?, shorter: Boolean = false) {
+private fun PointCloudPreview(
+    points: FloatArray,
+    state: ScanRecordingState,
+    extentMm: Float = 400f,
+) {
     Box(Modifier.padding(horizontal = Gomob.spacing.s16)) {
         Box(
             Modifier
                 .fillMaxWidth()
-                .aspectRatio(if (shorter) 16f / 9f else 16f / 10f)
+                .aspectRatio(1f)
                 .clip(Gomob.shapes.r3)
                 .background(Gomob.colors.bg2)
                 .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3),
         ) {
-            if (bitmap != null) {
-                Image(
-                    bitmap = bitmap.asImageBitmap(),
-                    contentDescription = label,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Fit,
-                    filterQuality = FilterQuality.Low,
-                )
-            } else {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("等待 $label 帧", style = Gomob.type.caption, color = Gomob.colors.fg3)
+            // 网格背景（让用户感觉这是个 3D 空间）
+            Canvas(Modifier.fillMaxSize()) {
+                drawGrid()
+                if (points.isNotEmpty()) {
+                    drawPointCloudTopView(points, extentMm)
                 }
             }
             // 角标
             Text(
-                label,
+                text = when (state) {
+                    is ScanRecordingState.Recording -> "TOP-VIEW · ${points.size / 3} 点"
+                    is ScanRecordingState.Completed -> "扫描完成"
+                    is ScanRecordingState.Finalizing -> "提取 mesh 中"
+                    is ScanRecordingState.Error -> "错误"
+                    is ScanRecordingState.Idle -> "TOP-VIEW · 等待开始"
+                },
                 style = Gomob.type.eyebrow,
                 color = Gomob.colors.fg2,
                 modifier = Modifier
@@ -166,14 +134,75 @@ private fun PreviewCard(label: String, bitmap: Bitmap?, shorter: Boolean = false
                     .background(Gomob.colors.bg0.copy(alpha = 0.7f))
                     .padding(horizontal = Gomob.spacing.s6, vertical = 2.dp),
             )
+            // 中心引导文案（点云为空时）
+            if (points.isEmpty() && state !is ScanRecordingState.Recording) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(
+                        text = when (state) {
+                            is ScanRecordingState.Idle -> "按下开始按钮，绕物体转一圈"
+                            is ScanRecordingState.Finalizing -> ""
+                            is ScanRecordingState.Completed -> ""
+                            is ScanRecordingState.Error -> ""
+                            else -> ""
+                        },
+                        style = Gomob.type.bodySm,
+                        color = Gomob.colors.fg3,
+                    )
+                }
+            }
         }
+    }
+}
+
+private fun DrawScope.drawGrid() {
+    val gridLines = 8
+    val color = Color(0xFF2A2A2E)
+    val w = size.width
+    val h = size.height
+    for (i in 1 until gridLines) {
+        val x = w * i / gridLines
+        drawLine(color, Offset(x, 0f), Offset(x, h), strokeWidth = 0.5f)
+        val y = h * i / gridLines
+        drawLine(color, Offset(0f, y), Offset(w, y), strokeWidth = 0.5f)
+    }
+    // 中心十字
+    val cross = Color(0xFF3A3A3E)
+    drawLine(cross, Offset(w / 2, 0f), Offset(w / 2, h), strokeWidth = 1f)
+    drawLine(cross, Offset(0f, h / 2), Offset(w, h / 2), strokeWidth = 1f)
+}
+
+private fun DrawScope.drawPointCloudTopView(points: FloatArray, extentMm: Float) {
+    // top-view: 世界系 (x, z) → canvas (cx + x*scale, cy - z*scale)
+    // (用 z 作为屏幕 y，因为相机一般在 ±z 方向，物体在原点 → top-view 看着自然)
+    val cx = size.width / 2
+    val cy = size.height / 2
+    val scale = (size.width * 0.45f) / (extentMm * 0.5f)  // 让 ±extent/2 占画布 90%
+    val n = points.size / 3
+    val accent = Color(0xFF7DB8FF)  // 接近 Gomob.colors.accent，但 Canvas 不能直拿 theme
+    for (i in 0 until n) {
+        val x = points[i * 3]
+        val z = points[i * 3 + 2]
+        val px = cx + x * scale
+        val py = cy - z * scale
+        if (px < 0f || px >= size.width || py < 0f || py >= size.height) continue
+        drawCircle(accent.copy(alpha = 0.8f), radius = 2f, center = Offset(px, py))
     }
 }
 
 // ─── 状态面板 ────────────────────────────────────────────────────────────────
 
+private fun deviceShortText(state: BerxelDeviceState): String = when (state) {
+    is BerxelDeviceState.Streaming -> "iHawk 在线"
+    is BerxelDeviceState.Initializing -> "SDK 初始化中..."
+    is BerxelDeviceState.Opening -> "打开 iHawk..."
+    is BerxelDeviceState.WaitingPermission -> "等待 USB 权限"
+    is BerxelDeviceState.NoDevice -> "未检测到 iHawk — 请插 USB-C OTG"
+    is BerxelDeviceState.Error -> "SDK 错误：${state.reason}"
+    BerxelDeviceState.Idle -> "等待设备..."
+}
+
 @Composable
-private fun IdleStatePanel(deviceReady: Boolean, onStart: () -> Unit) {
+private fun IdleStatePanel(deviceReady: Boolean, deviceText: String, onStart: () -> Unit) {
     PanelCard {
         Text("准备开始扫描", style = Gomob.type.title, color = Gomob.colors.fg0)
         Text(
@@ -189,14 +218,16 @@ private fun IdleStatePanel(deviceReady: Boolean, onStart: () -> Unit) {
             enabled = deviceReady,
             onClick = onStart,
         )
-        if (!deviceReady) {
-            Text("设备未就绪 — 等待 SDK 启动", style = Gomob.type.caption, color = Gomob.colors.fg3)
-        }
+        Text(
+            deviceText,
+            style = Gomob.type.caption,
+            color = if (deviceReady) Gomob.colors.fg3 else Gomob.colors.danger,
+        )
     }
 }
 
 @Composable
-private fun RecordingStatePanel(s: ScanRecordingState.Recording, onStop: () -> Unit) {
+private fun RecordingStatePanel(s: ScanRecordingState.Recording, previewPoints: Int, onStop: () -> Unit) {
     PanelCard {
         Text("正在录制", style = Gomob.type.eyebrow, color = Gomob.colors.accent)
         Row(
@@ -205,6 +236,7 @@ private fun RecordingStatePanel(s: ScanRecordingState.Recording, onStop: () -> U
         ) {
             StatColumn(label = "帧数",   value = s.framesIngested.toString())
             StatColumn(label = "关键帧", value = s.keyframes.toString())
+            StatColumn(label = "点云",   value = previewPoints.toString())
             StatColumn(label = "时长",   value = formatElapsed(s.elapsedMs))
         }
         Spacer(Modifier.height(Gomob.spacing.s4))
