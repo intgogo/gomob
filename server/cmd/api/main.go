@@ -47,6 +47,31 @@ func main() {
 
 	mux := http.NewServeMux()
 	h.Mount(mux)
+
+	// 端侧日志同步：POST /v1/logs/upload。日志根目录由 GOMOB_LOG_UPLOAD_DIR 控制
+	logRoot := envOr("GOMOB_LOG_UPLOAD_DIR", ".dev/server-logs")
+	logsH, err := api.NewLogsHandler(logRoot, 0)
+	if err != nil {
+		log.Error("logs handler 初始化失败", "err", err)
+		os.Exit(1)
+	}
+	logsH.Mount(mux)
+	defer logsH.Close()
+	// 30 分钟空闲关 file handle 防泄漏
+	go func() {
+		t := time.NewTicker(5 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				logsH.CloseIdle(30 * time.Minute)
+			}
+		}
+	}()
+	log.Info("logs upload 已挂载", "root", logRoot)
+
 	catalogTarget := envOr("GOMOB_CATALOG_TARGET", "http://127.0.0.1:18059")
 	vinrefTarget := envOr("GOMOB_VINREF_TARGET", "http://127.0.0.1:18058")
 	shaperefTarget := envOr("GOMOB_SHAPEREF_TARGET", "http://127.0.0.1:18056")

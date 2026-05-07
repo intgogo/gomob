@@ -3,6 +3,7 @@ package io.gomob.feature.profile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.gomob.logging.LogSyncPreferences
 import io.gomob.network.HealthProbe
 import io.gomob.network.ServerEndpoint
 import io.gomob.network.ServerEndpointStore
@@ -34,6 +35,8 @@ data class ProfileNetworkUiState(
     val testResult: ProbeStatus = ProbeStatus.Unknown,
     val savedToast: String? = null,
     val validationError: String? = null,
+    /** 日志同步开关 — 用户在本页切；当前是否启用 LogcatTailer + 上传 */
+    val logSyncEnabled: Boolean = false,
 )
 
 sealed interface ProbeStatus {
@@ -46,6 +49,7 @@ sealed interface ProbeStatus {
 @HiltViewModel
 class ProfileNetworkViewModel @Inject constructor(
     private val store: ServerEndpointStore,
+    private val logSyncPrefs: LogSyncPreferences,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ProfileNetworkUiState())
@@ -67,6 +71,16 @@ class ProfileNetworkViewModel @Inject constructor(
                 }
             }
         }
+        // 同步日志同步开关状态
+        viewModelScope.launch {
+            logSyncPrefs.enabledFlow.collectLatest { on ->
+                _state.update { it.copy(logSyncEnabled = on) }
+            }
+        }
+    }
+
+    fun setLogSyncEnabled(on: Boolean) {
+        viewModelScope.launch { logSyncPrefs.setEnabled(on) }
     }
 
     fun setDraftIp(v: String) = _state.update {

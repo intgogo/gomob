@@ -84,6 +84,9 @@ func DefaultRoutes() []Route {
 		// 资产
 		{Prefix: "/v1/assets/", Target: targetAsset},
 
+		// 端侧日志同步（M3 调试期；要 JWT，不公开）
+		{Prefix: "/v1/logs/", Target: targetAPI},
+
 		// 设备 / 算法 / LLM（直达）
 		{Prefix: "/v1/devices", Target: targetDevice},
 		{Prefix: "/cv/ocr/v1/", Target: targetCvengine},

@@ -50,6 +50,7 @@ dependencies {
     implementation(project(":core:designsystem"))
     implementation(project(":core:ui"))
     implementation(project(":core:native-bridge"))
+    implementation(project(":core:logging"))
 
     implementation(project(":feature:auth"))
     implementation(project(":feature:home"))

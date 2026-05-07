@@ -34,6 +34,7 @@ include(":core:domain")
 include(":core:designsystem")
 include(":core:ui")
 include(":core:network")
+include(":core:logging")
 include(":core:native-bridge")
 
 include(":feature:auth")

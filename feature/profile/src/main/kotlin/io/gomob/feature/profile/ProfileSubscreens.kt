@@ -255,6 +255,25 @@ fun ProfileNetworkRoute(
                     modifier = Modifier.weight(1f),
                 )
             }
+            // 诊断日志同步开关 — 开启后端侧 logcat 按 batch 上传到服务端 /v1/logs/upload
+            HairlineCard(padding = 0.dp) {
+                Column {
+                    ToggleRow(
+                        title = "诊断日志同步",
+                        subtitle = if (state.logSyncEnabled)
+                            "已开启 · 每 5s/100 条上传到 ${state.savedEndpoint.display()}"
+                        else
+                            "关闭中 · 端侧 logcat 不会发到服务端",
+                        value = state.logSyncEnabled,
+                        onChange = vm::setLogSyncEnabled,
+                    )
+                }
+            }
+            Text(
+                "服务端排查: scripts/tail-user-logs.sh <user_id> 看实时 jsonl",
+                style = Gomob.type.caption,
+                color = Gomob.colors.fg3,
+            )
         }
     }
 }
