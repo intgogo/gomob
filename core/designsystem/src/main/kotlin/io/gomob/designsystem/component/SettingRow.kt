@@ -27,6 +27,7 @@ fun SettingRow(
     modifier: Modifier = Modifier,
     subtitle: String? = null,
     onClick: (() -> Unit)? = null,
+    titleColor: androidx.compose.ui.graphics.Color = Gomob.colors.fg0,
     trailing: @Composable (() -> Unit)? = null,
 ) {
     Row(
@@ -39,7 +40,7 @@ fun SettingRow(
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2)) {
-            Text(text = title, style = Gomob.type.body, color = Gomob.colors.fg0)
+            Text(text = title, style = Gomob.type.body, color = titleColor)
             if (subtitle != null) {
                 Text(text = subtitle, style = Gomob.type.caption, color = Gomob.colors.fg2)
             }
