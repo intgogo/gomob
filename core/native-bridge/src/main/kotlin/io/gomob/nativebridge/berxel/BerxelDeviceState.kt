@@ -67,3 +67,34 @@ data class BerxelFrameStat(
     val width: Int,
     val height: Int,
 )
+
+/**
+ * iHawk 设备开关 / 数值类控制项的当前快照（UI 双向绑定用）。
+ *
+ * 所有字段都是"我们这一侧记录的应用值"，不是从 SDK 读回来的（SDK 没有 getter）。
+ * 默认值 = SDK 出厂默认 / startStreams 后的状态（参考 BerxelService.applyDefaultControls）。
+ */
+data class BerxelDeviceControls(
+    /** Depth 重投影到 Color 像素坐标（registration on）；off=原始 depth。 */
+    val registrationEnable: Boolean = false,
+    /** 投射器（IR 投射）on/off。off 时 depth 没数据。 */
+    val depthEmitterOn: Boolean = true,
+    /** 双流镜像（左右翻转）。 */
+    val streamMirror: Boolean = false,
+    /** Depth 自动曝光。 */
+    val depthAutoExposure: Boolean = true,
+    /** Depth 边缘优化（去边缘抖动）。 */
+    val depthEdgeOptimization: Boolean = false,
+    /** Depth 基础去噪（SDK 内置）。 */
+    val depthDenoise: Boolean = true,
+    /** Depth 温度补偿（变温环境下保精度）。 */
+    val depthTemperatureCompensation: Boolean = true,
+    /** Color 自动曝光。 */
+    val colorAutoExposure: Boolean = true,
+    /** Color 手动 exposure（仅 colorAutoExposure=false 时生效）。 */
+    val colorExposureUs: Int = 0,
+    /** Color 手动 gain（仅 colorAutoExposure=false 时生效）。 */
+    val colorGain: Int = 0,
+    /** Color 画质 0..100，0=不写入 SDK。 */
+    val colorQuality: Int = 0,
+)

@@ -62,11 +62,10 @@ fun Scan3dRoute(
     cameraSlot: @Composable () -> Unit = {},
     onOpenCalibration: () -> Unit = {},
     onOpenScan: () -> Unit = {},
+    onOpenDepthCamera: () -> Unit = {},
     vm: Scan3dViewModel = hiltViewModel(),
 ) {
     val ui by vm.uiState.collectAsStateWithLifecycle()
-    val colorBmp by vm.colorPreview.collectAsStateWithLifecycle()
-    val depthBmp by vm.depthPreview.collectAsStateWithLifecycle()
     LazyColumn(
         modifier = Modifier.fillMaxSize().background(Gomob.colors.bg0),
         contentPadding = PaddingValues(bottom = 28.dp),
@@ -78,11 +77,7 @@ fun Scan3dRoute(
                 trailing = { RefreshIconButton(onClick = vm::retry) },
             )
         }
-        item { DeviceCard(state = ui) }
-        if (ui.device is BerxelDeviceState.Streaming) {
-            item { Spacer(Modifier.height(Gomob.spacing.s8)) }
-            item { LivePreviewRow(color = colorBmp, depth = depthBmp) }
-        }
+        item { DeviceCard(state = ui, onClick = onOpenDepthCamera) }
         item { Spacer(Modifier.height(Gomob.spacing.s12)) }
         item { ActionTilePair(onOpenScan, onOpenCalibration) }
         item { Spacer(Modifier.height(Gomob.spacing.s16)) }
@@ -90,57 +85,6 @@ fun Scan3dRoute(
         item { Spacer(Modifier.height(Gomob.spacing.s20)) }
         item { AssetSectionHeader() }
         item { AssetGrid() }
-    }
-}
-
-// ─── 实时预览（Streaming 状态显示） ──────────────────────────────────────────
-@Composable
-private fun LivePreviewRow(color: android.graphics.Bitmap?, depth: android.graphics.Bitmap?) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = Gomob.spacing.s20),
-        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
-    ) {
-        PreviewTile("COLOR", color, Modifier.weight(1f))
-        PreviewTile("DEPTH", depth, Modifier.weight(1f))
-    }
-}
-
-@Composable
-private fun PreviewTile(label: String, bitmap: android.graphics.Bitmap?, modifier: Modifier = Modifier) {
-    Box(
-        modifier = modifier
-            .aspectRatio(1.6f)  // 640×400 ≈ 1.6
-            .clip(Gomob.shapes.r2)
-            .background(Gomob.colors.bg2)
-            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2),
-    ) {
-        if (bitmap != null) {
-            Image(
-                bitmap = bitmap.asImageBitmap(),
-                contentDescription = "$label preview",
-                contentScale = ContentScale.Crop,
-                filterQuality = FilterQuality.Low,
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
-        // 左上角标签
-        Box(
-            Modifier
-                .padding(Gomob.spacing.s4)
-                .clip(Gomob.shapes.r1)
-                .background(Color.Black.copy(alpha = 0.55f))
-                .padding(horizontal = Gomob.spacing.s6, vertical = 1.dp),
-        ) {
-            Text(
-                label,
-                fontSize = 9.sp,
-                fontFamily = FontFamily.Monospace,
-                letterSpacing = 0.08.em,
-                color = Color.White,
-            )
-        }
     }
 }
 
@@ -161,7 +105,7 @@ private fun RefreshIconButton(onClick: () -> Unit) {
 
 // ─── 设备卡 ──────────────────────────────────────────────────────────────────
 @Composable
-private fun DeviceCard(state: Scan3dDeviceUiState) {
+private fun DeviceCard(state: Scan3dDeviceUiState, onClick: () -> Unit) {
     val view = state.toView()
     Box(Modifier.padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20, bottom = Gomob.spacing.s12)) {
         Box(
@@ -171,6 +115,7 @@ private fun DeviceCard(state: Scan3dDeviceUiState) {
                 .background(Gomob.colors.bg1)
                 .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
                 .ticks()
+                .clickable(onClick = onClick)
                 .padding(Gomob.spacing.s14),
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12)) {

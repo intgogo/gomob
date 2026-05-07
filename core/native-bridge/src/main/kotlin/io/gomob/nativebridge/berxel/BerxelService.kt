@@ -37,6 +37,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -113,6 +114,15 @@ class BerxelService @Inject constructor(
     /** 内参：onDeviceOpened 时从 SDK 读出，所有后续帧 emit 时塞进 ColorFrame/DepthFrame.intrinsics。 */
     @Volatile private var currentColorIntrinsics: CameraIntrinsics? = null
     @Volatile private var currentDepthIntrinsics: CameraIntrinsics? = null
+
+    /**
+     * 设备控制项快照。所有 set* 方法都把"应用的值"写回 [_controls]，UI 双向绑定。
+     *
+     * 设计：SDK 没有 getter，我们这一侧记录"我们告诉过 SDK 的最后一个值"。设备拔出 / 重连后
+     * [stopInternal] 重置到默认值；下次开流 [applyDefaultControls] 把默认值同步到 SDK。
+     */
+    private val _controls = MutableStateFlow(BerxelDeviceControls())
+    val controls: StateFlow<BerxelDeviceControls> = _controls.asStateFlow()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -298,6 +308,9 @@ class BerxelService @Inject constructor(
             // 读出内参（出厂值；M1.3 实测精度后决定是否需要自标定覆盖）
             currentColorIntrinsics = readIntrinsics(dev, colorMode, "color")
             currentDepthIntrinsics = readIntrinsics(dev, depthMode, "depth")
+
+            // 把 _controls 当前快照同步到 SDK（默认值或上次 set 的值）
+            applyDefaultControls()
 
             val info = collectDeviceInfo(dev, colorMode, depthMode)
             _state.value = BerxelDeviceState.Streaming(info)
@@ -548,6 +561,89 @@ class BerxelService @Inject constructor(
                 )
             },
         )
+    }
+
+    // ───── 设备控制命令 (UI 双向绑定 + scope.launch 投到 IO) ─────────────────────
+
+    /**
+     * 一次性把 [_controls] 当前快照同步到 SDK。
+     * 在 `startStreams` 成功后调，让 UI 里的开关默认值真的生效到设备。
+     */
+    private fun applyDefaultControls() {
+        val dev = device ?: return
+        val c = _controls.value
+        // Kotlin 不能把这些 setter 当 property 用（SDK setter 返回 int 而非 Unit）
+        runCatching { dev.setRegistrationEnable(c.registrationEnable) }
+        runCatching { dev.setStreamMirror(c.streamMirror) }
+        if (c.depthAutoExposure) runCatching { dev.setDepthAEStatus(true) }
+        runCatching { dev.setEdgeOptimizationStatus(c.depthEdgeOptimization) }
+        runCatching { dev.setDenoiseStatus(c.depthDenoise) }
+        runCatching { dev.setTemperatureCompensationEnable(c.depthTemperatureCompensation) }
+        if (c.colorAutoExposure) runCatching { dev.enableColorAutoExposure() }
+    }
+
+    private inline fun controlOp(label: String, crossinline op: BerxelHawkDevice.() -> Int) {
+        val dev = device ?: run {
+            Log.w(TAG, "$label skipped: no device")
+            return
+        }
+        scope.launch {
+            val rc = runCatching { dev.op() }.getOrElse { t ->
+                Log.e(TAG, "$label exception", t); -1
+            }
+            Log.i(TAG, "$label rc=$rc")
+        }
+    }
+
+    fun setRegistrationEnable(on: Boolean) {
+        _controls.update { it.copy(registrationEnable = on) }
+        controlOp("setRegistrationEnable=$on") { setRegistrationEnable(on) }
+    }
+
+    fun setStreamMirror(on: Boolean) {
+        _controls.update { it.copy(streamMirror = on) }
+        controlOp("setStreamMirror=$on") { setStreamMirror(on) }
+    }
+
+    fun setDepthAutoExposure(on: Boolean) {
+        _controls.update { it.copy(depthAutoExposure = on) }
+        controlOp("setDepthAEStatus=$on") { setDepthAEStatus(on) }
+    }
+
+    fun setDepthEdgeOptimization(on: Boolean) {
+        _controls.update { it.copy(depthEdgeOptimization = on) }
+        controlOp("setEdgeOptimizationStatus=$on") { setEdgeOptimizationStatus(on) }
+    }
+
+    fun setDepthDenoise(on: Boolean) {
+        _controls.update { it.copy(depthDenoise = on) }
+        controlOp("setDenoiseStatus=$on") { setDenoiseStatus(on) }
+    }
+
+    fun setDepthTemperatureCompensation(on: Boolean) {
+        _controls.update { it.copy(depthTemperatureCompensation = on) }
+        controlOp("setTemperatureCompensationEnable=$on") { setTemperatureCompensationEnable(on) }
+    }
+
+    fun setColorAutoExposure(on: Boolean) {
+        _controls.update { it.copy(colorAutoExposure = on) }
+        if (on) {
+            controlOp("enableColorAutoExposure") { enableColorAutoExposure() }
+        }
+        // off 时不立即写入；要等用户给 colorExposureUs/colorGain 数值后调 setColorExposureGain
+    }
+
+    /** 手动曝光（仅 colorAutoExposure=false 时有意义）。exposure=0/gain=0 视作 noop。 */
+    fun setColorExposureGain(exposureUs: Int, gain: Int) {
+        _controls.update { it.copy(colorExposureUs = exposureUs, colorGain = gain) }
+        if (exposureUs == 0 && gain == 0) return
+        controlOp("setColorExposureGain=$exposureUs/$gain") { setColorExposureGain(exposureUs, gain) }
+    }
+
+    fun setColorQuality(q: Int) {
+        _controls.update { it.copy(colorQuality = q) }
+        if (q <= 0) return
+        controlOp("setColorQuality=$q") { setColorQuality(q) }
     }
 
     /** Process 终止前调，幂等。Hilt @Singleton 自身不会被销毁；该方法留给手动 cleanup 场景。 */
