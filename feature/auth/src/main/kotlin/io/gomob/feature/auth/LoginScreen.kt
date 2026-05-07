@@ -1,8 +1,10 @@
 package io.gomob.feature.auth
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -78,6 +80,7 @@ fun LoginRoute(
         onDraftPort = vm::setDraftPort,
         onTestDraft = vm::testDraft,
         onSaveDraft = vm::saveDraft,
+        onDevBypass = vm::devBypassLogin,
     )
 }
 
@@ -95,6 +98,7 @@ private fun LoginContent(
     onDraftPort: (String) -> Unit,
     onTestDraft: () -> Unit,
     onSaveDraft: () -> Unit,
+    onDevBypass: () -> Unit,
 ) {
     Column(
         Modifier
@@ -102,7 +106,7 @@ private fun LoginContent(
             .background(Gomob.colors.bg0)
             .verticalScroll(rememberScrollState()),
     ) {
-        BrandRow()
+        BrandRow(onDevBypass = onDevBypass)
         WelcomeBlock()
         InputBlock(
             state = state,
@@ -137,7 +141,7 @@ private fun LoginContent(
 
 // ─── 1. Brand 行 ────────────────────────────────────────────────────────────
 @Composable
-private fun BrandRow() {
+private fun BrandRow(onDevBypass: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -184,17 +188,20 @@ private fun BrandRow() {
             }
         }
         // DEV tag — mono 11sp + line2 边 + 透明底
-        DevTag()
+        DevTag(onDevBypass = onDevBypass)
     }
 }
 
 @Composable
-private fun DevTag() {
+private fun DevTag(onDevBypass: () -> Unit) {
     Box(
         Modifier
             .height(Gomob.spacing.chipHeight)
             .clip(Gomob.shapes.r1)
             .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r1)
+            // 长按 DEV badge —— 写假 token 跳过登录鉴权，给硬件功能调试用。
+            // 普通点击不响应，避免误触；只在 dev 调试场景的 long-press 才生效。
+            .combinedClickableForDev(onLongPress = onDevBypass)
             .padding(horizontal = Gomob.spacing.s8),
         contentAlignment = Alignment.Center,
     ) {
@@ -670,3 +677,7 @@ private fun SheetButton(
         )
     }
 }
+
+@OptIn(ExperimentalFoundationApi::class)
+private fun Modifier.combinedClickableForDev(onLongPress: () -> Unit): Modifier =
+    this.combinedClickable(onClick = {}, onLongClick = onLongPress)

@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -30,10 +31,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.designsystem.component.ScreenHeader
 import io.gomob.designsystem.decoration.ticks
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
+import io.gomob.nativebridge.berxel.BerxelDeviceState
+import io.gomob.nativebridge.berxel.BerxelFrameStat
 
 const val SCAN3D_ROUTE = "scan3d"
 
@@ -53,7 +58,9 @@ fun Scan3dRoute(
     cameraSlot: @Composable () -> Unit = {},
     onOpenCalibration: () -> Unit = {},
     onOpenScan: () -> Unit = {},
+    vm: Scan3dViewModel = hiltViewModel(),
 ) {
+    val ui by vm.uiState.collectAsStateWithLifecycle()
     LazyColumn(
         modifier = Modifier.fillMaxSize().background(Gomob.colors.bg0),
         contentPadding = PaddingValues(bottom = 28.dp),
@@ -62,10 +69,10 @@ fun Scan3dRoute(
             ScreenHeader(
                 title = "三维扫描",
                 eyebrow = "Berxel iHawk · 主从合一采集",
-                trailing = { RefreshIconButton() },
+                trailing = { RefreshIconButton(onClick = vm::retry) },
             )
         }
-        item { DeviceCard() }
+        item { DeviceCard(state = ui) }
         item { Spacer(Modifier.height(Gomob.spacing.s12)) }
         item { ActionTilePair(onOpenScan, onOpenCalibration) }
         item { Spacer(Modifier.height(Gomob.spacing.s16)) }
@@ -77,9 +84,9 @@ fun Scan3dRoute(
 }
 
 @Composable
-private fun RefreshIconButton() {
+private fun RefreshIconButton(onClick: () -> Unit) {
     Box(
-        Modifier.size(Gomob.spacing.touchMin).clickable {},
+        Modifier.size(Gomob.spacing.touchMin).clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
@@ -93,7 +100,8 @@ private fun RefreshIconButton() {
 
 // ─── 设备卡 ──────────────────────────────────────────────────────────────────
 @Composable
-private fun DeviceCard() {
+private fun DeviceCard(state: Scan3dDeviceUiState) {
+    val view = state.toView()
     Box(Modifier.padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20, bottom = Gomob.spacing.s12)) {
         Box(
             Modifier
@@ -105,7 +113,6 @@ private fun DeviceCard() {
                 .padding(Gomob.spacing.s14),
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12)) {
-                // 左：USB 图标 44dp
                 Box(
                     Modifier
                         .size(44.dp)
@@ -117,26 +124,25 @@ private fun DeviceCard() {
                     Icon(
                         GomobIcons.USB,
                         contentDescription = null,
-                        tint = Gomob.colors.accent,
+                        tint = view.iconTint,
                         modifier = Modifier.size(22.dp),
                     )
                 }
-                // 中：型号 + 状态 + 副文
                 Column(Modifier.weight(1f)) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
                     ) {
                         Text(
-                            "iHawk-072",
+                            view.title,
                             style = Gomob.type.numInline.copy(fontSize = 13.sp, letterSpacing = 0.04.em),
                             color = Gomob.colors.fg0,
                         )
-                        OkConnectedTag()
+                        StatusTagPill(view.statusText, view.statusTone)
                     }
                     Spacer(Modifier.height(Gomob.spacing.s6))
                     Text(
-                        "USB-C OTG · MixHD 1280×800 · 8 fps",
+                        view.line1,
                         fontSize = 10.sp,
                         fontFamily = FontFamily.Monospace,
                         letterSpacing = 0.06.em,
@@ -144,7 +150,7 @@ private fun DeviceCard() {
                         color = Gomob.colors.fg2,
                     )
                     Text(
-                        "FW 1.2.3 · SDK v2.0.190",
+                        view.line2,
                         fontSize = 10.sp,
                         fontFamily = FontFamily.Monospace,
                         letterSpacing = 0.06.em,
@@ -152,18 +158,17 @@ private fun DeviceCard() {
                         color = Gomob.colors.fg2,
                     )
                 }
-                // 右：帧率
                 Column(horizontalAlignment = Alignment.End) {
                     Text("帧率", fontSize = 10.sp, color = Gomob.colors.fg3)
                     Text(
-                        "8.0",
+                        view.fpsText,
                         style = Gomob.type.numInline.copy(
                             fontSize = 22.sp,
                             fontWeight = FontWeight.Normal,
                             letterSpacing = (-0.01).em,
                             lineHeight = 22.sp,
                         ),
-                        color = Gomob.colors.accent,
+                        color = view.fpsColor,
                     )
                 }
             }
@@ -171,14 +176,126 @@ private fun DeviceCard() {
     }
 }
 
+private data class DeviceCardView(
+    val title: String,
+    val iconTint: Color,
+    val statusText: String,
+    val statusTone: StatusTone,
+    val line1: String,
+    val line2: String,
+    val fpsText: String,
+    val fpsColor: Color,
+)
+
+private enum class StatusTone { Ok, Warn, Bad, Neutral }
+
 @Composable
-private fun OkConnectedTag() {
+private fun Scan3dDeviceUiState.toView(): DeviceCardView {
+    return when (val s = device) {
+        is BerxelDeviceState.Idle -> DeviceCardView(
+            title = "iHawk",
+            iconTint = Gomob.colors.fg3,
+            statusText = "未启动",
+            statusTone = StatusTone.Neutral,
+            line1 = "USB-C OTG 接口待机",
+            line2 = "进入页面后自动尝试连接",
+            fpsText = "—",
+            fpsColor = Gomob.colors.fg3,
+        )
+        is BerxelDeviceState.Initializing -> DeviceCardView(
+            title = "iHawk",
+            iconTint = Gomob.colors.accent,
+            statusText = "加载 SDK…",
+            statusTone = StatusTone.Warn,
+            line1 = "BerxelSDK Context 初始化中",
+            line2 = "约 1-2s",
+            fpsText = "—",
+            fpsColor = Gomob.colors.fg3,
+        )
+        is BerxelDeviceState.NoDevice -> DeviceCardView(
+            title = "iHawk",
+            iconTint = Gomob.colors.fg3,
+            statusText = "未插入",
+            statusTone = StatusTone.Warn,
+            line1 = "请用 USB-C OTG 接 iHawk",
+            line2 = "右上角 ↻ 可手动刷新枚举",
+            fpsText = "—",
+            fpsColor = Gomob.colors.fg3,
+        )
+        is BerxelDeviceState.WaitingPermission -> DeviceCardView(
+            title = "iHawk",
+            iconTint = Gomob.colors.accent,
+            statusText = "等待 USB 授权",
+            statusTone = StatusTone.Warn,
+            line1 = "请在系统弹窗点 \"始终允许\"",
+            line2 = "授权一次后下次插上自动开",
+            fpsText = "—",
+            fpsColor = Gomob.colors.fg3,
+        )
+        is BerxelDeviceState.Opening -> DeviceCardView(
+            title = "iHawk",
+            iconTint = Gomob.colors.accent,
+            statusText = "开流中",
+            statusTone = StatusTone.Warn,
+            line1 = "Color + Depth MIX 模式",
+            line2 = "首帧到达后切已连接",
+            fpsText = "—",
+            fpsColor = Gomob.colors.fg3,
+        )
+        is BerxelDeviceState.Streaming -> {
+            val info = s.info
+            val title = info.serialNumber.ifBlank { "iHawk · vid=0x${info.vendorId.toString(16)} pid=0x${info.productId.toString(16)}" }
+            val color = info.colorMode
+            val depth = info.depthMode
+            val line1 = when {
+                color != null && depth != null ->
+                    "Color ${color.width}×${color.height}@${color.fps} · Depth ${depth.width}×${depth.height}@${depth.fps}"
+                color != null -> "Color ${color.width}×${color.height}@${color.fps}"
+                depth != null -> "Depth ${depth.width}×${depth.height}@${depth.fps}"
+                else -> "等待第一帧"
+            }
+            val sdk = if (info.sdkVersion.isBlank()) "" else "SDK ${info.sdkVersion} · "
+            val fw = if (info.firmwareVersion.isBlank()) "FW —" else "FW ${info.firmwareVersion}"
+            // 优先用 reader 线程上一帧测出的 fps（real-time），缺帧时退到配置 fps
+            val liveFps = this.depth?.measuredFps ?: depth?.fps
+            DeviceCardView(
+                title = title,
+                iconTint = Gomob.colors.accent,
+                statusText = if (this.depth != null) "已连接" else "等帧",
+                statusTone = if (this.depth != null) StatusTone.Ok else StatusTone.Warn,
+                line1 = line1,
+                line2 = "$sdk$fw",
+                fpsText = liveFps?.let { "%.1f".format(it.toFloat()) } ?: "—",
+                fpsColor = Gomob.colors.accent,
+            )
+        }
+        is BerxelDeviceState.Error -> DeviceCardView(
+            title = "iHawk",
+            iconTint = Gomob.colors.danger,
+            statusText = "错误",
+            statusTone = StatusTone.Bad,
+            line1 = s.reason,
+            line2 = "右上角 ↻ 重试",
+            fpsText = "—",
+            fpsColor = Gomob.colors.fg3,
+        )
+    }
+}
+
+@Composable
+private fun StatusTagPill(text: String, tone: StatusTone) {
+    val (bg, line, fg, dot) = when (tone) {
+        StatusTone.Ok -> Quad(Gomob.colors.okSoft, Gomob.colors.okLine, Gomob.colors.ok, Gomob.colors.ok)
+        StatusTone.Warn -> Quad(Gomob.colors.accentSoft, Gomob.colors.accentLine, Gomob.colors.accent, Gomob.colors.accent)
+        StatusTone.Bad -> Quad(Gomob.colors.dangerSoft, Gomob.colors.dangerLine, Gomob.colors.danger, Gomob.colors.danger)
+        StatusTone.Neutral -> Quad(Gomob.colors.bg2, Gomob.colors.line2, Gomob.colors.fg2, Gomob.colors.fg3)
+    }
     Row(
         Modifier
             .height(Gomob.spacing.chipHeight)
             .clip(Gomob.shapes.r1)
-            .background(Gomob.colors.okSoft)
-            .border(Gomob.spacing.hairline, Gomob.colors.okLine, Gomob.shapes.r1)
+            .background(bg)
+            .border(Gomob.spacing.hairline, line, Gomob.shapes.r1)
             .padding(horizontal = Gomob.spacing.s8),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
@@ -187,17 +304,19 @@ private fun OkConnectedTag() {
             Modifier
                 .size(Gomob.spacing.dot6)
                 .clip(androidx.compose.foundation.shape.CircleShape)
-                .background(Gomob.colors.ok),
+                .background(dot),
         )
         Text(
-            "已连接",
+            text,
             fontSize = 11.sp,
             fontFamily = FontFamily.Monospace,
             letterSpacing = 0.04.em,
-            color = Gomob.colors.ok,
+            color = fg,
         )
     }
 }
+
+private data class Quad<A, B, C, D>(val a: A, val b: B, val c: C, val d: D)
 
 // ─── 双 ActionTile ──────────────────────────────────────────────────────────
 @Composable

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.gomob.data.auth.AuthRepository
+import io.gomob.data.auth.TokenStore
 import io.gomob.network.ApiException
 import io.gomob.network.ServerEndpoint
 import io.gomob.network.ServerEndpointStore
@@ -57,6 +58,7 @@ data class EndpointEditorState(
 class LoginViewModel @Inject constructor(
     private val authRepo: AuthRepository,
     private val endpointStore: ServerEndpointStore,
+    private val tokenStore: TokenStore,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(LoginUiState())
@@ -76,6 +78,20 @@ class LoginViewModel @Inject constructor(
     fun setUsername(v: String) = _state.update { it.copy(username = v, errorMessage = null) }
     fun setPassword(v: String) = _state.update { it.copy(password = v, errorMessage = null) }
     fun setRemember(v: Boolean) = _state.update { it.copy(rememberMe = v) }
+
+    /**
+     * 调试通道：写入假 token 跳过登录鉴权，立即进入主 App。
+     *
+     * Why: 开发服务端没起 / 跨网段不可达时，硬件相关功能（Berxel / 标定 / 扫描）
+     * 的验证不应被登录鉴权阻塞。通过登录页 DEV badge 长按触发，**不向用户暴露**。
+     * 真上线前 release 包应剥掉此入口。
+     */
+    fun devBypassLogin() {
+        viewModelScope.launch {
+            tokenStore.save(access = "dev-bypass-access", refresh = "dev-bypass-refresh")
+            _state.update { it.copy(loggedIn = true, errorMessage = null) }
+        }
+    }
 
     fun submit() {
         val s = _state.value

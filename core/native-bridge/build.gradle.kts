@@ -1,5 +1,6 @@
 plugins {
     alias(libs.plugins.gomob.android.native)
+    alias(libs.plugins.gomob.android.hilt)
 }
 
 android {
@@ -29,6 +30,7 @@ dependencies {
     api(project(":core:model"))
     implementation(libs.androidx.annotation)
     implementation(libs.timber)
+    implementation(libs.kotlinx.coroutines.android)
 
     // Berxel SDK Java 入口（jar，~14MB）。fileTree 写法在 jar 缺失时返回空集合，
     // 编译不挂；运行时调用就 ClassNotFoundException —— 让"SDK 未投放"在测试里立即暴露，
