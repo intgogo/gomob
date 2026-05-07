@@ -66,6 +66,17 @@ class BerxelService @Inject constructor(
     private val _state = MutableStateFlow<BerxelDeviceState>(BerxelDeviceState.Idle)
     val state: StateFlow<BerxelDeviceState> = _state.asStateFlow()
 
+    /**
+     * 上一次 [BerxelDeviceState.Streaming] 时收集到的设备信息 — stop 之后**不清空**。
+     *
+     * 用途：3D 主页设备卡不再常驻打开 SDK，只在点进详情页才连；关掉后用本快照展示已知信息
+     * （SN / FW / SDK / 流模式），让用户知道"上次插着的相机是哪台"，不需要重新连。
+     *
+     * 拔出 / 换设备：下次进详情页连接时自动覆盖本字段；如果用户从未连过，本字段为 null。
+     */
+    private val _lastKnownInfo = MutableStateFlow<BerxelDeviceInfo?>(null)
+    val lastKnownInfo: StateFlow<BerxelDeviceInfo?> = _lastKnownInfo.asStateFlow()
+
     private val _colorStat = MutableStateFlow<BerxelFrameStat?>(null)
     val colorStat: StateFlow<BerxelFrameStat?> = _colorStat.asStateFlow()
 
@@ -313,6 +324,7 @@ class BerxelService @Inject constructor(
             applyDefaultControls()
 
             val info = collectDeviceInfo(dev, colorMode, depthMode)
+            _lastKnownInfo.value = info
             _state.value = BerxelDeviceState.Streaming(info)
 
             readerRunning = true

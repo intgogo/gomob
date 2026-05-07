@@ -27,10 +27,11 @@ data class DepthCameraUiState(
 )
 
 /**
- * 深度相机详情子页 VM。
+ * 深度相机详情子页 VM —— 进本页才启动 SDK，离开就停。
  *
- * 跟 [Scan3dViewModel] 一样订阅 BerxelService 的状态流，但**预览渲染只在本子页**做（主页
- * 已不显示预览，避免双倍 Bitmap 转换浪费）。
+ * 设计：3D 主页 [Scan3dViewModel] 不再常驻打开相机（费电费热），改由进入详情页时启动；
+ * 三级页（info / controls / calibration）也共用本 VM 的 BerxelService 单例 — 但 `onCleared`
+ * 时才 stop()，所以三级页之间跳转不会断流（详情页 NavGraph 顶层未销毁本 VM）。
  */
 @HiltViewModel
 class DepthCameraViewModel @Inject constructor(
@@ -53,7 +54,9 @@ class DepthCameraViewModel @Inject constructor(
     val depthPreview: StateFlow<Bitmap?> = _depthPreview.asStateFlow()
 
     init {
-        // 不重复 berxel.start()：主页 VM 早就启动过；本子页只订阅
+        // 进本子页才启动 SDK（主页不再常驻）；幂等 — 已 Streaming 就 noop
+        berxel.start()
+
         viewModelScope.launch {
             var counter = 0
             berxel.colorFrames.collect { frame ->
@@ -82,6 +85,13 @@ class DepthCameraViewModel @Inject constructor(
     fun setDepthDenoise(on: Boolean) = berxel.setDepthDenoise(on)
     fun setDepthTemperatureCompensation(on: Boolean) = berxel.setDepthTemperatureCompensation(on)
     fun setColorAutoExposure(on: Boolean) = berxel.setColorAutoExposure(on)
+
+    override fun onCleared() {
+        super.onCleared()
+        // 离开详情页（导航回主页 / 退出 App）→ 停 SDK 释放 USB / 省电省热
+        // lastKnownInfo 保留在 BerxelService 里，主页继续展示
+        berxel.stop()
+    }
 
     private companion object {
         const val PREVIEW_DECIMATION = 5

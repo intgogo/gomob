@@ -74,36 +74,19 @@ fun Scan3dRoute(
             ScreenHeader(
                 title = "三维扫描",
                 eyebrow = "Berxel iHawk · 主从合一采集",
-                trailing = { RefreshIconButton(onClick = vm::retry) },
             )
         }
         item { DeviceCard(state = ui, onClick = onOpenDepthCamera) }
         item { Spacer(Modifier.height(Gomob.spacing.s12)) }
         item { ActionTilePair(onOpenScan, onOpenCalibration) }
-        item { Spacer(Modifier.height(Gomob.spacing.s16)) }
-        item { CalibrationStatusCard(onOpenCalibration = onOpenCalibration) }
         item { Spacer(Modifier.height(Gomob.spacing.s20)) }
         item { AssetSectionHeader() }
         item { AssetGrid() }
     }
 }
 
-@Composable
-private fun RefreshIconButton(onClick: () -> Unit) {
-    Box(
-        Modifier.size(Gomob.spacing.touchMin).clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            GomobIcons.Refresh,
-            contentDescription = "刷新设备",
-            tint = Gomob.colors.fg2,
-            modifier = Modifier.size(Gomob.spacing.icon20),
-        )
-    }
-}
 
-// ─── 设备卡 ──────────────────────────────────────────────────────────────────
+// ─── 设备卡（点击进详情页才会启动 SDK；本卡不显示实时 fps，只显示已知信息） ─────
 @Composable
 private fun DeviceCard(state: Scan3dDeviceUiState, onClick: () -> Unit) {
     val view = state.toView()
@@ -164,19 +147,12 @@ private fun DeviceCard(state: Scan3dDeviceUiState, onClick: () -> Unit) {
                         color = Gomob.colors.fg2,
                     )
                 }
-                Column(horizontalAlignment = Alignment.End) {
-                    Text("帧率", fontSize = 10.sp, color = Gomob.colors.fg3)
-                    Text(
-                        view.fpsText,
-                        style = Gomob.type.numInline.copy(
-                            fontSize = 22.sp,
-                            fontWeight = FontWeight.Normal,
-                            letterSpacing = (-0.01).em,
-                            lineHeight = 22.sp,
-                        ),
-                        color = view.fpsColor,
-                    )
-                }
+                Icon(
+                    GomobIcons.ArrowRight,
+                    contentDescription = null,
+                    tint = Gomob.colors.fg3,
+                    modifier = Modifier.size(16.dp).align(Alignment.CenterVertically),
+                )
             }
         }
     }
@@ -189,101 +165,87 @@ private data class DeviceCardView(
     val statusTone: StatusTone,
     val line1: String,
     val line2: String,
-    val fpsText: String,
-    val fpsColor: Color,
 )
 
 private enum class StatusTone { Ok, Warn, Bad, Neutral }
 
 @Composable
 private fun Scan3dDeviceUiState.toView(): DeviceCardView {
-    return when (val s = device) {
+    val info = lastKnownInfo
+    val title = info?.serialNumber?.ifBlank { null } ?: "iHawk"
+    val streamLine = info?.let { i ->
+        val color = i.colorMode
+        val depth = i.depthMode
+        when {
+            color != null && depth != null ->
+                "Color ${color.width}×${color.height}@${color.fps} · Depth ${depth.width}×${depth.height}@${depth.fps}"
+            color != null -> "Color ${color.width}×${color.height}@${color.fps}"
+            depth != null -> "Depth ${depth.width}×${depth.height}@${depth.fps}"
+            else -> null
+        }
+    }
+    val versionLine = info?.let { i ->
+        val sdk = i.sdkVersion.ifBlank { "" }.let { if (it.isNotEmpty()) "SDK $it" else "" }
+        val fw = i.firmwareVersion.ifBlank { "" }.let { if (it.isNotEmpty()) "FW $it" else "" }
+        listOf(sdk, fw).filter { it.isNotEmpty() }.joinToString(" · ").ifBlank { null }
+    }
+
+    return when (val s = state) {
         is BerxelDeviceState.Idle -> DeviceCardView(
-            title = "iHawk",
-            iconTint = Gomob.colors.fg3,
-            statusText = "未启动",
+            title = title,
+            iconTint = if (info != null) Gomob.colors.fg2 else Gomob.colors.fg3,
+            statusText = if (info != null) "已停止" else "未连接",
             statusTone = StatusTone.Neutral,
-            line1 = "USB-C OTG 接口待机",
-            line2 = "进入页面后自动尝试连接",
-            fpsText = "—",
-            fpsColor = Gomob.colors.fg3,
+            line1 = streamLine ?: "USB-C OTG 接 iHawk · 点击查看详情",
+            line2 = versionLine ?: "进入详情页才会启动 SDK · 节能",
         )
         is BerxelDeviceState.Initializing -> DeviceCardView(
-            title = "iHawk",
+            title = title,
             iconTint = Gomob.colors.accent,
             statusText = "加载 SDK…",
             statusTone = StatusTone.Warn,
-            line1 = "BerxelSDK Context 初始化中",
-            line2 = "约 1-2s",
-            fpsText = "—",
-            fpsColor = Gomob.colors.fg3,
+            line1 = streamLine ?: "BerxelSDK Context 初始化中",
+            line2 = versionLine ?: "约 1-2s",
         )
         is BerxelDeviceState.NoDevice -> DeviceCardView(
-            title = "iHawk",
+            title = title,
             iconTint = Gomob.colors.fg3,
             statusText = "未插入",
             statusTone = StatusTone.Warn,
             line1 = "请用 USB-C OTG 接 iHawk",
-            line2 = "右上角 ↻ 可手动刷新枚举",
-            fpsText = "—",
-            fpsColor = Gomob.colors.fg3,
+            line2 = versionLine ?: "插入后系统弹权限框，允许即可",
         )
         is BerxelDeviceState.WaitingPermission -> DeviceCardView(
-            title = "iHawk",
+            title = title,
             iconTint = Gomob.colors.accent,
             statusText = "等待 USB 授权",
             statusTone = StatusTone.Warn,
             line1 = "请在系统弹窗点 \"始终允许\"",
-            line2 = "授权一次后下次插上自动开",
-            fpsText = "—",
-            fpsColor = Gomob.colors.fg3,
+            line2 = versionLine ?: "授权一次后下次插上自动开",
         )
         is BerxelDeviceState.Opening -> DeviceCardView(
-            title = "iHawk",
+            title = title,
             iconTint = Gomob.colors.accent,
             statusText = "开流中",
             statusTone = StatusTone.Warn,
-            line1 = "Color + Depth MIX 模式",
-            line2 = "首帧到达后切已连接",
-            fpsText = "—",
-            fpsColor = Gomob.colors.fg3,
+            line1 = streamLine ?: "Color + Depth MIX 模式",
+            line2 = versionLine ?: "首帧到达后切已连接",
         )
-        is BerxelDeviceState.Streaming -> {
-            val info = s.info
-            val title = info.serialNumber.ifBlank { "iHawk · vid=0x${info.vendorId.toString(16)} pid=0x${info.productId.toString(16)}" }
-            val color = info.colorMode
-            val depth = info.depthMode
-            val line1 = when {
-                color != null && depth != null ->
-                    "Color ${color.width}×${color.height}@${color.fps} · Depth ${depth.width}×${depth.height}@${depth.fps}"
-                color != null -> "Color ${color.width}×${color.height}@${color.fps}"
-                depth != null -> "Depth ${depth.width}×${depth.height}@${depth.fps}"
-                else -> "等待第一帧"
-            }
-            val sdk = if (info.sdkVersion.isBlank()) "" else "SDK ${info.sdkVersion} · "
-            val fw = if (info.firmwareVersion.isBlank()) "FW —" else "FW ${info.firmwareVersion}"
-            // 优先用 reader 线程上一帧测出的 fps（real-time），缺帧时退到配置 fps
-            val liveFps = this.depth?.measuredFps ?: depth?.fps
-            DeviceCardView(
-                title = title,
-                iconTint = Gomob.colors.accent,
-                statusText = if (this.depth != null) "已连接" else "等帧",
-                statusTone = if (this.depth != null) StatusTone.Ok else StatusTone.Warn,
-                line1 = line1,
-                line2 = "$sdk$fw",
-                fpsText = liveFps?.let { "%.1f".format(it.toFloat()) } ?: "—",
-                fpsColor = Gomob.colors.accent,
-            )
-        }
+        is BerxelDeviceState.Streaming -> DeviceCardView(
+            title = s.info.serialNumber.ifBlank { title },
+            iconTint = Gomob.colors.accent,
+            statusText = "已连接",
+            statusTone = StatusTone.Ok,
+            line1 = streamLine ?: "Color + Depth MIX",
+            line2 = versionLine ?: "—",
+        )
         is BerxelDeviceState.Error -> DeviceCardView(
-            title = "iHawk",
+            title = title,
             iconTint = Gomob.colors.danger,
             statusText = "错误",
             statusTone = StatusTone.Bad,
             line1 = s.reason,
-            line2 = "右上角 ↻ 重试",
-            fpsText = "—",
-            fpsColor = Gomob.colors.fg3,
+            line2 = versionLine ?: "点击进详情页重试",
         )
     }
 }
@@ -429,144 +391,6 @@ private fun ActionTile(
             fontSize = 10.sp,
             lineHeight = 15.sp,
             color = Gomob.colors.fg3,
-        )
-    }
-}
-
-// ─── 标定状态卡 ─────────────────────────────────────────────────────────────
-@Composable
-private fun CalibrationStatusCard(onOpenCalibration: () -> Unit) {
-    Box(Modifier.padding(horizontal = Gomob.spacing.s20)) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .clip(Gomob.shapes.r3)
-                .background(Gomob.colors.bg1)
-                .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
-                .ticks()
-                .padding(Gomob.spacing.s14),
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
-            ) {
-                Box(
-                    Modifier
-                        .size(32.dp)
-                        .clip(Gomob.shapes.r1)
-                        .background(Gomob.colors.okSoft)
-                        .border(Gomob.spacing.hairline, Gomob.colors.okLine, Gomob.shapes.r1),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        GomobIcons.Calibrate,
-                        contentDescription = null,
-                        tint = Gomob.colors.ok,
-                        modifier = Modifier.size(Gomob.spacing.icon16),
-                    )
-                }
-                Column(Modifier.weight(1f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
-                    ) {
-                        Text("标定状态", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = Gomob.colors.fg0)
-                        Row(
-                            Modifier
-                                .height(Gomob.spacing.chipHeight)
-                                .clip(Gomob.shapes.r1)
-                                .background(Gomob.colors.okSoft)
-                                .border(Gomob.spacing.hairline, Gomob.colors.okLine, Gomob.shapes.r1)
-                                .padding(horizontal = Gomob.spacing.s8),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
-                        ) {
-                            Box(
-                                Modifier
-                                    .size(Gomob.spacing.dot6)
-                                    .clip(androidx.compose.foundation.shape.CircleShape)
-                                    .background(Gomob.colors.ok),
-                            )
-                            Text(
-                                "已校准",
-                                fontSize = 11.sp,
-                                fontFamily = FontFamily.Monospace,
-                                letterSpacing = 0.04.em,
-                                color = Gomob.colors.ok,
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(Gomob.spacing.s6))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            "双摄外参 · 内参 · 重投影 ",
-                            fontSize = 10.sp,
-                            lineHeight = 15.sp,
-                            color = Gomob.colors.fg3,
-                        )
-                        Text(
-                            "0.42 px",
-                            style = Gomob.type.numInline.copy(fontSize = 10.sp),
-                            color = Gomob.colors.fg2,
-                        )
-                    }
-                }
-                // 重新标定按钮
-                Row(
-                    Modifier
-                        .height(28.dp)
-                        .clip(Gomob.shapes.r1)
-                        .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r1)
-                        .clickable(onClick = onOpenCalibration)
-                        .padding(horizontal = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
-                ) {
-                    Text("重新标定", fontSize = 11.sp, color = Gomob.colors.fg1)
-                    Text(
-                        "›",
-                        fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace,
-                        color = Gomob.colors.accent,
-                    )
-                }
-            }
-            Spacer(Modifier.height(Gomob.spacing.s12))
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(Gomob.spacing.hairline)
-                    .background(Gomob.colors.line1),
-            )
-            Spacer(Modifier.height(10.dp))
-            // footer 行：上次 / 下次建议
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                FooterText(label = "上次 ", value = "2024/05/09 18:32")
-                FooterText(label = "下次建议 ", value = "≤ 7 天")
-            }
-        }
-    }
-}
-
-@Composable
-private fun FooterText(label: String, value: String) {
-    Row {
-        Text(
-            label,
-            fontSize = 10.sp,
-            fontFamily = FontFamily.Monospace,
-            letterSpacing = 0.04.em,
-            color = Gomob.colors.fg3,
-        )
-        Text(
-            value,
-            fontSize = 10.sp,
-            fontFamily = FontFamily.Monospace,
-            letterSpacing = 0.04.em,
-            color = Gomob.colors.fg2,
         )
     }
 }
