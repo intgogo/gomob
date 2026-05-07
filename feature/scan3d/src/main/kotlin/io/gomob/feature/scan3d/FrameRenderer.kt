@@ -44,8 +44,8 @@ internal object FrameRenderer {
     /**
      * 把 iHawk Depth 帧 16bit mm 字节流转成伪彩 ARGB_8888 Bitmap（turbo colormap）。
      *
-     * iHawk 深度像素是小端 16bit，含小数位（PixelType DEP_16BIT_12I_4D 或 _13I_3D）；
-     * 当前预览用，按"原始 16bit 当 mm"近似显示；M1.3 实测精度时再按 PixelType 校准。
+     * 契约：[DepthFrame.data] 已由 [io.gomob.nativebridge.berxel.BerxelService] 一次性
+     * 把 SDK 的 12.4 / 13.3 定点格式右移转成纯毫米整数 — 本函数直接当 mm 读，不再右移。
      *
      * 颜色映射：[minMm, maxMm] 区间线性映射到 turbo 256-stop colormap；0/无效像素出黑。
      */
@@ -64,9 +64,7 @@ internal object FrameRenderer {
         val pixels = IntArray(total)
         val span = (maxMm - minMm).coerceAtLeast(1)
         for (i in 0 until total) {
-            val raw = src.short.toInt() and 0xFFFF
-            // raw 是 12I_4D / 13I_3D 编码；预览近似当 mm 用（误差 ≤ 1mm，颜色没差别）
-            val mm = raw ushr 4
+            val mm = src.short.toInt() and 0xFFFF
             pixels[i] = if (mm == 0 || mm < minMm || mm > maxMm) {
                 0xFF000000.toInt()
             } else {

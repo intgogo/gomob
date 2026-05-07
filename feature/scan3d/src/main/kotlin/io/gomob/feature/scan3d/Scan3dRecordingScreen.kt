@@ -157,8 +157,8 @@ private fun PointCloudPreview(
     points: FloatArray,
     state: ScanRecordingState,
     modifier: Modifier = Modifier,
-    extentMm: Float = 1200f,   // 与 SessionCreate 的 gridExtentMm 对齐
-    centerZmm: Float = 600f,   // 与 SessionCreate 的 gridCenterZMm 对齐
+    extentMm: Float = 800f,    // 与 SessionCreate 的 gridExtentMm 对齐
+    centerZmm: Float = 400f,   // 与 SessionCreate 的 gridCenterZMm 对齐
 ) {
     Box(modifier.padding(horizontal = Gomob.spacing.s12)) {
         Box(

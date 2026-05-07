@@ -139,13 +139,13 @@ class Scan3dRecordingViewModel @Inject constructor(
         keyframesCount = 0
 
         try {
-            // 5mm voxel × 1200mm extent → 240³ = 13.8M voxel × 8B = ~110MB；端侧 LOG-AN10 8GB RAM 可承受
-            // gridCenterZ=600mm — 让 grid 覆盖 z[0, 1200]mm，覆盖手持 25cm-1m+ 全场景
-            // (实测真机日志：avg depth 可能 800mm+，grid 必须够大才能让 TSDF 表面 voxel 落进 (-1,+1) sdf 范围)
+            // 4mm voxel × 800mm extent → 200³ = 8M voxel × 8B = 64MB；端侧能跑
+            // gridCenterZ=400mm — 覆盖 z[0, 800]mm 兼容手持 25-80cm 全场景（PixelType
+            // DEP_16BIT_12I_4D 已在 BerxelService 端转成纯 mm，下游直接用）
             sessionHandle = NativeBridge.scanSessionCreate(
-                /*voxelSizeMm=*/5.0f,
-                /*gridExtentMm=*/1200.0f,
-                /*gridCenterZMm=*/600.0f,
+                /*voxelSizeMm=*/4.0f,
+                /*gridExtentMm=*/800.0f,
+                /*gridCenterZMm=*/400.0f,
             )
         } catch (e: Throwable) {
             _state.value = ScanRecordingState.Error("scanSessionCreate 失败: ${e.message}")

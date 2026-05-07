@@ -25,7 +25,9 @@ data class ColorFrame(
  * iHawk 单设备的深度帧。
  *
  * 字段单位：
- * - data: DirectByteBuffer，**16bit mm 深度**，0 = 无效（厂家约定）
+ * - data: DirectByteBuffer，**16bit unsigned mm 深度（小端、纯整数毫米）**；0 = 无效（厂家约定）。
+ *   SDK 原始格式可能是 12.4 / 13.3 定点，BerxelService 抽帧时已统一右移转成纯 mm，
+ *   下游所有 consumer（重建 / VIN 拓印 / colormap 渲染）直接当 mm 读，不要再 shift。
  * - depth 是否已 register 到 color 像素坐标取决于 SDK setRegistrationEnable —— 用
  *   [registeredToColor] 显式标记
  */

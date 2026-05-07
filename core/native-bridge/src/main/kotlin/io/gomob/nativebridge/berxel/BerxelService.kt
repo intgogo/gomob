@@ -466,6 +466,18 @@ class BerxelService @Inject constructor(
                 tryEmitPair(color = cf, depth = null)
             }
             StreamKind.DEPTH -> {
+                // SDK pixelType 是 BERXEL_HAWK_PIXEL_TYPE_DEP_16BIT_12I_4D 时，每个 uint16 是
+                // 12bit-int + 4bit-fraction 定点格式：raw_value / 16.0 才是真实毫米。
+                // 实测 (LOG-AN10 + iHawk-072): raw=15041 应解释为 940mm，不是 15m。
+                // 在此原地把 dst 转成纯 mm（每像素右移 4 位），下游 ingest / 拓印 / 渲染统一拿 mm。
+                if (pixelTypeName.contains("12I_4D")) {
+                    val sb = dst.asShortBuffer()
+                    val pixels = srcSize / 2
+                    for (i in 0 until pixels) {
+                        val raw = sb.get(i).toInt() and 0xFFFF
+                        sb.put(i, (raw shr 4).toShort())
+                    }
+                }
                 _depthStat.value = stat
                 val df = DepthFrame(
                     timestampUs = frame.timeStamp,
