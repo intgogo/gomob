@@ -139,12 +139,13 @@ class Scan3dRecordingViewModel @Inject constructor(
         keyframesCount = 0
 
         try {
-            // 4mm voxel × 600mm extent → 150³ = 3.4M voxel × 8B = ~27MB；端侧能跑
-            // gridCenterZ=400mm — 手持物体一般在相机前方 40cm 处，让 grid 覆盖 z[100, 700]mm
+            // 5mm voxel × 1200mm extent → 240³ = 13.8M voxel × 8B = ~110MB；端侧 LOG-AN10 8GB RAM 可承受
+            // gridCenterZ=600mm — 让 grid 覆盖 z[0, 1200]mm，覆盖手持 25cm-1m+ 全场景
+            // (实测真机日志：avg depth 可能 800mm+，grid 必须够大才能让 TSDF 表面 voxel 落进 (-1,+1) sdf 范围)
             sessionHandle = NativeBridge.scanSessionCreate(
-                /*voxelSizeMm=*/4.0f,
-                /*gridExtentMm=*/600.0f,
-                /*gridCenterZMm=*/400.0f,
+                /*voxelSizeMm=*/5.0f,
+                /*gridExtentMm=*/1200.0f,
+                /*gridCenterZMm=*/600.0f,
             )
         } catch (e: Throwable) {
             _state.value = ScanRecordingState.Error("scanSessionCreate 失败: ${e.message}")

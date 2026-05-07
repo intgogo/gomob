@@ -126,19 +126,50 @@ int SessionIngest(ScanSession* s,
         s->last_pose = p0;
         s->keyframe_poses.push_back(p0);
         s->keyframe_count = 1;
-        // 第一帧诊断：把内参 / pose / cloud / 积分体素数全打出来 — 帮上层定位"点云一直 0"
-        // 类问题（intrinsics 不对 / grid 位置偏 / depth 全 0 等）。
+        // 第一帧诊断：把内参 / pose / cloud / 积分体素数 / depth 直方图全打出来
         int valid_cloud = 0;
         for (std::size_t i = 0; i < cloud.size() / 3; ++i) {
             const float* p = cloud.data() + i * 3;
             if (p[0] != 0.f || p[1] != 0.f || p[2] != 0.f) ++valid_cloud;
         }
+        // depth 直方图 — 让 grid 覆盖范围 vs 实际物体距离的失配可立即被看到
+        uint32_t d_count = 0, d_min = 65535, d_max = 0;
+        uint64_t d_sum = 0;
+        // 5 个直方桶 [0,200) [200,500) [500,1000) [1000,2000) [2000,...)
+        int d_buckets[5] = {0, 0, 0, 0, 0};
+        for (int idx = 0; idx < width * height; ++idx) {
+            uint16_t d = depth_mm[idx];
+            if (d == 0) continue;
+            ++d_count;
+            if (d < d_min) d_min = d;
+            if (d > d_max) d_max = d;
+            d_sum += d;
+            if      (d < 200)  ++d_buckets[0];
+            else if (d < 500)  ++d_buckets[1];
+            else if (d < 1000) ++d_buckets[2];
+            else if (d < 2000) ++d_buckets[3];
+            else               ++d_buckets[4];
+        }
+        uint32_t d_avg = d_count > 0 ? static_cast<uint32_t>(d_sum / d_count) : 0;
         GOMOB_LOGI("Ingest[1st] %dx%d fx=%.2f fy=%.2f cx=%.2f cy=%.2f pose=(%.1f,%.1f,%.1f)+q "
-                   "cloud=%zu valid=%d voxelsUpdated=%d gridDim=%d origin=(%.0f,%.0f,%.0f)",
+                   "cloud=%zu valid=%d voxelsUpdated=%d gridDim=%d origin=(%.0f,%.0f,%.0f) "
+                   "extent=%.0fmm",
                    width, height, fx, fy, cx, cy, pose7[0], pose7[1], pose7[2],
                    cloud.size() / 3, valid_cloud, updated, s->tsdf.dim(),
                    s->tsdf.config().grid_origin_mm[0], s->tsdf.config().grid_origin_mm[1],
-                   s->tsdf.config().grid_origin_mm[2]);
+                   s->tsdf.config().grid_origin_mm[2], s->tsdf.config().grid_extent_mm);
+        GOMOB_LOGI("Depth hist mm: valid=%u min=%u max=%u avg=%u "
+                   "[<200=%d, 200-500=%d, 500-1000=%d, 1000-2000=%d, >2000=%d]",
+                   d_count, d_min, d_max, d_avg,
+                   d_buckets[0], d_buckets[1], d_buckets[2], d_buckets[3], d_buckets[4]);
+        // grid 与 avg depth 失配告警 — 物体不在 grid 覆盖区间内必出 nearSurf=0
+        float gz_lo = s->tsdf.config().grid_origin_mm[2];
+        float gz_hi = gz_lo + s->tsdf.config().grid_extent_mm;
+        if (d_count > 0 && (d_avg < gz_lo || d_avg > gz_hi)) {
+            GOMOB_LOGW("Ingest[1st] WARN avg depth %umm 不在 grid z[%.0f, %.0f]mm 内 — peek nearSurf 一定是 0；"
+                       "需扩 gridExtent 或调 gridCenterZ 让 grid 覆盖物体距离",
+                       d_avg, gz_lo, gz_hi);
+        }
         if (valid_cloud == 0) {
             GOMOB_LOGW("Ingest[1st] WARN cloud 全 0 — 检查 depth 是否全 0 (sdk 流没上来) 或 fx/fy/cx/cy 非法");
         }
