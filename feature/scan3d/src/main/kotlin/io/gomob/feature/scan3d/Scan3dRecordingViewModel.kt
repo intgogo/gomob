@@ -1,6 +1,7 @@
 package io.gomob.feature.scan3d
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -86,6 +87,12 @@ class Scan3dRecordingViewModel @Inject constructor(
     private val _pointCloudPreview = MutableStateFlow<FloatArray>(FloatArray(0))
     val pointCloudPreview: StateFlow<FloatArray> = _pointCloudPreview.asStateFlow()
 
+    private val _colorPreview = MutableStateFlow<Bitmap?>(null)
+    val colorPreview: StateFlow<Bitmap?> = _colorPreview.asStateFlow()
+
+    private val _depthPreview = MutableStateFlow<Bitmap?>(null)
+    val depthPreview: StateFlow<Bitmap?> = _depthPreview.asStateFlow()
+
     /** SDK 设备状态 — UI 用来判定开始按钮是否可用 */
     val deviceState: StateFlow<BerxelDeviceState> = berxel.state
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), BerxelDeviceState.Idle)
@@ -98,8 +105,27 @@ class Scan3dRecordingViewModel @Inject constructor(
     private var keyframesCount: Int = 0
 
     init {
-        // 进入扫描页即启动 SDK（幂等）；扫描页不显示原始 Color/Depth 预览，只显示点云累积进度
+        // 进入扫描页即启动 SDK（幂等）+ collect Color/Depth 预览帧（横排小窗给用户看实时画面）
         berxel.start()
+
+        viewModelScope.launch {
+            var counter = 0
+            berxel.colorFrames.collect { frame ->
+                counter++
+                if (counter % PREVIEW_DECIMATION != 0) return@collect
+                val bmp = withContext(Dispatchers.Default) { FrameRenderer.colorRgb24ToBitmap(frame) }
+                _colorPreview.value = bmp
+            }
+        }
+        viewModelScope.launch {
+            var counter = 0
+            berxel.depthFrames.collect { frame ->
+                counter++
+                if (counter % PREVIEW_DECIMATION != 0) return@collect
+                val bmp = withContext(Dispatchers.Default) { FrameRenderer.depth16ToBitmap(frame) }
+                _depthPreview.value = bmp
+            }
+        }
     }
 
     /** 用户点"开始扫描" — 建 native session + 启动 ingest 协程 */
@@ -113,9 +139,12 @@ class Scan3dRecordingViewModel @Inject constructor(
         keyframesCount = 0
 
         try {
+            // 4mm voxel × 600mm extent → 150³ = 3.4M voxel × 8B = ~27MB；端侧能跑
+            // gridCenterZ=400mm — 手持物体一般在相机前方 40cm 处，让 grid 覆盖 z[100, 700]mm
             sessionHandle = NativeBridge.scanSessionCreate(
-                /*voxelSizeMm=*/2.0f,
-                /*gridExtentMm=*/400.0f,
+                /*voxelSizeMm=*/4.0f,
+                /*gridExtentMm=*/600.0f,
+                /*gridCenterZMm=*/400.0f,
             )
         } catch (e: Throwable) {
             _state.value = ScanRecordingState.Error("scanSessionCreate 失败: ${e.message}")
@@ -258,5 +287,6 @@ class Scan3dRecordingViewModel @Inject constructor(
         private const val TAG = "Scan3dRecordingVM"
         private const val PREVIEW_PEEK_INTERVAL_MS = 500L
         private const val MAX_PREVIEW_VERTICES = 5000
+        private const val PREVIEW_DECIMATION = 5
     }
 }

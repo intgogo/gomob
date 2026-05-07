@@ -1,6 +1,8 @@
 package io.gomob.feature.scan3d
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -27,7 +29,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -59,6 +64,8 @@ fun Scan3dRecordingRoute(
     val state by vm.state.collectAsStateWithLifecycle()
     val device by vm.deviceState.collectAsStateWithLifecycle()
     val cloud by vm.pointCloudPreview.collectAsStateWithLifecycle()
+    val colorBmp by vm.colorPreview.collectAsStateWithLifecycle()
+    val depthBmp by vm.depthPreview.collectAsStateWithLifecycle()
 
     Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
         BackHeader(
@@ -74,6 +81,9 @@ fun Scan3dRecordingRoute(
             ),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
+            // 顶部 RGB / Depth 横排小窗，给用户看实时画面（对准物体用）
+            item { LiveStreamRow(colorBmp = colorBmp, depthBmp = depthBmp) }
+            // 中部大方形：累积点云 top-view
             item {
                 PointCloudPreview(
                     points = cloud,
@@ -93,13 +103,62 @@ fun Scan3dRecordingRoute(
     }
 }
 
+// ─── RGB / Depth 横排实时小窗 ────────────────────────────────────────────────
+
+@Composable
+private fun LiveStreamRow(colorBmp: Bitmap?, depthBmp: Bitmap?) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = Gomob.spacing.s16),
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+    ) {
+        StreamCell(label = "RGB",   bitmap = colorBmp, modifier = Modifier.weight(1f))
+        StreamCell(label = "DEPTH", bitmap = depthBmp, modifier = Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun StreamCell(label: String, bitmap: Bitmap?, modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .aspectRatio(4f / 3f)
+            .clip(Gomob.shapes.r2)
+            .background(Gomob.colors.bg2)
+            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r2),
+    ) {
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = label,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit,
+                filterQuality = FilterQuality.Low,
+            )
+        } else {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("等待 $label", style = Gomob.type.caption, color = Gomob.colors.fg3)
+            }
+        }
+        Text(
+            label,
+            style = Gomob.type.eyebrow,
+            color = Gomob.colors.fg2,
+            modifier = Modifier
+                .padding(Gomob.spacing.s6)
+                .clip(Gomob.shapes.r1)
+                .background(Gomob.colors.bg0.copy(alpha = 0.7f))
+                .padding(horizontal = 4.dp, vertical = 1.dp),
+        )
+    }
+}
+
 // ─── 累积点云预览（top-view 2D 投影） ────────────────────────────────────────
 
 @Composable
 private fun PointCloudPreview(
     points: FloatArray,
     state: ScanRecordingState,
-    extentMm: Float = 400f,
+    extentMm: Float = 600f,    // 与 SessionCreate 的 gridExtentMm 对齐
+    centerZmm: Float = 400f,   // 与 SessionCreate 的 gridCenterZMm 对齐
 ) {
     Box(Modifier.padding(horizontal = Gomob.spacing.s16)) {
         Box(
@@ -114,7 +173,7 @@ private fun PointCloudPreview(
             Canvas(Modifier.fillMaxSize()) {
                 drawGrid()
                 if (points.isNotEmpty()) {
-                    drawPointCloudTopView(points, extentMm)
+                    drawPointCloudTopView(points, extentMm, centerZmm)
                 }
             }
             // 角标
@@ -171,19 +230,21 @@ private fun DrawScope.drawGrid() {
     drawLine(cross, Offset(0f, h / 2), Offset(w, h / 2), strokeWidth = 1f)
 }
 
-private fun DrawScope.drawPointCloudTopView(points: FloatArray, extentMm: Float) {
-    // top-view: 世界系 (x, z) → canvas (cx + x*scale, cy - z*scale)
-    // (用 z 作为屏幕 y，因为相机一般在 ±z 方向，物体在原点 → top-view 看着自然)
+private fun DrawScope.drawPointCloudTopView(points: FloatArray, extentMm: Float, centerZmm: Float) {
+    // top-view: 世界系 (x, z) → canvas
+    //   x: 中心在画布中央，向右为正
+    //   z: grid 中心 = centerZmm，画布上 z=centerZmm 对应画布中心
+    //   相机在世界 z=0，朝 +z 看物体；画布上"屏幕下方"= z 小（靠近相机）
     val cx = size.width / 2
     val cy = size.height / 2
-    val scale = (size.width * 0.45f) / (extentMm * 0.5f)  // 让 ±extent/2 占画布 90%
+    val scale = (size.width * 0.9f) / extentMm  // 让 extent 占画布 90%
     val n = points.size / 3
-    val accent = Color(0xFF7DB8FF)  // 接近 Gomob.colors.accent，但 Canvas 不能直拿 theme
+    val accent = Color(0xFF7DB8FF)  // 接近 Gomob.colors.accent
     for (i in 0 until n) {
         val x = points[i * 3]
         val z = points[i * 3 + 2]
         val px = cx + x * scale
-        val py = cy - z * scale
+        val py = cy - (z - centerZmm) * scale  // 把 grid 中心对到画布中心；z 大 → 画布上方
         if (px < 0f || px >= size.width || py < 0f || py >= size.height) continue
         drawCircle(accent.copy(alpha = 0.8f), radius = 2f, center = Offset(px, py))
     }

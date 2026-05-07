@@ -77,14 +77,20 @@ static std::vector<float> TransformCloud(const std::vector<float>& cam_cloud,
     return out;
 }
 
-ScanSession* SessionCreate(float voxel_size_mm, float grid_extent_mm) {
+/**
+ * @param grid_center_z_mm grid 沿世界 z 轴的中心偏移：相机系朝 +z，手持物体一般在 +z 方向
+ *        25–80cm 处；grid 中心放在 (0, 0, grid_center_z_mm) 让物体落进 grid 内。
+ *        用户手持扫描默认 400mm（40cm 中心，覆盖 [center-extent/2, center+extent/2]）。
+ *        若上层用 IMU/外部 SLAM 给精确世界系 pose，可传 0.0 让 grid 中心在原点。
+ */
+ScanSession* SessionCreate(float voxel_size_mm, float grid_extent_mm, float grid_center_z_mm) {
     TsdfConfig cfg;
-    cfg.voxel_size_mm = voxel_size_mm > 0.5f ? voxel_size_mm : 2.0f;
-    cfg.grid_extent_mm = grid_extent_mm > 50.f ? grid_extent_mm : 400.0f;
+    cfg.voxel_size_mm = voxel_size_mm > 0.5f ? voxel_size_mm : 4.0f;
+    cfg.grid_extent_mm = grid_extent_mm > 50.f ? grid_extent_mm : 600.0f;
     cfg.truncation_dist_mm = std::max(4.0f * cfg.voxel_size_mm, 8.0f);
     cfg.weight_clamp = 100.0f;
     float half = cfg.grid_extent_mm * 0.5f;
-    cfg.grid_origin_mm = {-half, -half, -half};
+    cfg.grid_origin_mm = {-half, -half, grid_center_z_mm - half};
     return new ScanSession(cfg);
 }
 
@@ -190,7 +196,7 @@ std::vector<float> SessionPeekVertices(ScanSession* s, int max_vertices) {
                 float sdf, w;
                 tsdf.Get(i, j, k, sdf, w);
                 if (w < 1.f) continue;
-                if (std::abs(sdf) > 0.4f) continue;  // 近零等值面（归一化到 ±1）
+                if (std::abs(sdf) > 0.6f) continue;  // 近零等值面（归一化到 ±1）— 放宽阈值便于早期帧能 peek 出点
                 auto c = tsdf.VoxelCenter(i, j, k);
                 out.push_back(c[0]);
                 out.push_back(c[1]);

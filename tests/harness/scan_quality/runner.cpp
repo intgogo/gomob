@@ -28,7 +28,7 @@
 
 namespace gomob::reconstruction {
 struct ScanSession;
-ScanSession* SessionCreate(float voxel_size_mm, float grid_extent_mm);
+ScanSession* SessionCreate(float voxel_size_mm, float grid_extent_mm, float grid_center_z_mm);
 int SessionIngest(ScanSession*,
                   const uint16_t* depth_mm, int width, int height,
                   double fx, double fy, double cx, double cy,
@@ -143,7 +143,8 @@ int main(int argc, char** argv) {
 
     auto t_start = std::chrono::steady_clock::now();
 
-    ScanSession* s = SessionCreate(a.voxel_mm, a.extent_mm);
+    // harness 物体放在原点 → grid_center_z=0
+    ScanSession* s = SessionCreate(a.voxel_mm, a.extent_mm, /*grid_center_z_mm=*/0.0f);
     const int W = 240, H = 240;
     const double fx = 200.0, fy = 200.0, cx = 120.0, cy = 120.0;
     const float cam_dist = a.radius_mm * 4.2f; // 视野 + 距离合理

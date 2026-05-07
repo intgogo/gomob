@@ -36,7 +36,7 @@ namespace fusion {
 }
 namespace reconstruction {
     struct ScanSession;
-    ScanSession* SessionCreate(float voxel_size_mm, float grid_extent_mm);
+    ScanSession* SessionCreate(float voxel_size_mm, float grid_extent_mm, float grid_center_z_mm);
     int SessionIngest(
         ScanSession* s,
         const uint16_t* depth_mm, int width, int height,
@@ -189,8 +189,8 @@ Java_io_gomob_nativebridge_NativeBridge_icpRegister(
 JNIEXPORT jlong JNICALL
 Java_io_gomob_nativebridge_NativeBridge_scanSessionCreate(
         JNIEnv* /*env*/, jobject /*thiz*/,
-        jfloat voxelSizeMm, jfloat gridExtentMm) {
-    auto* s = gomob::reconstruction::SessionCreate(voxelSizeMm, gridExtentMm);
+        jfloat voxelSizeMm, jfloat gridExtentMm, jfloat gridCenterZMm) {
+    auto* s = gomob::reconstruction::SessionCreate(voxelSizeMm, gridExtentMm, gridCenterZMm);
     return reinterpret_cast<jlong>(s);
 }
 

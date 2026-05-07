@@ -79,10 +79,17 @@ object NativeBridge {
     /**
      * 创建一个扫描会话。返回 native session handle（Long），后续 Ingest/Finalize 用。
      *
-     * @param voxelSizeMm TSDF 体素边长（默认 2mm，物体 ≤ 30cm 时；大物体调到 5mm）
+     * @param voxelSizeMm TSDF 体素边长（默认 4mm，物体 ≤ 60cm 时；小物体可调 2mm）
      * @param gridExtentMm TSDF 网格边长（mm），决定可重建空间立方体大小
+     * @param gridCenterZMm grid 沿世界 z 轴的中心偏移；手持扫描 pose=identity 时物体在
+     *   相机前方 +z 方向 25–80cm 处，传 400.0f 把 grid 中心放到 z=400mm 让物体落进 grid。
+     *   若上层传精确世界系 pose 让物体落在原点附近，可传 0.0f。
      */
-    external fun scanSessionCreate(voxelSizeMm: Float, gridExtentMm: Float): Long
+    external fun scanSessionCreate(
+        voxelSizeMm: Float,
+        gridExtentMm: Float,
+        gridCenterZMm: Float,
+    ): Long
 
     /**
      * 喂一帧深度 + pose，session 内部 TSDF 累积。

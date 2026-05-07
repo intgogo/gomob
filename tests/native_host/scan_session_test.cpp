@@ -27,7 +27,7 @@
 
 namespace gomob::reconstruction {
 struct ScanSession;
-ScanSession* SessionCreate(float voxel_size_mm, float grid_extent_mm);
+ScanSession* SessionCreate(float voxel_size_mm, float grid_extent_mm, float grid_center_z_mm);
 int SessionIngest(ScanSession*,
                   const uint16_t* depth_mm, int width, int height,
                   double fx, double fy, double cx, double cy,
@@ -98,7 +98,8 @@ int TestEndToEndSphere() {
     std::filesystem::create_directories(out);
 
     // SessionCreate：物体半径 60mm → grid_extent 200mm 充足，voxel 4mm 求精度速度平衡
-    ScanSession* s = SessionCreate(/*voxel_size_mm=*/4.0f, /*grid_extent_mm=*/200.0f);
+    // 测试中物体在原点 → grid_center_z=0
+    ScanSession* s = SessionCreate(/*voxel_size_mm=*/4.0f, /*grid_extent_mm=*/200.0f, /*grid_center_z_mm=*/0.0f);
 
     const int W = 240, H = 240;          // 减小帧分辨率加速
     const double fx = 200.0, fy = 200.0; // 视场半角 ~31°
