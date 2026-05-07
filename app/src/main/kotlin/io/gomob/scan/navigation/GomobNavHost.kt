@@ -102,7 +102,9 @@ fun GomobNavHost() {
                 // ---- 3D + 二级 ----
                 composable(ROUTE_SCAN3D) {
                     Scan3dRoute(
-                        // 三维外廓扫描入口 → 深度相机详情页（emphasis NavRow 进 Recording）
+                        // 三维外廓扫描入口 → 直接进 RecordingScreen（自包含预览 + 开始/停止）
+                        onOpenContourScan = { nav.navigate("scan3d/recording") },
+                        // 设备卡入口 → 深度相机详情页（看设备 / 调控制 / 标定 — 不含扫描动作）
                         onOpenDepthCamera = { nav.navigate("scan3d/depth-camera") },
                         // VIN 数码拓印入口 → 暂用 ScanCaptureRoute (VIN 风格 stub)；M4 实施时换真路由
                         onOpenVinRectify = { nav.navigate("scan3d/scan") },
@@ -120,7 +122,6 @@ fun GomobNavHost() {
                         onOpenInfo = { nav.navigate("scan3d/depth-camera/info") },
                         onOpenControls = { nav.navigate("scan3d/depth-camera/controls") },
                         onOpenCalibration = { nav.navigate("scan3d/depth-camera/calibration") },
-                        onStartRecording = { nav.navigate("scan3d/recording") },
                     )
                 }
                 composable("scan3d/depth-camera/info") {

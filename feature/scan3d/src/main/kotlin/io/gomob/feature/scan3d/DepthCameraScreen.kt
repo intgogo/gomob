@@ -56,7 +56,6 @@ fun DepthCameraRoute(
     onOpenInfo: () -> Unit = {},
     onOpenControls: () -> Unit = {},
     onOpenCalibration: () -> Unit = {},
-    onStartRecording: () -> Unit = {},
     vm: DepthCameraViewModel = hiltViewModel(),
 ) {
     val ui by vm.uiState.collectAsStateWithLifecycle()
@@ -79,13 +78,7 @@ fun DepthCameraRoute(
             item { Spacer(Modifier.height(Gomob.spacing.s4)) }
             item {
                 SectionList {
-                    NavRow(
-                        title = "开始三维外廓扫描",
-                        subtitle = "ICP + TSDF + Marching Tetrahedra → mesh 文件",
-                        onClick = onStartRecording,
-                        emphasis = true,
-                    )
-                    SettingRowDivider()
+                    // 「开始三维外廓扫描」入口已上移到 3D 主页 ActionTile 01；本页只关心设备本身
                     NavRow(title = "设备详情", subtitle = "序列号 / 流模式 / 内参 / 帧统计", onClick = onOpenInfo)
                     SettingRowDivider()
                     NavRow(title = "成像控制", subtitle = "Color / Depth 曝光 · 去噪 · 配准", onClick = onOpenControls)
@@ -179,22 +172,16 @@ internal fun SectionList(content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun NavRow(
-    title: String,
-    subtitle: String,
-    onClick: () -> Unit,
-    emphasis: Boolean = false,
-) {
+private fun NavRow(title: String, subtitle: String, onClick: () -> Unit) {
     SettingRow(
         title = title,
-        titleColor = if (emphasis) Gomob.colors.accent else Gomob.colors.fg0,
         subtitle = subtitle,
         onClick = onClick,
         trailing = {
             Icon(
                 Icons.AutoMirrored.Filled.KeyboardArrowRight,
                 contentDescription = null,
-                tint = if (emphasis) Gomob.colors.accent else Gomob.colors.fg3,
+                tint = Gomob.colors.fg3,
             )
         },
     )

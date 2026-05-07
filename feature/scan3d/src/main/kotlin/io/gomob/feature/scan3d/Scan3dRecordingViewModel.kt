@@ -1,18 +1,22 @@
 package io.gomob.feature.scan3d
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.gomob.nativebridge.NativeBridge
+import io.gomob.nativebridge.berxel.BerxelDeviceState
 import io.gomob.nativebridge.berxel.BerxelService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -21,7 +25,7 @@ import javax.inject.Inject
 /**
  * 三维外廓扫描录制状态机。
  *
- * - [Idle]：未开始 / 上一次完成已取消
+ * - [Idle]：进 Screen 即此状态，SDK 已 start 出预览，等用户点"开始"
  * - [Recording]：正在喂深度帧到 native session（每帧 framesIngested++，关键帧来自 native 计数）
  * - [Finalizing]：用户/自动停止后，native 跑 Marching Tetrahedra + 写文件中（耗时）
  * - [Completed]：finalize 出 mesh，UI 显示统计 + outDir 路径
@@ -47,15 +51,19 @@ sealed interface ScanRecordingState {
 }
 
 /**
- * 三维外廓扫描 VM。
+ * 三维外廓扫描 VM —— 自包含 SDK 生命周期 + 实时预览 + native scanSession 三段。
  *
  * 生命周期：
- *   - 进 RecordingScreen → 用户点"开始" → start()
- *   - 帧流：berxel.depthFrames.collect → NativeBridge.scanSessionIngest 每帧
- *   - 用户点"停止" / 60s 自动判停 → stop()  →  Finalizing → Marching Tetrahedra → Completed
- *   - 离开 Screen → onCleared() 清场（含未 finalize 的 session 强制 close）
+ *   - VM 创建（进 Screen）→ init.start() 启动 BerxelService（已 streaming 时幂等）+ collect
+ *     colorFrames/depthFrames 出 Bitmap 给 UI 预览
+ *   - 用户点"开始" → start()：建 native session 并把 depthFrames 喂进去
+ *   - 用户点"停止" → stop() → Finalizing → Marching Tetrahedra → Completed
+ *   - VM cleared（退栈）→ onCleared() 关 native session + 停 SDK 释放 USB
  *
- * 不在 init 启动 SDK — DepthCameraViewModel 已 start() 过；本 VM 只 collect 帧不管 SDK 启停。
+ * 不嵌套：本 VM 与 [DepthCameraViewModel] 都做 init.start / onCleared.stop；为避免嵌套
+ * 入栈时 Recording 关 SDK 让上游 DepthCamera VM 看到空流，**不再从 DepthCameraScreen 提供
+ * 进入 Recording 的入口**（DepthCameraScreen 的 emphasis NavRow 已删，3D 主页 ActionTile 01
+ * 直接进 Recording）。
  *
  * pose7：第一阶段统一传 identity，让 native ICP 自估。后续接 IMU 时可在每帧给"IMU 估计的姿态"
  * 作为 ICP 初值（提高鲁棒性）。
@@ -69,14 +77,48 @@ class Scan3dRecordingViewModel @Inject constructor(
     private val _state = MutableStateFlow<ScanRecordingState>(ScanRecordingState.Idle)
     val state: StateFlow<ScanRecordingState> = _state.asStateFlow()
 
+    private val _colorPreview = MutableStateFlow<Bitmap?>(null)
+    val colorPreview: StateFlow<Bitmap?> = _colorPreview.asStateFlow()
+
+    private val _depthPreview = MutableStateFlow<Bitmap?>(null)
+    val depthPreview: StateFlow<Bitmap?> = _depthPreview.asStateFlow()
+
+    /** SDK 设备状态（NoDevice / WaitingPermission / Streaming / Error 等），UI 顶部状态条用 */
+    val deviceState: StateFlow<BerxelDeviceState> = berxel.state
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), BerxelDeviceState.Idle)
+
     @Volatile private var sessionHandle: Long = 0L
     private var ingestJob: Job? = null
     private var startedAtMs: Long = 0L
     private var framesIngested: Int = 0
     private var keyframesCount: Int = 0
 
+    init {
+        // 进入扫描页即启动 SDK（幂等）+ 收预览帧
+        berxel.start()
+
+        viewModelScope.launch {
+            var counter = 0
+            berxel.colorFrames.collect { frame ->
+                counter++
+                if (counter % PREVIEW_DECIMATION != 0) return@collect
+                val bmp = withContext(Dispatchers.Default) { FrameRenderer.colorRgb24ToBitmap(frame) }
+                _colorPreview.value = bmp
+            }
+        }
+        viewModelScope.launch {
+            var counter = 0
+            berxel.depthFrames.collect { frame ->
+                counter++
+                if (counter % PREVIEW_DECIMATION != 0) return@collect
+                val bmp = withContext(Dispatchers.Default) { FrameRenderer.depth16ToBitmap(frame) }
+                _depthPreview.value = bmp
+            }
+        }
+    }
+
+    /** 用户点"开始扫描" — 建 native session + 启动 ingest 协程 */
     fun start() {
-        // 已在 Recording / Finalizing 时不重复启动
         if (_state.value is ScanRecordingState.Recording ||
             _state.value is ScanRecordingState.Finalizing) {
             return
@@ -178,10 +220,18 @@ class Scan3dRecordingViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        reset()
+        ingestJob?.cancel()
+        ingestJob = null
+        if (sessionHandle != 0L) {
+            runCatching { NativeBridge.scanSessionClose(sessionHandle) }
+            sessionHandle = 0L
+        }
+        // 退栈 → 停 SDK 释放 USB / 省电省热（lastKnownInfo 保留在 BerxelService 单例里）
+        berxel.stop()
     }
 
     companion object {
         private const val TAG = "Scan3dRecordingVM"
+        private const val PREVIEW_DECIMATION = 5
     }
 }

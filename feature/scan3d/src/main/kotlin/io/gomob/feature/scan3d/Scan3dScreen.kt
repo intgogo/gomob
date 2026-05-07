@@ -60,6 +60,7 @@ const val SCAN3D_ROUTE = "scan3d"
 @Composable
 fun Scan3dRoute(
     cameraSlot: @Composable () -> Unit = {},
+    onOpenContourScan: () -> Unit = {},
     onOpenDepthCamera: () -> Unit = {},
     onOpenVinRectify: () -> Unit = {},
     vm: Scan3dViewModel = hiltViewModel(),
@@ -75,11 +76,12 @@ fun Scan3dRoute(
                 eyebrow = "Berxel iHawk · 主从合一采集",
             )
         }
+        // 设备卡 → 深度相机详情页（看预览 + 调控制 + 标定）
         item { DeviceCard(state = ui, onClick = onOpenDepthCamera) }
         item { Spacer(Modifier.height(Gomob.spacing.s12)) }
-        // 三维外廓扫描 → 深度相机详情页（看预览 + 控制 + 点 emphasis NavRow 进 Recording）
-        // VIN 数码拓印 → ScanCaptureRoute（VIN 风格 stub，M4 实施时换真路由）
-        item { ActionTilePair(onOpenContourScan = onOpenDepthCamera, onOpenVinRectify = onOpenVinRectify) }
+        // ActionTile 01 三维外廓扫描 → 直接进 RecordingScreen（自包含预览 + 开始/停止）
+        // ActionTile 02 VIN 数码拓印 → ScanCaptureRoute (M4 实施前的 VIN 风格 stub)
+        item { ActionTilePair(onOpenContourScan = onOpenContourScan, onOpenVinRectify = onOpenVinRectify) }
         item { Spacer(Modifier.height(Gomob.spacing.s20)) }
         item { AssetSectionHeader() }
         item { AssetGrid() }
