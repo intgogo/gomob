@@ -15,19 +15,31 @@ import android.util.Log
 import com.berxel.berxelInterface.api.BerxelHawkContext
 import com.berxel.berxelInterface.api.BerxelHawkDevice
 import com.berxel.berxelInterface.api.admitenum.BerxelHawkDeviceStatusEnum
+import com.berxel.berxelInterface.api.admitenum.BerxelHawkPixelTypeEnum
 import com.berxel.berxelInterface.api.admitenum.BerxelHawkStreamFlagEnum
 import com.berxel.berxelInterface.api.admitenum.BerxelHawkStreamTypeEnum
+import com.berxel.berxelInterface.api.admitmode.BerxelHawkCameraIntrinsic
 import com.berxel.berxelInterface.api.admitmode.BerxelHawkFrame
+import com.berxel.berxelInterface.api.admitmode.BerxelHawkStreamFrameMode
 import dagger.hilt.android.qualifiers.ApplicationContext
+import io.gomob.model.CameraIntrinsics
+import io.gomob.model.ColorFrame
+import io.gomob.model.DepthFrame
+import io.gomob.model.RgbdFramePair
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -58,6 +70,49 @@ class BerxelService @Inject constructor(
 
     private val _depthStat = MutableStateFlow<BerxelFrameStat?>(null)
     val depthStat: StateFlow<BerxelFrameStat?> = _depthStat.asStateFlow()
+
+    /**
+     * Color/Depth/RgbdPair 实时帧流。
+     *
+     * 设计选择 SharedFlow（不是 StateFlow / Channel）的原因：
+     * - StateFlow 会"覆盖未消费帧"，且只对最新值；订阅者跟不上时丢的是旧帧 — 对 30 fps
+     *   预览正合适
+     * - Channel 是单消费，但我们想多个订阅者（预览 UI + 重建管线 + harness 录制）
+     * - extraBufferCapacity = 1 + DROP_OLDEST：reader 永不阻塞；订阅者慢就丢旧
+     *
+     * 帧数据所有权：emit 出去的 ByteBuffer 是 reader 线程**新分配**的 DirectByteBuffer，
+     * SDK 内部 Frame 已 GC（reader 不留引用），消费方可安全长期持有。
+     */
+    private val _colorFrames = MutableSharedFlow<ColorFrame>(
+        replay = 0,
+        extraBufferCapacity = 1,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+    )
+    val colorFrames: SharedFlow<ColorFrame> = _colorFrames.asSharedFlow()
+
+    private val _depthFrames = MutableSharedFlow<DepthFrame>(
+        replay = 0,
+        extraBufferCapacity = 1,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+    )
+    val depthFrames: SharedFlow<DepthFrame> = _depthFrames.asSharedFlow()
+
+    /** 同 frameIndex 配对的 RGBD pair；VIN 拓印 / fusion 用。 */
+    private val _rgbdPairs = MutableSharedFlow<RgbdFramePair>(
+        replay = 0,
+        extraBufferCapacity = 1,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+    )
+    val rgbdPairs: SharedFlow<RgbdFramePair> = _rgbdPairs.asSharedFlow()
+
+    /** 同 frameIndex 配对器：reader 线程间共享，靠 frameIndex 两边相遇就 emit pair。 */
+    @Volatile private var pendingColor: ColorFrame? = null
+    @Volatile private var pendingDepth: DepthFrame? = null
+    private val pairLock = Any()
+
+    /** 内参：onDeviceOpened 时从 SDK 读出，所有后续帧 emit 时塞进 ColorFrame/DepthFrame.intrinsics。 */
+    @Volatile private var currentColorIntrinsics: CameraIntrinsics? = null
+    @Volatile private var currentDepthIntrinsics: CameraIntrinsics? = null
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -240,6 +295,10 @@ class BerxelService @Inject constructor(
                 return
             }
 
+            // 读出内参（出厂值；M1.3 实测精度后决定是否需要自标定覆盖）
+            currentColorIntrinsics = readIntrinsics(dev, colorMode, "color")
+            currentDepthIntrinsics = readIntrinsics(dev, depthMode, "depth")
+
             val info = collectDeviceInfo(dev, colorMode, depthMode)
             _state.value = BerxelDeviceState.Streaming(info)
 
@@ -249,6 +308,43 @@ class BerxelService @Inject constructor(
         } catch (t: Throwable) {
             Log.e(TAG, "onDeviceOpened 异常", t)
             _state.value = BerxelDeviceState.Error(t.message ?: t.javaClass.simpleName)
+        }
+    }
+
+    /**
+     * 从 SDK 读 [BerxelHawkCameraIntrinsic] 转成 core:model 的 [CameraIntrinsics]。
+     *
+     * SDK 的 `getCameraIntriscParams()` 返**一组**参数 — color/depth 共用，不区分 stream type。
+     * 实测 (2026-05-07 LOG-AN10 + iHawk-072): fx=771.79 fy=771.30 cx=630.20 cy=395.90，
+     * 但当前 stream 是 640×400，cx/cy 大于宽高的一半 → 这是 SDK 出厂参数针对的是 **registration
+     * 后的虚拟统一相机**或基础分辨率（可能是 1280×800）。M1.3 实测精度时要校准：
+     *   - setRegistrationEnable(true) 是否影响这组参数
+     *   - 不同分辨率切换时 SDK 是否自动 rescale
+     *   - getDeviceIntriscParams(FloatBuffer) 接口是否给两路独立参数
+     * 当前两路都用同一调用，预览看着没问题；进算法（ICP / 拓印）前必须解决。
+     */
+    private fun readIntrinsics(
+        dev: BerxelHawkDevice,
+        mode: BerxelHawkStreamFrameMode?,
+        tag: String,
+    ): CameraIntrinsics? {
+        val intr: BerxelHawkCameraIntrinsic = runCatching { dev.cameraIntriscParams }.getOrNull() ?: run {
+            Log.w(TAG, "$tag intrinsics 读取失败 — 用默认 0，M1.3 实测精度时再修")
+            return null
+        }
+        if (mode == null) return null
+        return CameraIntrinsics(
+            fx = intr.fxParam.toDouble(), fy = intr.fyParam.toDouble(),
+            cx = intr.cxParam.toDouble(), cy = intr.cyParam.toDouble(),
+            distortion = doubleArrayOf(
+                intr.k1Param.toDouble(), intr.k2Param.toDouble(),
+                intr.p1Param.toDouble(), intr.p2Param.toDouble(),
+                intr.k3Param.toDouble(),
+            ),
+            width = mode.resolutionX,
+            height = mode.resolutionY,
+        ).also {
+            Log.i(TAG, "$tag intrinsics fx=${it.fx} fy=${it.fy} cx=${it.cx} cy=${it.cy} ${mode.resolutionX}x${mode.resolutionY}")
         }
     }
 
@@ -268,23 +364,128 @@ class BerxelService @Inject constructor(
                 null
             }
             if (frame != null) {
-                val stat = BerxelFrameStat(
-                    frameIndex = frame.frameIndex,
-                    measuredFps = frame.fps,
-                    timestampUs = frame.timeStamp,
-                    receivedAtElapsedMs = SystemClock.elapsedRealtime(),
-                    width = frame.width,
-                    height = frame.height,
-                )
-                when (kind) {
-                    StreamKind.COLOR -> _colorStat.value = stat
-                    StreamKind.DEPTH -> _depthStat.value = stat
-                }
+                processFrame(kind, frame)
             }
             // SDK 不需要 release frame；GC 自动回收（Frame 内部 mFrameHandle 由 finalizer 处理）。
         }
         Log.i(TAG, "$kind reader 退出")
     }
+
+    /**
+     * Reader 线程内：把 SDK Frame 的字节拷贝到独立 DirectByteBuffer + 包成 core:model 的
+     * Color/DepthFrame + emit；emit 后尝试跟 pendingColor / pendingDepth 配对成 RgbdFramePair。
+     *
+     * 不变量：emit 出去的 ByteBuffer 与 SDK Frame 完全脱钩，订阅方可任意时机持有。
+     */
+    private fun processFrame(kind: StreamKind, frame: BerxelHawkFrame) {
+        val stat = BerxelFrameStat(
+            frameIndex = frame.frameIndex,
+            measuredFps = frame.fps,
+            timestampUs = frame.timeStamp,
+            receivedAtElapsedMs = SystemClock.elapsedRealtime(),
+            width = frame.width,
+            height = frame.height,
+        )
+
+        // 拷贝 SDK 帧字节到我们的 DirectByteBuffer（脱离 SDK 生命周期）
+        val srcData = frame.data
+        val srcSize = frame.dataSize
+        if (srcData == null || srcSize <= 0) {
+            Log.w(TAG, "$kind frame data null or empty (size=$srcSize)")
+            return
+        }
+        val dst = ByteBuffer.allocateDirect(srcSize).order(ByteOrder.nativeOrder())
+        // src 是 SDK 内部 buffer，可能 position != 0 / limit != capacity；duplicate + rewind 安全拷
+        val srcDup = srcData.duplicate().order(ByteOrder.nativeOrder())
+        srcDup.rewind()
+        srcDup.limit(srcSize)
+        dst.put(srcDup)
+        dst.rewind()
+
+        val pixelTypeName = runCatching {
+            BerxelHawkPixelTypeEnum.convertValueToEnum(frame.pixelType).name
+        }.getOrDefault("unknown(${frame.pixelType})")
+
+        when (kind) {
+            StreamKind.COLOR -> {
+                _colorStat.value = stat
+                val cf = ColorFrame(
+                    timestampUs = frame.timeStamp,
+                    frameIndex = frame.frameIndex,
+                    width = frame.width,
+                    height = frame.height,
+                    data = dst,
+                    pixelType = pixelTypeName,
+                    intrinsics = currentColorIntrinsics ?: defaultIntrinsics(frame.width, frame.height),
+                )
+                _colorFrames.tryEmit(cf)
+                tryEmitPair(color = cf, depth = null)
+            }
+            StreamKind.DEPTH -> {
+                _depthStat.value = stat
+                val df = DepthFrame(
+                    timestampUs = frame.timeStamp,
+                    frameIndex = frame.frameIndex,
+                    width = frame.width,
+                    height = frame.height,
+                    data = dst,
+                    intrinsics = currentDepthIntrinsics ?: defaultIntrinsics(frame.width, frame.height),
+                    // SDK 默认未开 setRegistrationEnable —— M1.3 实测精度后决定是否打开 + 在此处反映
+                    registeredToColor = false,
+                )
+                _depthFrames.tryEmit(df)
+                tryEmitPair(color = null, depth = df)
+            }
+        }
+    }
+
+    /**
+     * RGBD 配对器：两路 reader 各自 emit 单流帧后，调本方法尝试与对侧 pending 配对。
+     *
+     * 配对策略：
+     * - 先匹配 frameIndex（SDK 在 MIX 模式下两路 frameIndex 同步递增）
+     * - timestampUs 必须严格相等（来自同一物理设备同一帧序，硬件级同步）
+     * - 不命中则把当前帧暂存为对侧的 pending；下一次对侧来时再尝试
+     * - 配对成功 → 清两边 pending 并 emit 到 [_rgbdPairs]
+     */
+    private fun tryEmitPair(color: ColorFrame?, depth: DepthFrame?) {
+        val pair: RgbdFramePair? = synchronized(pairLock) {
+            when {
+                color != null -> {
+                    val d = pendingDepth
+                    if (d != null && d.frameIndex == color.frameIndex && d.timestampUs == color.timestampUs) {
+                        pendingDepth = null
+                        pendingColor = null
+                        RgbdFramePair(color, d)
+                    } else {
+                        pendingColor = color
+                        null
+                    }
+                }
+                depth != null -> {
+                    val c = pendingColor
+                    if (c != null && c.frameIndex == depth.frameIndex && c.timestampUs == depth.timestampUs) {
+                        pendingColor = null
+                        pendingDepth = null
+                        RgbdFramePair(c, depth)
+                    } else {
+                        pendingDepth = depth
+                        null
+                    }
+                }
+                else -> null
+            }
+        }
+        if (pair != null) _rgbdPairs.tryEmit(pair)
+    }
+
+    /** 内参缺失时的桩：fx/fy 用 width 0.8 倍当近似（够 UI 显示用，不进算法）。 */
+    private fun defaultIntrinsics(w: Int, h: Int): CameraIntrinsics = CameraIntrinsics(
+        fx = w * 0.8, fy = w * 0.8,
+        cx = w * 0.5, cy = h * 0.5,
+        distortion = DoubleArray(5),
+        width = w, height = h,
+    )
 
     private fun stopInternal(reason: String?) {
         readerRunning = false

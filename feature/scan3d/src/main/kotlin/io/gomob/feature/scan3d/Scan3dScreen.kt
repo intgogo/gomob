@@ -1,5 +1,6 @@
 package io.gomob.feature.scan3d
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,6 +17,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -61,6 +65,8 @@ fun Scan3dRoute(
     vm: Scan3dViewModel = hiltViewModel(),
 ) {
     val ui by vm.uiState.collectAsStateWithLifecycle()
+    val colorBmp by vm.colorPreview.collectAsStateWithLifecycle()
+    val depthBmp by vm.depthPreview.collectAsStateWithLifecycle()
     LazyColumn(
         modifier = Modifier.fillMaxSize().background(Gomob.colors.bg0),
         contentPadding = PaddingValues(bottom = 28.dp),
@@ -73,6 +79,10 @@ fun Scan3dRoute(
             )
         }
         item { DeviceCard(state = ui) }
+        if (ui.device is BerxelDeviceState.Streaming) {
+            item { Spacer(Modifier.height(Gomob.spacing.s8)) }
+            item { LivePreviewRow(color = colorBmp, depth = depthBmp) }
+        }
         item { Spacer(Modifier.height(Gomob.spacing.s12)) }
         item { ActionTilePair(onOpenScan, onOpenCalibration) }
         item { Spacer(Modifier.height(Gomob.spacing.s16)) }
@@ -80,6 +90,57 @@ fun Scan3dRoute(
         item { Spacer(Modifier.height(Gomob.spacing.s20)) }
         item { AssetSectionHeader() }
         item { AssetGrid() }
+    }
+}
+
+// ─── 实时预览（Streaming 状态显示） ──────────────────────────────────────────
+@Composable
+private fun LivePreviewRow(color: android.graphics.Bitmap?, depth: android.graphics.Bitmap?) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Gomob.spacing.s20),
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
+    ) {
+        PreviewTile("COLOR", color, Modifier.weight(1f))
+        PreviewTile("DEPTH", depth, Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun PreviewTile(label: String, bitmap: android.graphics.Bitmap?, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .aspectRatio(1.6f)  // 640×400 ≈ 1.6
+            .clip(Gomob.shapes.r2)
+            .background(Gomob.colors.bg2)
+            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2),
+    ) {
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = "$label preview",
+                contentScale = ContentScale.Crop,
+                filterQuality = FilterQuality.Low,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        // 左上角标签
+        Box(
+            Modifier
+                .padding(Gomob.spacing.s4)
+                .clip(Gomob.shapes.r1)
+                .background(Color.Black.copy(alpha = 0.55f))
+                .padding(horizontal = Gomob.spacing.s6, vertical = 1.dp),
+        ) {
+            Text(
+                label,
+                fontSize = 9.sp,
+                fontFamily = FontFamily.Monospace,
+                letterSpacing = 0.08.em,
+                color = Color.White,
+            )
+        }
     }
 }
 
