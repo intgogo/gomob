@@ -358,18 +358,37 @@ class BerxelService @Inject constructor(
             return null
         }
         if (mode == null) return null
+        // SDK 给的 fx/fy/cx/cy 是 iHawk 出厂基础分辨率（实测 1280×800）的内参；
+        // 当前 stream 切到 640×400 时 cx≈630 远超宽度一半 → 直接用会把所有点投到视野外。
+        // 推断基础分辨率 baseW = 2*cx, 按 streamW/baseW 等比缩放；不修畸变系数（畸变是无单位的）。
+        val rawFx = intr.fxParam.toDouble()
+        val rawFy = intr.fyParam.toDouble()
+        val rawCx = intr.cxParam.toDouble()
+        val rawCy = intr.cyParam.toDouble()
+        val streamW = mode.resolutionX
+        val streamH = mode.resolutionY
+        val baseW = (rawCx * 2.0).coerceAtLeast(1.0)
+        val baseH = (rawCy * 2.0).coerceAtLeast(1.0)
+        val scaleX = if (kotlin.math.abs(baseW - streamW) > 8) streamW.toDouble() / baseW else 1.0
+        val scaleY = if (kotlin.math.abs(baseH - streamH) > 8) streamH.toDouble() / baseH else 1.0
+        val rescaled = scaleX != 1.0 || scaleY != 1.0
         return CameraIntrinsics(
-            fx = intr.fxParam.toDouble(), fy = intr.fyParam.toDouble(),
-            cx = intr.cxParam.toDouble(), cy = intr.cyParam.toDouble(),
+            fx = rawFx * scaleX, fy = rawFy * scaleY,
+            cx = rawCx * scaleX, cy = rawCy * scaleY,
             distortion = doubleArrayOf(
                 intr.k1Param.toDouble(), intr.k2Param.toDouble(),
                 intr.p1Param.toDouble(), intr.p2Param.toDouble(),
                 intr.k3Param.toDouble(),
             ),
-            width = mode.resolutionX,
-            height = mode.resolutionY,
+            width = streamW,
+            height = streamH,
         ).also {
-            Log.i(TAG, "$tag intrinsics fx=${it.fx} fy=${it.fy} cx=${it.cx} cy=${it.cy} ${mode.resolutionX}x${mode.resolutionY}")
+            if (rescaled) {
+                Log.i(TAG, "$tag intrinsics rescaled base ${baseW.toInt()}×${baseH.toInt()} → ${streamW}×${streamH}: " +
+                    "fx=${rawFx}→${it.fx} cx=${rawCx}→${it.cx}")
+            } else {
+                Log.i(TAG, "$tag intrinsics fx=${it.fx} fy=${it.fy} cx=${it.cx} cy=${it.cy} ${streamW}x${streamH}")
+            }
         }
     }
 

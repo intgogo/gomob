@@ -73,31 +73,29 @@ fun Scan3dRecordingRoute(
             eyebrow = "TSDF 体素积分 · ICP 增量配准",
             onBack = onBack,
         )
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(
-                top = Gomob.spacing.s12,
-                bottom = Gomob.spacing.s28,
-            ),
-            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
+        // 整页布局，不滚动：RGB|Depth 横排（固定 4:3）+ 点云 weight=1 占剩余 + 状态卡（包内容自适应）
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(
+                    top = Gomob.spacing.s8,
+                    bottom = Gomob.spacing.s8,
+                ),
+            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
         ) {
-            // 顶部 RGB / Depth 横排小窗，给用户看实时画面（对准物体用）
-            item { LiveStreamRow(colorBmp = colorBmp, depthBmp = depthBmp) }
-            // 中部大方形：累积点云 top-view
-            item {
-                PointCloudPreview(
-                    points = cloud,
-                    state = state,
-                )
-            }
-            item { Spacer(Modifier.height(Gomob.spacing.s4)) }
+            LiveStreamRow(colorBmp = colorBmp, depthBmp = depthBmp)
+            PointCloudPreview(
+                points = cloud,
+                state = state,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+            )
             when (val s = state) {
                 is ScanRecordingState.Idle ->
-                    item { IdleStatePanel(deviceReady = device is BerxelDeviceState.Streaming, deviceText = deviceShortText(device), onStart = vm::start) }
-                is ScanRecordingState.Recording -> item { RecordingStatePanel(s, cloud.size / 3, onStop = vm::stop) }
-                is ScanRecordingState.Finalizing -> item { FinalizingStatePanel(s) }
-                is ScanRecordingState.Completed -> item { CompletedStatePanel(s, onAgain = vm::reset) }
-                is ScanRecordingState.Error -> item { ErrorStatePanel(s, onRetry = vm::reset) }
+                    IdleStatePanel(deviceReady = device is BerxelDeviceState.Streaming, deviceText = deviceShortText(device), onStart = vm::start)
+                is ScanRecordingState.Recording -> RecordingStatePanel(s, cloud.size / 3, onStop = vm::stop)
+                is ScanRecordingState.Finalizing -> FinalizingStatePanel(s)
+                is ScanRecordingState.Completed -> CompletedStatePanel(s, onAgain = vm::reset)
+                is ScanRecordingState.Error -> ErrorStatePanel(s, onRetry = vm::reset)
             }
         }
     }
@@ -108,9 +106,10 @@ fun Scan3dRecordingRoute(
 @Composable
 private fun LiveStreamRow(colorBmp: Bitmap?, depthBmp: Bitmap?) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = Gomob.spacing.s16),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = Gomob.spacing.s12),
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
     ) {
+        // 16:10 而非 4:3 — 减矮一点给点云预览更多空间
         StreamCell(label = "RGB",   bitmap = colorBmp, modifier = Modifier.weight(1f))
         StreamCell(label = "DEPTH", bitmap = depthBmp, modifier = Modifier.weight(1f))
     }
@@ -120,7 +119,7 @@ private fun LiveStreamRow(colorBmp: Bitmap?, depthBmp: Bitmap?) {
 private fun StreamCell(label: String, bitmap: Bitmap?, modifier: Modifier = Modifier) {
     Box(
         modifier
-            .aspectRatio(4f / 3f)
+            .aspectRatio(16f / 10f)
             .clip(Gomob.shapes.r2)
             .background(Gomob.colors.bg2)
             .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r2),
@@ -157,14 +156,14 @@ private fun StreamCell(label: String, bitmap: Bitmap?, modifier: Modifier = Modi
 private fun PointCloudPreview(
     points: FloatArray,
     state: ScanRecordingState,
+    modifier: Modifier = Modifier,
     extentMm: Float = 600f,    // 与 SessionCreate 的 gridExtentMm 对齐
     centerZmm: Float = 400f,   // 与 SessionCreate 的 gridCenterZMm 对齐
 ) {
-    Box(Modifier.padding(horizontal = Gomob.spacing.s16)) {
+    Box(modifier.padding(horizontal = Gomob.spacing.s12)) {
         Box(
             Modifier
-                .fillMaxWidth()
-                .aspectRatio(1f)
+                .fillMaxSize()
                 .clip(Gomob.shapes.r3)
                 .background(Gomob.colors.bg2)
                 .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3),
@@ -265,102 +264,122 @@ private fun deviceShortText(state: BerxelDeviceState): String = when (state) {
 @Composable
 private fun IdleStatePanel(deviceReady: Boolean, deviceText: String, onStart: () -> Unit) {
     PanelCard {
-        Text("准备开始扫描", style = Gomob.type.title, color = Gomob.colors.fg0)
-        Text(
-            "把 iHawk 对准物体，按下按钮，缓慢绕物体转一圈。\n保持镜头距物体 25–80 cm；相邻帧旋转角度 ≤ 10°。",
-            style = Gomob.type.bodySm,
-            color = Gomob.colors.fg2,
-            textAlign = TextAlign.Center,
-        )
-        Spacer(Modifier.height(Gomob.spacing.s8))
-        BigCircleButton(
-            label = "开始",
-            color = if (deviceReady) Gomob.colors.accent else Gomob.colors.fg3,
-            enabled = deviceReady,
-            onClick = onStart,
-        )
-        Text(
-            deviceText,
-            style = Gomob.type.caption,
-            color = if (deviceReady) Gomob.colors.fg3 else Gomob.colors.danger,
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = Gomob.spacing.s4),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2)) {
+                Text("准备开始扫描", style = Gomob.type.bodySm, color = Gomob.colors.fg0)
+                Text(
+                    "对准物体 → 转一圈 · 25–80 cm",
+                    style = Gomob.type.caption,
+                    color = Gomob.colors.fg2,
+                )
+                Text(
+                    deviceText,
+                    style = Gomob.type.caption,
+                    color = if (deviceReady) Gomob.colors.accent else Gomob.colors.danger,
+                )
+            }
+            BigCircleButton(
+                label = "开始",
+                color = if (deviceReady) Gomob.colors.accent else Gomob.colors.fg3,
+                enabled = deviceReady,
+                onClick = onStart,
+            )
+        }
     }
 }
 
 @Composable
 private fun RecordingStatePanel(s: ScanRecordingState.Recording, previewPoints: Int, onStop: () -> Unit) {
     PanelCard {
-        Text("正在录制", style = Gomob.type.eyebrow, color = Gomob.colors.accent)
         Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth().padding(vertical = Gomob.spacing.s4),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
-            StatColumn(label = "帧数",   value = s.framesIngested.toString())
-            StatColumn(label = "关键帧", value = s.keyframes.toString())
-            StatColumn(label = "点云",   value = previewPoints.toString())
-            StatColumn(label = "时长",   value = formatElapsed(s.elapsedMs))
+            Row(
+                Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
+            ) {
+                StatColumn(label = "帧",   value = s.framesIngested.toString())
+                StatColumn(label = "KF",   value = s.keyframes.toString())
+                StatColumn(label = "点",   value = previewPoints.toString())
+                StatColumn(label = "时长", value = formatElapsed(s.elapsedMs))
+            }
+            BigCircleButton(label = "停止", color = Gomob.colors.danger, onClick = onStop)
         }
-        Spacer(Modifier.height(Gomob.spacing.s4))
-        Text(
-            "保持镜头匀速旋转，避免抖动",
-            style = Gomob.type.bodySm,
-            color = Gomob.colors.fg2,
-        )
-        BigCircleButton(label = "停止", color = Gomob.colors.danger, onClick = onStop)
     }
 }
 
 @Composable
 private fun FinalizingStatePanel(s: ScanRecordingState.Finalizing) {
     PanelCard {
-        CircularProgressIndicator(
-            modifier = Modifier.size(48.dp),
-            color = Gomob.colors.accent,
-        )
-        Text("正在生成 Mesh", style = Gomob.type.title, color = Gomob.colors.fg0)
-        Text(
-            "Marching Tetrahedra 提取 + 文件落盘\n${s.framesIngested} 帧已积分到 TSDF",
-            style = Gomob.type.bodySm,
-            color = Gomob.colors.fg2,
-            textAlign = TextAlign.Center,
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = Gomob.spacing.s4),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(36.dp),
+                color = Gomob.colors.accent,
+                strokeWidth = 3.dp,
+            )
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2)) {
+                Text("正在生成 Mesh", style = Gomob.type.bodySm, color = Gomob.colors.fg0)
+                Text(
+                    "Marching Tetrahedra · ${s.framesIngested} 帧已积分",
+                    style = Gomob.type.caption,
+                    color = Gomob.colors.fg2,
+                )
+            }
+        }
     }
 }
 
 @Composable
 private fun CompletedStatePanel(s: ScanRecordingState.Completed, onAgain: () -> Unit) {
     PanelCard {
-        Text("✓ 扫描完成", style = Gomob.type.title, color = Gomob.colors.accent)
         Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth().padding(vertical = Gomob.spacing.s4),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
-            StatColumn(label = "顶点",   value = s.vertexCount.toString())
-            StatColumn(label = "三角形", value = s.triangleCount.toString())
-            StatColumn(label = "关键帧", value = s.keyframes.toString())
-            StatColumn(label = "时长",   value = formatElapsed(s.durationMs))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2)) {
+                Text("✓ 扫描完成", style = Gomob.type.bodySm, color = Gomob.colors.accent)
+                Text(
+                    "顶点 ${s.vertexCount} · 三角形 ${s.triangleCount} · 关键帧 ${s.keyframes} · ${formatElapsed(s.durationMs)}",
+                    style = Gomob.type.caption,
+                    color = Gomob.colors.fg2,
+                )
+                Text(
+                    s.outDir,
+                    style = Gomob.type.caption,
+                    color = Gomob.colors.fg3,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+            BigCircleButton(label = "再扫", color = Gomob.colors.accent, onClick = onAgain)
         }
-        Text(
-            "session: ${s.sessionId}\n→ ${s.outDir}",
-            style = Gomob.type.caption,
-            color = Gomob.colors.fg3,
-            fontFamily = FontFamily.Monospace,
-        )
-        BigCircleButton(label = "再扫", color = Gomob.colors.accent, onClick = onAgain)
     }
 }
 
 @Composable
 private fun ErrorStatePanel(s: ScanRecordingState.Error, onRetry: () -> Unit) {
     PanelCard {
-        Text("× 扫描失败", style = Gomob.type.title, color = Gomob.colors.danger)
-        Text(
-            s.msg,
-            style = Gomob.type.bodySm,
-            color = Gomob.colors.fg2,
-            textAlign = TextAlign.Center,
-        )
-        BigCircleButton(label = "重试", color = Gomob.colors.accent, onClick = onRetry)
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = Gomob.spacing.s4),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2)) {
+                Text("× 扫描失败", style = Gomob.type.bodySm, color = Gomob.colors.danger)
+                Text(s.msg, style = Gomob.type.caption, color = Gomob.colors.fg2)
+            }
+            BigCircleButton(label = "重试", color = Gomob.colors.accent, onClick = onRetry)
+        }
     }
 }
 
@@ -368,11 +387,11 @@ private fun ErrorStatePanel(s: ScanRecordingState.Error, onRetry: () -> Unit) {
 
 @Composable
 private fun PanelCard(content: @Composable () -> Unit) {
-    Box(Modifier.padding(horizontal = Gomob.spacing.s16)) {
+    Box(Modifier.padding(horizontal = Gomob.spacing.s12)) {
         HairlineCard(modifier = Modifier.fillMaxWidth()) {
             Column(
-                Modifier.fillMaxWidth().padding(Gomob.spacing.s16),
-                verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+                Modifier.fillMaxWidth().padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
+                verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) { content() }
         }
@@ -397,7 +416,7 @@ private fun BigCircleButton(
 ) {
     Box(
         Modifier
-            .size(Gomob.spacing.btnCircle72)
+            .size(64.dp)
             .clip(CircleShape)
             .background(color.copy(alpha = if (enabled) 0.18f else 0.10f))
             .border(Gomob.spacing.hairline * 2, color, CircleShape)
@@ -406,12 +425,12 @@ private fun BigCircleButton(
     ) {
         Box(
             Modifier
-                .size(Gomob.spacing.avatar48)
+                .size(40.dp)
                 .clip(CircleShape)
                 .background(color),
             contentAlignment = Alignment.Center,
         ) {
-            Text(label, style = Gomob.type.bodySm, color = Gomob.colors.bg0)
+            Text(label, style = Gomob.type.caption, color = Gomob.colors.bg0)
         }
     }
 }
