@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,13 +15,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -39,26 +40,22 @@ import io.gomob.designsystem.component.SettingRowDivider
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.nativebridge.berxel.BerxelDeviceState
 import io.gomob.nativebridge.berxel.BerxelFrameStat
-import io.gomob.nativebridge.berxel.BerxelStreamSpec
 
 const val DEPTH_CAMERA_ROUTE = "scan3d/depth-camera"
 
 /**
- * 深度相机详情子页。
+ * 深度相机详情子页 v2 — 大画面竖排预览 + 导航列表。
  *
- * 内容（参考 Windows VinRectifyGui MainWindow.cpp 控件分组）：
- *  - LivePreviewRow：Color + Depth 双窗口实时预览
- *  - 设备信息（SN / VID/PID / SDK / FW / 流模式）
- *  - 内参（fx/fy/cx/cy + distortion）
- *  - 帧统计（实时 fps / frameIndex / timestamp）
- *  - Color 控制（自动曝光 / 镜像 / Registration）
- *  - Depth 控制（AE / 边缘优化 / 去噪 / 温度补偿）
- *
- * 当前 v1：开关型控制项（数值型 Exposure/Gain/Confidence/MaxDepth 等留 v2，需要数值输入控件）。
+ * 设计:
+ *  - COLOR / DEPTH 各占满宽度独立成行（横排会让画面太小）
+ *  - 详细信息 / 控制 / 标定 都收成 SettingRow → 三级页，避免主页过载
  */
 @Composable
 fun DepthCameraRoute(
     onBack: () -> Unit,
+    onOpenInfo: () -> Unit = {},
+    onOpenControls: () -> Unit = {},
+    onOpenCalibration: () -> Unit = {},
     vm: DepthCameraViewModel = hiltViewModel(),
 ) {
     val ui by vm.uiState.collectAsStateWithLifecycle()
@@ -75,199 +72,98 @@ fun DepthCameraRoute(
             ),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
-            item { LivePreviewRow(color = colorBmp, depth = depthBmp) }
-            item { DeviceInfoCard(state = ui.device) }
-            item { IntrinsicsCard(state = ui.device) }
-            item { FrameStatsCard(color = ui.color, depth = ui.depth) }
-            item { ColorControlsCard(vm = vm, ui = ui) }
-            item { DepthControlsCard(vm = vm, ui = ui) }
+            item { LargePreview(label = "COLOR", bitmap = colorBmp) }
+            item { LargePreview(label = "DEPTH", bitmap = depthBmp) }
+            item { LiveStatusStrip(ui = ui) }
+            item { Spacer(Modifier.height(Gomob.spacing.s4)) }
+            item {
+                SectionList {
+                    NavRow(title = "设备详情", subtitle = "序列号 / 流模式 / 内参 / 帧统计", onClick = onOpenInfo)
+                    SettingRowDivider()
+                    NavRow(title = "成像控制", subtitle = "Color / Depth 曝光 · 去噪 · 配准", onClick = onOpenControls)
+                    SettingRowDivider()
+                    NavRow(title = "Color ↔ Depth 标定", subtitle = "外参微调 / Charuco 标定向导", onClick = onOpenCalibration)
+                }
+            }
         }
     }
 }
 
-// ─── 实时预览（Color + Depth） ────────────────────────────────────────────────
+// ─── 大画面单流预览（占满宽度） ──────────────────────────────────────────────
 @Composable
-private fun LivePreviewRow(color: Bitmap?, depth: Bitmap?) {
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = Gomob.spacing.s20),
-        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
-    ) {
-        PreviewTile("COLOR", color, Modifier.weight(1f))
-        PreviewTile("DEPTH", depth, Modifier.weight(1f))
-    }
-}
-
-@Composable
-private fun PreviewTile(label: String, bitmap: Bitmap?, modifier: Modifier = Modifier) {
+private fun LargePreview(label: String, bitmap: Bitmap?) {
     Box(
-        modifier
-            .aspectRatio(1.6f)
-            .clip(Gomob.shapes.r2)
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Gomob.spacing.s16)
+            .aspectRatio(16f / 10f)  // 640×400 = 1.6 ≈ 16:10
+            .clip(Gomob.shapes.r3)
             .background(Gomob.colors.bg2)
-            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2),
+            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r3),
     ) {
         if (bitmap != null) {
             Image(
                 bitmap = bitmap.asImageBitmap(),
                 contentDescription = "$label preview",
-                contentScale = ContentScale.Crop,
+                contentScale = ContentScale.Fit,  // 不裁切，保留全画面
                 filterQuality = FilterQuality.Low,
                 modifier = Modifier.fillMaxSize(),
             )
         }
         Box(
             Modifier
-                .padding(Gomob.spacing.s4)
+                .padding(Gomob.spacing.s8)
                 .clip(Gomob.shapes.r1)
-                .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.55f))
-                .padding(horizontal = Gomob.spacing.s6, vertical = 1.dp),
+                .background(Color.Black.copy(alpha = 0.55f))
+                .padding(horizontal = Gomob.spacing.s8, vertical = 2.dp),
         ) {
             Text(
                 label,
-                fontSize = 9.sp,
+                fontSize = 10.sp,
                 fontFamily = FontFamily.Monospace,
-                letterSpacing = 0.08.em,
-                color = androidx.compose.ui.graphics.Color.White,
+                letterSpacing = 0.1.em,
+                color = Color.White,
             )
         }
     }
 }
 
-// ─── 设备信息卡 ──────────────────────────────────────────────────────────────
+// ─── 实时状态条（fps + frame 序号 + 状态点） ─────────────────────────────────
 @Composable
-private fun DeviceInfoCard(state: BerxelDeviceState) {
-    val info = (state as? BerxelDeviceState.Streaming)?.info
-    SectionCard(title = "设备信息") {
-        InfoRow("序列号", info?.serialNumber ?: "—")
-        SettingRowDivider()
-        InfoRow("VID / PID", info?.let {
-            "0x${"%04x".format(it.vendorId)}  /  0x${"%04x".format(it.productId)}"
-        } ?: "—")
-        SettingRowDivider()
-        InfoRow("SDK", info?.sdkVersion?.ifBlank { "—" } ?: "—")
-        SettingRowDivider()
-        InfoRow("Firmware", info?.firmwareVersion?.ifBlank { "—" } ?: "—")
-        SettingRowDivider()
-        InfoRow("Color 模式", info?.colorMode.formatStreamSpec())
-        SettingRowDivider()
-        InfoRow("Depth 模式", info?.depthMode.formatStreamSpec())
+private fun LiveStatusStrip(ui: DepthCameraUiState) {
+    val streaming = ui.device is BerxelDeviceState.Streaming
+    val color = ui.color
+    val depth = ui.depth
+    val fpsText = (depth?.measuredFps ?: color?.measuredFps)?.let { "$it fps" } ?: "—"
+    val frameText = (depth?.frameIndex ?: color?.frameIndex)?.let { "frame#$it" } ?: "等待首帧"
+    val syncText = if (color != null && depth != null && color.timestampUs == depth.timestampUs) {
+        "RGBD 同步 ✓"
+    } else {
+        "未配对"
+    }
+    val tone = if (streaming) Gomob.colors.accent else Gomob.colors.fg3
+    Box(Modifier.padding(horizontal = Gomob.spacing.s16)) {
+        HairlineCard(padding = 0.dp) {
+            Box(Modifier.fillMaxWidth().padding(Gomob.spacing.s12)) {
+                Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4)) {
+                    androidx.compose.foundation.layout.Row(
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(fpsText, style = Gomob.type.numInline.copy(fontSize = 16.sp), color = tone)
+                        Text(frameText, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = Gomob.colors.fg2)
+                    }
+                    Text(syncText, fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = Gomob.colors.fg3)
+                }
+            }
+        }
     }
 }
 
-private fun BerxelStreamSpec?.formatStreamSpec(): String {
-    if (this == null) return "—"
-    return "${width}×${height}@${fps}  ${pixelType.removePrefix("BERXEL_HAWK_PIXEL_TYPE_")}"
-}
-
-// ─── 内参卡 ───────────────────────────────────────────────────────────────────
+// ─── 导航列表组件（导出给三级页复用） ─────────────────────────────────────────
 @Composable
-private fun IntrinsicsCard(state: BerxelDeviceState) {
-    SectionCard(title = "内参（出厂值）") {
-        // SDK 出厂参数 color/depth 共用同一组（详见 BerxelService.readIntrinsics 注释）
-        // M1.3 实测精度时再决定要不要拆开
-        val info = (state as? BerxelDeviceState.Streaming)?.info
-        val color = info?.colorMode
-        InfoRow("分辨率参考", color?.let { "${it.width}×${it.height}" } ?: "—")
-        SettingRowDivider()
-        // SDK getCameraIntriscParams 当前在 BerxelService 里读出后没透传到 info；
-        // v1 子页先显示"使用 SDK 出厂"占位，M1.3 时把 fx/fy/cx/cy 透传到 BerxelDeviceInfo
-        InfoRow("内参来源", "SDK 出厂参数（getCameraIntriscParams）")
-        SettingRowDivider()
-        InfoRow("自标定", "未启用（M2 标定向导待实施）")
-    }
-}
-
-// ─── 帧统计卡 ────────────────────────────────────────────────────────────────
-@Composable
-private fun FrameStatsCard(color: BerxelFrameStat?, depth: BerxelFrameStat?) {
-    SectionCard(title = "实时帧统计") {
-        StatRow("Color", color)
-        SettingRowDivider()
-        StatRow("Depth", depth)
-    }
-}
-
-@Composable
-private fun StatRow(label: String, stat: BerxelFrameStat?) {
-    val sub = if (stat == null) "等待首帧" else
-        "frame#${stat.frameIndex}  ${stat.measuredFps} fps  t=${stat.timestampUs}μs"
-    InfoRow(label, sub)
-}
-
-// ─── Color 控制卡 ────────────────────────────────────────────────────────────
-@Composable
-private fun ColorControlsCard(vm: DepthCameraViewModel, ui: DepthCameraUiState) {
-    SectionCard(title = "Color 控制") {
-        ToggleRow(
-            title = "自动曝光",
-            subtitle = "off 时按手动 Exposure / Gain（v2 加数值输入）",
-            checked = ui.controls.colorAutoExposure,
-            onCheckedChange = vm::setColorAutoExposure,
-        )
-        SettingRowDivider()
-        ToggleRow(
-            title = "镜像",
-            subtitle = "Color + Depth 同步左右翻转",
-            checked = ui.controls.streamMirror,
-            onCheckedChange = vm::setStreamMirror,
-        )
-        SettingRowDivider()
-        ToggleRow(
-            title = "Depth → Color 配准",
-            subtitle = "SDK 把 Depth 重投影到 Color 像素坐标；off 时 Depth 在自身坐标",
-            checked = ui.controls.registrationEnable,
-            onCheckedChange = vm::setRegistrationEnable,
-        )
-    }
-}
-
-// ─── Depth 控制卡 ────────────────────────────────────────────────────────────
-@Composable
-private fun DepthControlsCard(vm: DepthCameraViewModel, ui: DepthCameraUiState) {
-    SectionCard(title = "Depth 控制") {
-        ToggleRow(
-            title = "自动曝光",
-            subtitle = "Depth AE 由 SDK 自动调整投射器与积分时间",
-            checked = ui.controls.depthAutoExposure,
-            onCheckedChange = vm::setDepthAutoExposure,
-        )
-        SettingRowDivider()
-        ToggleRow(
-            title = "边缘优化",
-            subtitle = "去除深度边缘抖动，但可能丢细节",
-            checked = ui.controls.depthEdgeOptimization,
-            onCheckedChange = vm::setDepthEdgeOptimization,
-        )
-        SettingRowDivider()
-        ToggleRow(
-            title = "基础去噪",
-            subtitle = "SDK 内置时空域去噪",
-            checked = ui.controls.depthDenoise,
-            onCheckedChange = vm::setDepthDenoise,
-        )
-        SettingRowDivider()
-        ToggleRow(
-            title = "温度补偿",
-            subtitle = "变温环境下保深度精度（推荐开启）",
-            checked = ui.controls.depthTemperatureCompensation,
-            onCheckedChange = vm::setDepthTemperatureCompensation,
-        )
-    }
-}
-
-// ─── 公共组件 ────────────────────────────────────────────────────────────────
-@Composable
-private fun SectionCard(title: String, content: @Composable () -> Unit) {
-    Column(
-        Modifier.padding(horizontal = Gomob.spacing.s20),
-        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-    ) {
-        Text(
-            title,
-            style = Gomob.type.eyebrow,
-            color = Gomob.colors.fg2,
-            modifier = Modifier.padding(start = Gomob.spacing.s4),
-        )
+internal fun SectionList(content: @Composable () -> Unit) {
+    Box(Modifier.padding(horizontal = Gomob.spacing.s16)) {
         HairlineCard(padding = 0.dp) {
             Column { content() }
         }
@@ -275,32 +171,22 @@ private fun SectionCard(title: String, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun InfoRow(title: String, subtitle: String) {
-    SettingRow(title = title, subtitle = subtitle)
-}
-
-@Composable
-private fun ToggleRow(
-    title: String,
-    subtitle: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-) {
+private fun NavRow(title: String, subtitle: String, onClick: () -> Unit) {
     SettingRow(
         title = title,
         subtitle = subtitle,
+        onClick = onClick,
         trailing = {
-            Switch(
-                checked = checked,
-                onCheckedChange = onCheckedChange,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Gomob.colors.bg0,
-                    checkedTrackColor = Gomob.colors.accent,
-                    uncheckedThumbColor = Gomob.colors.fg2,
-                    uncheckedTrackColor = Gomob.colors.bg2,
-                ),
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = Gomob.colors.fg3,
             )
         },
     )
-    Spacer(Modifier.height(Gomob.spacing.s2))
 }
+
+// ─── 工具：BerxelFrameStat 短文本（三级页复用） ──────────────────────────────
+internal fun BerxelFrameStat?.shortLine(): String =
+    if (this == null) "等待首帧"
+    else "frame#$frameIndex · $measuredFps fps · t=${timestampUs}μs · ${width}×${height}"

@@ -38,6 +38,9 @@ import io.gomob.feature.profile.ProfileNotificationRoute
 import io.gomob.feature.profile.ProfilePersonalRoute
 import io.gomob.feature.profile.ProfileRoute
 import io.gomob.feature.scan3d.CalibrationRoute
+import io.gomob.feature.scan3d.DepthCameraCalibrationRoute
+import io.gomob.feature.scan3d.DepthCameraControlsRoute
+import io.gomob.feature.scan3d.DepthCameraInfoRoute
 import io.gomob.feature.scan3d.DepthCameraRoute
 import io.gomob.feature.scan3d.Scan3dRoute
 import io.gomob.feature.scan3d.ScanCaptureRoute
@@ -110,7 +113,21 @@ fun GomobNavHost() {
                     ScanCaptureRoute(onBack = { nav.popBackStack() })
                 }
                 composable("scan3d/depth-camera") {
-                    DepthCameraRoute(onBack = { nav.popBackStack() })
+                    DepthCameraRoute(
+                        onBack = { nav.popBackStack() },
+                        onOpenInfo = { nav.navigate("scan3d/depth-camera/info") },
+                        onOpenControls = { nav.navigate("scan3d/depth-camera/controls") },
+                        onOpenCalibration = { nav.navigate("scan3d/depth-camera/calibration") },
+                    )
+                }
+                composable("scan3d/depth-camera/info") {
+                    DepthCameraInfoRoute(onBack = { nav.popBackStack() })
+                }
+                composable("scan3d/depth-camera/controls") {
+                    DepthCameraControlsRoute(onBack = { nav.popBackStack() })
+                }
+                composable("scan3d/depth-camera/calibration") {
+                    DepthCameraCalibrationRoute(onBack = { nav.popBackStack() })
                 }
 
                 // ---- 协作 + 二级 ----
