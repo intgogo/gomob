@@ -40,6 +40,7 @@ Thumbs.db
 # Berxel SDK 二进制由厂商发布单独下发，不进库（jar/.so/PDF 都来自
 # /root/WindowsR/berxel/BerxelSDK-Android-9.9.190/，按 README 投放即可）
 third_party/berxel-android/libs/*.jar
+third_party/berxel-android/libs/*.jar.orig
 third_party/berxel-android/jniLibs/**/*.so
 third_party/berxel-android/docs/*.pdf
 !third_party/berxel-android/libs/.gitkeep

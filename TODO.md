@@ -15,13 +15,13 @@
 | ✅ M0.5 | 真机验证：`./dev.sh install && ./dev.sh shot home` 跑通 | gomob_test AVD（GUI 模式默认）+ adb install + 5 tab 截图全收齐于 `.dev/screenshots/redesign-7/`（01-login → 07-history） | `CLAUDE.md` UI 验证规范 |
 | ✅ M0.6 | 端侧 mob3d 全屏 jsx 重做（OLED dark + 7 commit） | 01 login / 02 home AI / 03 message / 04 scan3d / 05 collab / 06 profile + 设置抽屉 + 07 history 日历 端到端通过 | 7 commit `9a8d745..8a37818` |
 
-## M1 — 深度相机接入（未启动）
+## M1 — 深度相机接入
 
 | ID | 项 | 状态 | 文档 |
 |----|----|------|------|
-| M1.1 | 反编译 VINCreator APK 摸清 Berxel Android 端 .so 接口 | ☐ | `docs/architecture/01-depth-camera-integration.md` |
-| M1.2 | USB OTG 设备发现 + 权限授予 + 热插拔处理 | ☐ | `docs/architecture/01-depth-camera-integration.md` §USB 接入 |
-| M1.3 | RGBD 双流采集（CameraX + Berxel SDK） + 时间戳同步 harness | ☐ | `tests/harness/rgbd_sync/` |
+| ✅ M1.1 | Berxel Android SDK jar/.so 投放 + 反编译验证 SDK 内部行为 + USB OTG 权限 + 热插拔 + jar PendingIntent flag 二进制补丁 | jar+多 ABI .so 已在 third_party/berxel-android/；BerxelService.kt 自枚举 + attachAuthorizedDevice + 主动 requestPermission 兜底；`patches/berxel-android/{BerxelJarPatch.java,patch.sh}` 用 ASM 把 SDK requestDevicePermission 的 PendingIntent flag 0 改成 IMMUTABLE\|UPDATE_CURRENT；2026-05-07 真机 LOG-AN10 Android 15 走通 Color+Depth 640×400@30 MIX streaming 29 fps | `docs/architecture/01-depth-camera-integration.md` + memory `finding_berxel_sdk_internals_2026-05-07.md` |
+| M1.2 | CameraX 主摄像头 RGB 流采集 + 内参读取（LENS_INTRINSIC_CALIBRATION）+ 帧时间戳归一化到 nanoTime | ☐ | `docs/architecture/01-depth-camera-integration.md` §M2 |
+| M1.3 | Berxel + CameraX 双流时间戳同步 harness（参数：SYNC_THRESHOLD_NS 默认 5ms） | ☐ | `tests/harness/rgbd_sync/` |
 | M1.4 | 单帧点云可视化（Filament） — 端到端最小闭环 | ☐ | `docs/architecture/04-reconstruction-pipeline.md` |
 
 ## M2 — 双摄外参标定（未启动）

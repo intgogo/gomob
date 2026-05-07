@@ -82,12 +82,14 @@ class BerxelService @Inject constructor(
         override fun onReceive(c: Context?, intent: Intent?) {
             if (intent?.action != USB_PERMISSION_ACTION) return
             val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-            Log.i(TAG, "USB permission broadcast granted=$granted")
-            if (granted) {
-                // 拿到权限后接着完成 SDK open 流程
+            val grantedDevice = @Suppress("DEPRECATION") intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
+            Log.i(TAG, "USB permission broadcast granted=$granted device=${grantedDevice?.deviceName}")
+            if (granted && grantedDevice != null) {
+                // 拿到权限后把 device 喂回 service，再走完整启动
+                authorizedDevice = grantedDevice
                 scope.launch { startInternal() }
             } else {
-                _state.value = BerxelDeviceState.Error("用户拒绝了 USB 权限")
+                _state.value = BerxelDeviceState.Error("用户拒绝了 USB 权限 — 拔出重插以重试")
             }
         }
     }
@@ -158,13 +160,28 @@ class BerxelService @Inject constructor(
             }
             Log.i(TAG, "using ${workingDev.deviceName} (fromIntent=${authDev != null}, hasPermission=${usbManager.hasPermission(workingDev)})")
 
-            // 实测开一下：openDevice 返 null 即权限有效失败，进入"请拔了重插"状态
+            // 实测开一下：openDevice 返 null 即没有有效 fd 权限。
             // (HONOR Magic OS 上 hasPermission 偶现脏缓存返 false 但实际 openDevice 能过；
             // 也有反之的情况。所以不查 flag，只看真实开 fd 结果)
             val testConn = usbManager.openDevice(workingDev)
             if (testConn == null) {
-                _state.value = BerxelDeviceState.Error("USB 设备无访问权限 —— 请拔出 USB 重新插入并允许 mob3d 访问")
-                return
+                // 没权限 —— 主动调 requestPermission 弹标准 Android 系统对话框
+                // (Why: 之前只靠 manifest USB_DEVICE_ATTACHED intent，用户拒过一次后无路重试；
+                //  现在主动请求 → granted 则 receiver 把 authorized device 喂回 startInternal；
+                //  HONOR 脏缓存仍然会让 broadcast 直接 deny=false 不弹窗，那种场景由 finding_honor_usb_permission_cache_2026-05-07
+                //  指出"重启手机"是唯一根治路径)
+                ensureUsbReceiver()
+                // FLAG_IMMUTABLE：USB 权限广播 EXTRA_PERMISSION_GRANTED 是 system fill 的，不需 mutate；
+                // Android 14+ 对 implicit Intent 禁 MUTABLE，IMMUTABLE 也是 Google USB host sample 推荐用法。
+                val piFlags = PendingIntent.FLAG_UPDATE_CURRENT or
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_IMMUTABLE else 0
+                val pi = PendingIntent.getBroadcast(
+                    appContext, 0, Intent(USB_PERMISSION_ACTION).setPackage(appContext.packageName), piFlags,
+                )
+                Log.i(TAG, "openDevice fd=null → requestPermission ${workingDev.deviceName}")
+                _state.value = BerxelDeviceState.WaitingPermission
+                usbManager.requestPermission(workingDev, pi)
+                return  // 等 receiver 回调时再次进入 startInternal
             }
             testConn.close()
 
@@ -336,6 +353,10 @@ class BerxelService @Inject constructor(
     fun shutdown() {
         scope.cancel()
         stopInternal(reason = null)
+        if (usbReceiverRegistered) {
+            runCatching { appContext.unregisterReceiver(usbPermissionReceiver) }
+            usbReceiverRegistered = false
+        }
     }
 
     private fun ensureUsbReceiver() {

@@ -27,11 +27,15 @@
   - `/root/WindowsR/berxel/sdk/docs/Camera_Settings_Audit_20260425.md`
   - `/root/WindowsR/berxel/sdk/docs/MixHD_1280x800_probe_20260424.md`
 
-### 2.2 Berxel 已发布的 Android 端制品
+### 2.2 Berxel Android SDK（已到位 2026-05-06）
 
-- `/root/WindowsR/berxel/sdk/Models/VINCreator_standard_target34_v1.4.11/` — Berxel 厂家自己做的
-  Android 端 VINCreator APK（target SDK 34 = Android 14），证明 Berxel 有 Android 端能力
-- 待用户从厂家拿到 Berxel Android SDK（AAR + .so + Android 头文件）后投放至 `third_party/berxel-android/`
+- `third_party/berxel-android/libs/BerxelSDK.jar` 9.9.190（含 com.berxel.berxelInterface.api.* + assets/params*.bin 6MB×3 校准/滤波查找表）
+- `third_party/berxel-android/jniLibs/{arm64-v8a,armeabi-v7a}/libBerxel*.so` + `libopencv_java3.so`
+- 反编译笔记见 memory `finding_berxel_sdk_internals_2026-05-07.md`：SDK 内部 `BerxelHawkUsbManager` 构造时立即 `registerReceiver`（2-参签名，Android 14+ 必报 SecurityException 故业务侧需 ContextWrapper 拦），`requestDevicePermission` 用 PendingIntent flag=0（Android 12+ 必抛 IllegalArgumentException，DFU 升级模式雷点）
+
+> **VINCreator APK 与 Berxel 无关**：`/root/WindowsR/berxel/sdk/VINCreator_*.apk` 是 eYs3D / Etron 摄像头 + jiangdg
+> AndroidUSBCamera 框架做的 VIN 字符识别 demo（包名 `com.vin.uvc`，主类 `com.esp.uvc.*` + `com.jiangdg.demo.*`），
+> .so 是 `libESPDI/libeysov/libUVCCamera`，**没有 com.berxel 类**。仅 USB OTG 权限处理流可作通用参考，跟 Berxel iHawk 接入无关。
 
 ### 2.3 Windows 端实测的关键事实（直接影响 Android 端设计）
 
@@ -114,17 +118,10 @@ external fun colorizePointCloud(points, rgb, ..., R, t): ByteArray
 后续 M1.3 / M2 / M3 会陆续追加 `attachUsbDevice` / `startStreams` /
 `registerSyncCallback` 等。**所有**新增 native 入口必须经 NativeBridge 暴露，不允许散点。
 
-## 5. 厂商 SDK 缺位的退化路径（**临时**）
+## 5. 厂商 SDK 缺位的退化路径（**已不适用** 2026-05-06）
 
-> 这是探路，**终态**是接 Berxel 官方 Android SDK；TODO 指向 M1.3。
-
-如果厂家 SDK 暂未到位，按以下路径让工程演进不阻塞：
-
-1. 反编译 `VINCreator_standard_target34_v1.4.11.apk`，提取出 `lib/<abi>/libberxel*.so`
-2. 拿到 .so 的导出符号清单（`nm -D` / `objdump -T`），逆推 Android 头文件
-3. 在 `third_party/berxel-android/include/` 写一份**最小够用**的 Android 头（不照搬 Windows 头）
-4. native 端通过 `dlopen` + `dlsym` 调用，**不**链接（避免符号 ABI 不稳）
-5. 一旦正式 SDK 到位，**完全替换**这套桩；不允许"两套并存"
+Berxel 官方 Android SDK（jar + 多 ABI .so + assets/params*.bin）已到位 `third_party/berxel-android/`，
+当前直接走官方 jar 路径，无需 dlopen/dlsym 桩。本节保留作历史记录。
 
 ## 6. 待办（落到 TODO.md）
 
