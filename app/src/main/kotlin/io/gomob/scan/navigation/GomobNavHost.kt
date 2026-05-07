@@ -102,9 +102,10 @@ fun GomobNavHost() {
                 // ---- 3D + 二级 ----
                 composable(ROUTE_SCAN3D) {
                     Scan3dRoute(
-                        onOpenCalibration = { nav.navigate("scan3d/calibration") },
-                        onOpenScan = { nav.navigate("scan3d/scan") },
+                        // 三维外廓扫描入口 → 深度相机详情页（emphasis NavRow 进 Recording）
                         onOpenDepthCamera = { nav.navigate("scan3d/depth-camera") },
+                        // VIN 数码拓印入口 → 暂用 ScanCaptureRoute (VIN 风格 stub)；M4 实施时换真路由
+                        onOpenVinRectify = { nav.navigate("scan3d/scan") },
                     )
                 }
                 composable("scan3d/calibration") {

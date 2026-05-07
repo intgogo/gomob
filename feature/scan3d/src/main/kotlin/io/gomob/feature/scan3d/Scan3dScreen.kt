@@ -60,9 +60,8 @@ const val SCAN3D_ROUTE = "scan3d"
 @Composable
 fun Scan3dRoute(
     cameraSlot: @Composable () -> Unit = {},
-    onOpenCalibration: () -> Unit = {},
-    onOpenScan: () -> Unit = {},
     onOpenDepthCamera: () -> Unit = {},
+    onOpenVinRectify: () -> Unit = {},
     vm: Scan3dViewModel = hiltViewModel(),
 ) {
     val ui by vm.uiState.collectAsStateWithLifecycle()
@@ -78,7 +77,9 @@ fun Scan3dRoute(
         }
         item { DeviceCard(state = ui, onClick = onOpenDepthCamera) }
         item { Spacer(Modifier.height(Gomob.spacing.s12)) }
-        item { ActionTilePair(onOpenScan, onOpenCalibration) }
+        // 三维外廓扫描 → 深度相机详情页（看预览 + 控制 + 点 emphasis NavRow 进 Recording）
+        // VIN 数码拓印 → ScanCaptureRoute（VIN 风格 stub，M4 实施时换真路由）
+        item { ActionTilePair(onOpenContourScan = onOpenDepthCamera, onOpenVinRectify = onOpenVinRectify) }
         item { Spacer(Modifier.height(Gomob.spacing.s20)) }
         item { AssetSectionHeader() }
         item { AssetGrid() }
@@ -288,7 +289,7 @@ private data class Quad<A, B, C, D>(val a: A, val b: B, val c: C, val d: D)
 
 // ─── 双 ActionTile ──────────────────────────────────────────────────────────
 @Composable
-private fun ActionTilePair(onScan: () -> Unit, onCalibration: () -> Unit) {
+private fun ActionTilePair(onOpenContourScan: () -> Unit, onOpenVinRectify: () -> Unit) {
     Row(
         Modifier.padding(horizontal = Gomob.spacing.s20),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -298,10 +299,10 @@ private fun ActionTilePair(onScan: () -> Unit, onCalibration: () -> Unit) {
             id = "01",
             icon = GomobIcons.Cube,
             title = "三维外廓扫描",
-            desc = "RGBD 同步采集",
-            detail = "主从合一 · 实时点云预览",
+            desc = "ICP + TSDF + Mesh",
+            detail = "深度相机 → 转一圈 → mesh.obj",
             primary = true,
-            onClick = onScan,
+            onClick = onOpenContourScan,    // 深度相机详情页（含 emphasis "开始扫描" 进 Recording）
         )
         ActionTile(
             modifier = Modifier.weight(1f),
@@ -311,7 +312,7 @@ private fun ActionTilePair(onScan: () -> Unit, onCalibration: () -> Unit) {
             desc = "OCR + 拓印图层",
             detail = "自动识别 17 位 · 入档归档",
             primary = false,
-            onClick = onCalibration,    // VIN 拓印暂复用 onCalibration 回调（后续接真路由）
+            onClick = onOpenVinRectify,     // M4 实施前指向 VIN 风格 stub
         )
     }
 }
