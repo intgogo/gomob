@@ -23,9 +23,9 @@ TsdfVolume::TsdfVolume(const TsdfConfig& cfg) : cfg_(cfg) {
     weight_.assign(total, 0.0f);
 }
 
-void TsdfVolume::Integrate(const uint16_t* depth_mm, int width, int height,
-                           double fx, double fy, double cx, double cy,
-                           const float* pose7) {
+int TsdfVolume::Integrate(const uint16_t* depth_mm, int width, int height,
+                          double fx, double fy, double cx, double cy,
+                          const float* pose7) {
     // 解相机位姿：相机在世界系，P_w = R*P_c + t；逆变换 P_c = R^T * (P_w - t)
     Eigen::Vector3f t(pose7[0], pose7[1], pose7[2]);
     Eigen::Quaternionf q(pose7[6], pose7[3], pose7[4], pose7[5]);
@@ -37,6 +37,7 @@ void TsdfVolume::Integrate(const uint16_t* depth_mm, int width, int height,
     const float trunc = cfg_.truncation_dist_mm;
     const float wmax = cfg_.weight_clamp;
 
+    int updated = 0;
     // 遍历所有体素（端侧 30fps ingest 时 200^3=8M voxel × 简单算术，O(1G) ops/frame，
     // 单线程 arm64 ~几十 ms；M3.x 阶段加 NEON / 多线程）
     for (int k = 0; k < grid_dim_; ++k) {
@@ -68,11 +69,13 @@ void TsdfVolume::Integrate(const uint16_t* depth_mm, int width, int height,
                 float s1 = (s0 * w0 + sdf_norm * 1.0f) / w1;
                 sdf_[idx] = s1;
                 weight_[idx] = w1;
+                ++updated;
             }
         }
     }
 
     frame_count_++;
+    return updated;
 }
 
 void TsdfVolume::Set(int i, int j, int k, float sdf, float weight) {

@@ -44,9 +44,10 @@ public:
 
     // 用一帧 16bit mm 深度图 + 内参 + 相机位姿 (世界 → 相机) 积分一次
     // pose7: [tx,ty,tz,qx,qy,qz,qw]，含义"相机在世界系的位姿"，即 P_w = R*P_c + t
-    void Integrate(const uint16_t* depth_mm, int width, int height,
-                   double fx, double fy, double cx, double cy,
-                   const float* pose7);
+    // 返回：本次实际更新的体素数（>0 → TSDF 在工作；==0 → 内参/grid 位置/位姿任一错位）
+    int Integrate(const uint16_t* depth_mm, int width, int height,
+                  double fx, double fy, double cx, double cy,
+                  const float* pose7);
 
     int dim() const { return grid_dim_; }
     float voxel_size() const { return cfg_.voxel_size_mm; }
