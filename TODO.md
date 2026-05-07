@@ -15,40 +15,66 @@
 | ✅ M0.5 | 真机验证：`./dev.sh install && ./dev.sh shot home` 跑通 | gomob_test AVD（GUI 模式默认）+ adb install + 5 tab 截图全收齐于 `.dev/screenshots/redesign-7/`（01-login → 07-history） | `CLAUDE.md` UI 验证规范 |
 | ✅ M0.6 | 端侧 mob3d 全屏 jsx 重做（OLED dark + 7 commit） | 01 login / 02 home AI / 03 message / 04 scan3d / 05 collab / 06 profile + 设置抽屉 + 07 history 日历 端到端通过 | 7 commit `9a8d745..8a37818` |
 
-## M1 — 深度相机接入
+## M1 — Berxel iHawk 接入（基础就绪 2026-05-07）
+
+> 单设备路线：iHawk 自身 Color + Depth 双流，**不**接手机主摄。详见
+> `docs/architecture/01-depth-camera-integration.md`。
 
 | ID | 项 | 状态 | 文档 |
 |----|----|------|------|
-| ✅ M1.1 | Berxel Android SDK jar/.so 投放 + 反编译验证 SDK 内部行为 + USB OTG 权限 + 热插拔 + jar PendingIntent flag 二进制补丁 | jar+多 ABI .so 已在 third_party/berxel-android/；BerxelService.kt 自枚举 + attachAuthorizedDevice + 主动 requestPermission 兜底；`patches/berxel-android/{BerxelJarPatch.java,patch.sh}` 用 ASM 把 SDK requestDevicePermission 的 PendingIntent flag 0 改成 IMMUTABLE\|UPDATE_CURRENT；2026-05-07 真机 LOG-AN10 Android 15 走通 Color+Depth 640×400@30 MIX streaming 29 fps | `docs/architecture/01-depth-camera-integration.md` + memory `finding_berxel_sdk_internals_2026-05-07.md` |
-| M1.2 | CameraX 主摄像头 RGB 流采集 + 内参读取（LENS_INTRINSIC_CALIBRATION）+ 帧时间戳归一化到 nanoTime | ☐ | `docs/architecture/01-depth-camera-integration.md` §M2 |
-| M1.3 | Berxel + CameraX 双流时间戳同步 harness（参数：SYNC_THRESHOLD_NS 默认 5ms） | ☐ | `tests/harness/rgbd_sync/` |
-| M1.4 | 单帧点云可视化（Filament） — 端到端最小闭环 | ☐ | `docs/architecture/04-reconstruction-pipeline.md` |
+| ✅ M1.1 | Berxel Android SDK jar/.so 投放 + 反编译验证 + USB OTG + ASM PendingIntent patch + 真机 streaming | jar + 多 ABI .so 已在 third_party/berxel-android/；BerxelService.kt 自枚举 + attachAuthorizedDevice + 主动 requestPermission 兜底；`patches/berxel-android/{BerxelJarPatch.java,patch.sh}` 用 ASM 9.6 改 SDK requestDevicePermission PendingIntent flag 0 → IMMUTABLE\|UPDATE_CURRENT；2026-05-07 真机 LOG-AN10 Android 15 跑通 Color+Depth 640×400@30 MIX 29 fps | `docs/architecture/01-depth-camera-integration.md` + memory `finding_berxel_sdk_internals_2026-05-07.md` |
+| M1.2 | iHawk Color/Depth 帧字节流暴露：reader 线程把 Frame.data 拷成 DirectByteBuffer 出来到 SharedFlow / Channel；Color YUYV→BGR888 转换；同 frameIndex 配对成 RgbdFramePair | ☐ | 同上 §3.3 |
+| M1.3 | iHawk 内参读取 (`getCameraIntriscParams` / `getDeviceIntriscParams`) + setRegistrationEnable 精度实测 harness | ☐ | `tests/harness/calibration_smoke/`（拍棋盘格 30/50/100cm，验深度投到 color 边缘误差 ≤ 2 px） |
+| M1.4 | Compose Color/Depth 实时预览：Color 直贴 SurfaceTexture，Depth 出伪彩 Bitmap；frameIndex/fps/timestamp HUD | ☐ | `feature/scan3d/Scan3dScreen` |
 
-## M2 — 双摄外参标定（未启动）
+## M2 — iHawk Color/Depth 标定（M1.3 不达标时启动）
 
-| ID | 项 | 状态 | 文档 |
-|----|----|------|------|
-| M2.1 | 标定板设计（棋盘 / Charuco）+ 流程文档 | ☐ | `docs/architecture/05-calibration-pipeline.md` |
-| M2.2 | feature:calibration UI 向导 + 数据采集 + 求解 | ☐ | 同上 |
-| M2.3 | 标定结果落库 + 跨会话复用 | ☐ | `core:database` |
-
-## M3 — 实时融合 + 重建（未启动）
+> 详见 `docs/architecture/05-calibration-pipeline.md`。
+> SDK 出厂参数 + setRegistrationEnable 实测达标 → 跳过本节进入 M3 / M4，仅保留向导作"出厂复检"。
 
 | ID | 项 | 状态 | 文档 |
 |----|----|------|------|
-| M3.1 | 主从外参投影 colorize 单元测试 + harness | ☐ | `tests/harness/fusion_quality/` |
-| M3.2 | TSDF voxel grid + Marching Cubes 出 mesh | ☐ | `docs/architecture/04-reconstruction-pipeline.md` |
-| M3.3 | 纹理烘焙 + glTF 导出 | ☐ | 同上 |
-| M3.4 | feature:gallery Filament 渲染回看 | ☐ | — |
+| M2.1 | calibration native 模块接 OpenCV 4.x（OpenCV cv::aruco + cv::calibrateCamera + cv::stereoCalibrate）；评估用 SDK 自带 libopencv_java3.so 还是自编 OpenCV 4 | ☐ | `docs/architecture/05-calibration-pipeline.md` §3.3 |
+| M2.2 | feature:calibration 模块（gradle 创建）+ Charuco 检测向导 UI（12 角度采集） | ☐ | 同上 §3.2 |
+| M2.3 | 单目内参 + stereo 外参求解 + reprojection 验收（Color ≤ 1.0 px / Depth ≤ 0.5 mm） | ☐ | 同上 |
+| M2.4 | calibrations 表（Room）+ deviceSerial 唯一索引 + 跨会话复用 + 接 M-S3 device 服务端云同步 | ☐ | `core:database` |
+| M2.5 | calibration_quality harness：跑三场景验收 + SDK 出厂参数 vs 自标定对比 | ☐ | `tests/harness/calibration_quality/` |
 
-## M4 — 工程治理 / Harness（贯穿）
+## M3 — 三维外廓扫描重建（核心业务主线）
+
+> 详见 `docs/architecture/04-reconstruction-pipeline.md`。
+> 单深度流路径：用户转一圈 → ICP 增量配准 → TSDF 体素积分 → Marching Cubes 出 mesh + 关键帧纹理烘焙。
+
+| ID | 项 | 状态 | 文档 |
+|----|----|------|------|
+| M3.1 | 重建 native：ICP point-to-point（Eigen 3.x 自编进 .so）、TSDF voxel grid（自写 NEON 加速）、Marching Cubes 自写 | ☐ | `docs/architecture/04-reconstruction-pipeline.md` §3 |
+| M3.2 | scanSessionCreate / Ingest / Finalize / Close 全链路接通：reader 线程深度帧 → ICP → TSDF → 关键帧轨迹 | ☐ | `core:native-bridge/NativeBridge.kt` |
+| M3.3 | feature:scan3d「三维外廓」入口：开始/停止按钮 + 实时帧计数 + 关键帧轨迹可视化 + 自动判停 | ☐ | `feature/scan3d/Scan3dScreen.kt` |
+| M3.4 | 关键帧纹理烘焙（projection mapping + UV unwrap + atlas）+ glTF / OBJ / PLY 导出 | ☐ | 同 §3.4 |
+| M3.5 | feature:gallery 用 Filament 渲染 mesh + 点云回看 | ☐ | — |
+| M3.6 | scan_quality harness：合成 RGBD 序列（Stanford Bunny / 立方体）→ 跑管线 → mesh chamfer / 点云覆盖度 vs ground truth | ☐ | `tests/harness/scan_quality/` |
+
+## M4 — VIN 数码拓印（核心业务主线）
+
+> 详见 `docs/architecture/08-vin-rectify-design.md`。
+> 单帧 RGBD → ROI 平面拟合 → 固定法向距离正射重投影 → 1024×512 拓印图给后端 OCR。
+
+| ID | 项 | 状态 | 文档 |
+|----|----|------|------|
+| M4.1 | vin native 模块：RANSAC 平面拟合（自写 / 用 Eigen）+ 正射相机参数化 + 像素重投影 + 双线性 Color 采样 + PNG 编码（libpng 静态） | ☐ | `docs/architecture/08-vin-rectify-design.md` §2 |
+| M4.2 | feature:scan3d「VIN 数码拓印」入口：Color 实时预览 + ROI 选框拖拽 + 拍按钮 + 拓印结果页 | ☐ | `feature/scan3d/Scan3dScreen.kt` |
+| M4.3 | 拓印图落本地 + 推服务端 cv-engine vin_pipeline（M-S10.2a 已就绪）| ☐ | `core:network` 接 vin_pipeline |
+| M4.4 | vin_rectify_quality harness：录 N 个真实 VIN 钢架 RGBD pair → 跑 vinRectify → SSIM 多角度一致性 ≥ 0.9 + 服务端 OCR 准确率 ≥ 95% | ☐ | `tests/harness/vin_rectify_quality/` |
+
+## M5 — 工程治理 / Harness（贯穿）
 
 | ID | 项 | 状态 |
 |----|----|------|
-| M4.1 | rgbd_sync harness（采样 + analyze.py） | ☐ |
-| M4.2 | fusion_quality harness | ☐ |
-| M4.3 | recon_quality harness | ☐ |
-| M4.4 | `docs/architecture/registry/` 机器可校验真理源（modules / dependencies） | ☐ |
+| M5.1 | calibration_smoke harness（M1.3 用） | ☐ |
+| M5.2 | calibration_quality harness（M2.5 用） | ☐ |
+| M5.3 | scan_quality harness（M3.6 用） | ☐ |
+| M5.4 | vin_rectify_quality harness（M4.4 用） | ☐ |
+| M5.5 | `docs/architecture/registry/` 机器可校验真理源更新（按新模块结构） | ☐ |
 
 ---
 

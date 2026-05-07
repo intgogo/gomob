@@ -1,32 +1,201 @@
 package io.gomob.model
 
+import java.nio.ByteBuffer
+
 /**
- * 单帧 RGBD 数据契约（领域层视角，跨进程/JNI 传递时再做拷贝/序列化）。
+ * iHawk 单设备的彩色帧。
  *
- * 字段单位:
- *  - timestampNs: System.nanoTime() 同步参考；同源 RGB+Depth 必须同时间戳
- *  - depth: 单位毫米；0 表示无效
- *  - intrinsics: 标定后的内参（fx/fy/cx/cy）+ 畸变系数 k1..k5
+ * 字段单位：
+ * - timestampUs: SDK 内部时基（μs）；与同设备 [DepthFrame] 同一帧序的 timestamp 必须相同
+ * - data: DirectByteBuffer，零拷贝直读 native；像素格式由 [pixelType] 描述
+ *   （iHawk 出 YUYV，端侧用 NativeBridge 转 BGR888 再喂给重建/拓印 / Compose 渲染）
  */
-data class RgbdFrame(
-    val timestampNs: Long,
-    val rgb: ByteArray,
-    val rgbWidth: Int,
-    val rgbHeight: Int,
-    val depth: ShortArray,
-    val depthWidth: Int,
-    val depthHeight: Int,
+data class ColorFrame(
+    val timestampUs: Long,
+    val frameIndex: Int,
+    val width: Int,
+    val height: Int,
+    val data: ByteBuffer,
+    /** SDK PixelType 枚举名（如 BERXEL_HAWK_PIXEL_TYPE_RGB_24BIT） */
+    val pixelType: String,
     val intrinsics: CameraIntrinsics,
 )
 
+/**
+ * iHawk 单设备的深度帧。
+ *
+ * 字段单位：
+ * - data: DirectByteBuffer，**16bit mm 深度**，0 = 无效（厂家约定）
+ * - depth 是否已 register 到 color 像素坐标取决于 SDK setRegistrationEnable —— 用
+ *   [registeredToColor] 显式标记
+ */
+data class DepthFrame(
+    val timestampUs: Long,
+    val frameIndex: Int,
+    val width: Int,
+    val height: Int,
+    val data: ByteBuffer,
+    val intrinsics: CameraIntrinsics,
+    /** true = SDK 已把 depth 重投影到 color 像素坐标（registration on）；
+     *  false = 原始 depth，沿用 depth 镜头自身坐标 */
+    val registeredToColor: Boolean,
+)
+
+/**
+ * iHawk 单设备的 Color + Depth 同步帧对（VIN 拓印用）。
+ *
+ * **不变量**：`color.timestampUs == depth.timestampUs`（来自同一物理设备同一帧序）。
+ * 取得方式：BerxelService 在 reader 线程把同 frameIndex 的 color/depth 配对再 emit。
+ */
+data class RgbdFramePair(
+    val color: ColorFrame,
+    val depth: DepthFrame,
+) {
+    init {
+        require(color.timestampUs == depth.timestampUs) {
+            "color/depth 时间戳不一致：${color.timestampUs} vs ${depth.timestampUs}"
+        }
+    }
+}
+
+/** 相机内参（fx/fy/cx/cy + 畸变系数 + 标定时分辨率）。分辨率切换需重算。 */
 data class CameraIntrinsics(
     val fx: Double, val fy: Double,
     val cx: Double, val cy: Double,
+    /** [k1, k2, p1, p2, k3] OpenCV 5 系数；都为 0 表示未做畸变标定（SDK 出厂值大多如此） */
     val distortion: DoubleArray,
+    val width: Int,
+    val height: Int,
+) {
+    override fun equals(other: Any?): Boolean = other is CameraIntrinsics &&
+        fx == other.fx && fy == other.fy && cx == other.cx && cy == other.cy &&
+        distortion.contentEquals(other.distortion) &&
+        width == other.width && height == other.height
+    override fun hashCode(): Int =
+        (((fx.hashCode() * 31 + fy.hashCode()) * 31 + cx.hashCode()) * 31 + cy.hashCode()) *
+            31 + distortion.contentHashCode() + width * 31 + height
+}
+
+/**
+ * iHawk 自身 Color↔Depth 间的相对外参（同一物理设备内的 stereo pair）。
+ *
+ * - rotation：行优先 3×3，把 Depth 系坐标 → Color 系坐标
+ * - translation：3×1 mm
+ * - rmsReprojectionPx：标定时 reprojection 误差，作健康度指示
+ *
+ * **早期版本**这个类型语义是"主摄↔深度"——已废，详见 docs/architecture/01 §1。
+ */
+data class StereoExtrinsics(
+    val rotation: DoubleArray,
+    val translation: DoubleArray,
+    val rmsReprojectionPx: Double,
+) {
+    override fun equals(other: Any?): Boolean = other is StereoExtrinsics &&
+        rotation.contentEquals(other.rotation) &&
+        translation.contentEquals(other.translation) &&
+        rmsReprojectionPx == other.rmsReprojectionPx
+    override fun hashCode(): Int = rotation.contentHashCode() * 31 +
+        translation.contentHashCode() * 31 + rmsReprojectionPx.hashCode()
+}
+
+/** 标定结果完整契约，落 Room + 跨会话复用，按 [deviceSerial] 唯一。 */
+data class CalibrationResult(
+    val deviceSerial: String,
+    val colorIntrinsics: CameraIntrinsics,
+    val depthIntrinsics: CameraIntrinsics,
+    val stereo: StereoExtrinsics,
+    val calibratedAtMs: Long,
+    val sampleCount: Int,
+    val source: CalibrationSource,
 )
 
-/** 主摄像头与深度相机的外参 — 标定阶段产出，扫描阶段只读。 */
-data class StereoExtrinsics(
-    val rotation: DoubleArray,    // 行优先 3x3
-    val translation: DoubleArray, // 3x1，单位毫米
+enum class CalibrationSource { SDK_FACTORY, USER_CALIBRATED }
+
+/**
+ * 三维点云（含可选颜色），重建管线中间产物。
+ *
+ * 用 NIO Buffer：[points] 是 FloatBuffer，DirectByteBuffer 包装的 [x,y,z, ...] 序列；
+ * [colors] 是 ByteBuffer，[r,g,b, ...] 同长度（每点 3 bytes），可空。
+ */
+data class PointCloud(
+    val points: java.nio.FloatBuffer,
+    val colors: ByteBuffer?,
+    val count: Int,
 )
+
+/** 6 自由度位姿（四元数 + 平移）。重建时每帧一个，关键帧轨迹累积成扫描路径。 */
+data class Pose6D(
+    /** 四元数 [x, y, z, w] */
+    val rotationQuat: FloatArray,
+    /** 平移 [tx, ty, tz] mm */
+    val translation: FloatArray,
+) {
+    override fun equals(other: Any?): Boolean = other is Pose6D &&
+        rotationQuat.contentEquals(other.rotationQuat) &&
+        translation.contentEquals(other.translation)
+    override fun hashCode(): Int =
+        rotationQuat.contentHashCode() * 31 + translation.contentHashCode()
+}
+
+/**
+ * 三维外廓扫描会话元信息（持久化到 Room + 文件落 getFilesDir()/scans/<id>/）。
+ *
+ * 文件布局：
+ *   scans/<id>/cloud.ply      — 高密度点云
+ *   scans/<id>/mesh.gltf      — 三维网格（含纹理）
+ *   scans/<id>/mesh.obj       — OBJ 备份
+ *   scans/<id>/preview.png    — 缩略图
+ *   scans/<id>/keyframes/...  — 关键帧 Color 图（纹理烘焙后可选清理）
+ */
+data class ScanSession(
+    val id: String,
+    val createdAtMs: Long,
+    val deviceSerial: String,
+    val keyframeCount: Int,
+    val totalFrameCount: Int,
+    val pointCloudPath: String,
+    val meshPath: String,
+    val texturePath: String?,
+    /** 0..1，扫描覆盖估计（关键帧轨迹围成的球面占比） */
+    val coverageRatio: Float,
+    val durationMs: Long,
+)
+
+/** VIN 拓印的平面拟合结果（钢架表面单帧拟合）。 */
+data class PlaneFit(
+    /** [nx, ny, nz] 单位向量 */
+    val normal: FloatArray,
+    /** mm，钢架到 Color 相机原点的法向距离 */
+    val distance: Float,
+    /** 拟合残差（mm） */
+    val rmsResidualMm: Float,
+    /** RANSAC inlier 占比（0..1），≥ 0.95 视为可信平面 */
+    val inlierRatio: Float,
+) {
+    override fun equals(other: Any?): Boolean = other is PlaneFit &&
+        normal.contentEquals(other.normal) && distance == other.distance &&
+        rmsResidualMm == other.rmsResidualMm && inlierRatio == other.inlierRatio
+    override fun hashCode(): Int = normal.contentHashCode() * 31 +
+        distance.hashCode() * 31 + rmsResidualMm.hashCode() * 31 + inlierRatio.hashCode()
+}
+
+/** VIN 拓印结果（单帧 RGBD → 1:1 正射图）。 */
+data class VinRectifyResult(
+    /** PNG 编码的拓印图（默认 1024×512，0.2 mm/px） */
+    val rectifiedPng: ByteArray,
+    val plane: PlaneFit,
+    /** 虚拟正射相机的法向距离 mm（默认 300） */
+    val orthoDistanceMm: Float,
+    /** 虚拟正射相机像素物理尺寸 mm/px（默认 0.2） */
+    val pixelSizeMm: Float,
+    val outputWidth: Int,
+    val outputHeight: Int,
+    val captureTimestampMs: Long,
+) {
+    override fun equals(other: Any?): Boolean = other is VinRectifyResult &&
+        rectifiedPng.contentEquals(other.rectifiedPng) && plane == other.plane &&
+        orthoDistanceMm == other.orthoDistanceMm && pixelSizeMm == other.pixelSizeMm &&
+        outputWidth == other.outputWidth && outputHeight == other.outputHeight &&
+        captureTimestampMs == other.captureTimestampMs
+    override fun hashCode(): Int = rectifiedPng.contentHashCode() * 31 + plane.hashCode()
+}

@@ -15,6 +15,8 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/depth
     ${CMAKE_CURRENT_SOURCE_DIR}/fusion
     ${CMAKE_CURRENT_SOURCE_DIR}/reconstruction
+    ${CMAKE_CURRENT_SOURCE_DIR}/vin
+    ${CMAKE_CURRENT_SOURCE_DIR}/calibration
 )
 
 # Berxel Android SDK 不暴露 C++ 头给业务，业务侧从 Kotlin 直接调
@@ -32,6 +34,12 @@ file(GLOB FUSION_SOURCES "fusion/*.cpp")
 # reconstruction/ 子模块（占位）
 file(GLOB RECON_SOURCES "reconstruction/*.cpp")
 
+# vin/ 子模块（占位）
+file(GLOB VIN_SOURCES "vin/*.cpp")
+
+# calibration/ 子模块（占位）
+file(GLOB CALIB_SOURCES "calibration/*.cpp")
+
 # JNI 入口
 file(GLOB JNI_SOURCES "jni/*.cpp")
 
@@ -41,6 +49,8 @@ add_library(gomob_native SHARED
     ${DEPTH_SOURCES}
     ${FUSION_SOURCES}
     ${RECON_SOURCES}
+    ${VIN_SOURCES}
+    ${CALIB_SOURCES}
 )
 
 target_link_libraries(gomob_native
