@@ -19,6 +19,14 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/calibration
 )
 
+# Eigen 3.4 header-only — third_party/eigen-3.4.0/ 投放（详见 README.gomob.md）
+# 用于 ICP SVD / 位姿四元数 / TSDF 后处理；header-only 不需 add_subdirectory
+set(GOMOB_EIGEN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/eigen-3.4.0)
+if(NOT EXISTS ${GOMOB_EIGEN_DIR}/Eigen/Dense)
+    message(FATAL_ERROR "Eigen 3.4 not found at ${GOMOB_EIGEN_DIR}; 检查 third_party/ 投放")
+endif()
+include_directories(SYSTEM ${GOMOB_EIGEN_DIR})
+
 # Berxel Android SDK 不暴露 C++ 头给业务，业务侧从 Kotlin 直接调
 # BerxelSDK.jar 的 Java API（见 core:native-bridge/build.gradle.kts），
 # 我们的 gomob_native.so 不需要在 C++ 层链接 Berxel 任何 .so。

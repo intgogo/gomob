@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# native-host-test.sh — 在 Linux host 上跑 native/reconstruction 单测（不依赖 NDK / Android）
+# 用于 ICP / TSDF / Marching Cubes 等纯计算模块的快速验证
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+mkdir -p .dev/native-host
+
+CXX_FLAGS=(-std=c++17 -O2 -Wall -Wextra -Wno-deprecated-copy
+           -Ithird_party/eigen-3.4.0 -Inative)
+
+build_and_run() {
+    local name=$1; shift
+    echo "=== $name ==="
+    g++ "${CXX_FLAGS[@]}" "$@" -o ".dev/native-host/$name"
+    ".dev/native-host/$name"
+    echo
+}
+
+build_and_run icp_test \
+    tests/native_host/icp_test.cpp \
+    native/reconstruction/icp.cpp
+
+build_and_run tsdf_test \
+    tests/native_host/tsdf_test.cpp \
+    native/reconstruction/tsdf.cpp
+
+build_and_run mc_test \
+    tests/native_host/mc_test.cpp \
+    native/reconstruction/marching_cubes.cpp \
+    native/reconstruction/tsdf.cpp
+
+build_and_run scan_session_test \
+    tests/native_host/scan_session_test.cpp \
+    native/reconstruction/scan_session.cpp \
+    native/reconstruction/icp.cpp \
+    native/reconstruction/tsdf.cpp \
+    native/reconstruction/marching_cubes.cpp \
+    native/reconstruction/mesh_export.cpp \
+    native/depth/depth_projection.cpp

@@ -2,6 +2,7 @@
 // 占位实现：用针孔模型把 (u,v,d) 反投影为 (X,Y,Z)；
 // 后续接 Berxel SDK 时可换成厂商提供的高精度反畸变路径。
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 

@@ -15,6 +15,8 @@
 #include <string>
 #include <vector>
 
+#include "reconstruction/icp.h"
+
 #define LOG_TAG "gomob_native"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
@@ -42,10 +44,7 @@ namespace reconstruction {
         const float* pose7);
     bool SessionFinalize(ScanSession* s, const char* out_dir, int* out_stats3);
     void SessionClose(ScanSession* s);
-    std::vector<float> IcpRegister(
-        const float* src, size_t src_count,
-        const float* dst, size_t dst_count,
-        const float* initial_pose7);
+    // IcpRegister 的真实实现在 reconstruction/icp.h，返回 IcpResult；本文件 #include 了 icp.h
 }
 namespace vin {
     struct RectifyResult;
@@ -160,11 +159,15 @@ Java_io_gomob_nativebridge_NativeBridge_icpRegister(
         ThrowNativeException(env, 2, "initialPose must be 7 floats");
         return nullptr;
     }
+    if (srcLen % 3 != 0 || dstLen % 3 != 0) {
+        ThrowNativeException(env, 2, "src/dst length must be multiple of 3");
+        return nullptr;
+    }
     jfloat* srcData = env->GetFloatArrayElements(src, nullptr);
     jfloat* dstData = env->GetFloatArrayElements(dst, nullptr);
     jfloat* initData = env->GetFloatArrayElements(initialPose, nullptr);
 
-    auto pose = gomob::reconstruction::IcpRegister(
+    gomob::reconstruction::IcpResult ir = gomob::reconstruction::IcpRegister(
         srcData, static_cast<size_t>(srcLen / 3),
         dstData, static_cast<size_t>(dstLen / 3),
         initData);
@@ -173,8 +176,12 @@ Java_io_gomob_nativebridge_NativeBridge_icpRegister(
     env->ReleaseFloatArrayElements(dst, dstData, JNI_ABORT);
     env->ReleaseFloatArrayElements(initialPose, initData, JNI_ABORT);
 
+    if (ir.status == gomob::reconstruction::IcpResultStatus::DegenerateInput) {
+        ThrowNativeException(env, 101, "ICP degenerate input (pairs < 6)");
+        return nullptr;
+    }
     jfloatArray result = env->NewFloatArray(7);
-    env->SetFloatArrayRegion(result, 0, 7, pose.data());
+    env->SetFloatArrayRegion(result, 0, 7, ir.pose7.data());
     return result;
 }
 
