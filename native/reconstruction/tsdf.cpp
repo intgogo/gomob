@@ -12,6 +12,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+
+namespace gomob::depth {
+// 与 depth_projection.cpp 共享的工作距离窗口判断 — 让 ICP 输入点云与 TSDF 积分对齐。
+extern bool IsDepthValid(int16_t d);
+}
 
 namespace gomob::reconstruction {
 
@@ -55,7 +61,9 @@ int TsdfVolume::Integrate(const uint16_t* depth_mm, int width, int height,
                 int vi = static_cast<int>(std::lround(v));
                 if (ui < 0 || ui >= width || vi < 0 || vi >= height) continue;
                 uint16_t d = depth_mm[vi * width + ui];
-                if (d == 0) continue;                  // 无效深度
+                // 跳过无效深度 + 工作距离外的噪声（与 ProjectToPointCloud 同一窗口，
+                // 避免 ICP reference 与 TSDF 体素积分用了不同的"有效像素"集合，造成漂移）
+                if (!gomob::depth::IsDepthValid(static_cast<int16_t>(d))) continue;
                 float z = static_cast<float>(d);
                 float sdf = z - Pc.z();
                 if (sdf < -trunc) continue;            // 远在表面后面（被遮挡 → 不更新）

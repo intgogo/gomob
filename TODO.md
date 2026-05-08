@@ -40,19 +40,60 @@
 | M2.4 | calibrations 表（Room）+ deviceSerial 唯一索引 + 跨会话复用 + 接 M-S3 device 服务端云同步 | ☐ | `core:database` |
 | M2.5 | calibration_quality harness：跑三场景验收 + SDK 出厂参数 vs 自标定对比 | ☐ | `tests/harness/calibration_quality/` |
 
-## M3 — 三维外廓扫描重建（核心业务主线）
+## M3 — 三维外廓扫描重建（核心业务主线，2026-05-07 大方向变更）
 
-> 详见 `docs/architecture/04-reconstruction-pipeline.md`。
-> 单深度流路径：用户转一圈 → ICP 增量配准 → TSDF 体素积分 → Marching Cubes 出 mesh + 关键帧纹理烘焙。
+> **方向变更（2026-05-07）**：从"实时 SLAM 单流连续录制 + 端侧 TSDF"转向**多视角 RGBD 配准 + 端云组合**。
+> 设计文档：[docs/architecture/04b-multiview-rgbd-reconstruction.md](docs/architecture/04b-multiview-rgbd-reconstruction.md)（终态权威）；
+> [docs/architecture/04-reconstruction-pipeline.md](docs/architecture/04-reconstruction-pipeline.md) 保留作历史路线参考。
+> 决策记忆：[docs/agent-memory/finding_multiview_rgbd_pivot_2026-05-07.md](agent-memory/finding_multiview_rgbd_pivot_2026-05-07.md)。
+>
+> **新管线**：用户环绕目标采 8-12 角度 RGBD → SAM 语义分割物体 → Open3D multiway_registration + Color-ICP +
+> 全局 Pose Graph Optimization → Marching Cubes + 纹理烘焙 → GLB。三阶段实施：阶段 1 端拍照 + 云融合（业务闭环）；
+> 阶段 2 云端加 SAM-HD（精分割）；阶段 3 端侧加 SAM2 Mobile + 实时拼接预览（用户主动补漏）。
 
-| ID | 项 | 状态 | 文档 |
+### 既有沉淀（部分继承）
+
+| ID | 项 | 状态 | 备注 |
 |----|----|------|------|
-| M3.1 | 重建 native：ICP point-to-point（Eigen 3.x 自编进 .so）、TSDF voxel grid（自写 NEON 加速）、Marching Cubes 自写 | ☐ | `docs/architecture/04-reconstruction-pipeline.md` §3 |
-| M3.2 | scanSessionCreate / Ingest / Finalize / Close 全链路接通：reader 线程深度帧 → ICP → TSDF → 关键帧轨迹 | ☐ | `core:native-bridge/NativeBridge.kt` |
-| M3.3 | feature:scan3d「三维外廓」入口：开始/停止按钮 + 实时帧计数 + 关键帧轨迹可视化 + 自动判停 | ☐ | `feature/scan3d/Scan3dScreen.kt` |
-| M3.4 | 关键帧纹理烘焙（projection mapping + UV unwrap + atlas）+ glTF / OBJ / PLY 导出 | ☐ | 同 §3.4 |
-| M3.5 | feature:gallery 用 Filament 渲染 mesh + 点云回看 | ☐ | — |
-| M3.6 | scan_quality harness：合成 RGBD 序列（Stanford Bunny / 立方体）→ 跑管线 → mesh chamfer / 点云覆盖度 vs ground truth | ☐ | `tests/harness/scan_quality/` |
+| 🟡 M3.1 | ICP / 空间哈希 / Marching Tetrahedra native 地基 (commit d10bedc / b2b2f0a) | 🟡 算法沉淀可复用到端侧实时预览（阶段 3）；当前不再是核心路径 | 阶段 3 的输入 |
+| 🟡 M3.2 | scanSessionCreate / Ingest / Finalize / Close 全链路 + NativeBridge bulk 化 | 🟡 阶段 3 端侧实时预览复用；当前阶段 1 端侧只采集，不调 ingest | 阶段 3 的输入 |
+| 🟡 M3.3 | feature:scan3d Recording / Completed UI + Filament 3D 预览 + mesh lit 渲染 | 🟡 UI 框架保留，交互改"采集模式"（按钮拍照 vs 连续录制）| 阶段 1 改造 |
+| ✅ M3.7 | P100R3 spec 对齐：[200, 8000]mm + grid voxel=6mm/extent=1500/centerZ=1000（commit 待 git） | ✅ 本次；待真机回测 | [reference_iHawkP100R3_spec.md](agent-memory/reference_iHawkP100R3_spec.md) |
+
+### ❌ 已弃（被多视角 RGBD 方案替代）
+
+| ID | 原项 | 弃因 |
+|----|----|------|
+| ~~M3.8~~ | ~~稀疏 TSDF voxel hashing~~ | SAM 分割后只剩物体点云（10⁵ 量级 vs 场景 10⁷），密集 TSDF 已够；多视角融合后云端跑全局 PGO 不需要稀疏 TSDF |
+| ~~M3.9~~ | ~~PoseSource 三层适配（ARCore/AREngine/IMU）~~ | 多视角配准 pose 来自点云本身（FPFH+RANSAC+Color-ICP+PGO），不依赖手机 pose 源 |
+| ~~M3.10~~ | ~~手机主摄 ↔ P100R3 双摄外参标定~~ | 不需要——P100R3 出厂已硬件深度彩色像素对齐（spec 表 1 明确） |
+| ~~M3.11~~ | ~~实时已扫覆盖图引导（基于 TSDF block 鸟瞰）~~ | 形式变化：阶段 1 用"已采角度计数 + 上张 RGB 半透明叠加" UI；阶段 3 才回到"覆盖度可视化" |
+
+### ✨ 新主线（多视角 RGBD 方案）
+
+#### 阶段 1：端拍照 + 云融合（业务闭环 MVP，1-2 周）
+
+| ID | 项 | 验收 | 文档 |
+|----|----|------|------|
+| M3.12 | **端侧采集模式 UI**：环绕目标 8-12 角度引导 + 每按拍照按钮抓 RGB(1080p) + depth(1280×800) + 内参 + 时间戳；上张 RGB 半透明叠当前 viewfinder 引导 overlap；端侧 ORB 实时算 overlap < 30% 提示重拍；启发式 ROI（中心连通块）作初步分割兜底；采集完成 zip 落 `.dev/scans/<sessionId>/` | UI 录像在 `.dev/screenshots/scan-multiview/` 通过；8 张 RGBD pair 完整（每张 RGB+depth 时间戳 ≤ 50ms 偏差） | 04b §3.1 |
+| M3.13 | **asset multipart upload 接入**：复用 M-S2.3 接口；新增 `inspections.scan_multiview_payload` 字段或独立 scan 表 | curl 上传 8 张 RGBD pair 到 MinIO 通过；DB 记 sessionId + frameCount + 各帧 sha256 | 04b §3.2 / `02-api-contract.md` |
+| M3.14 | **cv-engine 加 `object_3d_fusion` worker**：NATS 订阅 `scan.captured` → MinIO 拉所有帧 → Open3D `multiway_registration`（FPFH+RANSAC pairwise → Color-ICP 精修 → g2o/Ceres PGO 全局优化）→ Marching Cubes 出 mesh → per-vertex visibility 多张 RGB 投影做纹理烘焙 → 输出 GLB 写 MinIO + DB → publish `scan.fusion_done` | harness `scan_fusion`：用 Open3D demo dataset (apartment / bedroom 的子集) 跑出 chamfer ≤ 5mm vs ground truth；卡车真实 8 张 RGBD 端到端 1-2 分钟出 mesh 顶点数 ≥ 50K | 04b §3.3 |
+| M3.15 | **端侧 gallery 拉 GLB 回看**：feature:gallery 订阅 `scan.fusion_done`（WebSocket/轮询）→ 拉 GLB → Filament PBR + IBL 渲染；点击查看历史扫描 | 1080p 60fps 渲染流畅；旋转 / 缩放 / 平移手势就绪 | 04b §3.4 |
+| M3.16 | **scan_multiview_quality harness**：合成 RGBD 序列（Stanford Bunny 8 角度合成）+ 真实卡车数据 → 跑端到端 → mesh chamfer / 点云覆盖度 vs ground truth；UV atlas 利用率 ≥ 70% | `./dev.sh harness scan_multiview_quality` 通过；analyze.py 输出"正常 / 警告 / 异常 + 原因" | `tests/harness/scan_multiview_quality/` |
+
+#### 阶段 2：SAM-HD 替代启发式分割（精度提升，2-3 周后）
+
+| ID | 项 | 验收 |
+|----|----|------|
+| M3.17 | **cv-engine 接 SAM-HD（满血 ViT-H 或 SAM2）**：worker 拉用户 prompt + RGB → SAM 推理出精确 2D mask → 借 P100R3 像素对齐投到 depth → 物体点云；端侧采集时让用户每张点 1-2 个 prompt 点（point + 可选 box）落 sessionId 元数据 | 同张 RGB 上 SAM mask IoU 与人工标注 ≥ 0.92；端到端 mesh 边缘毛刺减少（DOC: vs M3.14 启发式 ROI A/B 对比） |
+| M3.18 | **GPU worker 部署**：cv-engine 容器加 GPU runtime；模型卸载 / 多任务排队 | 单 worker 8 张 RGBD 全程 ≤ 30s SAM 推理 |
+
+#### 阶段 3：端侧 SAM2 Mobile + 实时拼接预览（体验升级，4-6 周后）
+
+| ID | 项 | 验收 |
+|----|----|------|
+| M3.19 | **端侧 SAM2 Mobile 集成**：50MB 模型进 APK；NPU/GPU 推理后端适配（高通 HTP / 联发科 APU / 麒麟 NPU）；首帧 prompt + 后续帧 mask propagation | LOG-AN10 上 5+ fps SAM 推理稳定 |
+| M3.20 | **端侧实时 ICP/TSDF + Filament 实时 mesh 渲染**：Recording 模式回归（视频流），但只对 SAM mask 内 voxel 积分；HUD "覆盖度 65%, 缺: 顶面 / 后右"；扫描结束端侧立即出 cm 级 mesh，同时上传原始帧云端跑高精度版 silently 替换 | 端侧实时 mesh ≥ 5 fps 增长；扫描完成 ≤ 1s 出实时版；30s 后云端高精度版自动替换 |
 
 ## M4 — VIN 数码拓印（核心业务主线）
 

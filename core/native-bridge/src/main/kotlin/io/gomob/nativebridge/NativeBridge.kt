@@ -129,6 +129,20 @@ object NativeBridge {
      */
     external fun scanSessionPeekVertices(handle: Long, maxVertices: Int): FloatArray
 
+    /**
+     * finalize 完成后拉 mesh 顶点（扁平 [x,y,z,...] mm 世界系）— 与 [scanSessionMeshNormals]
+     * / [scanSessionMeshIndices] 配合用 lit material 渲染实体面。
+     *
+     * 数据生命周期：handle close 前持有，close 后清空；finalize 前调用返长度 0 数组。
+     */
+    external fun scanSessionMeshVertices(handle: Long): FloatArray
+
+    /** finalize 完成后拉 mesh 顶点法向（扁平 [nx,ny,nz,...] 单位向量），见 [scanSessionMeshVertices]。 */
+    external fun scanSessionMeshNormals(handle: Long): FloatArray
+
+    /** finalize 完成后拉 mesh 三角形索引（每 3 个 = 一个三角形 CCW），见 [scanSessionMeshVertices]。 */
+    external fun scanSessionMeshIndices(handle: Long): IntArray
+
     // ===== vin/* — VIN 数码拓印 =====
     //
     // 详见 docs/architecture/08-vin-rectify-design.md。

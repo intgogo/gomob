@@ -1,0 +1,34 @@
+// Mesh lit material — 扫描完成后 mesh 实体面渲染
+//
+// 设计：
+//   - shadingModel: lit — Filament 自带 PBR 走 tangents + directional light，给 mesh 立体感
+//   - vertexDomain: object — 顶点 attribute 在模型空间，由 Camera/View 矩阵转屏幕
+//   - requires position + tangents — Kotlin 端用 SurfaceOrientation 把 normal → quaternion
+//     上传到 TANGENTS attribute；lit shading model 会从 quaternion 解出 N 做光照
+//   - 不用 IBL（间接光）— 节省 GPU + 不需要 cubemap 资源；光照仅来自 Scene 的 directional light
+//   - metallic=0, roughness=0.85 — 漫反射为主，扫描结果展示无需高光
+//   - culling : none — MC 输出 winding 偶尔反，双面渲染保证用户能看到面
+material {
+    name : meshLit,
+    shadingModel : lit,
+    vertexDomain : object,
+    requires : [ position ],
+    blending : opaque,
+    depthWrite : true,
+    culling : none,
+    parameters : [
+        {
+            type : float4,
+            name : baseColor
+        }
+    ]
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        material.baseColor = materialParams.baseColor;
+        material.metallic = 0.0;
+        material.roughness = 0.85;
+    }
+}

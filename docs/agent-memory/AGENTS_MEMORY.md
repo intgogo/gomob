@@ -22,10 +22,12 @@
 ## 项目 / 参考（reference）
 
 - [Berxel SDK 资源位置](reference_berxel_sdk_locations.md) — Windows SDK 头文件 / 样例 / VIN 文档的 SMB 挂载点路径。
+- [iHawk P100R3.0 产品规格](reference_iHawkP100R3_spec.md) — gomob 实际硬件型号；工作距离 0.2-8m / 理想 0.25-2m / 精度 ≤1%@1-2m。native 阈值真理源。
 - [gogame 方法论源仓](reference_gogame_methodology_origin.md) — 本项目的方法论源头是 `/root/lilw/gogame`，可回溯。
 
 ## 历史决策（finding / design）
 
+- [**重建主线 2026-05-07 重大方向变更**](finding_multiview_rgbd_pivot_2026-05-07.md) — 实时 SLAM → 多视角 RGBD 配准 + 端云融合；权威设计在 04b；既有 native 沉淀阶段 3 复用。**新工作不要扩 04 路线**。
 - [模拟器在本机的可工作配置 2026-05-04](finding_emulator_setup_2026-05-04.md) — SwiftShader SIGSEGV；必须 `-gpu host` + `DISPLAY=:1` 走 NVIDIA。
 - [KSP2 + Hilt 2.53.x 不兼容](finding_ksp1_required_for_hilt_2_53.md) — `ksp.useKSP2=false` 是当前唯一解。
 - [mob3d 设计最新交付核对 2026-05-05](finding_mob3d_handoff_realign_2026-05-05.md) — 现仓本就是 handoff 业务化升级版；本次只补 token + 微观对齐 + FirstPersonViewer 重写 + 删 PlaceholderScreen。

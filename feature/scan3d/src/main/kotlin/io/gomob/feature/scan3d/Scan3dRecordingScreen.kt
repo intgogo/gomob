@@ -64,6 +64,7 @@ fun Scan3dRecordingRoute(
     val state by vm.state.collectAsStateWithLifecycle()
     val device by vm.deviceState.collectAsStateWithLifecycle()
     val cloud by vm.pointCloudPreview.collectAsStateWithLifecycle()
+    val mesh by vm.meshPreview.collectAsStateWithLifecycle()
     val colorBmp by vm.colorPreview.collectAsStateWithLifecycle()
     val depthBmp by vm.depthPreview.collectAsStateWithLifecycle()
 
@@ -86,6 +87,7 @@ fun Scan3dRecordingRoute(
             LiveStreamRow(colorBmp = colorBmp, depthBmp = depthBmp)
             PointCloudPreview(
                 points = cloud,
+                mesh = mesh,
                 state = state,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
             )
@@ -155,10 +157,10 @@ private fun StreamCell(label: String, bitmap: Bitmap?, modifier: Modifier = Modi
 @Composable
 private fun PointCloudPreview(
     points: FloatArray,
+    mesh: ScanMeshData?,
     state: ScanRecordingState,
     modifier: Modifier = Modifier,
-    extentMm: Float = 800f,    // 与 SessionCreate 的 gridExtentMm 对齐
-    centerZmm: Float = 400f,   // 与 SessionCreate 的 gridCenterZMm 对齐
+    centerZmm: Float = 750f,  // 与 Scan3dRecordingViewModel.scanSessionCreate gridCenterZMm 对齐 (grid z[0,1500]mm)
 ) {
     Box(modifier.padding(horizontal = Gomob.spacing.s12)) {
         Box(
@@ -168,21 +170,33 @@ private fun PointCloudPreview(
                 .background(Gomob.colors.bg2)
                 .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3),
         ) {
-            // 网格背景（让用户感觉这是个 3D 空间）
-            Canvas(Modifier.fillMaxSize()) {
-                drawGrid()
-                if (points.isNotEmpty()) {
-                    drawPointCloudTopView(points, extentMm, centerZmm)
-                }
+            // Filament 3D 预览（手势 orbit/zoom）：
+            //   - Recording 全程挂载（即使点云空也保持挂载）→ 避免 peek 偶发返空时
+            //     SurfaceView destroy + Filament Engine 重建造成的"画面闪烁"
+            //   - Completed 且 mesh 非空 → 显示 mesh 实体面（lit + 方向光）
+            //   - 其它状态（Idle / Finalizing / Error / Completed-empty）不挂载，
+            //     DisposableEffect 自动 destroy 释放 GPU。
+            val showAsPoints = state is ScanRecordingState.Recording
+            val showAsMesh = state is ScanRecordingState.Completed && mesh != null
+            val showFilament = showAsPoints || showAsMesh
+            if (showFilament) {
+                PointCloud3dView(
+                    points = if (showAsMesh) FloatArray(0) else points,
+                    mesh = if (showAsMesh) mesh else null,
+                    modifier = Modifier.fillMaxSize(),
+                    gridCenterZmm = centerZmm,
+                )
             }
             // 角标
             Text(
                 text = when (state) {
-                    is ScanRecordingState.Recording -> "TOP-VIEW · ${points.size / 3} 点"
-                    is ScanRecordingState.Completed -> "扫描完成"
+                    is ScanRecordingState.Recording -> "3D · ${points.size / 3} 点 · 拖动旋转"
+                    is ScanRecordingState.Completed -> if (mesh != null) {
+                        "Mesh · ${mesh.vertices.size / 3} 顶点 · ${mesh.indices.size / 3} 面 · 拖动旋转"
+                    } else "扫描完成"
                     is ScanRecordingState.Finalizing -> "提取 mesh 中"
                     is ScanRecordingState.Error -> "错误"
-                    is ScanRecordingState.Idle -> "TOP-VIEW · 等待开始"
+                    is ScanRecordingState.Idle -> "3D · 等待开始"
                 },
                 style = Gomob.type.eyebrow,
                 color = Gomob.colors.fg2,
@@ -192,16 +206,16 @@ private fun PointCloudPreview(
                     .background(Gomob.colors.bg0.copy(alpha = 0.7f))
                     .padding(horizontal = Gomob.spacing.s6, vertical = 2.dp),
             )
-            // 中心引导文案（点云为空时）
-            if (points.isEmpty() && state !is ScanRecordingState.Recording) {
+            // 中心引导文案（点云 / mesh 为空时）
+            if (!showFilament) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
                         text = when (state) {
                             is ScanRecordingState.Idle -> "按下开始按钮，绕物体转一圈"
+                            is ScanRecordingState.Recording -> "正在采集首帧深度…"
                             is ScanRecordingState.Finalizing -> ""
-                            is ScanRecordingState.Completed -> ""
+                            is ScanRecordingState.Completed -> "mesh 为空（扫描没积分到任何表面）"
                             is ScanRecordingState.Error -> ""
-                            else -> ""
                         },
                         style = Gomob.type.bodySm,
                         color = Gomob.colors.fg3,
@@ -209,43 +223,6 @@ private fun PointCloudPreview(
                 }
             }
         }
-    }
-}
-
-private fun DrawScope.drawGrid() {
-    val gridLines = 8
-    val color = Color(0xFF2A2A2E)
-    val w = size.width
-    val h = size.height
-    for (i in 1 until gridLines) {
-        val x = w * i / gridLines
-        drawLine(color, Offset(x, 0f), Offset(x, h), strokeWidth = 0.5f)
-        val y = h * i / gridLines
-        drawLine(color, Offset(0f, y), Offset(w, y), strokeWidth = 0.5f)
-    }
-    // 中心十字
-    val cross = Color(0xFF3A3A3E)
-    drawLine(cross, Offset(w / 2, 0f), Offset(w / 2, h), strokeWidth = 1f)
-    drawLine(cross, Offset(0f, h / 2), Offset(w, h / 2), strokeWidth = 1f)
-}
-
-private fun DrawScope.drawPointCloudTopView(points: FloatArray, extentMm: Float, centerZmm: Float) {
-    // top-view: 世界系 (x, z) → canvas
-    //   x: 中心在画布中央，向右为正
-    //   z: grid 中心 = centerZmm，画布上 z=centerZmm 对应画布中心
-    //   相机在世界 z=0，朝 +z 看物体；画布上"屏幕下方"= z 小（靠近相机）
-    val cx = size.width / 2
-    val cy = size.height / 2
-    val scale = (size.width * 0.9f) / extentMm  // 让 extent 占画布 90%
-    val n = points.size / 3
-    val accent = Color(0xFF7DB8FF)  // 接近 Gomob.colors.accent
-    for (i in 0 until n) {
-        val x = points[i * 3]
-        val z = points[i * 3 + 2]
-        val px = cx + x * scale
-        val py = cy - (z - centerZmm) * scale  // 把 grid 中心对到画布中心；z 大 → 画布上方
-        if (px < 0f || px >= size.width || py < 0f || py >= size.height) continue
-        drawCircle(accent.copy(alpha = 0.8f), radius = 2f, center = Offset(px, py))
     }
 }
 
@@ -295,21 +272,35 @@ private fun IdleStatePanel(deviceReady: Boolean, deviceText: String, onStart: ()
 @Composable
 private fun RecordingStatePanel(s: ScanRecordingState.Recording, previewPoints: Int, onStop: () -> Unit) {
     PanelCard {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(vertical = Gomob.spacing.s4),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
         ) {
+            // 首帧提示：native ingest 第一次调用要分配 64MB TSDF + page fault 冷启，几百 ms~秒级
+            // 这期间帧/KF 仍是 0，加这行兜底告诉用户"在等首帧而非卡死"
+            if (s.awaitingFirstFrame) {
+                Text(
+                    "等待首帧深度…(TSDF 体素冷启)",
+                    style = Gomob.type.caption,
+                    color = Gomob.colors.fg3,
+                )
+            }
             Row(
-                Modifier.weight(1f),
+                modifier = Modifier.fillMaxWidth().padding(vertical = Gomob.spacing.s4),
+                verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
             ) {
-                StatColumn(label = "帧",   value = s.framesIngested.toString())
-                StatColumn(label = "KF",   value = s.keyframes.toString())
-                StatColumn(label = "点",   value = previewPoints.toString())
-                StatColumn(label = "时长", value = formatElapsed(s.elapsedMs))
+                Row(
+                    Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
+                ) {
+                    StatColumn(label = "帧",   value = s.framesIngested.toString())
+                    StatColumn(label = "KF",   value = s.keyframes.toString())
+                    StatColumn(label = "点",   value = previewPoints.toString())
+                    StatColumn(label = "时长", value = formatElapsed(s.elapsedMs))
+                }
+                BigCircleButton(label = "停止", color = Gomob.colors.danger, onClick = onStop)
             }
-            BigCircleButton(label = "停止", color = Gomob.colors.danger, onClick = onStop)
         }
     }
 }

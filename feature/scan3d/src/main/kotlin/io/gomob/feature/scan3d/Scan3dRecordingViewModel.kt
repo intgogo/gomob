@@ -10,9 +10,12 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import io.gomob.nativebridge.NativeBridge
 import io.gomob.nativebridge.berxel.BerxelDeviceState
 import io.gomob.nativebridge.berxel.BerxelService
+import kotlinx.coroutines.CoroutineName
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,9 +25,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.Executors
 import javax.inject.Inject
 
 /**
@@ -42,6 +45,8 @@ sealed interface ScanRecordingState {
         val framesIngested: Int,
         val keyframes: Int,
         val elapsedMs: Long,
+        /** 首帧 native ingest 还没回来；UI 用来显示"等待首帧"避免误以为卡死。 */
+        val awaitingFirstFrame: Boolean = true,
     ) : ScanRecordingState
     data class Finalizing(val framesIngested: Int) : ScanRecordingState
     data class Completed(
@@ -87,6 +92,11 @@ class Scan3dRecordingViewModel @Inject constructor(
     private val _pointCloudPreview = MutableStateFlow<FloatArray>(FloatArray(0))
     val pointCloudPreview: StateFlow<FloatArray> = _pointCloudPreview.asStateFlow()
 
+    /** finalize 完成后 native 提取的 mesh 数据快照 — UI 在 Completed 状态下用 lit material 渲染。
+     *  必须在 scanSessionClose 之前从 native 拉走（close 后 last_mesh 释放）。 */
+    private val _meshPreview = MutableStateFlow<ScanMeshData?>(null)
+    val meshPreview: StateFlow<ScanMeshData?> = _meshPreview.asStateFlow()
+
     private val _colorPreview = MutableStateFlow<Bitmap?>(null)
     val colorPreview: StateFlow<Bitmap?> = _colorPreview.asStateFlow()
 
@@ -100,9 +110,21 @@ class Scan3dRecordingViewModel @Inject constructor(
     @Volatile private var sessionHandle: Long = 0L
     private var ingestJob: Job? = null
     private var previewJob: Job? = null
+    private var tickerJob: Job? = null
     private var startedAtMs: Long = 0L
     private var framesIngested: Int = 0
     private var keyframesCount: Int = 0
+    @Volatile private var firstFrameReceived: Boolean = false
+
+    /**
+     * native scan_session 单线程 dispatcher — ingest / peek / finalize / close 全部走这一个线程，
+     * 避免多核并发撞 native 数据竞争（scan_session.cpp 注释 "native 不是线程安全" 已说明）。
+     * VM cleared 时 close。
+     */
+    private val nativeExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "scan-session-native").apply { isDaemon = true }
+    }
+    private val nativeDispatcher = nativeExecutor.asCoroutineDispatcher()
 
     init {
         // 进入扫描页即启动 SDK（幂等）+ collect Color/Depth 预览帧（横排小窗给用户看实时画面）
@@ -137,32 +159,60 @@ class Scan3dRecordingViewModel @Inject constructor(
         startedAtMs = System.currentTimeMillis()
         framesIngested = 0
         keyframesCount = 0
+        firstFrameReceived = false
 
         try {
-            // 4mm voxel × 800mm extent → 200³ = 8M voxel × 8B = 64MB；端侧能跑
-            // gridCenterZ=400mm — 覆盖 z[0, 800]mm 兼容手持 25-80cm 全场景（PixelType
-            // DEP_16BIT_12I_4D 已在 BerxelService 端转成纯 mm，下游直接用）
+            // P100R3 默认参数（覆盖手持 25-150cm + 桌面贴近 20-50cm 全场景）：
+            //   voxel=6mm × extent=1500mm → 250³ ≈ 16M voxel × 8B = 125MB，端侧能扛
+            //   gridCenterZ=750mm 让 grid 覆盖 z[0, 1500]mm —— 关键调整：
+            //     之前 1000mm 让 grid 起点 z=250mm，用户贴近物体 (实测 20cm) 时 seed=207mm 不在
+            //     grid 内（log "Ingest[1st] WARN foreground depth 207mm 不在 grid z[250,1750]mm
+            //     内"），TSDF 完全没积分到物体；750mm 让 grid 起点 z=0，覆盖整个相机前方有效区。
+            //     [0, 200] 段是 IsDepthValid 滤死区（P100R3 spec 0.2m 硬下限），grid 浪费 ~13%
+            //     可接受。
+            //   6mm voxel 对应 truncation=24mm，匹配 P100R3 精度 ≤1% @ 1-2m 的真实噪声底；
+            //   4mm voxel 反而比传感器精度还细 → 噪声拉锯式刷新表面。
+            //
+            // TODO 阶段 2 引入"扫描预设" UI（桌面贴近 / 中件 / 大件），按 preset 选 voxel/extent/centerZ。
             sessionHandle = NativeBridge.scanSessionCreate(
-                /*voxelSizeMm=*/4.0f,
-                /*gridExtentMm=*/800.0f,
-                /*gridCenterZMm=*/400.0f,
+                /*voxelSizeMm=*/6.0f,
+                /*gridExtentMm=*/1500.0f,
+                /*gridCenterZMm=*/750.0f,
             )
         } catch (e: Throwable) {
             _state.value = ScanRecordingState.Error("scanSessionCreate 失败: ${e.message}")
             return
         }
-        _state.value = ScanRecordingState.Recording(0, 0, 0L)
+        _state.value = ScanRecordingState.Recording(0, 0, 0L, awaitingFirstFrame = true)
         Log.i(TAG, "扫描会话已建立 handle=$sessionHandle")
 
-        // 实时点云预览协程：每 500ms peek 一次，UI 端 Canvas 画 2D top-view
+        // 时长独立 1Hz ticker — 与 ingest 帧节奏解耦，wall clock 走时长。
+        // 修 bug：之前 elapsedMs 只在 ingest 一帧返回后才写，首帧 native 冷启动 (TSDF 64MB
+        // 首次 page fault + ProjectToPointCloud 冷启) 几百 ms~秒级 → 用户看到时长卡 0
+        // 然后突然跳一下，误以为录制没工作。
+        tickerJob = viewModelScope.launch {
+            while (isActive) {
+                delay(TICKER_INTERVAL_MS)
+                val cur = _state.value
+                if (cur is ScanRecordingState.Recording) {
+                    _state.value = cur.copy(elapsedMs = System.currentTimeMillis() - startedAtMs)
+                } else {
+                    break
+                }
+            }
+        }
+
+        // 实时点云预览协程：每 500ms peek 一次；走 nativeDispatcher 与 ingest 串行。
         previewJob = viewModelScope.launch {
             while (isActive) {
                 delay(PREVIEW_PEEK_INTERVAL_MS)
                 val h = sessionHandle
                 if (h == 0L) break
+                if (!firstFrameReceived) continue  // 首帧没到 peek 必空，省一次 native 调用
                 try {
-                    val pts = withContext(Dispatchers.Default) {
-                        NativeBridge.scanSessionPeekVertices(h, MAX_PREVIEW_VERTICES)
+                    val pts = withContext(nativeDispatcher) {
+                        if (sessionHandle == 0L) FloatArray(0)
+                        else NativeBridge.scanSessionPeekVertices(h, MAX_PREVIEW_VERTICES)
                     }
                     _pointCloudPreview.value = pts
                 } catch (e: Throwable) {
@@ -172,29 +222,41 @@ class Scan3dRecordingViewModel @Inject constructor(
         }
 
         ingestJob = viewModelScope.launch {
+            var collectCount = 0
             berxel.depthFrames.collect { frame ->
+                collectCount++
                 // 每次进入 native 前 snapshot handle；stop() 把 handle 置 0 后这里跳过
                 val h = sessionHandle
                 if (h == 0L) return@collect
                 val intr = frame.intrinsics
                 val pose = floatArrayOf(0f, 0f, 0f, 0f, 0f, 0f, 1f) // identity
                 try {
-                    val kf = withContext(Dispatchers.Default) {
-                        NativeBridge.scanSessionIngest(
+                    val nativeStart = System.currentTimeMillis()
+                    val kf = withContext(nativeDispatcher) {
+                        if (sessionHandle == 0L) -1
+                        else NativeBridge.scanSessionIngest(
                             h,
                             frame.data, frame.width, frame.height,
                             doubleArrayOf(intr.fx, intr.fy, intr.cx, intr.cy),
                             pose,
                         )
                     }
+                    val nativeMs = System.currentTimeMillis() - nativeStart
+                    // 只在异常慢时告警 — 正常每帧 ~250ms，超 800ms 必有问题
+                    if (nativeMs > 800) {
+                        Log.w(TAG, "ingest native #$collectCount took ${nativeMs}ms (慢) kf=$kf")
+                    }
+                    if (kf < 0) return@collect
                     framesIngested++
                     keyframesCount = kf
+                    firstFrameReceived = true
                     val cur = _state.value
                     if (cur is ScanRecordingState.Recording) {
-                        _state.value = ScanRecordingState.Recording(
+                        _state.value = cur.copy(
                             framesIngested = framesIngested,
                             keyframes = keyframesCount,
                             elapsedMs = System.currentTimeMillis() - startedAtMs,
+                            awaitingFirstFrame = false,
                         )
                     }
                 } catch (e: Throwable) {
@@ -231,11 +293,25 @@ class Scan3dRecordingViewModel @Inject constructor(
                 ingestJob = null
                 previewJob?.cancelAndJoin()
                 previewJob = null
+                tickerJob?.cancelAndJoin()
+                tickerJob = null
 
                 val sessionId = "scan-${System.currentTimeMillis()}"
                 val outDir = File(ctx.filesDir, "scans/$sessionId").apply { mkdirs() }
-                val stats = NativeBridge.scanSessionFinalize(handle, outDir.absolutePath)
-                NativeBridge.scanSessionClose(handle)
+                // finalize → 拉 mesh → close 全部串行在 nativeDispatcher 上（单线程，无重叠）。
+                // 必须在 close 之前拉走 mesh：close 后 ScanSession.last_mesh 已释放。
+                val (stats, mesh) = withContext(nativeDispatcher) {
+                    val s = NativeBridge.scanSessionFinalize(handle, outDir.absolutePath)
+                    val mv = NativeBridge.scanSessionMeshVertices(handle)
+                    val mn = NativeBridge.scanSessionMeshNormals(handle)
+                    val mi = NativeBridge.scanSessionMeshIndices(handle)
+                    NativeBridge.scanSessionClose(handle)
+                    val m = if (mv.isNotEmpty() && mi.isNotEmpty() && mn.size == mv.size) {
+                        ScanMeshData(vertices = mv, normals = mn, indices = mi)
+                    } else null
+                    s to m
+                }
+                _meshPreview.value = mesh
                 _state.value = ScanRecordingState.Completed(
                     sessionId = sessionId,
                     outDir = outDir.absolutePath,
@@ -244,10 +320,12 @@ class Scan3dRecordingViewModel @Inject constructor(
                     keyframes = stats[2],
                     durationMs = System.currentTimeMillis() - startedAtMs,
                 )
-                Log.i(TAG, "扫描完成 v=${stats[0]} f=${stats[1]} kf=${stats[2]} → $outDir")
+                Log.i(TAG, "扫描完成 v=${stats[0]} f=${stats[1]} kf=${stats[2]} mesh=${mesh != null} → $outDir")
             } catch (e: Throwable) {
                 _state.value = ScanRecordingState.Error("finalize 失败: ${e.message}")
-                runCatching { NativeBridge.scanSessionClose(handle) }
+                runCatching {
+                    withContext(nativeDispatcher) { NativeBridge.scanSessionClose(handle) }
+                }
             }
         }
     }
@@ -259,10 +337,19 @@ class Scan3dRecordingViewModel @Inject constructor(
         ingestJob = null
         previewJob?.cancel()
         previewJob = null
-        if (handle != 0L) runCatching { NativeBridge.scanSessionClose(handle) }
+        tickerJob?.cancel()
+        tickerJob = null
+        if (handle != 0L) {
+            // close 也走 nativeDispatcher，保证 ingest 协程即使还在 native 中也能等它退出
+            viewModelScope.launch {
+                runCatching { withContext(nativeDispatcher) { NativeBridge.scanSessionClose(handle) } }
+            }
+        }
         framesIngested = 0
         keyframesCount = 0
+        firstFrameReceived = false
         _pointCloudPreview.value = FloatArray(0)
+        _meshPreview.value = null
         _state.value = ScanRecordingState.Idle
     }
 
@@ -272,14 +359,27 @@ class Scan3dRecordingViewModel @Inject constructor(
         sessionHandle = 0L
         val ij = ingestJob; ingestJob = null
         val pj = previewJob; previewJob = null
-        if (handle != 0L || ij?.isActive == true || pj?.isActive == true) {
+        val tj = tickerJob; tickerJob = null
+        val executor = nativeExecutor
+        val dispatcher = nativeDispatcher
+
+        // native 释放派到 process-lifetime cleanup scope 跑，主线程立即返回避免 ANR。
+        // 之前 onCleared 里 runBlocking(NonCancellable) 在主线程等 native 调用返回：
+        //   - ingest 一帧 ~250-800ms（JNI 不响应 coroutine cancel）
+        //   - preview 排在同一 single-thread nativeDispatcher 后面再等一轮
+        //   - finalize（Marching Tetrahedra）几秒到十几秒
+        // 累积主线程阻塞 → 用户体感"按返回 app 卡死"乃至 ANR。cleanup scope 与 VM 解耦，
+        // VM 销毁后仍能跑完释放。
+        cleanupScope.launch {
             runCatching {
-                runBlocking(NonCancellable) {
-                    ij?.cancelAndJoin()
-                    pj?.cancelAndJoin()
-                    if (handle != 0L) NativeBridge.scanSessionClose(handle)
+                ij?.cancelAndJoin()
+                pj?.cancelAndJoin()
+                tj?.cancelAndJoin()
+                if (handle != 0L) {
+                    withContext(dispatcher) { NativeBridge.scanSessionClose(handle) }
                 }
             }
+            executor.shutdown()
         }
         berxel.stop()
     }
@@ -287,7 +387,22 @@ class Scan3dRecordingViewModel @Inject constructor(
     companion object {
         private const val TAG = "Scan3dRecordingVM"
         private const val PREVIEW_PEEK_INTERVAL_MS = 500L
-        private const val MAX_PREVIEW_VERTICES = 5000
+        // SessionPeekVertices 上限。提到 50000 让 native 端 stride_by_count（按 max_vertices×64
+        // 反推的内存兜底 stride）在 N=250 (extent=1500/voxel=6mm) 时降到 1，与 stride_by_physics
+        // (8mm 物理间距 → voxel=6mm 时 stride=1) 对齐。50000 是 cap 不是常态——实际 nearSurf 数
+        // 量只有几百到几千（取决于物体大小），FloatArray 拷贝量上界也只有 50000×3×4=600KB，可控。
+        private const val MAX_PREVIEW_VERTICES = 50000
         private const val PREVIEW_DECIMATION = 5
+        /** 时长 ticker 周期：250ms — 用户体感"流畅滚动"的下限。 */
+        private const val TICKER_INTERVAL_MS = 250L
+
+        /**
+         * Process-lifetime cleanup scope —— VM 销毁后仍能跑完 native 释放，主线程不阻塞。
+         * SupervisorJob：单个 VM cleanup 失败不影响其它；Default 调度器够用，cleanup 主要是
+         * 等 nativeDispatcher 上的 native 调用结束。
+         */
+        private val cleanupScope = CoroutineScope(
+            SupervisorJob() + Dispatchers.Default + CoroutineName("scan3d-cleanup")
+        )
     }
 }

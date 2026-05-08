@@ -45,6 +45,10 @@ namespace reconstruction {
     bool SessionFinalize(ScanSession* s, const char* out_dir, int* out_stats3);
     void SessionClose(ScanSession* s);
     std::vector<float> SessionPeekVertices(ScanSession* s, int max_vertices);
+    // finalize 后 UI 端拉 mesh —— 返回 const ref 避免拷贝；JNI 端再 SetXxxArrayRegion 拷一次
+    const std::vector<float>& SessionMeshVertices(ScanSession* s);
+    const std::vector<float>& SessionMeshNormals(ScanSession* s);
+    const std::vector<uint32_t>& SessionMeshIndices(ScanSession* s);
     // IcpRegister 的真实实现在 reconstruction/icp.h，返回 IcpResult；本文件 #include 了 icp.h
 }
 namespace vin {
@@ -264,6 +268,50 @@ Java_io_gomob_nativebridge_NativeBridge_scanSessionPeekVertices(
     jfloatArray result = env->NewFloatArray(static_cast<jsize>(vs.size()));
     if (!vs.empty()) {
         env->SetFloatArrayRegion(result, 0, static_cast<jsize>(vs.size()), vs.data());
+    }
+    return result;
+}
+
+// finalize 后 UI 端拉 mesh —— vertex / normal / index 三个独立 JNI 调用，每次返回完整数据
+// 拷贝一份给 Kotlin。session 未 finalize / 已 close → 返空数组（不抛异常）。
+
+JNIEXPORT jfloatArray JNICALL
+Java_io_gomob_nativebridge_NativeBridge_scanSessionMeshVertices(
+        JNIEnv* env, jobject /*thiz*/, jlong handle) {
+    auto* s = reinterpret_cast<gomob::reconstruction::ScanSession*>(handle);
+    if (!s) return env->NewFloatArray(0);
+    const auto& vs = gomob::reconstruction::SessionMeshVertices(s);
+    jfloatArray result = env->NewFloatArray(static_cast<jsize>(vs.size()));
+    if (!vs.empty()) {
+        env->SetFloatArrayRegion(result, 0, static_cast<jsize>(vs.size()), vs.data());
+    }
+    return result;
+}
+
+JNIEXPORT jfloatArray JNICALL
+Java_io_gomob_nativebridge_NativeBridge_scanSessionMeshNormals(
+        JNIEnv* env, jobject /*thiz*/, jlong handle) {
+    auto* s = reinterpret_cast<gomob::reconstruction::ScanSession*>(handle);
+    if (!s) return env->NewFloatArray(0);
+    const auto& ns = gomob::reconstruction::SessionMeshNormals(s);
+    jfloatArray result = env->NewFloatArray(static_cast<jsize>(ns.size()));
+    if (!ns.empty()) {
+        env->SetFloatArrayRegion(result, 0, static_cast<jsize>(ns.size()), ns.data());
+    }
+    return result;
+}
+
+JNIEXPORT jintArray JNICALL
+Java_io_gomob_nativebridge_NativeBridge_scanSessionMeshIndices(
+        JNIEnv* env, jobject /*thiz*/, jlong handle) {
+    auto* s = reinterpret_cast<gomob::reconstruction::ScanSession*>(handle);
+    if (!s) return env->NewIntArray(0);
+    const auto& idx = gomob::reconstruction::SessionMeshIndices(s);
+    jintArray result = env->NewIntArray(static_cast<jsize>(idx.size()));
+    if (!idx.empty()) {
+        // uint32_t → jint 重解释 OK：mesh 顶点数 ≤ 2^31，indices 不会超 INT_MAX
+        env->SetIntArrayRegion(result, 0, static_cast<jsize>(idx.size()),
+                               reinterpret_cast<const jint*>(idx.data()));
     }
     return result;
 }

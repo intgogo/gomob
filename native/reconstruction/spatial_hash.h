@@ -1,11 +1,12 @@
 // 3D 空间哈希格 — ICP 最近邻查询用
 //
 // 为什么不是 KdTree：cell-based 哈希在 ICP 配准这类"小位移、密集点云"场景下查询常数远小于 KdTree
-// （KdTree 树深度 log N，哈希查 27 个桶 O(平均桶长)），且实现 ≤ 100 行不依赖额外库。
+// （KdTree 树深度 log N，哈希查 125 个桶 O(平均桶长)），且实现 ≤ 100 行不依赖额外库。
 //
 // 设计：
-//   - 把点云按 cell_mm 装桶；NearestNeighbor 查询邻接 3×3×3 = 27 个 cell
-//   - cell 选 ICP 拒绝距离的 1/2 — 拒绝距离 100mm 时 cell=50mm，27 个 cell 必定覆盖最近点
+//   - 把点云按 cell_mm 装桶；NearestNeighbor 查询邻接 5×5×5 个 cell
+//   - cell 选 ICP 拒绝距离的 1/2；拒绝距离 100mm、cell=50mm 时，距离阈值内的点
+//     最远可能落在 ±2 cell（查询点贴近 cell 边界时），所以必须查 5³ 而不是 3³。
 //   - 哈希键用 21bit-per-axis pack 进 uint64_t；±1M cell 对应 ±50km，远超扫描场景
 
 #pragma once
@@ -43,9 +44,9 @@ public:
         int cz = static_cast<int>(std::floor(z * inv_cell_));
         out_dist_sq = std::numeric_limits<float>::infinity();
         bool found = false;
-        for (int dz = -1; dz <= 1; ++dz)
-        for (int dy = -1; dy <= 1; ++dy)
-        for (int dx = -1; dx <= 1; ++dx) {
+        for (int dz = -2; dz <= 2; ++dz)
+        for (int dy = -2; dy <= 2; ++dy)
+        for (int dx = -2; dx <= 2; ++dx) {
             auto it = buckets_.find(EncodeKey(cx + dx, cy + dy, cz + dz));
             if (it == buckets_.end()) continue;
             for (std::size_t idx : it->second) {

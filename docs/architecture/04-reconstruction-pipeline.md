@@ -1,6 +1,17 @@
-# 04 — 三维外廓扫描重建管线
+# 04 — 三维外廓扫描重建管线（**历史路线，2026-05-07 已弃**）
 
-> 业务定义：用户手持 iHawk 相机围着目标物体转一圈，App 把所有帧的深度数据迭代融合
+> ⚠️ **当前权威终态设计在 [04b-multiview-rgbd-reconstruction.md](04b-multiview-rgbd-reconstruction.md)**。
+> 本文档描述的"实时 SLAM 单流连续录制 + 端侧 TSDF"路线已被替换为"多视角 RGBD 配准 + 端云融合"。
+> 决策与取舍详见 [../agent-memory/finding_multiview_rgbd_pivot_2026-05-07.md](../agent-memory/finding_multiview_rgbd_pivot_2026-05-07.md)。
+>
+> 保留本文档作历史路径追溯，**不要再扩展这条路**。
+> 既有 native 沉淀（ICP / spatial hash / TSDF / Marching Tetrahedra）作为新路线"阶段 3 端侧实时预览"的输入复用。
+
+---
+
+## 历史业务定义
+
+> 用户手持 iHawk 相机围着目标物体转一圈，App 把所有帧的深度数据迭代融合
 > 成一个**完整物体点云**，再生成**三维网格模型**（mesh）和高密度点云模型。
 > 单设备来源（iHawk 自身），不涉及手机主摄。
 

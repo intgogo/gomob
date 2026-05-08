@@ -9,6 +9,16 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # 全局编译选项 — 严格警告，禁止未声明类型
 add_compile_options(-Wall -Wextra -Wpedantic)
 
+# Debug 也强开 -O2：Eigen / TSDF / ICP 全是 header-only template，-O0 下性能跌 50-100×。
+# 实测 LOG-AN10 + Berxel 640×400 深度帧 + 200³ TSDF：-O0 首帧 ingest 22.5s，-O2 < 200ms。
+# 调试用 -g 保留符号；行号在 -O2 下虽不精确但栈展开仍可用，性能调试只能这样。
+# CMAKE_BUILD_TYPE=Debug 时 AGP 默认追加 "-O0 -g"，此处把 *_DEBUG 也设成 -O2 把它覆盖。
+if(CMAKE_BUILD_TYPE STREQUAL "Debug" OR CMAKE_BUILD_TYPE STREQUAL "")
+    set(CMAKE_C_FLAGS_DEBUG   "-O2 -g")
+    set(CMAKE_CXX_FLAGS_DEBUG "-O2 -g")
+    add_compile_options(-O2)
+endif()
+
 # 包含目录
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}

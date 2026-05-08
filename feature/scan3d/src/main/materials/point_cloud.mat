@@ -1,0 +1,39 @@
+// 点云 unlit material — 扫描中 TSDF 体素近表面预览用
+//
+// 设计：
+//   - shadingModel: unlit — 点云没有面法线，光照计算无意义
+//   - vertexDomain: object — 顶点 attribute 是模型空间，由 Camera/View 矩阵转屏幕
+//   - PrimitiveType.POINTS 配合 vertex shader 写 gl_PointSize 控制点大小
+//   - 透明 blending — 后续可按距离做 alpha 衰减给深度感
+//   - parameters: baseColor + pointSizePx 通过 material instance 调
+material {
+    name : pointCloud,
+    shadingModel : unlit,
+    vertexDomain : object,
+    requires : [ position ],
+    depthWrite : true,
+    blending : opaque,
+    parameters : [
+        {
+            type : float4,
+            name : baseColor
+        },
+        {
+            type : float,
+            name : pointSizePx
+        }
+    ]
+}
+
+vertex {
+    void materialVertex(inout MaterialVertexInputs material) {
+        gl_PointSize = materialParams.pointSizePx;
+    }
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        material.baseColor = materialParams.baseColor;
+    }
+}

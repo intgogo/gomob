@@ -1,0 +1,214 @@
+# 04b — 多视角 RGBD 重建管线（**当前主线**，2026-05-07 起）
+
+> **本文档是当前权威终态设计**。`04-reconstruction-pipeline.md` 描述的是 2026-05-07 之前的"实时
+> SLAM 单流连续录制 + 端侧 TSDF"路线，已弃；保留作历史路径追溯，不要再扩展那条路。
+>
+> 决策记忆：[../agent-memory/finding_multiview_rgbd_pivot_2026-05-07.md](../agent-memory/finding_multiview_rgbd_pivot_2026-05-07.md)
+
+## 1. 业务定义
+
+用户**环绕目标物**采集 8–12 个角度的 RGBD 帧，App 把这些独立角度的点云通过**多视角配准 +
+全局 Pose Graph Optimization**融合成完整 mesh，输出 GLB（PBR + 纹理）。
+
+适用目标：从桌面工件（10cm）到大件物体（卡车 6m+，整间客厅）。
+不适用：不停运动的物体、户外强阳光下的目标（940nm 结构光被淹没）、纯透明 / 镜面反射体（深度无效）。
+
+## 2. 为什么不走"实时 SLAM"路线
+
+详细取舍见决策记忆。一句话：
+
+- **实时 SLAM**（KinectFusion 风格）依赖 ARCore/IMU 给全局 pose，国产手机 50% 不在 ARCore 名单 → 出货后用户机型不可控；ICP 累积漂移天然限制精度天花板到 cm 级；做不到 mm 级"高精度"。
+- **多视角 RGBD 配准 + 离线 PGO** 不依赖任何手机 pose 源，pose 来自点云本身（FPFH+RANSAC+Color-ICP）；全局优化天然消除累积误差，loop closure 免费；mm 级精度可达。
+
+代价是用户体验从"实时反馈"变成"拍 8 张 → 等 1–2 分钟出结果"。阶段 3（端侧 SAM2 Mobile +
+实时拼接预览）补回这个体验差。
+
+## 3. 输入 / 输出契约
+
+### 3.1 输入（端侧采集）
+
+每次扫描会话产出 N=8–12 个 `RgbdShot`：
+
+```kotlin
+data class RgbdShot(
+    val sessionId: String,         // ULID
+    val shotIndex: Int,            // 0..N-1
+    val timestampNs: Long,
+    val rgb: ByteArray,            // MJPEG, 1920×1080，源自 P100R3 RGB stream
+    val depth: ShortArray,         // mm 单位，1280×800，源自 P100R3 Depth stream（已与 RGB 像素对齐）
+    val intrinsicsRgb: CameraIntrinsics,    // 来自 P100R3 SDK getCameraIntriscParams
+    val intrinsicsDepth: CameraIntrinsics,
+    val depthToRgbExtrinsics: StereoExtrinsics,  // 出厂参数；P100R3 硬件像素对齐时 ≈ identity
+    val userPrompts: List<PromptPoint>?, // 阶段 2 起：用户在 RGB 上点的 prompt 点（SAM 输入）
+    val ipOverlapToPrev: Float?,         // ORB 实时算的 overlap 比例（0.0–1.0），引导补拍
+)
+```
+
+会话采集完成后打成 zip（含 N 个 shot + 全局元信息 manifest.json），通过 [asset multipart
+upload](server/02-api-contract.md#5-asset-multipart) 推到云端 MinIO。
+
+### 3.2 输出（云端融合）
+
+```kotlin
+data class ScanFusionResult(
+    val sessionId: String,
+    val mesh: MeshAsset,           // GLB 2.0，PBR base color + normal map
+    val pointCloud: PointCloudAsset?,  // PLY，可选
+    val stats: FusionStats,        // chamfer / 顶点数 / 面数 / 烘焙覆盖率 / pairwise 平均误差
+    val poseTrajectory: List<Pose7>,  // N 个角度的优化后位姿
+)
+```
+
+云端通过 NATS event `scan.fusion_done` 通知端侧；端侧 gallery 拉 GLB 渲染。
+
+## 4. 管线总览
+
+```
+端侧采集（feature:scan3d 重写）
+─────────────────────────────────────────────────────────────
+  环绕目标 8-12 角度拍照
+       ↓
+  每帧抓 RGB + depth + 内参 + 时间戳
+       ↓
+  上一张 RGB 半透明叠 viewfinder + ORB 实时算 overlap
+       ↓
+  阶段 2 起：用户在 RGB 上点 prompt 点（SAM 提示）
+       ↓
+  本地 zip 打包 → asset multipart upload (M-S2.3)
+                            │
+                            ↓ NATS event "scan.captured"
+─────────────────────────────────────────────────────────────
+云端 worker: object_3d_fusion （新增，沿用 M-S5 worker 架构）
+─────────────────────────────────────────────────────────────
+  for each shot:
+    阶段 1: 启发式 ROI（中心连通块 / 用户拉框）→ 物体点云
+    阶段 2: SAM-HD + 用户 prompt → 高精度 2D mask → 物体点云
+       ↓
+  multiway_registration (Open3D):
+    - pairwise: FPFH + RANSAC 粗对齐 → Color-ICP 精修 → 平均误差 < 5mm
+    - pose graph: g2o / Ceres 全局优化 + loop closure (末视角 → 首视角)
+       ↓
+  TSDF integration (融合所有点云到统一 voxel 体)
+       ↓
+  Marching Cubes → mesh
+       ↓
+  纹理烘焙 (per-vertex visibility 选最佳 RGB 投影 + UV atlas pack)
+       ↓
+  导出 GLB / OBJ / PLY → MinIO + DB inspections.scan_assets
+       ↓
+                            │
+                            ↓ NATS event "scan.fusion_done"
+─────────────────────────────────────────────────────────────
+端侧 gallery 拉 GLB → Filament PBR + IBL 渲染回看
+─────────────────────────────────────────────────────────────
+```
+
+## 5. 关键技术选型
+
+### 5.1 多视角配准（Multiway Registration）
+
+核心算法链 = **特征匹配 → 全局粗对齐 → 局部精修 → Pose Graph 全局优化**。
+
+实现优先级（避免重复造轮子）：
+
+| 层 | 选型 | 备注 |
+|---|---|---|
+| 特征 | **FPFH**（Fast Point Feature Histograms）| Open3D 内置；33 维特征对各向同性几何鲁棒 |
+| 粗对齐 | **RANSAC** based on FPFH correspondence | Open3D `registration_ransac_based_on_feature_matching` |
+| 局部精修 | **Color-ICP** ([Park et al. 2017](https://www.cs.cmu.edu/~kaess/pub/Park17iccv.pdf)) | Open3D `registration_colored_icp`；同时优化几何 + RGB 颜色梯度残差，对弱纹理白漆面有救 |
+| 全局优化 | **Pose Graph Optimization** | Open3D `global_optimization` 包了 g2o；末视角→首视角 loop closure 必须给 |
+| 融合 | **TSDF Integration** | Open3D `ScalableTSDFVolume`；voxel_size = 6mm，sdf_trunc = 24mm，与 P100R3 真实噪声底匹配 |
+| 提取 | **Marching Cubes** | Open3D 内置；输出 `TriangleMesh` |
+| 纹理烘焙 | **per-vertex visibility + UV atlas** | 自实现：对每个三角面选可见性最好的 RGB 帧投影采样；用 [xatlas](https://github.com/jpcy/xatlas) 做 UV unwrap |
+
+**不自己写**这些算法。Open3D 在 cv-engine（Python）侧调即可。
+
+### 5.2 物体分割
+
+阶段 1（启发式）→ 阶段 2（SAM-HD）→ 阶段 3（端侧 SAM2 Mobile）三步走。
+
+| 阶段 | 方法 | 精度 | 延迟 |
+|---|---|---|---|
+| 1 | 中心连通块（继承现有 `BuildForegroundDepth`）+ 用户拉 ROI 框补救 | 边缘有 5–20 像素毛刺；目标贴墙 / 偏中心可能失败 | 端侧 < 10ms |
+| 2 | 云端 SAM-HD（ViT-H 或 SAM2 全量）+ 用户每张点 1-2 prompt 点 | 边缘 1-3 像素，几乎人工标注水平 | 云端 GPU 单帧 ~500ms |
+| 3 | 端侧 MobileSAM/SAM2 Mobile + mask propagation | 5-7fps 实时 | NPU/GPU ~50ms/帧 |
+
+阶段 1 启发式分割是 MVP 兜底，**不为它做多余优化**——一旦阶段 2 SAM-HD 上线就被替代。
+
+### 5.3 RGB 与 Depth 像素对齐
+
+P100R3 spec 表 1 明确："**深度彩色像素对齐**"是固件能力。意味着：
+
+```
+SAM 在 RGB(1920×1080) 上输出 mask(1920×1080)
+       ↓ 缩放 / 裁剪到 depth 分辨率(1280×800)
+mask × depth → 物体 depth → 反投影 → 物体点云
+```
+
+**不需要双摄外参标定**（这是相比"手机主摄 + 外接深度相机"方案的重大简化）。
+但要在 P100R3 SDK 启用 `setRegistrationEnable(true)` 让 SDK 出对齐版本的 RGB+Depth。
+
+### 5.4 用户引导（采集时）
+
+弱纹理 / 弱几何目标（白漆卡车、玻璃车窗、镜面）pairwise 配准会失败。**采集时主动引导比事后救场更有效**：
+
+- **Overlap 提示**：每按下一张拍照前，用 ORB 特征实时算当前 viewfinder 与上一张 RGB 的 overlap 比例；
+  < 30% 时 HUD 显示"和上一张重叠不够，往左转 ~15° 再拍"
+- **角度引导**：HUD 上一个 8 段圆环，已采角度填实色，未采角度灰显
+- **失败回退**：扫描完成后 cv-engine 跑配准，某两张 pair 配不上时 → 端侧 UI 提示"角度 5 和 6 拼不上，请补拍这两个角度之间"
+- **目标锁定**（阶段 2 起）：第一张让用户点 prompt 点指定目标 → 后续帧 SAM 自动用该 prompt 跟踪
+
+## 6. 工程实施阶段（与 [TODO.md](../../TODO.md) M3.12–M3.20 对齐）
+
+### 阶段 1：端拍照 + 云融合（业务闭环 MVP，1-2 周）
+
+- M3.12 端侧采集 UI（启发式 ROI 兜底分割）
+- M3.13 asset multipart upload 接入
+- M3.14 cv-engine `object_3d_fusion` worker（Open3D 现成库 + xatlas 纹理）
+- M3.15 端侧 gallery GLB 拉回 Filament 渲染
+- M3.16 scan_multiview_quality harness（Stanford Bunny 合成 + 卡车真实数据）
+
+**完成标准**：8 张真实卡车 RGBD → 1-2 分钟内出 mesh，顶点 ≥ 50K，目视卡车形状完整无大面积塌陷。
+
+### 阶段 2：SAM-HD 替代启发式（精度提升，2-3 周后）
+
+- M3.17 cv-engine 接 SAM-HD（ViT-H 或 SAM2）+ 端侧 prompt 收集
+- M3.18 GPU worker 容器部署
+
+**完成标准**：mesh 边缘毛刺 vs 阶段 1 减少 ≥ 80%；SAM mask IoU vs 人工标注 ≥ 0.92。
+
+### 阶段 3：端侧实时拼接预览（体验升级，4-6 周后）
+
+- M3.19 端侧 SAM2 Mobile 集成（NPU/GPU 多后端适配）
+- M3.20 端侧实时 ICP/TSDF + Filament 实时 mesh 渲染（继承 M3.1/M3.2 沉淀）
+
+**完成标准**：端侧实时 mesh ≥ 5fps 增长；扫描完成 ≤ 1s 出 cm 级实时版；30s 后云端 mm 级版自动替换。
+
+## 7. 当前已有沉淀的去向
+
+| 既有 | 阶段 1 | 阶段 2 | 阶段 3 |
+|---|---|---|---|
+| ICP / spatial hash / TSDF / MarchingTetrahedra (M3.1, native) | 不调用 | 不调用 | **复用**为端侧实时预览 |
+| scanSessionCreate / Ingest / Finalize (M3.2, NativeBridge) | 不调用 | 不调用 | **复用**为端侧实时管线入口 |
+| Recording / Completed UI + Filament 3D 预览 (M3.3) | UI 框架保留，交互改"采集模式" | 加 prompt 输入 | 改回"录像式实时预览" |
+| P100R3 spec 工作距离常量 + grid 默认值 (M3.7) | 阶段 1 不用（云端融合自己控制 voxel）| 同 | **阶段 3 复用** |
+| Berxel SDK + RGB 像素对齐 (M1.1) | 必须 | 必须 | 必须 |
+
+## 8. 风险与缓解
+
+| 风险 | 缓解 |
+|---|---|
+| 弱纹理 + 弱几何（白漆 + 平面）pairwise 配准失败 | (1) Color-ICP 利用 RGB 微梯度；(2) UI 引导多拍提高 overlap 密度；(3) 失败检测后端侧主动提示补拍 |
+| 大目标采 8 角度 overlap 不够 | 改 12 角度 / 30° 间隔；卡车 + 顶部俯拍补 1-2 张 |
+| 室外强光淹没 940nm 结构光 | 业务定位明确"室内"；UI 提示用户避免阳光直射 |
+| 云端 worker GPU 排队 | 阶段 1 启发式分割不依赖 GPU；阶段 2 起再考虑 GPU 池化 |
+| 离线场景（车间无网） | 本地保留原始 RGBD zip；联网后自动上传跑云端；阶段 3 端侧降级版可单机出 cm 级 mesh |
+
+## 9. 文档对齐
+
+- 业务路线：[../../TODO.md](../../TODO.md) M3 节
+- 决策记忆：[../agent-memory/finding_multiview_rgbd_pivot_2026-05-07.md](../agent-memory/finding_multiview_rgbd_pivot_2026-05-07.md)
+- P100R3 硬件真理源：[../agent-memory/reference_iHawkP100R3_spec.md](../agent-memory/reference_iHawkP100R3_spec.md)
+- 服务端 worker 架构沿用：[server/00-server-overview.md](server/00-server-overview.md) §6
+- asset 上传契约：[server/02-api-contract.md](server/02-api-contract.md) §5
+- 历史路径（弃）：[04-reconstruction-pipeline.md](04-reconstruction-pipeline.md)

@@ -13,5 +13,7 @@ dependencies {
     implementation(libs.androidx.camera.camera2)
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
-    // Filament 在 M3 重建预览时再加（点云 / mesh 实时渲染）
+    // Filament — 扫描中 TSDF 点云实时 3D 预览（手势旋转/缩放），未来 Gallery mesh 回看复用
+    implementation(libs.filament.android)
+    implementation(libs.filament.utils.android)
 }
