@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
@@ -36,6 +37,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
@@ -367,17 +369,20 @@ private fun UnreadBadge(unread: Int, tone: WatchTone) {
     Box(
         Modifier
             .padding(start = Gomob.spacing.s8)
-            .height(Gomob.spacing.icon16)
+            .height(22.dp)
+            .widthIn(min = 22.dp)
             .clip(Gomob.shapes.pill)
             .background(color)
-            .padding(horizontal = 5.dp),
+            .padding(horizontal = Gomob.spacing.s6),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             unread.toString(),
-            fontSize = 10.sp,
+            fontSize = 11.sp,
+            lineHeight = 11.sp,
             fontFamily = FontFamily.Monospace,
             fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center,
             color = Color.Black,
         )
     }

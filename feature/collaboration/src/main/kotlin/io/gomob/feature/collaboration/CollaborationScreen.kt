@@ -111,10 +111,7 @@ fun CollaborationRoute(
 ) {
     var sub by remember { mutableStateOf(0) }
 
-    Column(
-        Modifier.fillMaxSize().background(Gomob.colors.bg0),
-        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
-    ) {
+    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
         val (eyebrow, badge, badgeTone) = when (sub) {
             0 -> Triple("团队 · 实时第一视角直播", "8 在线", StatusTone.Accent)
             1 -> Triple("团队 · 抽查复核 / 工单分发", "127 待办", StatusTone.Warn)
@@ -130,7 +127,7 @@ fun CollaborationRoute(
             items = SUB_TABS,
             selectedIndex = sub,
             onSelect = { sub = it },
-            modifier = Modifier.padding(horizontal = Gomob.spacing.s16),
+            modifier = Modifier.padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20, bottom = 14.dp),
         )
 
         Box(Modifier.fillMaxSize()) {

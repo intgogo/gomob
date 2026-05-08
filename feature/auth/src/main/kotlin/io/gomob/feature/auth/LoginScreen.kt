@@ -41,8 +41,10 @@ import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.gomob.common.net.Ipv4AddressDraft
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
+import io.gomob.ui.component.Ipv4AddressField
 
 const val LOGIN_ROUTE = "auth/login"
 
@@ -94,7 +96,7 @@ private fun LoginContent(
     onGoRegister: () -> Unit,
     onOpenEndpointEditor: () -> Unit,
     onCloseEndpointEditor: () -> Unit,
-    onDraftIp: (String) -> Unit,
+    onDraftIp: (Ipv4AddressDraft) -> Unit,
     onDraftPort: (String) -> Unit,
     onTestDraft: () -> Unit,
     onSaveDraft: () -> Unit,
@@ -559,7 +561,7 @@ private fun EndpointEditorSheet(
     editor: EndpointEditorState,
     currentEndpoint: io.gomob.network.ServerEndpoint,
     onDismiss: () -> Unit,
-    onDraftIp: (String) -> Unit,
+    onDraftIp: (Ipv4AddressDraft) -> Unit,
     onDraftPort: (String) -> Unit,
     onTest: () -> Unit,
     onSave: () -> Unit,
@@ -591,12 +593,11 @@ private fun EndpointEditorSheet(
                     color = Gomob.colors.fg3,
                 )
             }
-            InlineField(
-                icon = GomobIcons.Wifi,
+            Ipv4AddressField(
                 label = "网关 IP",
                 value = editor.draftIp,
-                placeholder = "192.168.x.x 或 10.x.x.x",
-                onChange = onDraftIp,
+                onValueChange = onDraftIp,
+                isError = editor.validationError?.contains("IP") == true,
             )
             InlineField(
                 icon = GomobIcons.Settings,

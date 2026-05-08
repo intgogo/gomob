@@ -3,6 +3,7 @@ package io.gomob.feature.auth
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.gomob.common.net.Ipv4AddressDraft
 import io.gomob.data.auth.AuthRepository
 import io.gomob.data.auth.TokenStore
 import io.gomob.network.ApiException
@@ -45,7 +46,7 @@ sealed interface ConnectivityStatus {
 }
 
 data class EndpointEditorState(
-    val draftIp: String,
+    val draftIp: Ipv4AddressDraft,
     val draftPort: String,
     /** 内嵌 "测试" 按钮的状态 */
     val testing: Boolean = false,
@@ -119,7 +120,7 @@ class LoginViewModel @Inject constructor(
         _state.update {
             it.copy(
                 editor = EndpointEditorState(
-                    draftIp = ep.ip,
+                    draftIp = Ipv4AddressDraft.from(ep.ip),
                     draftPort = ep.port.toString(),
                 ),
             )
@@ -130,7 +131,10 @@ class LoginViewModel @Inject constructor(
         _state.update { it.copy(editor = null) }
     }
 
-    fun setDraftIp(v: String) = updateEditor { it.copy(draftIp = v.trim(), validationError = null, testResult = ConnectivityStatus.Unknown) }
+    fun setDraftIp(v: Ipv4AddressDraft) = updateEditor {
+        it.copy(draftIp = v, validationError = null, testResult = ConnectivityStatus.Unknown)
+    }
+
     fun setDraftPort(v: String) = updateEditor { it.copy(draftPort = v.filter { ch -> ch.isDigit() }.take(5), validationError = null, testResult = ConnectivityStatus.Unknown) }
 
     /** "测试连接" —— 拿草稿值临时 ping，不写库 */
@@ -156,10 +160,10 @@ class LoginViewModel @Inject constructor(
     }
 
     private fun parseDraft(ed: EndpointEditorState): ServerEndpoint? {
-        val ip = ed.draftIp
+        val ip = ed.draftIp.normalizedOrNull()
         val port = ed.draftPort.toIntOrNull()
-        if (ip.isBlank()) {
-            updateEditor { it.copy(validationError = "请输入网关 IP") }
+        if (ip == null) {
+            updateEditor { it.copy(validationError = ed.draftIp.validationError("网关 IP")) }
             return null
         }
         if (port == null || port !in 1..65535) {

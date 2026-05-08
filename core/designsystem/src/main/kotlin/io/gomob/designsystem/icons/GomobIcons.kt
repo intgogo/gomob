@@ -87,6 +87,12 @@ object GomobIcons {
         lineTo(9f, 19f)
     }
 
+    val ChevronLeft: ImageVector = stroked("ChevronLeft") {
+        moveTo(15f, 5f)
+        lineTo(8f, 12f)
+        lineTo(15f, 19f)
+    }
+
     val History: ImageVector = stroked("History") {
         // 圆弧 + 缺口（jsx history 图标）
         moveTo(3.5f, 12f)

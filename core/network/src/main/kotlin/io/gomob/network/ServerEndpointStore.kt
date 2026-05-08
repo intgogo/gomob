@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
+import io.gomob.common.net.Ipv4AddressDraft
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -59,8 +60,11 @@ class ServerEndpointStore @Inject constructor(
     fun current(): ServerEndpoint = runBlocking { endpointFlow.first() }
 
     suspend fun set(ip: String, port: Int) {
+        val normalizedIp = Ipv4AddressDraft.from(ip).normalizedOrNull()
+            ?: throw IllegalArgumentException("invalid IPv4 address: $ip")
+        require(port in 1..65535) { "port must be in 1..65535: $port" }
         context.serverEndpointDataStore.edit {
-            it[keyIp] = ip
+            it[keyIp] = normalizedIp
             it[keyPort] = port
         }
     }

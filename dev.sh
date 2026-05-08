@@ -15,7 +15,8 @@
 #   ./dev.sh adb-wifi ... 转发到 scripts/adb-wifi.sh
 #   ./dev.sh harness <名> 跑指定 harness（tests/harness/<名>/run.sh）
 #   ./dev.sh emu-start    启动 gomob_test AVD（默认带 GUI 窗口走 DISPLAY=:1, -gpu host;
-#                         头像式开发请求看 VNC 桌面里的 emulator 窗口。
+#                         同时禁用本机不稳定的 netsim / packet streamer 路径。
+#                         用户通过 VNC 桌面里的 emulator 窗口看 app。
 #                         若需 headless（CI / 截图 only）传 HEADLESS=1）
 #   ./dev.sh emu-stop     杀 emulator
 #   ./dev.sh avd-create   创建 gomob_test AVD（首次）
@@ -156,26 +157,55 @@ case "$cmd" in
         ;;
     emu-start)
         : "${ANDROID_HOME:?}"
-        # 关键：必须 -gpu host + DISPLAY=:1 走 NVIDIA / VNC 桌面
-        # 详见 docs/agent-memory/finding_emulator_setup_2026-05-04.md +
-        # docs/agent-memory/feedback_vnc_remote_dev.md
+        # 关键：必须 -gpu host + DISPLAY=:1 走 NVIDIA / VNC 桌面。
+        # 2026-05-08: emulator 36.x 在本机 netsim/packet streamer 路径会触发
+        # libandroid-webrtc.so 崩溃，默认关掉 WiFi/Modem 仿真链路。
+        # 详见 docs/agent-memory/finding_emulator_setup_2026-05-04.md
+        # 和 docs/agent-memory/feedback_vnc_remote_dev.md。
         # 默认带 GUI 窗口（用户走 TigerVNC 远程, 需在 :1 桌面看到 emulator）
         # 设 HEADLESS=1 可切回无窗口（CI / 截图脚本场景）
-        WIN_FLAG=""
-        [[ "${HEADLESS:-0}" == "1" ]] && WIN_FLAG="-no-window"
+        win_flags=()
+        [[ "${HEADLESS:-0}" == "1" ]] && win_flags=(-no-window)
+        stable_flags=(
+            -feature -VirtioWifi
+            -feature -Mac80211hwsimUserspaceManaged
+            -feature -ModemSimulator
+            -crash-report-mode never
+        )
         DISPLAY="${DISPLAY:-:1}" setsid "$ANDROID_HOME/emulator/emulator" -avd gomob_test \
-            $WIN_FLAG -no-audio -no-snapshot -no-boot-anim \
-            -gpu host -accel on -port 5556 \
+            "${win_flags[@]}" -no-audio -no-snapshot -no-boot-anim \
+            -gpu host -accel on -port 5556 "${stable_flags[@]}" \
             < /dev/null > "$DEV_DIR/emulator.log" 2>&1 & disown
+        (
+            export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+            for _ in {1..90}; do
+                state="$(adb -s emulator-5556 get-state 2>/dev/null || true)"
+                [[ "$state" == "device" ]] || { sleep 2; continue; }
+                adb -s emulator-5556 shell pm path android >/dev/null 2>&1 && break
+                sleep 2
+            done
+            for _ in {1..30}; do
+                adb -s emulator-5556 shell pm disable-user --user 0 com.android.bluetooth >/dev/null 2>&1 && break
+                sleep 2
+            done
+            adb -s emulator-5556 shell am force-stop com.android.bluetooth >/dev/null 2>&1 || true
+        ) > "$DEV_DIR/emulator-postboot.log" 2>&1 & disown
         echo "emulator started (log: $DEV_DIR/emulator.log)"
-        [[ -z "$WIN_FLAG" ]] && echo "GUI 模式 — 在 VNC :1 桌面里能看到 emulator 窗口" \
+        [[ "${#win_flags[@]}" -eq 0 ]] && echo "GUI 模式 — 在 VNC :1 桌面里能看到 emulator 窗口" \
             || echo "headless 模式 (HEADLESS=1)"
+        echo "postboot 修正日志: $DEV_DIR/emulator-postboot.log"
         echo "等 boot: until [ \"\$(adb -s emulator-5556 shell getprop sys.boot_completed)\" = 1 ]; do sleep 5; done"
         ;;
     emu-stop)
-        # 注意: 不能用 pkill -f 'qemu-system' — 会匹配自身 bash 命令行把当前会话杀掉
-        pkill -x qemu-system-x86_64-headless 2>/dev/null
-        pkill -x qemu-system-x86_64 2>/dev/null
+        # 注意: 不能用宽泛的 pkill -f 'qemu-system' — 会匹配自身 bash 命令行。
+        # 也不能只用 pkill -x: Linux comm 名会截断成 qemu-system-x86，匹配不到。
+        qemu_pids="$(pgrep -f "^$ANDROID_HOME/emulator/qemu/.*/qemu-system" || true)"
+        if [[ -n "$qemu_pids" ]]; then
+            printf '%s\n' "$qemu_pids" | xargs -r kill
+            sleep 3
+            qemu_pids="$(pgrep -f "^$ANDROID_HOME/emulator/qemu/.*/qemu-system" || true)"
+            [[ -n "$qemu_pids" ]] && printf '%s\n' "$qemu_pids" | xargs -r kill -9
+        fi
         adb kill-server >/dev/null 2>&1
         echo "emulator stopped"
         ;;

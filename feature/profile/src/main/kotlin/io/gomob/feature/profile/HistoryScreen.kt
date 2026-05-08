@@ -119,7 +119,7 @@ private fun TopHistoryHeader(onBack: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20, top = 16.dp, bottom = Gomob.spacing.s12),
+            .padding(start = Gomob.spacing.s8, end = Gomob.spacing.s20, top = 16.dp, bottom = Gomob.spacing.s12),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -132,11 +132,11 @@ private fun TopHistoryHeader(onBack: () -> Unit) {
                 .clickable(onClick = onBack),
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                "‹",
-                fontSize = 18.sp,
-                fontFamily = FontFamily.Monospace,
-                color = Gomob.colors.fg1,
+            Icon(
+                imageVector = GomobIcons.ChevronLeft,
+                contentDescription = "返回",
+                tint = Gomob.colors.fg1,
+                modifier = Modifier.size(22.dp),
             )
         }
         Column(Modifier.weight(1f)) {

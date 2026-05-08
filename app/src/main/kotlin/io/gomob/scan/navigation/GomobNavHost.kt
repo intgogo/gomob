@@ -1,10 +1,13 @@
 package io.gomob.scan.navigation
 
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.ime
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ChatBubble
@@ -14,6 +17,7 @@ import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.navigation.NavController
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
@@ -26,6 +30,7 @@ import io.gomob.designsystem.theme.Gomob
 import io.gomob.feature.collaboration.CollaborationRoute
 import io.gomob.feature.collaboration.FirstPersonViewerRoute
 import io.gomob.feature.collaboration.ReviewDetailRoute
+import io.gomob.feature.home.HomeAiChatRoute
 import io.gomob.feature.home.HomeRoute
 import io.gomob.feature.home.InspectionDetailRoute
 import io.gomob.feature.message.ConversationRoute
@@ -73,13 +78,26 @@ fun GomobNavHost() {
     val backStack by nav.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
     val onTabRoot = currentRoute in TAB_ROUTES
+    val density = LocalDensity.current
+    val imeVisible = WindowInsets.ime.getBottom(density) > 0
 
     Column(modifier = Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             NavHost(navController = nav, startDestination = ROUTE_HOME) {
                 // ---- 首页 + 二级 ----
                 composable(ROUTE_HOME) {
-                    HomeRoute(onOpenInspection = { id -> nav.navigate("home/inspection/$id") })
+                    HomeRoute(
+                        onOpenInspection = { id -> nav.navigate("home/inspection/$id") },
+                        onOpenNewChat = { prompt ->
+                            nav.navigate("home/chat/${Uri.encode(prompt)}")
+                        },
+                    )
+                }
+                composable("home/chat/{prompt}") { entry ->
+                    HomeAiChatRoute(
+                        initialPrompt = Uri.decode(entry.arguments?.getString("prompt").orEmpty()),
+                        onBack = { nav.popBackStack() },
+                    )
                 }
                 composable("home/inspection/{id}") { entry ->
                     InspectionDetailRoute(
@@ -188,7 +206,7 @@ fun GomobNavHost() {
                 }
             }
         }
-        if (onTabRoot) {
+        if (onTabRoot && !imeVisible) {
             TabBarVector(
                 items = TABS,
                 selectedKey = currentRoute ?: ROUTE_HOME,

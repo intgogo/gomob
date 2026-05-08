@@ -9,6 +9,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":core:common"))
     implementation(libs.okhttp)
     implementation(libs.okhttp.logging)
     implementation(libs.retrofit.core)

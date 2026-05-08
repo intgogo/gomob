@@ -3,6 +3,7 @@ package io.gomob.feature.profile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.gomob.common.net.Ipv4AddressDraft
 import io.gomob.logging.LogSyncPreferences
 import io.gomob.network.HealthProbe
 import io.gomob.network.ServerEndpoint
@@ -28,7 +29,7 @@ data class ProfileNetworkUiState(
     val savedEndpoint: ServerEndpoint = ServerEndpoint(
         ServerEndpointStore.DEFAULT_IP, ServerEndpointStore.DEFAULT_PORT,
     ),
-    val draftIp: String = ServerEndpointStore.DEFAULT_IP,
+    val draftIp: Ipv4AddressDraft = Ipv4AddressDraft.from(ServerEndpointStore.DEFAULT_IP),
     val draftPort: String = ServerEndpointStore.DEFAULT_PORT.toString(),
     val testing: Boolean = false,
     val saving: Boolean = false,
@@ -61,11 +62,11 @@ class ProfileNetworkViewModel @Inject constructor(
             store.endpointFlow.collectLatest { ep ->
                 _state.update {
                     // 草稿与已存值同步 —— 除非用户正在编辑（draft 与 saved 不一致就不覆盖）
-                    val draftMatchesSaved = it.draftIp == it.savedEndpoint.ip &&
+                    val draftMatchesSaved = it.draftIp.normalizedOrNull() == it.savedEndpoint.ip &&
                         it.draftPort == it.savedEndpoint.port.toString()
                     it.copy(
                         savedEndpoint = ep,
-                        draftIp = if (draftMatchesSaved) ep.ip else it.draftIp,
+                        draftIp = if (draftMatchesSaved) Ipv4AddressDraft.from(ep.ip) else it.draftIp,
                         draftPort = if (draftMatchesSaved) ep.port.toString() else it.draftPort,
                     )
                 }
@@ -83,8 +84,8 @@ class ProfileNetworkViewModel @Inject constructor(
         viewModelScope.launch { logSyncPrefs.setEnabled(on) }
     }
 
-    fun setDraftIp(v: String) = _state.update {
-        it.copy(draftIp = v.trim(), validationError = null, testResult = ProbeStatus.Unknown, savedToast = null)
+    fun setDraftIp(v: Ipv4AddressDraft) = _state.update {
+        it.copy(draftIp = v, validationError = null, testResult = ProbeStatus.Unknown, savedToast = null)
     }
 
     fun setDraftPort(v: String) = _state.update {
@@ -134,8 +135,9 @@ class ProfileNetworkViewModel @Inject constructor(
 
     private fun parseDraft(): ServerEndpoint? {
         val s = _state.value
-        if (s.draftIp.isBlank()) {
-            _state.update { it.copy(validationError = "请输入网关 IP") }
+        val ip = s.draftIp.normalizedOrNull()
+        if (ip == null) {
+            _state.update { it.copy(validationError = s.draftIp.validationError("网关 IP")) }
             return null
         }
         val port = s.draftPort.toIntOrNull()
@@ -143,7 +145,7 @@ class ProfileNetworkViewModel @Inject constructor(
             _state.update { it.copy(validationError = "端口需在 1-65535") }
             return null
         }
-        return ServerEndpoint(s.draftIp, port)
+        return ServerEndpoint(ip, port)
     }
 
     private suspend fun probe(ep: ServerEndpoint): ProbeStatus {

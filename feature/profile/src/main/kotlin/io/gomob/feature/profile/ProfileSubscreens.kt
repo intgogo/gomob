@@ -36,6 +36,7 @@ import io.gomob.designsystem.component.SettingRowDivider
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
 import io.gomob.designsystem.theme.Gomob
+import io.gomob.ui.component.Ipv4AddressField
 
 // ============================================================================
 // 个人信息
@@ -203,12 +204,11 @@ fun ProfileNetworkRoute(
             Modifier.padding(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s12),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
-            TextInputCard(
+            Ipv4AddressField(
                 label = "网关 IP",
                 value = state.draftIp,
-                placeholder = "192.168.x.x 或 10.x.x.x",
-                keyboardType = KeyboardType.Uri,
-                onChange = vm::setDraftIp,
+                onValueChange = vm::setDraftIp,
+                isError = state.validationError?.contains("IP") == true,
             )
             TextInputCard(
                 label = "端口",
