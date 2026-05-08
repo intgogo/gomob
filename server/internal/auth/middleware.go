@@ -68,6 +68,8 @@ func Required(next http.Handler) http.Handler {
 			httpx.WriteError(w, httpx.ErrTokenInvalid)
 			return
 		}
+		r.Header.Set(hdrUserID, strconv.FormatInt(c.UserID, 10))
+		r.Header.Set(hdrRoles, c.Role)
 		ctx := context.WithValue(r.Context(), ctxUserID, c.UserID)
 		ctx = context.WithValue(ctx, ctxRole, c.Role)
 		next.ServeHTTP(w, r.WithContext(ctx))

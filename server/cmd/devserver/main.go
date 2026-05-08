@@ -25,10 +25,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 
+	"io.gomob/server/internal/api"
 	"io.gomob/server/internal/auth"
 	"io.gomob/server/internal/gateway"
+	"io.gomob/server/pkg/audit"
 	"io.gomob/server/pkg/httpx"
 	"io.gomob/server/pkg/logger"
+	"io.gomob/server/pkg/rbac"
 	"io.gomob/server/pkg/repo"
 )
 
@@ -56,6 +59,7 @@ func main() {
 
 	devAutoActivate := os.Getenv("GOMOB_DEV_AUTO_ACTIVATE") != "false"
 	authH := auth.NewHandler(pool, devAutoActivate)
+	apiH := api.NewHandler(pool, audit.NewPG(pool), rbac.Baseline())
 
 	mux := http.NewServeMux()
 
@@ -80,8 +84,16 @@ func main() {
 	protected := http.NewServeMux()
 	protected.HandleFunc("POST /v1/auth/password", authH.ChangePassword)
 	protected.HandleFunc("GET /v1/me", authH.Me)
-	mux.Handle("/v1/auth/password", auth.Required(http.HandlerFunc(authH.ChangePassword)))
-	mux.Handle("/v1/me", auth.Required(http.HandlerFunc(authH.Me)))
+	apiH.Mount(protected)
+	protectedHandler := auth.Required(protected)
+	mux.Handle("/v1/auth/password", protectedHandler)
+	mux.Handle("/v1/me", protectedHandler)
+	mux.Handle("/v1/inspections", protectedHandler)
+	mux.Handle("/v1/inspections/", protectedHandler)
+	mux.Handle("/v1/reviews", protectedHandler)
+	mux.Handle("/v1/reviews/", protectedHandler)
+	mux.Handle("/v1/conversations", protectedHandler)
+	mux.Handle("/v1/conversations/", protectedHandler)
 
 	addr := os.Getenv("GOMOB_LISTEN")
 	if addr == "" {
