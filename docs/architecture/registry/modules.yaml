@@ -66,6 +66,14 @@ modules:
     layer: device
     type: android-library-native
     description: "JNI 唯一入口"
+  - path: ":core:realtime"
+    layer: application
+    type: android-library
+    description: "WebSocket 实时通道、Envelope 解析、重连状态"
+  - path: ":core:media"
+    layer: application
+    type: android-library
+    description: "媒体房间接口契约；M5.4 接 LiveKit 实现"
 
   - path: ":feature:home"
     layer: presentation

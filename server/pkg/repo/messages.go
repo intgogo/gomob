@@ -7,6 +7,7 @@ package repo
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,12 +18,15 @@ import (
 )
 
 type Conversation struct {
-	ID        int64
-	Kind      string  // p2p / group / system
-	Title     *string
-	P2PKey    *string // 仅 p2p 有
-	NextSeq   int64
-	CreatedAt time.Time
+	ID          int64
+	Kind        string // p2p / group / system
+	Title       *string
+	P2PKey      *string // 仅 p2p 有
+	SubjectKind *string
+	SubjectID   *int64
+	NextSeq     int64
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 type Message struct {
@@ -30,9 +34,26 @@ type Message struct {
 	ConversationID int64
 	SenderID       *int64
 	ServerSeq      int64
-	Kind           string          // text / image / video_call / video_clip / system
+	Kind           string // text / image / video_call / video_clip / system
 	Payload        json.RawMessage
+	ClientMsgID    *string
 	CreatedAt      time.Time
+	EditedAt       *time.Time
+	DeletedAt      *time.Time
+}
+
+type ConversationPeer struct {
+	ID         int64
+	RealName   string
+	EmployeeID string
+}
+
+type ConversationSummary struct {
+	Conversation Conversation
+	Peer         *ConversationPeer
+	LastMessage  *Message
+	LastReadSeq  int64
+	UnreadCount  int64
 }
 
 type ConversationRepo struct {
@@ -103,6 +124,12 @@ func (r *ConversationRepo) GetOrCreateP2P(ctx context.Context, a, b int64) (*Con
 	if _, err := tx.Exec(ctx, insertMember, c.ID, a, b); err != nil {
 		return nil, err
 	}
+	const insertState = `
+		INSERT INTO conversation_member_states(conversation_id, user_id) VALUES($1, $2), ($1, $3)
+		ON CONFLICT DO NOTHING`
+	if _, err := tx.Exec(ctx, insertState, c.ID, a, b); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
@@ -151,6 +178,166 @@ func (r *ConversationRepo) CounterpartIDs(ctx context.Context, convID, self int6
 	return ids, rows.Err()
 }
 
+// ListForUser 返回当前用户参与的会话摘要，按 updated_at/id 倒序。
+func (r *ConversationRepo) ListForUser(ctx context.Context, userID int64, limit int, cursor int64) ([]ConversationSummary, int64, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	const q = `
+		WITH member_convs AS (
+			SELECT c.id, c.kind, c.title, c.p2p_key, c.subject_kind, c.subject_id,
+			       c.next_seq, c.created_at, c.updated_at,
+			       COALESCE(cms.last_read_seq, 0) AS last_read_seq
+			FROM conversations c
+			JOIN conversation_members cm
+			  ON cm.conversation_id = c.id AND cm.user_id = $1
+			LEFT JOIN conversation_member_states cms
+			  ON cms.conversation_id = c.id AND cms.user_id = $1
+			WHERE ($2 = 0 OR c.id < $2)
+			ORDER BY c.updated_at DESC, c.id DESC
+			LIMIT $3
+		)
+		SELECT mc.id, mc.kind, mc.title, mc.p2p_key, mc.subject_kind, mc.subject_id,
+		       mc.next_seq, mc.created_at, mc.updated_at, mc.last_read_seq,
+		       lm.id, lm.sender_id, lm.server_seq, lm.kind, lm.payload, lm.client_msg_id,
+		       lm.created_at, lm.edited_at, lm.deleted_at,
+		       peer.id, peer.real_name, peer.employee_id,
+		       GREATEST(mc.next_seq - 1 - mc.last_read_seq, 0) AS unread_count
+		FROM member_convs mc
+		LEFT JOIN LATERAL (
+			SELECT id, sender_id, server_seq, kind, payload, client_msg_id, created_at, edited_at, deleted_at
+			FROM messages
+			WHERE conversation_id = mc.id AND deleted_at IS NULL
+			ORDER BY server_seq DESC
+			LIMIT 1
+		) lm ON true
+		LEFT JOIN LATERAL (
+			SELECT u.id, u.real_name, u.employee_id
+			FROM conversation_members cm2
+			JOIN users u ON u.id = cm2.user_id
+			WHERE mc.kind = 'p2p' AND cm2.conversation_id = mc.id AND cm2.user_id <> $1
+			ORDER BY u.id
+			LIMIT 1
+		) peer ON true
+		ORDER BY mc.updated_at DESC, mc.id DESC`
+	rows, err := r.pool.Query(ctx, q, userID, cursor, limit+1)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	items := make([]ConversationSummary, 0, limit+1)
+	for rows.Next() {
+		var s ConversationSummary
+		var title, p2pKey, subjectKind sql.NullString
+		var subjectID sql.NullInt64
+		var lmID, lmSenderID, lmSeq sql.NullInt64
+		var lmKind, lmClientMsgID sql.NullString
+		var lmPayload []byte
+		var lmCreatedAt, lmEditedAt, lmDeletedAt sql.NullTime
+		var peerID sql.NullInt64
+		var peerName, peerEmployee sql.NullString
+		if err := rows.Scan(
+			&s.Conversation.ID, &s.Conversation.Kind, &title, &p2pKey, &subjectKind, &subjectID,
+			&s.Conversation.NextSeq, &s.Conversation.CreatedAt, &s.Conversation.UpdatedAt, &s.LastReadSeq,
+			&lmID, &lmSenderID, &lmSeq, &lmKind, &lmPayload, &lmClientMsgID,
+			&lmCreatedAt, &lmEditedAt, &lmDeletedAt,
+			&peerID, &peerName, &peerEmployee,
+			&s.UnreadCount,
+		); err != nil {
+			return nil, 0, err
+		}
+		s.Conversation.Title = nullStringPtr(title)
+		s.Conversation.P2PKey = nullStringPtr(p2pKey)
+		s.Conversation.SubjectKind = nullStringPtr(subjectKind)
+		s.Conversation.SubjectID = nullInt64Ptr(subjectID)
+		if lmID.Valid {
+			msg := &Message{
+				ID:             lmID.Int64,
+				ConversationID: s.Conversation.ID,
+				ServerSeq:      lmSeq.Int64,
+				Kind:           lmKind.String,
+				Payload:        append(json.RawMessage(nil), lmPayload...),
+				ClientMsgID:    nullStringPtr(lmClientMsgID),
+				CreatedAt:      lmCreatedAt.Time,
+				EditedAt:       nullTimePtr(lmEditedAt),
+				DeletedAt:      nullTimePtr(lmDeletedAt),
+			}
+			if lmSenderID.Valid {
+				v := lmSenderID.Int64
+				msg.SenderID = &v
+			}
+			s.LastMessage = msg
+		}
+		if peerID.Valid {
+			s.Peer = &ConversationPeer{
+				ID:         peerID.Int64,
+				RealName:   peerName.String,
+				EmployeeID: peerEmployee.String,
+			}
+		}
+		items = append(items, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	var next int64
+	if len(items) > limit {
+		next = items[limit-1].Conversation.ID
+		items = items[:limit]
+	}
+	return items, next, nil
+}
+
+// EnsureMemberState 补齐 conversation_members 对应的本地状态行。
+func (r *ConversationRepo) EnsureMemberState(ctx context.Context, convID, userID int64) error {
+	_, err := r.pool.Exec(ctx,
+		`INSERT INTO conversation_member_states(conversation_id, user_id) VALUES($1, $2)
+		 ON CONFLICT DO NOTHING`, convID, userID)
+	return err
+}
+
+// MarkRead 更新用户在会话内的已读水位，返回更新后的未读数。
+func (r *ConversationRepo) MarkRead(ctx context.Context, convID, userID, lastReadSeq int64) (int64, error) {
+	if lastReadSeq < 0 {
+		return 0, errors.New("last_read_seq must be non-negative")
+	}
+	ok, err := r.IsMember(ctx, convID, userID)
+	if err != nil {
+		return 0, err
+	}
+	if !ok {
+		return 0, ErrNotFound
+	}
+	const upsert = `
+		INSERT INTO conversation_member_states(conversation_id, user_id, last_read_seq, updated_at)
+		VALUES($1, $2, $3, now())
+		ON CONFLICT (conversation_id, user_id) DO UPDATE
+		SET last_read_seq = GREATEST(conversation_member_states.last_read_seq, EXCLUDED.last_read_seq),
+		    updated_at = now()`
+	if _, err := r.pool.Exec(ctx, upsert, convID, userID, lastReadSeq); err != nil {
+		return 0, err
+	}
+	return r.UnreadCount(ctx, convID, userID)
+}
+
+func (r *ConversationRepo) UnreadCount(ctx context.Context, convID, userID int64) (int64, error) {
+	const q = `
+		SELECT GREATEST(c.next_seq - 1 - COALESCE(cms.last_read_seq, 0), 0)
+		FROM conversations c
+		JOIN conversation_members cm ON cm.conversation_id = c.id AND cm.user_id = $2
+		LEFT JOIN conversation_member_states cms ON cms.conversation_id = c.id AND cms.user_id = $2
+		WHERE c.id = $1`
+	var unread int64
+	if err := r.pool.QueryRow(ctx, q, convID, userID).Scan(&unread); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, err
+	}
+	return unread, nil
+}
+
 // MessageRepo —— 消息持久化。
 type MessageRepo struct {
 	pool *pgxpool.Pool
@@ -165,35 +352,70 @@ func NewMessageRepo(pool *pgxpool.Pool) *MessageRepo {
 // 关键：UPDATE ... RETURNING next_seq - 1 让两步在同一事务里串行化，
 // 同 conversation 并发请求会互相等待行锁，server_seq 严格单调递增、不会跳号。
 func (r *MessageRepo) Append(ctx context.Context, m *Message) error {
-	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	inserted, err := r.AppendIdempotent(ctx, m, "")
 	if err != nil {
 		return err
+	}
+	_ = inserted
+	return nil
+}
+
+// AppendIdempotent 写入消息；clientMsgID 非空时按 (sender_id, client_msg_id) 幂等。
+//
+// 返回 inserted=false 表示此前已经写过同一个 client_msg_id，m 会被填充为既有消息。
+func (r *MessageRepo) AppendIdempotent(ctx context.Context, m *Message, clientMsgID string) (bool, error) {
+	if clientMsgID != "" && m.SenderID != nil {
+		if existing, err := r.FindByClientMsgID(ctx, *m.SenderID, clientMsgID); err == nil {
+			*m = *existing
+			return false, nil
+		} else if !errors.Is(err, ErrNotFound) {
+			return false, err
+		}
+	}
+
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// 行锁 + 自增（next_seq 现值就是要分配的 seq）
 	var seq int64
 	err = tx.QueryRow(ctx,
-		`UPDATE conversations SET next_seq = next_seq + 1 WHERE id = $1 RETURNING next_seq - 1`,
+		`UPDATE conversations SET next_seq = next_seq + 1, updated_at = now()
+		 WHERE id = $1 RETURNING next_seq - 1`,
 		m.ConversationID).Scan(&seq)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNotFound
+			return false, ErrNotFound
 		}
-		return err
+		return false, err
 	}
 
 	const ins = `
-		INSERT INTO messages(conversation_id, sender_id, server_seq, kind, payload)
-		VALUES($1, $2, $3, $4, $5)
+		INSERT INTO messages(conversation_id, sender_id, server_seq, kind, payload, client_msg_id)
+		VALUES($1, $2, $3, $4, $5, NULLIF($6, ''))
 		RETURNING id, created_at`
 	if err := tx.QueryRow(ctx, ins,
-		m.ConversationID, m.SenderID, seq, m.Kind, m.Payload,
+		m.ConversationID, m.SenderID, seq, m.Kind, m.Payload, clientMsgID,
 	).Scan(&m.ID, &m.CreatedAt); err != nil {
-		return err
+		if pgErr, ok := isPgError(err, "23505"); ok && pgErr.ConstraintName == "uq_messages_sender_client_msg" && m.SenderID != nil {
+			if existing, findErr := r.FindByClientMsgID(ctx, *m.SenderID, clientMsgID); findErr == nil {
+				*m = *existing
+				return false, nil
+			}
+		}
+		return false, err
 	}
 	m.ServerSeq = seq
-	return tx.Commit(ctx)
+	if clientMsgID != "" {
+		cid := clientMsgID
+		m.ClientMsgID = &cid
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // ListSince 返回 conversation 中 server_seq > since 的消息（升序）；用于离线补齐。
@@ -202,9 +424,10 @@ func (r *MessageRepo) ListSince(ctx context.Context, convID, since int64, limit 
 		limit = 100
 	}
 	const q = `
-		SELECT id, conversation_id, sender_id, server_seq, kind, payload, created_at
+		SELECT id, conversation_id, sender_id, server_seq, kind, payload, client_msg_id,
+		       created_at, edited_at, deleted_at
 		FROM messages
-		WHERE conversation_id=$1 AND server_seq > $2
+		WHERE conversation_id=$1 AND server_seq > $2 AND deleted_at IS NULL
 		ORDER BY server_seq ASC
 		LIMIT $3`
 	rows, err := r.pool.Query(ctx, q, convID, since, limit)
@@ -215,13 +438,46 @@ func (r *MessageRepo) ListSince(ctx context.Context, convID, since int64, limit 
 	out := make([]Message, 0, limit)
 	for rows.Next() {
 		var m Message
+		var clientMsgID sql.NullString
+		var editedAt, deletedAt sql.NullTime
 		if err := rows.Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.ServerSeq,
-			&m.Kind, &m.Payload, &m.CreatedAt); err != nil {
+			&m.Kind, &m.Payload, &clientMsgID, &m.CreatedAt, &editedAt, &deletedAt); err != nil {
 			return nil, err
 		}
+		m.ClientMsgID = nullStringPtr(clientMsgID)
+		m.EditedAt = nullTimePtr(editedAt)
+		m.DeletedAt = nullTimePtr(deletedAt)
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// FindByClientMsgID 返回某发送者 client_msg_id 对应的已入库消息。
+func (r *MessageRepo) FindByClientMsgID(ctx context.Context, senderID int64, clientMsgID string) (*Message, error) {
+	if clientMsgID == "" {
+		return nil, ErrNotFound
+	}
+	const q = `
+		SELECT id, conversation_id, sender_id, server_seq, kind, payload, client_msg_id,
+		       created_at, edited_at, deleted_at
+		FROM messages
+		WHERE sender_id=$1 AND client_msg_id=$2`
+	var m Message
+	var client sql.NullString
+	var editedAt, deletedAt sql.NullTime
+	if err := r.pool.QueryRow(ctx, q, senderID, clientMsgID).Scan(
+		&m.ID, &m.ConversationID, &m.SenderID, &m.ServerSeq, &m.Kind, &m.Payload, &client,
+		&m.CreatedAt, &editedAt, &deletedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	m.ClientMsgID = nullStringPtr(client)
+	m.EditedAt = nullTimePtr(editedAt)
+	m.DeletedAt = nullTimePtr(deletedAt)
+	return &m, nil
 }
 
 // MaxSeq 返回当前 conversation 已经分配出去的最大 server_seq（即 next_seq - 1）。
@@ -236,4 +492,28 @@ func (r *MessageRepo) MaxSeq(ctx context.Context, convID int64) (int64, error) {
 		return 0, err
 	}
 	return seq, nil
+}
+
+func nullStringPtr(v sql.NullString) *string {
+	if !v.Valid {
+		return nil
+	}
+	s := v.String
+	return &s
+}
+
+func nullInt64Ptr(v sql.NullInt64) *int64 {
+	if !v.Valid {
+		return nil
+	}
+	n := v.Int64
+	return &n
+}
+
+func nullTimePtr(v sql.NullTime) *time.Time {
+	if !v.Valid {
+		return nil
+	}
+	t := v.Time
+	return &t
 }

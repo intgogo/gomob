@@ -69,9 +69,11 @@ func Baseline() *InMemory {
 		// 监管：跨用户读
 		Rule{RoleSupervisor, "inspection", "read_any"},
 		Rule{RoleSupervisor, "user", "read"},
+		Rule{RoleSupervisor, "message", "send"},
 		// 复核员：抽查复核
 		Rule{RoleReviewer, "review", "read"},
 		Rule{RoleReviewer, "review", "decide"},
 		Rule{RoleReviewer, "inspection", "read_any"},
+		Rule{RoleReviewer, "message", "send"},
 	)
 }

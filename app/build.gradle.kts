@@ -51,6 +51,8 @@ dependencies {
     implementation(project(":core:ui"))
     implementation(project(":core:native-bridge"))
     implementation(project(":core:logging"))
+    implementation(project(":core:realtime"))
+    implementation(project(":core:media"))
 
     implementation(project(":feature:auth"))
     implementation(project(":feature:home"))

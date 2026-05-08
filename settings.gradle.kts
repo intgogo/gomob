@@ -36,6 +36,8 @@ include(":core:ui")
 include(":core:network")
 include(":core:logging")
 include(":core:native-bridge")
+include(":core:realtime")
+include(":core:media")
 
 include(":feature:auth")
 include(":feature:home")

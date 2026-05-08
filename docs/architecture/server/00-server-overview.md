@@ -219,6 +219,9 @@ vehicle-catalog (结构化主数据)
 
 ## 7. 信令 / 视频通话
 
+> 本节描述 M-S4 已落地的 P2P 信令骨架。M5 起视频通话和第一视角直播走
+> `docs/architecture/09-realtime-message-live.md`：gomob 自研控制面，媒体面交给自托管 LiveKit + coturn。
+
 - App 通过 wss 长连接到 signaling 服务
 - 主叫发起：`POST /v1/calls/{peer_id}/invite` → signaling 通过 wss 推 invite 到被叫
 - 双方 SDP / ICE candidate 交换走 wss 转发

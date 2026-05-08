@@ -1,0 +1,191 @@
+package io.gomob.data.message
+
+import io.gomob.database.message.ConversationDao
+import io.gomob.database.message.ConversationEntity
+import io.gomob.database.message.MessageDao
+import io.gomob.database.message.MessageEntity
+import io.gomob.model.message.ConversationSummary
+import io.gomob.model.message.MessageRecord
+import io.gomob.model.message.MessageStatus
+import io.gomob.network.ApiException
+import io.gomob.network.MessageApi
+import io.gomob.network.dto.ConversationDto
+import io.gomob.network.dto.CreateMessageRequest
+import io.gomob.network.dto.MessageDto
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import java.time.Instant
+import java.util.UUID
+import javax.inject.Inject
+import javax.inject.Singleton
+
+@Singleton
+class MessageRepository @Inject constructor(
+    private val api: MessageApi,
+    private val conversationDao: ConversationDao,
+    private val messageDao: MessageDao,
+    private val json: Json,
+) {
+    fun observeConversations(): Flow<List<ConversationSummary>> =
+        conversationDao.observeConversations().map { items ->
+            items.map { it.conversation.toDomain(it.lastMessage) }
+        }
+
+    fun observeMessages(conversationId: Long): Flow<List<MessageRecord>> =
+        messageDao.observeMessages(conversationId).map { items -> items.map { it.toDomain() } }
+
+    fun observeConversation(conversationId: Long): Flow<ConversationSummary?> =
+        conversationDao.observeConversation(conversationId).map { item ->
+            item?.conversation?.toDomain(item.lastMessage)
+        }
+
+    suspend fun refreshConversations(limit: Int = 20) {
+        val resp = api.conversations(limit = limit)
+        val data = resp.data ?: throw ApiException(50001, 500, "会话列表响应缺数据")
+        val messageEntities = data.items.mapNotNull { dto ->
+            dto.lastMessage?.toEntity(
+                conversationId = dto.id.toLongOrNull() ?: return@mapNotNull null,
+                json = json,
+            )
+        }
+        if (messageEntities.isNotEmpty()) {
+            messageDao.upsertServerMessages(messageEntities)
+        }
+        conversationDao.upsertConversations(data.items.map { it.toEntity() })
+    }
+
+    suspend fun refreshMessages(conversationId: Long, limit: Int = 100, fullSync: Boolean = false) {
+        val since = if (fullSync) 0L else messageDao.maxServerSeq(conversationId) ?: 0L
+        val resp = api.messages(conversationId.toString(), sinceSeq = since, limit = limit)
+        val data = resp.data ?: throw ApiException(50001, 500, "消息历史响应缺数据")
+        messageDao.upsertServerMessages(data.items.map { it.toEntity(conversationId, json) })
+    }
+
+    suspend fun sendText(conversationId: Long, text: String): String {
+        val clientMsgId = UUID.randomUUID().toString()
+        val payload = buildJsonObject { put("text", text) }
+        messageDao.upsertMessage(
+            pendingTextEntity(
+                conversationId = conversationId,
+                text = text,
+                clientMsgId = clientMsgId,
+                now = Instant.now().toString(),
+            ),
+        )
+        sendExistingMessage(conversationId, clientMsgId, "text", payload)
+        return clientMsgId
+    }
+
+    suspend fun retryText(clientMsgId: String) {
+        val entity = messageDao.findByClientMsgId(clientMsgId) ?: return
+        val payload = json.parseToJsonElement(entity.payloadJson)
+        val text = payload.jsonObject["text"]?.jsonPrimitive?.content.orEmpty()
+        if (entity.kind != "text" || text.isBlank()) return
+        messageDao.markPending(clientMsgId)
+        sendExistingMessage(entity.conversationId, clientMsgId, entity.kind, payload)
+    }
+
+    suspend fun markRead(conversationId: Long, lastReadSeq: Long) {
+        val resp = api.markRead(conversationId.toString(), io.gomob.network.dto.MarkReadRequest(lastReadSeq))
+        val data = resp.data ?: throw ApiException(50001, 500, "标记已读响应缺数据")
+        conversationDao.markRead(
+            conversationId = conversationId,
+            lastReadSeq = data.lastReadSeq,
+            unreadCount = data.unreadCount,
+        )
+    }
+
+    private suspend fun sendExistingMessage(
+        conversationId: Long,
+        clientMsgId: String,
+        kind: String,
+        payload: JsonElement,
+    ) {
+        try {
+            val resp = api.sendMessage(
+                conversationId = conversationId.toString(),
+                request = CreateMessageRequest(
+                    clientMsgId = clientMsgId,
+                    kind = kind,
+                    payload = payload,
+                ),
+            )
+            val dto = resp.data ?: throw ApiException(50001, 500, "发送消息响应缺数据")
+            messageDao.markDelivered(
+                clientMsgId = clientMsgId,
+                serverId = dto.id.toLong(),
+                serverSeq = dto.serverSeq,
+                createdAt = dto.createdAt,
+            )
+        } catch (t: Throwable) {
+            messageDao.markFailed(clientMsgId)
+            throw t
+        }
+    }
+}
+
+internal fun pendingTextEntity(
+    conversationId: Long,
+    text: String,
+    clientMsgId: String,
+    now: String,
+): MessageEntity = MessageEntity(
+    localKey = "c:$clientMsgId",
+    serverId = null,
+    conversationId = conversationId,
+    serverSeq = null,
+    senderId = null,
+    kind = "text",
+    payloadJson = buildJsonObject { put("text", text) }.toString(),
+    preview = text,
+    clientMsgId = clientMsgId,
+    status = MessageStatus.Pending.name,
+    createdAt = now,
+    editedAt = null,
+)
+
+private fun ConversationDto.toEntity(): ConversationEntity {
+    val conversationId = id.toLong()
+    val lastKey = lastMessage?.id?.let { "s:$it" }
+    return ConversationEntity(
+        id = conversationId,
+        kind = kind,
+        title = title,
+        peerId = peer?.id?.toLongOrNull(),
+        peerName = peer?.name,
+        peerEmployeeId = peer?.employeeId,
+        subjectKind = subjectKind,
+        subjectId = subjectId?.toLongOrNull(),
+        lastMessageLocalKey = lastKey,
+        lastReadSeq = lastReadSeq,
+        unreadCount = unreadCount,
+        createdAt = createdAt,
+        updatedAt = updatedAt,
+    )
+}
+
+private fun MessageDto.toEntity(conversationId: Long, json: Json): MessageEntity {
+    val serverId = id.toLong()
+    return MessageEntity(
+        localKey = "s:$serverId",
+        serverId = serverId,
+        conversationId = this.conversationId?.toLongOrNull() ?: conversationId,
+        serverSeq = serverSeq,
+        senderId = senderId?.toLongOrNull(),
+        kind = kind,
+        payloadJson = payload?.let { jsonElement ->
+            json.encodeToString(JsonElement.serializer(), jsonElement)
+        } ?: "{}",
+        preview = preview?.takeIf { it.isNotBlank() },
+        clientMsgId = clientMsgId,
+        status = MessageStatus.Sent.name,
+        createdAt = createdAt,
+        editedAt = editedAt,
+    )
+}

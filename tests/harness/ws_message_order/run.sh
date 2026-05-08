@@ -12,6 +12,9 @@
 #   S6   并发 100 条：seq 严格 [52..151] 单调 + 无重 + 无空
 #   S7   msg.fetch since=0 拿到全部 ≥151 条 + 升序
 #   S8   非法 msg.send → error 帧 code=10001
+#   S16  同 client_msg_id 重发 → server_seq 不重复，收件人只收到一次
+#   S17  HTTP 标记已读 → unread_count=0
+#   S18  HTTP 会话列表 → last_message 与最新消息一致
 #   S9   B 离线时 A 发 call.invite → invite_ack online=false
 #   S10  B 重连 → 5s 内收到 pending invite (pending=true)
 #   S11  call.answer 透传到主叫
@@ -37,7 +40,7 @@ log() { printf "[%s] %s\n" "$(date +%H:%M:%S)" "$*"; }
 # ============================================================================
 # 0. 前置：清表（拓扑序）+ 跑迁移
 # ============================================================================
-log "0. 前置：清表 + 应用 migration 0006"
+log "0. 前置：清表 + 应用 migration 0006/0010"
 podman ps --format '{{.Names}}' | grep -qx gomob-pg    || { log "缺 gomob-pg";    exit 2; }
 podman ps --format '{{.Names}}' | grep -qx gomob-redis || { log "缺 gomob-redis"; exit 2; }
 
@@ -50,36 +53,50 @@ if [[ -z "$HAS_PENDING" ]]; then
     podman exec -i gomob-pg psql -U gomob -d gomob -v ON_ERROR_STOP=1 \
         < "$SERVER_DIR/migrations/0006_signaling.up.sql" > /dev/null
 fi
+HAS_MEDIA=$(podman exec -i gomob-pg psql -U gomob -d gomob -tAc \
+    "SELECT 1 FROM information_schema.tables WHERE table_name='media_rooms'")
+if [[ -z "$HAS_MEDIA" ]]; then
+    log "  应用 migrations/0010_realtime_message_live.up.sql"
+    podman exec -i gomob-pg psql -U gomob -d gomob -v ON_ERROR_STOP=1 \
+        < "$SERVER_DIR/migrations/0010_realtime_message_live.up.sql" > /dev/null
+fi
 
-# 0.b 清表（FK 拓扑序：叶子先于父）
-podman exec -i gomob-pg psql -U gomob -d gomob -v ON_ERROR_STOP=1 > /dev/null <<'SQL'
-DELETE FROM audit_log;
-DELETE FROM llm_call_logs;
-DELETE FROM llm_templates;
-DELETE FROM model_routes;
-DELETE FROM models;
-DELETE FROM upload_sessions;
-DELETE FROM inspection_assets;
-DELETE FROM reviews;
-DELETE FROM inspections;
-DELETE FROM vehicles;
-DELETE FROM vehicle_models;
-DELETE FROM messages;
-DELETE FROM conversation_members;
-DELETE FROM conversations;
-DELETE FROM call_logs;
-DELETE FROM pending_calls;
-DELETE FROM users;
-DELETE FROM stations;
+# 0.b 清表：用 TRUNCATE ... CASCADE 避免参考库 / 设备 / 媒体表新增 FK 后清理顺序漂移。
+if ! podman exec -i gomob-pg psql -U gomob -d gomob -v ON_ERROR_STOP=1 > /dev/null <<'SQL'
+TRUNCATE TABLE
+    audit_log,
+    llm_call_logs,
+    llm_templates,
+    model_routes,
+    models,
+    upload_sessions,
+    inspection_assets,
+    reviews,
+    inspections,
+    vehicles,
+    vehicle_models,
+    messages,
+    conversation_members,
+    conversations,
+    call_logs,
+    pending_calls,
+    users,
+    stations
+RESTART IDENTITY CASCADE;
 INSERT INTO stations(name, region) VALUES('测试检测站','test');
 SQL
+then
+    log "清表失败"
+    exit 2
+fi
 podman exec gomob-redis redis-cli FLUSHDB > /dev/null
 
 # ============================================================================
 # 1. 编译
 # ============================================================================
-log "1. 编译 auth / gateway / signaling / wsharness"
+log "1. 编译 auth / api / gateway / signaling / wsharness"
 (cd "$SERVER_DIR" && go build -o .dev/bin/gomob-auth      ./cmd/auth)      || { log "auth build 失败"; exit 3; }
+(cd "$SERVER_DIR" && go build -o .dev/bin/gomob-api       ./cmd/api)       || { log "api build 失败"; exit 3; }
 (cd "$SERVER_DIR" && go build -o .dev/bin/gomob-gateway   ./cmd/gateway)   || { log "gateway build 失败"; exit 3; }
 (cd "$SERVER_DIR" && go build -o .dev/bin/gomob-signaling ./cmd/signaling) || { log "signaling build 失败"; exit 3; }
 (cd "$SERVER_DIR" && go build -o .dev/bin/gomob-wsharness ./cmd/wsharness) || { log "wsharness build 失败"; exit 3; }
@@ -96,6 +113,12 @@ GOMOB_AUTH_HTTP_ADDR=:18082 GOMOB_AUTH_DEV_AUTOACTIVATE=true \
     "$SERVER_DIR/.dev/bin/gomob-auth" > "$OUTPUT_DIR/auth.log" 2>&1 &
 PIDS+=($!)
 
+# api：挂 conversations/messages REST，用于 S17/S18
+GOMOB_API_HTTP_ADDR=:18080 \
+GOMOB_CATALOG_TARGET= GOMOB_VINREF_TARGET= GOMOB_SHAPEREF_TARGET= \
+    "$SERVER_DIR/.dev/bin/gomob-api" > "$OUTPUT_DIR/api.log" 2>&1 &
+PIDS+=($!)
+
 # gateway：限流不要触发（设大）
 GOMOB_GATEWAY_ADDR=:18808 GOMOB_REDIS_ADDR=127.0.0.1:6379 GOMOB_RATE_LIMIT=10000 \
     "$SERVER_DIR/.dev/bin/gomob-gateway" > "$OUTPUT_DIR/gateway.log" 2>&1 &
@@ -109,6 +132,11 @@ GOMOB_PENDING_CALL_SWEEP=1s \
 PIDS+=($!)
 
 sleep 1
+for p in "${PIDS[@]}"; do
+    kill -0 "$p" 2>/dev/null || { log "服务启动后已退出 pid=$p，检查 $OUTPUT_DIR/*.log"; exit 4; }
+done
+hc=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:18080/healthz")
+[[ "$hc" == "200" ]] || { log "api /healthz=$hc"; exit 4; }
 hc=$(curl -s -o /dev/null -w '%{http_code}' "$GATEWAY/healthz")
 [[ "$hc" == "200" ]] || { log "gateway /healthz=$hc"; exit 4; }
 hc=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:18084/healthz")

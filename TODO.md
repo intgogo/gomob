@@ -9,6 +9,21 @@
 1. **M1 iHawk 帧链路**：先把 Color/Depth 字节流、内参、预览跑实。
 2. **M3 多视角 RGBD 重建**：阶段 1 先做端侧采集 + 云端融合闭环。
 3. **M4 VIN 数码拓印**：复用同一 RGBD 采集链路，接 cv-engine `vin_pipeline`。
+4. **M5 实时消息与第一视角协作**：消息控制面自研，视频 / 直播媒体面接自托管 LiveKit。
+
+## M5 实时消息与第一视角协作
+
+> 控制面：gomob 自研 WebSocket + REST + PostgreSQL，负责消息顺序、会话、未读、邀请、审计。
+> 媒体面：自托管 LiveKit + coturn + Egress，负责视频通话、第一视角直播、录制。
+> docs: `docs/architecture/09-realtime-message-live.md` / `docs/architecture/09-realtime-message-live-implementation.md`
+
+| ID | 任务 | 验收 | 文档 |
+|----|------|------|------|
+| M5.4 | LiveKit 媒体控制面：接自托管 LiveKit 配置，服务端实现 `POST /v1/media/rooms`、`POST /v1/media/rooms/{id}/token`、`POST /v1/media/rooms/{id}/end`、`POST /v1/livekit/webhook`；`core:media` 接 LiveKit Android SDK，封装 `MediaRoomClient`。 | `tests/harness/livekit_room_lifecycle` 通过：创建 room、签发 publisher/viewer token、两个测试客户端加入、断开后 room status 变 `ended`；服务端拒绝非成员拿 token。 | `docs/architecture/09-realtime-message-live-implementation.md` §5 |
+| M5.5 | 1:1 视频通话：`media.invite` 替代旧 P2P SDP 语义；单聊视频按钮创建 call room；被叫前台在线收到来电弹层；通话页全屏远端视频 + 角落本地预览 + 静音/摄像头/挂断；结束后写 `call_logs` 并追加 `kind=video_call` 消息。 | `tests/harness/livekit_call_quality` 通过：同局域网首帧 ≤ 2s，挂断后 conversation 出现 `[视频通话]` 消息；`./dev.sh shot video-call-active` 画面非空且按钮无遮挡。 | `docs/architecture/09-realtime-message-live-implementation.md` §6 |
+| M5.6 | 第一视角直播：查验员创建 `live_session` 并发布后摄像头；协作页 `GET /v1/live-sessions?status=live` 展示在线视角；观看页订阅真实 video track；介入语音、标记预警、截图存档写 `live_annotations` 并推 WebSocket。 | `tests/harness/first_person_live_quality` 通过：viewer 收到非空视频帧，P95 延迟 ≤ 1500ms，标预警后 publisher 收到 `live.annotation`；截图 `.dev/screenshots/collaboration-live-list.png`、`.dev/screenshots/first-person-live.png` 通过。 | `docs/architecture/09-realtime-message-live-implementation.md` §7 |
+| M5.7 | 直播录制与回放：服务端触发 LiveKit Egress；webhook complete 后把 MP4/HLS 登记到 asset，写 `live_recordings.status='complete'`，推 `recording.ready`；协作页“近期录像”拉真实数据并可播放。 | `tests/harness/live_recording_egress` 通过：10s 测试直播在结束后 30s 内产出可播放 MP4，asset sha256 与对象存储一致。 | `docs/architecture/09-realtime-message-live-implementation.md` §8 |
+| M5.8 | 实时协作观测闭环：所有关键日志带 `room_id/live_session_id/conversation_id/client_msg_id/server_seq/media_rtt_ms/packet_loss_pct/first_frame_ms`；harness `analyze.py` 输出正常 / 警告 / 异常 + 原因；更新 registry 中新增 Android 模块和服务依赖。 | `tests/harness/ws_message_order`、`realtime_message_sync`、`livekit_room_lifecycle`、`first_person_live_quality`、`live_recording_egress` 全部输出可判定结论；`docs/architecture/registry/modules.yaml` / `dependencies.yaml` / server registry 与实际模块一致。 | `docs/architecture/09-realtime-message-live-implementation.md` §9 |
 
 ## M1 iHawk 接入
 

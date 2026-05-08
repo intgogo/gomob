@@ -123,7 +123,8 @@ func (r *Router) handleMsgSend(ctx context.Context, c *Conn, env Envelope) {
 		Kind:           req.Kind,
 		Payload:        req.Content,
 	}
-	if err := r.msgRepo.Append(ctx, m); err != nil {
+	inserted, err := r.msgRepo.AppendIdempotent(ctx, m, req.ClientMsgID)
+	if err != nil {
 		r.log.Error("消息落库失败", "err", err, "conv", conv.ID)
 		r.sendError(c, 50001, "服务端内部错误", env)
 		return
@@ -138,16 +139,18 @@ func (r *Router) handleMsgSend(ctx context.Context, c *Conn, env Envelope) {
 	}
 	c.Send(Envelope{Type: "msg.delivered", Payload: mustJSON(delivered)})
 
-	// 推送给收件人（所有在线连接）
-	recv := msgRecvPayload{
-		ConversationID: conv.ID,
-		ServerSeq:      m.ServerSeq,
-		SenderID:       senderID,
-		Kind:           m.Kind,
-		Content:        m.Payload,
-		CreatedAt:      m.CreatedAt.UTC().Format(time.RFC3339Nano),
+	// 幂等重发只回执发送方，不重复推给收件人。
+	if inserted {
+		recv := msgRecvPayload{
+			ConversationID: conv.ID,
+			ServerSeq:      m.ServerSeq,
+			SenderID:       senderID,
+			Kind:           m.Kind,
+			Content:        m.Payload,
+			CreatedAt:      m.CreatedAt.UTC().Format(time.RFC3339Nano),
+		}
+		r.hub.Push(req.ToUserID, Envelope{Type: "msg.recv", Payload: mustJSON(recv)})
 	}
-	r.hub.Push(req.ToUserID, Envelope{Type: "msg.recv", Payload: mustJSON(recv)})
 
 	// audit（用独立 ctx 避免 conn 关闭传递取消）
 	if r.audit != nil {
@@ -241,7 +244,7 @@ type callInviteReq struct {
 
 type callInviteAck struct {
 	CallID string `json:"call_id"`
-	Online bool   `json:"online"`   // false → 入 pending_calls；true → 已 push 给 callee
+	Online bool   `json:"online"` // false → 入 pending_calls；true → 已 push 给 callee
 	TTLSec int    `json:"ttl_sec,omitempty"`
 }
 
@@ -493,4 +496,3 @@ func (r *Router) sendError(c *Conn, code int, msg string, inReplyTo Envelope) {
 		}),
 	})
 }
-

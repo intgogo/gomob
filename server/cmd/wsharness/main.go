@@ -157,6 +157,50 @@ func parseFlexInt(v any) int64 {
 	return 0
 }
 
+func authHeader(token string) map[string]string {
+	return map[string]string{"Authorization": "Bearer " + token}
+}
+
+func dataField(body map[string]any, key string) any {
+	if body == nil {
+		return nil
+	}
+	data, _ := body["data"].(map[string]any)
+	if data == nil {
+		return nil
+	}
+	return data[key]
+}
+
+func nestedField(obj map[string]any, outer, inner string) any {
+	if obj == nil {
+		return nil
+	}
+	nested, _ := obj[outer].(map[string]any)
+	if nested == nil {
+		return nil
+	}
+	return nested[inner]
+}
+
+func findConversation(body map[string]any, convID int64) map[string]any {
+	if body == nil {
+		return nil
+	}
+	data, _ := body["data"].(map[string]any)
+	if data == nil {
+		return nil
+	}
+	items, _ := data["items"].([]any)
+	for _, it := range items {
+		obj, _ := it.(map[string]any)
+		if parseFlexInt(obj["id"]) == convID {
+			return obj
+		}
+	}
+	return nil
+}
+
 // ============================================================================
 // WS 客户端封装
 // ============================================================================
@@ -456,6 +500,68 @@ func main() {
 		HTTPCode: 200, ExpectedHTTP: 200, LatencyMS: msSince(t0),
 		Note: fmt.Sprintf("code=%d msg=%q", er.Code, er.Message)})
 
+	// S16 幂等 client_msg_id：同一客户端消息重发，不重新分配 server_seq，也不重复推给 B。
+	t0 = time.Now()
+	idemClientID := fmt.Sprintf("idem-%d", time.Now().UnixNano())
+	_ = wsA.write(envelope{
+		Type: "msg.send",
+		Payload: jsonRaw(map[string]any{
+			"to_user_id":    uidB,
+			"kind":          "text",
+			"content":       jsonRaw(map[string]any{"text": "idempotent"}),
+			"client_msg_id": idemClientID,
+		}),
+	})
+	idemDelivered1, idemD1OK := wsA.expect("msg.delivered", 3*time.Second)
+	idemRecv1, idemR1OK := wsB.expect("msg.recv", 3*time.Second)
+	idemSeq1 := getSeq(idemDelivered1)
+	_ = wsA.write(envelope{
+		Type: "msg.send",
+		Payload: jsonRaw(map[string]any{
+			"to_user_id":    uidB,
+			"kind":          "text",
+			"content":       jsonRaw(map[string]any{"text": "idempotent"}),
+			"client_msg_id": idemClientID,
+		}),
+	})
+	idemDelivered2, idemD2OK := wsA.expect("msg.delivered", 3*time.Second)
+	idemSeq2 := getSeq(idemDelivered2)
+	dupRecv := 0
+	for _, e := range wsB.drainFor(600 * time.Millisecond) {
+		if e.Type == "msg.recv" && getSeq(e) == idemSeq1 {
+			dupRecv++
+		}
+	}
+	s16ok := idemD1OK && idemR1OK && idemD2OK &&
+		idemSeq1 > 0 && idemSeq1 == idemSeq2 && getSeq(idemRecv1) == idemSeq1 && dupRecv == 0
+	rec.write(result{Scenario: "S16.client_msg_id_idempotent", OK: s16ok, HTTPCode: 200, ExpectedHTTP: 200,
+		LatencyMS: msSince(t0),
+		Note:      fmt.Sprintf("seq1=%d seq2=%d dup_recv=%d", idemSeq1, idemSeq2, dupRecv)})
+
+	// S17 HTTP 标记已读：B 把当前最新 seq 标为已读，会话 unread_count 应归零。
+	t0 = time.Now()
+	statusCode, body, err := httpJSON("POST",
+		fmt.Sprintf("%s/v1/conversations/%d/read", *gateway, convID),
+		map[string]any{"last_read_seq": idemSeq1},
+		authHeader(tokenB),
+	)
+	readUnread := parseFlexInt(dataField(body, "unread_count"))
+	s17ok := err == nil && statusCode == 200 && readUnread == 0
+	rec.write(result{Scenario: "S17.http_mark_read", OK: s17ok, HTTPCode: statusCode, ExpectedHTTP: 200,
+		LatencyMS: msSince(t0),
+		Note:      fmt.Sprintf("unread=%d", readUnread)})
+
+	// S18 HTTP 会话列表：last_message 与最新幂等消息一致，且 unread_count=0。
+	t0 = time.Now()
+	statusCode, body, err = httpJSON("GET", *gateway+"/v1/conversations?limit=20", nil, authHeader(tokenB))
+	conv := findConversation(body, convID)
+	lastSeq := parseFlexInt(nestedField(conv, "last_message", "server_seq"))
+	listUnread := parseFlexInt(conv["unread_count"])
+	s18ok := err == nil && statusCode == 200 && lastSeq == idemSeq1 && listUnread == 0
+	rec.write(result{Scenario: "S18.http_conversation_list", OK: s18ok, HTTPCode: statusCode, ExpectedHTTP: 200,
+		LatencyMS: msSince(t0),
+		Note:      fmt.Sprintf("last_seq=%d unread=%d", lastSeq, listUnread)})
+
 	// S9 离线 invite：B 断开 → A 发 call.invite → A 应收 invite_ack online=false
 	t0 = time.Now()
 	wsB.close()
@@ -583,7 +689,7 @@ func main() {
 	// admin 接口需要 admin 角色，注册时是 inspector — 这里跳过严格断言，仅观察。
 	// 通过 signaling 自暴露的 /v1/signaling/online 间接验证连接已被注册：
 	t0 = time.Now()
-	statusCode, body, err := httpJSON("GET", *gateway+"/v1/signaling/online", nil, nil)
+	statusCode, body, err = httpJSON("GET", *gateway+"/v1/signaling/online", nil, nil)
 	onlineCount := 0
 	if arr, ok := body["users"].([]any); ok {
 		onlineCount = len(arr)

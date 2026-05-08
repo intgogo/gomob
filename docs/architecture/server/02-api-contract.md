@@ -385,16 +385,27 @@ Body：原始字节流（非 multipart，简化）。Header：`Content-Length: <
 
 ```json
 {
-  "id": "c_1",
-  "kind": "p2p",
-  "title": "周科",
-  "peer": { "id": "12346", "name": "周科" },
-  "last_message": {
-    "kind": "video_call",
-    "preview": "[视频通话 56:02]",
-    "created_at": "2024-05-10T17:11:00Z"
-  },
-  "unread_count": 0
+  "items": [
+    {
+      "id": "1",
+      "kind": "p2p",
+      "title": "周科",
+      "peer": { "id": "12346", "name": "周科", "employee_id": "ZAA0120230002" },
+      "last_message": {
+        "id": "999",
+        "sender_id": "12346",
+        "server_seq": 42,
+        "kind": "video_call",
+        "preview": "[视频通话 56:02]",
+        "created_at": "2026-05-08T17:11:00Z"
+      },
+      "last_read_seq": 40,
+      "unread_count": 2,
+      "updated_at": "2026-05-08T17:11:00Z"
+    }
+  ],
+  "next_cursor": "0",
+  "has_more": false
 }
 ```
 
@@ -410,6 +421,7 @@ Body：原始字节流（非 multipart，简化）。Header：`Content-Length: <
   "sender_id": "12346",
   "kind": "text",
   "payload": { "text": "好的" },
+  "client_msg_id": "可选，发送方本地 UUID",
   "created_at": "..."
 }
 ```
@@ -428,9 +440,34 @@ Body：原始字节流（非 multipart，简化）。Header：`Content-Length: <
 
 返回服务端 `server_seq` 等。
 
+服务端按 `(sender_id, client_msg_id)` 幂等；同一客户端重试不会重复分配 `server_seq`，
+也不会重复推送给收件人。
+
+### 7.4 标记已读
+
+`POST /v1/conversations/:id/read`
+
+```json
+{ "last_read_seq": 1234 }
+```
+
+返回：
+
+```json
+{
+  "conversation_id": "1",
+  "last_read_seq": 1234,
+  "unread_count": 0
+}
+```
+
 ## 8. WebSocket 通道（M-S4 已实施）
 
 `WS /v1/ws?token=<access_token>` —— 单连接复用消息推送 + 视频信令。
+
+> M-S4 的 `call.invite / call.answer / call.ice` 是 P2P 信令验证骨架。M5 起视频通话和第一视角直播升级为
+> [09 实时消息与第一视角协作](../09-realtime-message-live.md) 的媒体房间模型：WebSocket 只承载邀请、
+> 状态和批注，SDP / ICE 由自托管 LiveKit 媒体面处理。
 
 **鉴权**：浏览器 / RN WebSocket 不能设自定义 header，约定 `?token=<access JWT>` query；
 gateway 路由声明 `Public:true` 透传 ws upgrade，token 校验由 signaling 自己做。

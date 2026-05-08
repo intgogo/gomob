@@ -37,8 +37,12 @@ edges:
   - from: ":core:domain"
     to: [":core:common", ":core:model", ":core:data"]
   - from: ":core:data"
-    to: [":core:common", ":core:model", ":core:database", ":core:network"]
+    to: [":core:common", ":core:model", ":core:database", ":core:network", ":core:realtime", ":core:media"]
   - from: ":core:database"
+    to: [":core:model"]
+  - from: ":core:realtime"
+    to: [":core:common", ":core:network"]
+  - from: ":core:media"
     to: [":core:model"]
   - from: ":core:ui"
     to: [":core:designsystem", ":core:model"]

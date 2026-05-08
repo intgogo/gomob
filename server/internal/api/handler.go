@@ -20,26 +20,30 @@ import (
 )
 
 type Handler struct {
-	pool        *pgxpool.Pool
-	inspections *repo.InspectionRepo
-	vehicles    *repo.VehicleRepo
-	reviews     *repo.ReviewRepo
-	assets      *repo.AssetRepo
-	users       *repo.UserRepo
-	audit       audit.Recorder
-	enforcer    rbac.Enforcer
+	pool          *pgxpool.Pool
+	inspections   *repo.InspectionRepo
+	vehicles      *repo.VehicleRepo
+	reviews       *repo.ReviewRepo
+	assets        *repo.AssetRepo
+	users         *repo.UserRepo
+	conversations *repo.ConversationRepo
+	messages      *repo.MessageRepo
+	audit         audit.Recorder
+	enforcer      rbac.Enforcer
 }
 
 func NewHandler(pool *pgxpool.Pool, audit audit.Recorder, enforcer rbac.Enforcer) *Handler {
 	return &Handler{
-		pool:        pool,
-		inspections: repo.NewInspectionRepo(pool),
-		vehicles:    repo.NewVehicleRepo(pool),
-		reviews:     repo.NewReviewRepo(pool),
-		assets:      repo.NewAssetRepo(pool),
-		users:       repo.NewUserRepo(pool),
-		audit:       audit,
-		enforcer:    enforcer,
+		pool:          pool,
+		inspections:   repo.NewInspectionRepo(pool),
+		vehicles:      repo.NewVehicleRepo(pool),
+		reviews:       repo.NewReviewRepo(pool),
+		assets:        repo.NewAssetRepo(pool),
+		users:         repo.NewUserRepo(pool),
+		conversations: repo.NewConversationRepo(pool),
+		messages:      repo.NewMessageRepo(pool),
+		audit:         audit,
+		enforcer:      enforcer,
 	}
 }
 
@@ -59,6 +63,12 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/reviews", h.ListReviews)
 	mux.HandleFunc("GET /v1/reviews/{id}", h.GetReview)
 	mux.HandleFunc("POST /v1/reviews/{id}/decision", h.DecideReview)
+
+	// 消息
+	mux.HandleFunc("GET /v1/conversations", h.ListConversations)
+	mux.HandleFunc("GET /v1/conversations/{id}/messages", h.ListConversationMessages)
+	mux.HandleFunc("POST /v1/conversations/{id}/messages", h.CreateConversationMessage)
+	mux.HandleFunc("POST /v1/conversations/{id}/read", h.MarkConversationRead)
 }
 
 // ---------- 通用工具 ----------

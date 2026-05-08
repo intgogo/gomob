@@ -30,6 +30,8 @@
 | `architecture/03-jni-boundary.md` | JNI 边界契约（数据通道 / 错误模型 / 零拷贝） | 草稿 |
 | `architecture/04-reconstruction-pipeline.md` | 重建管线（采集 → 同步 → 配准 → 融合 → TSDF/MC → 纹理） | 待写 |
 | `architecture/05-calibration-pipeline.md` | 双摄内/外参标定 | 待写 |
+| `architecture/09-realtime-message-live.md` | 实时消息、视频通话、第一视角直播控制面 / 媒体面设计 | 草稿 |
+| `architecture/09-realtime-message-live-implementation.md` | M5 实时协作实施步骤、端侧 / 服务端 / harness 验收 | 草稿 |
 
 ## 设计原则速览
 
