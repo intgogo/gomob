@@ -126,6 +126,7 @@ class LoginViewModel @Inject constructor(
 
     fun openEndpointEditor() {
         val ep = _state.value.endpoint
+        val connectivity = _state.value.connectivity
         _state.update {
             it.copy(
                 editor = EndpointEditorState(
@@ -134,7 +135,9 @@ class LoginViewModel @Inject constructor(
                 ),
             )
         }
-        discoverGateways()
+        if (connectivity !is ConnectivityStatus.Ok) {
+            discoverGateways()
+        }
     }
 
     fun closeEndpointEditor() {
@@ -159,7 +162,7 @@ class LoginViewModel @Inject constructor(
                     discoveredGateways = gateways,
                     discoveryMessage = when {
                         result.isFailure -> "发现失败: ${shortReason(result.exceptionOrNull() ?: RuntimeException())}"
-                        gateways.isEmpty() -> "未发现同网段网关"
+                        gateways.isEmpty() -> "未发现可用网关"
                         else -> null
                     },
                 )
@@ -262,10 +265,11 @@ class LoginViewModel @Inject constructor(
         return when {
             "ECONNREFUSED" in msg || "Connection refused" in msg -> "拒绝连接"
             "EHOSTUNREACH" in msg || "No route" in msg -> "主机不可达"
-            "ENETUNREACH" in msg -> "网络不可达"
+            "ENETUNREACH" in msg || "Network is unreachable" in msg -> "网络不可达"
             "Failed to connect" in msg -> "连接失败"
             "timeout" in msg.lowercase() -> "超时"
             "Unable to resolve" in msg -> "DNS 解析失败"
+            e is java.io.IOException -> "连接失败"
             else -> e.javaClass.simpleName.removeSuffix("Exception").ifBlank { "网络错误" }
         }
     }

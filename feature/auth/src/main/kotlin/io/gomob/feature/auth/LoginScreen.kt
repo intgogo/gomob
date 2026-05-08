@@ -137,6 +137,7 @@ private fun LoginContent(
         EndpointEditorSheet(
             editor = state.editor,
             currentEndpoint = state.endpoint,
+            currentConnectivity = state.connectivity,
             discoveringGateways = state.discoveringGateways,
             discoveredGateways = state.discoveredGateways,
             discoveryMessage = state.discoveryMessage,
@@ -570,6 +571,7 @@ private fun ConnectivityStatus.toLabel(): Pair<androidx.compose.ui.graphics.Colo
 private fun EndpointEditorSheet(
     editor: EndpointEditorState,
     currentEndpoint: io.gomob.network.ServerEndpoint,
+    currentConnectivity: ConnectivityStatus,
     discoveringGateways: Boolean,
     discoveredGateways: List<DiscoveredGateway>,
     discoveryMessage: String?,
@@ -595,26 +597,30 @@ private fun EndpointEditorSheet(
                 .padding(bottom = Gomob.spacing.s24),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s14),
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4)) {
-                Text(
-                    "服务端网关",
-                    fontSize = 16.sp,
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
-                    color = Gomob.colors.fg0,
-                )
-                Text(
-                    "当前已保存: ${currentEndpoint.display()}",
-                    fontSize = 12.sp,
-                    color = Gomob.colors.fg3,
-                )
-            }
+            Text(
+                "服务端网关",
+                fontSize = 16.sp,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
+                color = Gomob.colors.fg0,
+            )
+            CurrentEndpointRow(
+                endpoint = currentEndpoint,
+                connectivity = currentConnectivity,
+                discovering = discoveringGateways,
+                onDiscover = onDiscover,
+            )
             DiscoverySection(
                 currentEndpoint = currentEndpoint,
+                currentConnectivity = currentConnectivity,
                 discovering = discoveringGateways,
                 gateways = discoveredGateways,
                 message = discoveryMessage,
-                onDiscover = onDiscover,
                 onUse = onUseDiscovered,
+            )
+            Text(
+                "手动地址",
+                style = Gomob.type.eyebrow,
+                color = Gomob.colors.fg3,
             )
             Ipv4AddressField(
                 label = "网关 IP",
@@ -673,33 +679,73 @@ private fun EndpointEditorSheet(
 }
 
 @Composable
+private fun CurrentEndpointRow(
+    endpoint: io.gomob.network.ServerEndpoint,
+    connectivity: ConnectivityStatus,
+    discovering: Boolean,
+    onDiscover: () -> Unit,
+) {
+    val (dotColor, statusText) = connectivity.toLabel()
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(Gomob.spacing.rowSetting)
+            .clip(Gomob.shapes.r2)
+            .background(Gomob.colors.bg0)
+            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
+            .padding(horizontal = Gomob.spacing.s12),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+    ) {
+        Box(
+            Modifier
+                .size(Gomob.spacing.dot8)
+                .clip(CircleShape)
+                .background(dotColor),
+        )
+        Column(
+            Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2),
+        ) {
+            Text(
+                endpoint.display(),
+                style = Gomob.type.numInline.copy(fontSize = 13.sp, letterSpacing = 0.04.em),
+                color = Gomob.colors.fg0,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+            Text(
+                statusText,
+                fontSize = 11.sp,
+                color = Gomob.colors.fg3,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+        }
+        SmallIconButton(
+            icon = GomobIcons.Refresh,
+            loading = discovering,
+            enabled = !discovering,
+            onClick = onDiscover,
+        )
+    }
+}
+
+@Composable
 private fun DiscoverySection(
     currentEndpoint: io.gomob.network.ServerEndpoint,
+    currentConnectivity: ConnectivityStatus,
     discovering: Boolean,
     gateways: List<DiscoveredGateway>,
     message: String?,
-    onDiscover: () -> Unit,
     onUse: (DiscoveredGateway) -> Unit,
 ) {
+    val emptyText = when {
+        discovering -> "搜索中…"
+        currentConnectivity is ConnectivityStatus.Ok -> "未发现其它网关"
+        else -> message ?: "未发现可用网关"
+    }
     Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8)) {
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(
-                "同网段服务器",
-                fontSize = 13.sp,
-                fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
-                color = Gomob.colors.fg1,
-            )
-            SmallIconButton(
-                icon = GomobIcons.Refresh,
-                loading = discovering,
-                enabled = !discovering,
-                onClick = onDiscover,
-            )
-        }
         when {
             gateways.isNotEmpty() -> gateways.forEach { gateway ->
                 DiscoveredGatewayRow(
@@ -709,7 +755,7 @@ private fun DiscoverySection(
                     onUse = { onUse(gateway) },
                 )
             }
-            else -> DiscoveryStatusRow(text = if (discovering) "发现中…" else message ?: "暂无发现")
+            discovering || currentConnectivity !is ConnectivityStatus.Ok -> DiscoveryStatusRow(text = emptyText)
         }
     }
 }
@@ -719,10 +765,6 @@ private fun DiscoveryStatusRow(text: String) {
     Row(
         Modifier
             .fillMaxWidth()
-            .height(Gomob.spacing.touchMin)
-            .clip(Gomob.shapes.r2)
-            .background(Gomob.colors.bg0)
-            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
             .padding(horizontal = Gomob.spacing.s12),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
