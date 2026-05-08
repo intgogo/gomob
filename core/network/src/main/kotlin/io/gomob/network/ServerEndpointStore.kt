@@ -35,7 +35,8 @@ private val Context.serverEndpointDataStore by preferencesDataStore(name = "gomo
  * 单一真理源 (SSOT)：登录页 DiagnosticStrip 的"服务端 IP:端口"展示与保存，
  * OkHttp / WebSocket 出站请求，全部读这一份。进入 App 后不再二次配置服务端地址。
  *
- * 默认 `127.0.0.1:8808` —— 仅 emulator + adb reverse 场景能直接通；
+ * 默认 `127.0.0.1:8808` —— emulator 通过 `adb reverse tcp:8808 tcp:18808`
+ * 访问宿主机开发网关；`./dev.sh install/run` 会自动设置这条反向代理。
  * 真机首次安装由登录页服务发现优先自动写入，失败或多网关时再手动兜底。
  */
 @Singleton

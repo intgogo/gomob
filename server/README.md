@@ -12,7 +12,7 @@ gomob 移动应用的后端服务（Go）。
 | `gomob-asset` | `:50053` | 图片 / 3D 扫描 / PDF 上传下载 |
 | `gomob-signaling` | `:50054` | 消息中心 + WebRTC 视频信令 |
 | `gomob-worker` | `:50055` | 智能预审 AI / 缩略图 / PDF 生成（异步） |
-| `gomob-devserver` | `:8808` | 开发模式单进程合体（仅本地） |
+| `gomob-devserver` | HTTP `:18808` / UDP discovery `:18809` | 开发模式单进程合体（仅本地） |
 
 ## 快速上手
 

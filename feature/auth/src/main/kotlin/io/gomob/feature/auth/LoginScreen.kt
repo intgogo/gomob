@@ -58,7 +58,7 @@ const val LOGIN_ROUTE = "auth/login"
  *   3. 输入区（padding 36/24/0 gap 14）：Field × 2 + 记住账号 / 去注册同行
  *   4. 主按钮（padding 24/24/0）：48dp 高 + accentSoft + "登 录" 字距 0.3em + ArrowRight
  *   5. flex:1 spacer
- *   6. 底部诊断条（margin 0/20/24/20）：mono 10sp "服务端 10.0.2.2:8808 · 已连接 · 28ms"
+ *   6. 底部诊断条（margin 0/20/24/20）：mono 10sp "服务端 127.0.0.1:8808 · 已连接 · 28ms"
  */
 @Composable
 fun LoginRoute(
@@ -632,7 +632,7 @@ private fun EndpointEditorSheet(
                 icon = GomobIcons.Settings,
                 label = "端口",
                 value = editor.draftPort,
-                placeholder = "8808",
+                placeholder = "18808",
                 onChange = onDraftPort,
                 keyboardType = KeyboardType.Number,
             )

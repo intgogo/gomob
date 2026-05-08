@@ -72,6 +72,18 @@ doctor() {
     echo "  ./scripts/ensure-android-sdk.sh --install"
 }
 
+adb_cmd() {
+    adb ${ADB_DEVICE:+-s "$ADB_DEVICE"} "$@"
+}
+
+ensure_emulator_gateway_reverse() {
+    local qemu
+    qemu="$(adb_cmd shell getprop ro.kernel.qemu 2>/dev/null | tr -d '\r' || true)"
+    [[ "$qemu" == "1" ]] || return 0
+    adb_cmd reverse tcp:8808 tcp:18808 >/dev/null
+    echo "adb reverse: emulator tcp:8808 -> host tcp:18808"
+}
+
 case "$cmd" in
     doctor)
         doctor
@@ -83,11 +95,13 @@ case "$cmd" in
         "$GRADLEW" :app:assembleRelease "$@" 2>&1 | tee "$DEV_DIR/release.log"
         ;;
     install)
+        ensure_emulator_gateway_reverse
         "$GRADLEW" :app:installDebug "$@" 2>&1 | tee "$DEV_DIR/install.log"
         ;;
     run)
+        ensure_emulator_gateway_reverse
         "$GRADLEW" :app:installDebug 2>&1 | tee "$DEV_DIR/install.log"
-        adb ${ADB_DEVICE:+-s "$ADB_DEVICE"} shell am start -n io.gomob.scan.debug/io.gomob.scan.MainActivity
+        adb_cmd shell am start -n io.gomob.scan.debug/io.gomob.scan.MainActivity
         ;;
     test)
         "$GRADLEW" test "$@" 2>&1 | tee "$DEV_DIR/test.log"
@@ -100,14 +114,14 @@ case "$cmd" in
         rm -rf "$DEV_DIR"/*.log "$DEV_DIR/screenshots"
         ;;
     log)
-        adb ${ADB_DEVICE:+-s "$ADB_DEVICE"} logcat -v time \
+        adb_cmd logcat -v time \
             'gomob:*' 'gomob_native:*' 'AndroidRuntime:E' 'System.err:W' '*:S' \
             | tee "$DEV_DIR/logcat.log"
         ;;
     shot)
         name="${1:-screen}"
         out="$DEV_DIR/screenshots/${name}.png"
-        adb ${ADB_DEVICE:+-s "$ADB_DEVICE"} exec-out screencap -p > "$out"
+        adb_cmd exec-out screencap -p > "$out"
         echo "→ $out"
         ;;
     adb-wifi)
