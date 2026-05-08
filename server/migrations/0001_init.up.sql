@@ -8,7 +8,7 @@ CREATE TABLE stations (
     id              BIGSERIAL PRIMARY KEY,
     name            TEXT NOT NULL,                          -- 杭州市西湖区车管所检测站
     region          TEXT,                                   -- 行政区
-    gateway_addr    TEXT,                                   -- 网关 IP:Port（"网络设置"展示）
+    gateway_addr    TEXT,                                   -- 网关 IP:Port（登录页服务端诊断展示）
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

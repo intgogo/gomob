@@ -114,7 +114,7 @@ server/
 - 二进制：`gomob-<service>`（gomob-api / gomob-gateway / gomob-cvengine / gomob-llmgateway / ...）
 - 端口（gRPC 仅内网；gateway 与 admin HTTP 走外 / 管理网；cv-engine HTTP 沿用 gosmart 兼容路径仅内网）：
   - **生产端口**：
-    - gateway 8808（HTTPS，App 唯一暴露入口）
+    - gateway 8808（HTTPS，App 唯一暴露入口）/ UDP 18809（同网段服务发现）
     - admin 9090（HTTPS / mTLS，仅内网管理网段访问；BFF）
     - cv-engine HTTP 8810（仅内网，兼容 `/cv/ocr/v1/*`）
     - llm-gateway HTTP 8811（仅内网，流式 SSE）
@@ -123,7 +123,7 @@ server/
     - gRPC：catalog 50059 / vinref 50060 / shaperef 50061
     - gRPC：cvengine 50062 / llmgateway 50063
   - **开发端口**（默认；统一 18000 段，避免 8080 / 8808 等常用端口与其它项目冲突）：
-    - gateway 18808 / api 18080 / auth 18082 / asset 18083
+    - gateway 18808 / UDP discovery 18809 / api 18080 / auth 18082 / asset 18083
     - signaling 18084 / device 18086
     - cv-engine HTTP 18810 / llm-gateway HTTP 18811
     - 各服务由 `GOMOB_<SVC>_HTTP_ADDR` 环境变量覆盖；harness / dev.sh 已对齐 18000 段

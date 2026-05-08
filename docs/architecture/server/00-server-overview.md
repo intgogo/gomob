@@ -24,8 +24,9 @@
         └───────────────────────────────────────────────────┘
 ```
 
-App 端**只配置一个**网关地址（`112.145.10.91:8808`，对应"我的→网络设置"）。
-内部所有微服务通过 gRPC 互通，不直接对 App 暴露。
+App 端**只持有一个**网关地址，登录页优先通过同网段 UDP 服务发现自动写入；
+发现失败或多网关冲突时才允许手动填 IP:Port 兜底。内部所有微服务通过 gRPC 互通，
+不直接对 App 暴露。
 
 ## 2. 服务划分（基于第一性原理：每个服务围绕一个**资源边界**）
 
@@ -77,6 +78,7 @@ API 短连接 + 同步 CRUD）。混在一起会让任何一边的容量规划�
 | 通路 | 协议 | 编码 |
 |------|------|------|
 | App ↔ Gateway | HTTPS (REST) + WebSocket (wss) | JSON over HTTP / WebRTC SDP |
+| App ↔ Gateway 发现 | UDP broadcast :18809 | `gomob.discovery.v1` → `gomob.gateway.v1` JSON |
 | Gateway ↔ 内部服务 | gRPC | Protobuf |
 | 服务 ↔ 服务 (异步) | NATS / Redis pub-sub | Protobuf |
 | 信令 / 视频 | WebRTC (peer-to-peer) + STUN/TURN | RTP/SRTP |
@@ -183,6 +185,7 @@ vehicle-catalog (结构化主数据)
 - **实时类**（cv-engine / llm-gateway）：gateway 路由直达，避免 api 中转引入额外延迟；LLM 流式 SSE 也由 gateway 直接 pipe 到客户端
 - **参考库三件套**（vehicle-catalog / vin-ref / shape-ref）：HTTP 入口由 **api 服务** 承担（路径前缀 `/v1/catalog/*`），api 内部 gRPC 调对应服务。理由：参考库是查验业务的引用资料（不是独立交互对象），让 api 在 inspection 详情里一并返回引用 ID + 提供按 ID 拉详情的代理接口，App 只感知一致的 `/v1/catalog/*` 而无需关心后端服务拆分
 - **api 不会变成肥 BFF**：参考库代理只是**只读 GET 透传**（无业务逻辑），写入路径全部走 admin（参考库入库审核）；api 不为 cv-engine / llm-gateway 做任何代理（实时类直达）
+- **服务发现**：gateway 默认监听 UDP `:18809`。App 登录页广播 `gomob.discovery.v1`，gateway 回复 `{type:"gomob.gateway.v1", service:"gomob-gateway", name, http_port, server_ts}`；App 使用 UDP 响应来源 IP + `http_port` 组成唯一 HTTP/WebSocket 入口，并写入同一个 `ServerEndpointStore`。
 
 **鉴权策略：**
 - 全局：gateway 校验 JWT，下游服务信任 `X-Gomob-User-Id` / `X-Gomob-Roles` header

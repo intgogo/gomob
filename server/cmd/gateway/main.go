@@ -5,6 +5,8 @@
 // 环境变量：
 //
 //	GOMOB_GATEWAY_ADDR     监听地址（默认 :18808）
+//	GOMOB_DISCOVERY_ADDR   UDP 服务发现监听地址（默认 :18809；空字符串禁用）
+//	GOMOB_DISCOVERY_NAME   服务发现展示名称（默认 gomob-gateway）
 //	GOMOB_REDIS_ADDR       Redis 地址（默认 127.0.0.1:6379；空字符串 = 禁用限流）
 //	GOMOB_RATE_LIMIT       每分钟每用户上限（默认 1000）
 //	GOMOB_JWT_SECRET       JWT 密钥（与 auth 服务共享）
@@ -30,10 +32,12 @@ func main() {
 	log := logger.New("gateway")
 
 	addr := envOr("GOMOB_GATEWAY_ADDR", ":18808")
+	discoveryAddr := envOrAllowEmpty("GOMOB_DISCOVERY_ADDR", gateway.DefaultDiscoveryAddr)
+	discoveryName := envOr("GOMOB_DISCOVERY_NAME", "gomob-gateway")
 
 	// Redis（限流后端）— 不可达时降级为不限流
 	var rdb *redis.Client
-	if redisAddr := envOr("GOMOB_REDIS_ADDR", "127.0.0.1:6379"); redisAddr != "" {
+	if redisAddr := envOrAllowEmpty("GOMOB_REDIS_ADDR", "127.0.0.1:6379"); redisAddr != "" {
 		rdb = redis.NewClient(&redis.Options{Addr: redisAddr})
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -66,6 +70,11 @@ func main() {
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	discoveryCtx, stopDiscovery := context.WithCancel(context.Background())
+	defer stopDiscovery()
+	if err := gateway.StartDiscoveryResponder(discoveryCtx, discoveryAddr, addr, discoveryName, log); err != nil {
+		log.Warn("UDP 服务发现不可用", "addr", discoveryAddr, "err", err)
+	}
 
 	go func() {
 		log.Info("HTTP 监听", "addr", addr, "rate_limit_per_min", limit, "redis_enabled", rdb != nil)
@@ -88,6 +97,13 @@ func main() {
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func envOrAllowEmpty(key, def string) string {
+	if v, ok := os.LookupEnv(key); ok {
 		return v
 	}
 	return def

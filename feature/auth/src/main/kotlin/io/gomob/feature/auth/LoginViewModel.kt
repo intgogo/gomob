@@ -7,6 +7,8 @@ import io.gomob.common.net.Ipv4AddressDraft
 import io.gomob.data.auth.AuthRepository
 import io.gomob.data.auth.TokenStore
 import io.gomob.network.ApiException
+import io.gomob.network.DiscoveredGateway
+import io.gomob.network.GatewayDiscoveryClient
 import io.gomob.network.ServerEndpoint
 import io.gomob.network.ServerEndpointStore
 import kotlinx.coroutines.TimeoutCancellationException
@@ -34,6 +36,9 @@ data class LoginUiState(
     ),
     /** 后台对当前 endpoint 的探活结果 (driving DiagnosticStrip 状态点) */
     val connectivity: ConnectivityStatus = ConnectivityStatus.Unknown,
+    val discoveringGateways: Boolean = false,
+    val discoveredGateways: List<DiscoveredGateway> = emptyList(),
+    val discoveryMessage: String? = null,
     /** 非 null 表示编辑面板打开 */
     val editor: EndpointEditorState? = null,
 )
@@ -60,6 +65,7 @@ class LoginViewModel @Inject constructor(
     private val authRepo: AuthRepository,
     private val endpointStore: ServerEndpointStore,
     private val tokenStore: TokenStore,
+    private val gatewayDiscoveryClient: GatewayDiscoveryClient,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(LoginUiState())
@@ -72,6 +78,9 @@ class LoginViewModel @Inject constructor(
                 _state.update { it.copy(endpoint = ep, connectivity = ConnectivityStatus.Probing) }
                 val result = probeEndpoint()
                 _state.update { it.copy(connectivity = result) }
+                if (result is ConnectivityStatus.Failed) {
+                    discoverGateways(autoApplySingle = true)
+                }
             }
         }
     }
@@ -125,6 +134,7 @@ class LoginViewModel @Inject constructor(
                 ),
             )
         }
+        discoverGateways()
     }
 
     fun closeEndpointEditor() {
@@ -136,6 +146,35 @@ class LoginViewModel @Inject constructor(
     }
 
     fun setDraftPort(v: String) = updateEditor { it.copy(draftPort = v.filter { ch -> ch.isDigit() }.take(5), validationError = null, testResult = ConnectivityStatus.Unknown) }
+
+    fun discoverGateways(autoApplySingle: Boolean = false) {
+        if (_state.value.discoveringGateways) return
+        _state.update { it.copy(discoveringGateways = true, discoveryMessage = null) }
+        viewModelScope.launch {
+            val result = runCatching { gatewayDiscoveryClient.discover() }
+            val gateways = result.getOrDefault(emptyList())
+            _state.update {
+                it.copy(
+                    discoveringGateways = false,
+                    discoveredGateways = gateways,
+                    discoveryMessage = when {
+                        result.isFailure -> "发现失败: ${shortReason(result.exceptionOrNull() ?: RuntimeException())}"
+                        gateways.isEmpty() -> "未发现同网段网关"
+                        else -> null
+                    },
+                )
+            }
+            if (autoApplySingle && gateways.size == 1 && _state.value.connectivity is ConnectivityStatus.Failed) {
+                applyDiscoveredGateway(gateways.first(), closeEditor = false)
+            }
+        }
+    }
+
+    fun useDiscoveredGateway(gateway: DiscoveredGateway) {
+        viewModelScope.launch {
+            applyDiscoveredGateway(gateway, closeEditor = true)
+        }
+    }
 
     /** "测试连接" —— 拿草稿值临时 ping，不写库 */
     fun testDraft() {
@@ -155,6 +194,26 @@ class LoginViewModel @Inject constructor(
         updateEditor { it.copy(saving = true) }
         viewModelScope.launch {
             endpointStore.set(parsed.ip, parsed.port)
+            _state.update { it.copy(editor = null) }
+        }
+    }
+
+    private suspend fun applyDiscoveredGateway(gateway: DiscoveredGateway, closeEditor: Boolean) {
+        val current = _state.value.endpoint
+        if (current == gateway.endpoint) {
+            if (closeEditor) _state.update { it.copy(editor = null) }
+            return
+        }
+        updateEditor {
+            it.copy(
+                draftIp = Ipv4AddressDraft.from(gateway.endpoint.ip),
+                draftPort = gateway.endpoint.port.toString(),
+                saving = closeEditor,
+                validationError = null,
+            )
+        }
+        endpointStore.set(gateway.endpoint.ip, gateway.endpoint.port)
+        if (closeEditor) {
             _state.update { it.copy(editor = null) }
         }
     }

@@ -44,6 +44,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.common.net.Ipv4AddressDraft
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
+import io.gomob.network.DiscoveredGateway
 import io.gomob.ui.component.Ipv4AddressField
 
 const val LOGIN_ROUTE = "auth/login"
@@ -80,6 +81,8 @@ fun LoginRoute(
         onCloseEndpointEditor = vm::closeEndpointEditor,
         onDraftIp = vm::setDraftIp,
         onDraftPort = vm::setDraftPort,
+        onDiscoverGateways = { vm.discoverGateways() },
+        onUseDiscoveredGateway = vm::useDiscoveredGateway,
         onTestDraft = vm::testDraft,
         onSaveDraft = vm::saveDraft,
         onDevBypass = vm::devBypassLogin,
@@ -98,6 +101,8 @@ private fun LoginContent(
     onCloseEndpointEditor: () -> Unit,
     onDraftIp: (Ipv4AddressDraft) -> Unit,
     onDraftPort: (String) -> Unit,
+    onDiscoverGateways: () -> Unit,
+    onUseDiscoveredGateway: (DiscoveredGateway) -> Unit,
     onTestDraft: () -> Unit,
     onSaveDraft: () -> Unit,
     onDevBypass: () -> Unit,
@@ -132,9 +137,14 @@ private fun LoginContent(
         EndpointEditorSheet(
             editor = state.editor,
             currentEndpoint = state.endpoint,
+            discoveringGateways = state.discoveringGateways,
+            discoveredGateways = state.discoveredGateways,
+            discoveryMessage = state.discoveryMessage,
             onDismiss = onCloseEndpointEditor,
             onDraftIp = onDraftIp,
             onDraftPort = onDraftPort,
+            onDiscover = onDiscoverGateways,
+            onUseDiscovered = onUseDiscoveredGateway,
             onTest = onTestDraft,
             onSave = onSaveDraft,
         )
@@ -560,9 +570,14 @@ private fun ConnectivityStatus.toLabel(): Pair<androidx.compose.ui.graphics.Colo
 private fun EndpointEditorSheet(
     editor: EndpointEditorState,
     currentEndpoint: io.gomob.network.ServerEndpoint,
+    discoveringGateways: Boolean,
+    discoveredGateways: List<DiscoveredGateway>,
+    discoveryMessage: String?,
     onDismiss: () -> Unit,
     onDraftIp: (Ipv4AddressDraft) -> Unit,
     onDraftPort: (String) -> Unit,
+    onDiscover: () -> Unit,
+    onUseDiscovered: (DiscoveredGateway) -> Unit,
     onTest: () -> Unit,
     onSave: () -> Unit,
 ) {
@@ -588,11 +603,19 @@ private fun EndpointEditorSheet(
                     color = Gomob.colors.fg0,
                 )
                 Text(
-                    "App 仅配置一个网关地址,反代到内部各服务。当前已保存: ${currentEndpoint.display()}",
+                    "当前已保存: ${currentEndpoint.display()}",
                     fontSize = 12.sp,
                     color = Gomob.colors.fg3,
                 )
             }
+            DiscoverySection(
+                currentEndpoint = currentEndpoint,
+                discovering = discoveringGateways,
+                gateways = discoveredGateways,
+                message = discoveryMessage,
+                onDiscover = onDiscover,
+                onUse = onUseDiscovered,
+            )
             Ipv4AddressField(
                 label = "网关 IP",
                 value = editor.draftIp,
@@ -644,6 +667,175 @@ private fun EndpointEditorSheet(
                 enabled = !editor.saving && !editor.testing,
                 onClick = onSave,
                 primary = true,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DiscoverySection(
+    currentEndpoint: io.gomob.network.ServerEndpoint,
+    discovering: Boolean,
+    gateways: List<DiscoveredGateway>,
+    message: String?,
+    onDiscover: () -> Unit,
+    onUse: (DiscoveredGateway) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8)) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                "同网段服务器",
+                fontSize = 13.sp,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
+                color = Gomob.colors.fg1,
+            )
+            SmallIconButton(
+                icon = GomobIcons.Refresh,
+                loading = discovering,
+                enabled = !discovering,
+                onClick = onDiscover,
+            )
+        }
+        when {
+            gateways.isNotEmpty() -> gateways.forEach { gateway ->
+                DiscoveredGatewayRow(
+                    gateway = gateway,
+                    selected = gateway.endpoint == currentEndpoint,
+                    enabled = !discovering,
+                    onUse = { onUse(gateway) },
+                )
+            }
+            else -> DiscoveryStatusRow(text = if (discovering) "发现中…" else message ?: "暂无发现")
+        }
+    }
+}
+
+@Composable
+private fun DiscoveryStatusRow(text: String) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(Gomob.spacing.touchMin)
+            .clip(Gomob.shapes.r2)
+            .background(Gomob.colors.bg0)
+            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
+            .padding(horizontal = Gomob.spacing.s12),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+    ) {
+        Icon(
+            GomobIcons.Search,
+            contentDescription = null,
+            tint = Gomob.colors.fg3,
+            modifier = Modifier.size(Gomob.spacing.icon16),
+        )
+        Text(
+            text,
+            fontSize = 12.sp,
+            color = Gomob.colors.fg3,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun DiscoveredGatewayRow(
+    gateway: DiscoveredGateway,
+    selected: Boolean,
+    enabled: Boolean,
+    onUse: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(Gomob.spacing.rowSetting)
+            .clip(Gomob.shapes.r2)
+            .background(if (selected) Gomob.colors.accentSoft else Gomob.colors.bg0)
+            .border(
+                Gomob.spacing.hairline,
+                if (selected) Gomob.colors.accentLine else Gomob.colors.line2,
+                Gomob.shapes.r2,
+            )
+            .clickable(enabled = enabled && !selected, onClick = onUse)
+            .padding(horizontal = Gomob.spacing.s12),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+    ) {
+        Icon(
+            GomobIcons.Wifi,
+            contentDescription = null,
+            tint = if (selected) Gomob.colors.accent else Gomob.colors.fg2,
+            modifier = Modifier.size(Gomob.spacing.icon16),
+        )
+        Column(
+            Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2),
+        ) {
+            Text(
+                gateway.name,
+                fontSize = 13.sp,
+                color = Gomob.colors.fg0,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+            Text(
+                "${gateway.endpoint.display()} · ${gateway.latencyMs}ms",
+                style = Gomob.type.numInline.copy(fontSize = 10.sp, letterSpacing = 0.04.em),
+                color = Gomob.colors.fg3,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+        }
+        if (selected) {
+            Icon(
+                GomobIcons.Check,
+                contentDescription = null,
+                tint = Gomob.colors.accent,
+                modifier = Modifier.size(Gomob.spacing.icon16),
+            )
+        } else {
+            Text(
+                "使用",
+                fontSize = 12.sp,
+                color = if (enabled) Gomob.colors.accent else Gomob.colors.fg3,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SmallIconButton(
+    icon: ImageVector,
+    loading: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        Modifier
+            .size(Gomob.spacing.s32)
+            .clip(Gomob.shapes.r2)
+            .background(Gomob.colors.bg0)
+            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (loading) {
+            CircularProgressIndicator(
+                color = Gomob.colors.accent,
+                modifier = Modifier.size(Gomob.spacing.icon16),
+                strokeWidth = Gomob.spacing.s2,
+            )
+        } else {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = if (enabled) Gomob.colors.fg1 else Gomob.colors.fg3,
+                modifier = Modifier.size(Gomob.spacing.icon16),
             )
         }
     }

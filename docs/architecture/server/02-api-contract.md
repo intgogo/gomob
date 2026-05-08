@@ -11,6 +11,22 @@
 - 开发（模拟器）：`http://10.0.2.2:18808/v1/...`（10.0.2.2 是 emulator 看到的宿主机；本机 dev 端口在 18000 段，避免与其它 8080/8808 项目冲突）
 - 开发（真机 ADB Wi-Fi）：`http://<电脑局域网 IP>:18808/v1/...`
 
+登录页优先通过同网段服务发现拿 Base URL：App 向 UDP `255.255.255.255:18809`
+和本机网卡 broadcast 地址发送 `gomob.discovery.v1`，gateway 回复：
+
+```json
+{
+  "type": "gomob.gateway.v1",
+  "service": "gomob-gateway",
+  "name": "gomob-gateway",
+  "http_port": 18808,
+  "server_ts": 1778200000000
+}
+```
+
+App 使用 UDP 响应来源 IP + `http_port` 生成 `http://<source-ip>:<http_port>/v1/...`；
+多台 gateway 同时响应时登录页列出候选，用户点选后写入同一个端点存储。
+
 ### 1.2 Headers
 
 | Header | 用途 |

@@ -81,17 +81,14 @@ const val PROFILE_ROUTE = "profile"
 fun ProfileRoute(
     onOpenPersonal: () -> Unit = {},
     onOpenAccount: () -> Unit = {},
-    onOpenNetwork: () -> Unit = {},
     onOpenNotification: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
     onOpenHistory: () -> Unit = {},
     vm: ProfileViewModel = hiltViewModel(),
     appearance: AppearanceViewModel = hiltViewModel(),
-    networkVm: ProfileNetworkViewModel = hiltViewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     val themeMode by appearance.mode.collectAsStateWithLifecycle()
-    val networkState by networkVm.state.collectAsStateWithLifecycle()
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
 
     val context = LocalContext.current
@@ -148,7 +145,6 @@ fun ProfileRoute(
             },
             onOpenPersonal = onOpenPersonal,
             onOpenAccount = onOpenAccount,
-            onOpenNetwork = onOpenNetwork,
             onOpenNotification = onOpenNotification,
             onOpenAbout = onOpenAbout,
             themeLabel = themeLabel(themeMode),
@@ -160,7 +156,6 @@ fun ProfileRoute(
                     cacheSize = withContext(Dispatchers.IO) { dirSize(cacheRoot) }
                 }
             },
-            networkLabel = networkState.savedEndpoint.display(),
         )
     }
 }
@@ -514,14 +509,12 @@ private fun SettingsDrawer(
     onLogout: () -> Unit,
     onOpenPersonal: () -> Unit,
     onOpenAccount: () -> Unit,
-    onOpenNetwork: () -> Unit,
     onOpenNotification: () -> Unit,
     onOpenAbout: () -> Unit,
     themeLabel: String,
     onCycleTheme: () -> Unit,
     cacheText: String,
     onClearCache: () -> Unit,
-    networkLabel: String,
 ) {
     AnimatedVisibility(
         visible = visible,
@@ -551,14 +544,12 @@ private fun SettingsDrawer(
                 onLogout = onLogout,
                 onOpenPersonal = onOpenPersonal,
                 onOpenAccount = onOpenAccount,
-                onOpenNetwork = onOpenNetwork,
                 onOpenNotification = onOpenNotification,
                 onOpenAbout = onOpenAbout,
                 themeLabel = themeLabel,
                 onCycleTheme = onCycleTheme,
                 cacheText = cacheText,
                 onClearCache = onClearCache,
-                networkLabel = networkLabel,
             )
         }
     }
@@ -570,21 +561,18 @@ private fun DrawerContent(
     onLogout: () -> Unit,
     onOpenPersonal: () -> Unit,
     onOpenAccount: () -> Unit,
-    onOpenNetwork: () -> Unit,
     onOpenNotification: () -> Unit,
     onOpenAbout: () -> Unit,
     themeLabel: String,
     onCycleTheme: () -> Unit,
     cacheText: String,
     onClearCache: () -> Unit,
-    networkLabel: String,
 ) {
     val items = listOf(
         SettingItem(GomobIcons.ID, "个人信息", onClick = onOpenPersonal),
         SettingItem(GomobIcons.Lock, "账号与安全", onClick = onOpenAccount),
         SettingItem(GomobIcons.Moon, "切换主题", value = themeLabel, onClick = onCycleTheme),
         SettingItem(GomobIcons.Cache, "清理缓存", value = cacheText, onClick = onClearCache),
-        SettingItem(GomobIcons.Wifi, "网络设置", value = networkLabel, mono = true, onClick = onOpenNetwork),
         SettingItem(GomobIcons.Bell, "通知设置", onClick = onOpenNotification),
         SettingItem(GomobIcons.Info, "关于 mob3d", value = "v0.1.0", onClick = onOpenAbout),
     )

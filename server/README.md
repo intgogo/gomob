@@ -6,7 +6,7 @@ gomob 移动应用的后端服务（Go）。
 
 | 二进制 | 端口 | 职责 |
 |--------|------|------|
-| `gomob-gateway` | `:8808` | 反代 + JWT 校验 + wss 升级（App 唯一入口） |
+| `gomob-gateway` | HTTP `:8808` / UDP discovery `:18809` | 反代 + JWT 校验 + wss 升级（App 唯一入口） |
 | `gomob-api` | `:50051` | 业务 CRUD（查验 / 车辆 / 智能预审 / 抽查复核） |
 | `gomob-auth` | `:50052` | 注册（含审核流） / 登录 / 改密 / token |
 | `gomob-asset` | `:50053` | 图片 / 3D 扫描 / PDF 上传下载 |
