@@ -14,9 +14,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChatBubble
@@ -33,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -44,6 +47,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.designsystem.component.ScreenHeader
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
+import io.gomob.designsystem.decoration.ticks
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 
@@ -395,18 +399,15 @@ private fun HelpPane(
     onMessageExpert: (HelpExpertRowUi) -> Unit,
     onOpenLocalVideo: (HelpExpertRowUi) -> Unit,
 ) {
+    val experts = (state as? HelpExpertsUiState.Content)?.experts.orEmpty()
+    var selectedUserId by remember { mutableStateOf<Long?>(null) }
+    val selected = experts.firstOrNull { it.userId == selectedUserId } ?: experts.firstOrNull()
+
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = Gomob.spacing.s24),
-        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
     ) {
-        item {
-            StatusStrip(
-                text = "固定专家 · 消息 / 本地视频",
-                tone = StatusTone.Neutral,
-                onClick = onRefresh,
-            )
-        }
         when (state) {
             HelpExpertsUiState.Loading -> item {
                 StateBlock(text = "正在加载专家", tone = StatusTone.Neutral)
@@ -427,18 +428,15 @@ private fun HelpPane(
                         )
                     }
                 }
-                items(state.experts, key = { it.userId }) { expert ->
-                    Box(
-                        Modifier
-                            .padding(horizontal = Gomob.spacing.s20)
-                            .padding(bottom = Gomob.spacing.s2),
-                    ) {
-                        ExpertRow(
-                            expert = expert,
-                            onMessage = { onMessageExpert(expert) },
-                            onLocalVideo = { onOpenLocalVideo(expert) },
-                        )
-                    }
+                item {
+                    ExpertParticipantCard(
+                        experts = state.experts,
+                        selected = selected,
+                        onSelect = { selectedUserId = it.userId },
+                        onMessage = { selected?.let(onMessageExpert) },
+                        onLocalVideo = { selected?.let(onOpenLocalVideo) },
+                        onRefresh = onRefresh,
+                    )
                 }
             }
         }
@@ -446,87 +444,194 @@ private fun HelpPane(
 }
 
 @Composable
-private fun ExpertRow(
-    expert: HelpExpertRowUi,
+private fun ExpertParticipantCard(
+    experts: List<HelpExpertRowUi>,
+    selected: HelpExpertRowUi?,
+    onSelect: (HelpExpertRowUi) -> Unit,
     onMessage: () -> Unit,
     onLocalVideo: () -> Unit,
+    onRefresh: () -> Unit,
 ) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(Gomob.shapes.r3)
-            .background(Gomob.colors.bg1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
-            .padding(horizontal = Gomob.spacing.s14, vertical = Gomob.spacing.s12),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
+    Column(
+        Modifier.padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20),
     ) {
-        MsgAvatar(initials = expert.initials, kind = AvatarKind.Call)
-        Column(Modifier.weight(1f)) {
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-            ) {
-                Text(
-                    expert.name,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Gomob.colors.fg0,
-                    maxLines = 1,
-                    modifier = Modifier.weight(1f),
-                )
-                StatusTag(
-                    text = if (expert.opening) "打开中" else expert.availabilityText,
-                    tone = if (expert.opening) StatusTone.Neutral else StatusTone.Ok,
-                    showDot = false,
-                )
-            }
-            Spacer(Modifier.height(Gomob.spacing.s4))
-            Text(
-                expert.roleTitle,
-                fontSize = 12.sp,
-                color = Gomob.colors.accent,
-                maxLines = 1,
-            )
-            Spacer(Modifier.height(Gomob.spacing.s2))
-            Text(
-                expert.specialty,
-                fontSize = 12.sp,
-                color = Gomob.colors.fg2,
-                maxLines = 2,
-            )
-            Spacer(Modifier.height(Gomob.spacing.s2))
-            Text(
-                expert.employeeId,
-                style = Gomob.type.numInline.copy(fontSize = 10.sp),
-                color = Gomob.colors.fg3,
-                maxLines = 1,
-            )
-        }
-        Column(
-            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
-            horizontalAlignment = Alignment.CenterHorizontally,
+        Text(
+            "固定专家 · ${experts.size} 位可联系",
+            fontSize = 10.sp,
+            fontFamily = FontFamily.Monospace,
+            color = Gomob.colors.fg3,
+            modifier = Modifier.padding(bottom = Gomob.spacing.s8),
+        )
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .clip(Gomob.shapes.r3)
+                .background(Gomob.colors.bg1)
+                .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
+                .ticks()
+                .padding(Gomob.spacing.s14),
         ) {
-            ExpertActionIcon(
-                icon = Icons.Filled.ChatBubble,
-                label = "发消息",
-                enabled = !expert.opening,
-                onClick = onMessage,
-            )
-            ExpertActionIcon(
-                icon = Icons.Filled.Videocam,
-                label = "本地视频",
-                enabled = !expert.opening,
-                onClick = onLocalVideo,
-            )
+            Column {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    experts.forEach { expert ->
+                        ExpertChip(
+                            expert = expert,
+                            selected = expert.userId == selected?.userId,
+                            onClick = { onSelect(expert) },
+                        )
+                    }
+                    RefreshExpertsBox(onClick = onRefresh)
+                }
+                Spacer(Modifier.height(14.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(Gomob.spacing.hairline)
+                        .background(Gomob.colors.line1),
+                )
+                Spacer(Modifier.height(Gomob.spacing.s12))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            selected?.name ?: "选择专家",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = Gomob.colors.fg0,
+                            maxLines = 1,
+                        )
+                        Spacer(Modifier.height(Gomob.spacing.s2))
+                        Text(
+                            selected?.roleTitle.orEmpty(),
+                            fontSize = 11.sp,
+                            color = Gomob.colors.accent,
+                            maxLines = 1,
+                        )
+                        Spacer(Modifier.height(Gomob.spacing.s2))
+                        Text(
+                            selected?.specialty.orEmpty(),
+                            fontSize = 11.sp,
+                            color = Gomob.colors.fg2,
+                            maxLines = 1,
+                        )
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        ExpertActionIcon(
+                            icon = Icons.Filled.ChatBubble,
+                            label = "发消息",
+                            enabled = selected != null && !selected.opening,
+                            onClick = onMessage,
+                        )
+                        ExpertActionIcon(
+                            icon = Icons.Filled.Videocam,
+                            label = "本地视频",
+                            enabled = selected != null && !selected.opening,
+                            onClick = onLocalVideo,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(Gomob.spacing.s8))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        selected?.employeeId.orEmpty(),
+                        style = Gomob.type.numInline.copy(fontSize = 10.sp),
+                        color = Gomob.colors.fg3,
+                        maxLines = 1,
+                    )
+                    StatusTag(
+                        text = if (selected?.opening == true) "打开中" else selected?.availabilityText ?: "待连接",
+                        tone = if (selected?.opening == true) StatusTone.Neutral else StatusTone.Ok,
+                        showDot = selected != null,
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
+private fun ExpertChip(
+    expert: HelpExpertRowUi,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Column(
+        Modifier
+            .width(56.dp)
+            .clickable(onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+    ) {
+        Box(contentAlignment = Alignment.BottomEnd) {
+            Box(
+                Modifier
+                    .size(44.dp)
+                    .clip(Gomob.shapes.r2)
+                    .background(if (selected) Gomob.colors.accentSoft else Gomob.colors.bg3)
+                    .border(
+                        Gomob.spacing.hairline,
+                        if (selected) Gomob.colors.accentLine else Gomob.colors.line2,
+                        Gomob.shapes.r2,
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    expert.initials,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = if (selected) Gomob.colors.accentStrong else Gomob.colors.fg1,
+                )
+            }
+            Box(
+                Modifier
+                    .size(9.dp)
+                    .clip(CircleShape)
+                    .background(if (expert.availabilityText == "可发消息") Gomob.colors.ok else Gomob.colors.fg3)
+                    .border(2.dp, Gomob.colors.bg1, CircleShape),
+            )
+        }
+        Text(expert.name, fontSize = 11.sp, color = Gomob.colors.fg0, maxLines = 1)
+        Text(
+            expert.roleTitle,
+            fontSize = 9.sp,
+            color = Gomob.colors.fg3,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun RefreshExpertsBox(onClick: () -> Unit) {
+    Box(
+        Modifier
+            .size(44.dp)
+            .clip(Gomob.shapes.r2)
+            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            GomobIcons.Refresh,
+            contentDescription = "刷新专家",
+            tint = Gomob.colors.fg3,
+            modifier = Modifier.size(Gomob.spacing.icon16),
+        )
+    }
+}
+
+@Composable
 private fun ExpertActionIcon(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    icon: ImageVector,
     label: String,
     enabled: Boolean,
     onClick: () -> Unit,
