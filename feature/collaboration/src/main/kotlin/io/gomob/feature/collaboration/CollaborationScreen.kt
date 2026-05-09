@@ -23,6 +23,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -33,6 +34,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
+import dagger.hilt.android.lifecycle.HiltViewModel
+import io.gomob.data.message.LiveSessionRepository
+import io.gomob.data.message.MediaSessionRepository
 import io.gomob.designsystem.component.HairlineCard
 import io.gomob.designsystem.component.MetricTile
 import io.gomob.designsystem.component.MetricTrend
@@ -43,6 +51,12 @@ import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
+import io.gomob.model.message.LiveSessionSummary
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import javax.inject.Inject
 
 const val COLLAB_ROUTE = "collaboration"
 
@@ -108,12 +122,17 @@ private val BAR_VALUES = listOf(35, 30, 23, 28, 47, 60, 42)
 fun CollaborationRoute(
     onOpenReview: (String) -> Unit = {},
     onOpenLiveStream: (String) -> Unit = {},
+    viewModel: CollaborationViewModel = hiltViewModel(),
 ) {
     var sub by remember { mutableStateOf(0) }
+    val liveSessions by viewModel.liveSessions.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) {
+        viewModel.refreshLiveSessions()
+    }
 
     Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
         val (eyebrow, badge, badgeTone) = when (sub) {
-            0 -> Triple("团队 · 实时第一视角直播", "8 在线", StatusTone.Accent)
+            0 -> Triple("团队 · 实时第一视角直播", "${liveSessions.size} 在线", StatusTone.Accent)
             1 -> Triple("团队 · 抽查复核 / 工单分发", "127 待办", StatusTone.Warn)
             else -> Triple("团队 · 公开案例库", "780 案例", StatusTone.Neutral)
         }
@@ -132,10 +151,29 @@ fun CollaborationRoute(
 
         Box(Modifier.fillMaxSize()) {
             when (sub) {
-                0 -> FirstPersonBoard(onOpenLiveStream = onOpenLiveStream)
+                0 -> FirstPersonBoard(liveSessions = liveSessions, onOpenLiveStream = onOpenLiveStream)
                 1 -> ReviewBoard(onOpenReview = onOpenReview)
                 else -> CaseLibBoard()
             }
+        }
+    }
+}
+
+@HiltViewModel
+class CollaborationViewModel @Inject constructor(
+    liveSessionRepository: LiveSessionRepository,
+    private val mediaSessionRepository: MediaSessionRepository,
+) : ViewModel() {
+    val liveSessions: StateFlow<List<LiveSessionSummary>> =
+        liveSessionRepository.observeLiveSessions().stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = emptyList(),
+        )
+
+    fun refreshLiveSessions() {
+        viewModelScope.launch {
+            runCatching { mediaSessionRepository.refreshLiveSessions() }
         }
     }
 }
@@ -144,7 +182,10 @@ fun CollaborationRoute(
 // 第一视角 — 实时直播 + 录像分享
 // ============================================================================
 @Composable
-private fun FirstPersonBoard(onOpenLiveStream: (String) -> Unit) {
+private fun FirstPersonBoard(
+    liveSessions: List<LiveSessionSummary>,
+    onOpenLiveStream: (String) -> Unit,
+) {
     Column(
         Modifier
             .fillMaxSize()
@@ -155,8 +196,8 @@ private fun FirstPersonBoard(onOpenLiveStream: (String) -> Unit) {
         Row(horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12)) {
             MetricTile(
                 label = "在线视角",
-                value = "8",
-                delta = "+2",
+                value = liveSessions.size.toString(),
+                delta = "实时",
                 trend = MetricTrend.Up,
                 caption = "较昨日",
                 modifier = Modifier.weight(1f),
@@ -173,17 +214,22 @@ private fun FirstPersonBoard(onOpenLiveStream: (String) -> Unit) {
 
         Text("在线视角", style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
 
-        // 2-col grid (静态 4 cell — 用 2 行 Row,避免引入 LazyVerticalGrid 依赖)
-        LIVE_STREAMS.chunked(2).forEach { rowItems ->
-            Row(horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12)) {
-                rowItems.forEach {
-                    LiveStreamTile(
-                        stream = it,
-                        modifier = Modifier.weight(1f),
-                        onClick = { onOpenLiveStream(it.id) },
-                    )
+        if (liveSessions.isEmpty()) {
+            HairlineCard(padding = Gomob.spacing.s16) {
+                StatusTag(text = "暂无在线第一视角", tone = StatusTone.Neutral, showDot = false)
+            }
+        } else {
+            liveSessions.chunked(2).forEach { rowItems ->
+                Row(horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12)) {
+                    rowItems.forEach {
+                        LiveStreamTile(
+                            session = it,
+                            modifier = Modifier.weight(1f),
+                            onClick = { onOpenLiveStream(it.id.toString()) },
+                        )
+                    }
+                    if (rowItems.size == 1) Spacer(Modifier.weight(1f))
                 }
-                if (rowItems.size == 1) Spacer(Modifier.weight(1f))
             }
         }
 
@@ -212,7 +258,7 @@ private fun FirstPersonBoard(onOpenLiveStream: (String) -> Unit) {
 
 @Composable
 private fun LiveStreamTile(
-    stream: LiveStream,
+    session: LiveSessionSummary,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
@@ -249,19 +295,6 @@ private fun LiveStreamTile(
                 Text("LIVE", style = Gomob.type.caption, color = Gomob.colors.bg0)
             }
             // 警示
-            if (stream.warn) {
-                Box(
-                    Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(Gomob.spacing.s8)
-                        .clip(Gomob.shapes.r1)
-                        .background(Gomob.colors.warnSoft)
-                        .border(Gomob.spacing.hairline, Gomob.colors.warn.copy(alpha = 0.32f), Gomob.shapes.r1)
-                        .padding(horizontal = Gomob.spacing.s6, vertical = 2.dp),
-                ) {
-                    Text("预警", style = Gomob.type.caption, color = Gomob.colors.warn)
-                }
-            }
             // 时长
             Box(
                 Modifier
@@ -271,7 +304,7 @@ private fun LiveStreamTile(
                     .background(Gomob.colors.bg0.copy(alpha = 0.72f))
                     .padding(horizontal = Gomob.spacing.s6, vertical = 2.dp),
             ) {
-                Text(stream.duration, style = Gomob.type.numInline, color = Gomob.colors.fg0)
+                Text("LIVE", style = Gomob.type.numInline, color = Gomob.colors.fg0)
             }
         }
         // meta
@@ -279,8 +312,8 @@ private fun LiveStreamTile(
             Modifier.padding(Gomob.spacing.s12),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            Text(stream.inspector, style = Gomob.type.body, color = Gomob.colors.fg0)
-            Text(stream.station, style = Gomob.type.caption, color = Gomob.colors.fg3)
+            Text(session.title, style = Gomob.type.body, color = Gomob.colors.fg0)
+            Text("发布者 #${session.publisherId}", style = Gomob.type.caption, color = Gomob.colors.fg3)
         }
     }
 }

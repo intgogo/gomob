@@ -79,6 +79,9 @@ func DefaultRoutes() []Route {
 		{Prefix: "/v1/reviews", Target: targetAPI},
 		{Prefix: "/v1/messages", Target: targetAPI},
 		{Prefix: "/v1/conversations", Target: targetAPI},
+		{Prefix: "/v1/media/", Target: targetAPI},
+		{Prefix: "/v1/live-sessions", Target: targetAPI},
+		{Prefix: "/v1/livekit/", Target: targetAPI},
 		{Prefix: "/v1/catalog/", Target: targetAPI},
 
 		// 资产

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -26,6 +27,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
@@ -45,10 +47,12 @@ internal fun MessageComposerBar(
     onSendVoice: (() -> Unit)? = null,
     onSendVideoClip: (() -> Unit)? = null,
     onOpenLocalVideo: (() -> Unit)? = null,
+    voiceRecording: Boolean = false,
+    onInputFocusChanged: (Boolean) -> Unit = {},
 ) {
     val canSendText = enabled && draft.isNotBlank()
 
-    Column(modifier.fillMaxWidth().background(Gomob.colors.bg1)) {
+    Column(modifier.fillMaxWidth().background(Gomob.colors.bg1).imePadding()) {
         Box(
             Modifier
                 .fillMaxWidth()
@@ -77,7 +81,8 @@ internal fun MessageComposerBar(
                         enabled = enabled,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(min = 24.dp, max = 96.dp),
+                            .heightIn(min = 24.dp, max = 96.dp)
+                            .onFocusChanged { onInputFocusChanged(it.isFocused) },
                         singleLine = false,
                         minLines = 1,
                         maxLines = 5,
@@ -109,7 +114,13 @@ internal fun MessageComposerBar(
                         ComposerToolIcon(Icons.Filled.PhotoCamera, "拍摄", enabled = enabled, onClick = it)
                     }
                     onSendVoice?.let {
-                        ComposerToolIcon(GomobIcons.Mic, "发语音", enabled = enabled, onClick = it)
+                        ComposerToolIcon(
+                            GomobIcons.Mic,
+                            if (voiceRecording) "停止并发送语音" else "发语音",
+                            enabled = enabled,
+                            active = voiceRecording,
+                            onClick = it,
+                        )
                     }
                     onSendVideoClip?.let {
                         ComposerToolIcon(Icons.Filled.Videocam, "发视频消息", enabled = enabled, onClick = it)
@@ -133,6 +144,7 @@ private fun ComposerToolIcon(
     icon: ImageVector,
     label: String,
     enabled: Boolean,
+    active: Boolean = false,
     onClick: () -> Unit,
 ) {
     Box(
@@ -145,7 +157,11 @@ private fun ComposerToolIcon(
         Icon(
             icon,
             contentDescription = label,
-            tint = if (enabled) Gomob.colors.fg2 else Gomob.colors.fg3.copy(alpha = 0.45f),
+            tint = when {
+                !enabled -> Gomob.colors.fg3.copy(alpha = 0.45f)
+                active -> Gomob.colors.danger
+                else -> Gomob.colors.fg2
+            },
             modifier = Modifier.size(18.dp),
         )
     }

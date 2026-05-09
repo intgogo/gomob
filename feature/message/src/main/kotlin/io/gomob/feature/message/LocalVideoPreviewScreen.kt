@@ -41,20 +41,34 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
+import dagger.hilt.android.lifecycle.HiltViewModel
+import io.gomob.data.message.LiveSessionStartResult
+import io.gomob.data.message.MediaSessionRepository
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
 import io.gomob.designsystem.theme.Gomob
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import javax.inject.Inject
 
 @Composable
 fun LocalVideoPreviewRoute(
     title: String,
     onBack: () -> Unit,
+    viewModel: LocalVideoPreviewViewModel = hiltViewModel(),
 ) {
+    val mediaState by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var hasCameraPermission by remember {
         mutableStateOf(
@@ -77,18 +91,32 @@ fun LocalVideoPreviewRoute(
             permissionLauncher.launch(Manifest.permission.CAMERA)
         }
     }
+    LaunchedEffect(title) {
+        viewModel.startFirstPersonLive(title)
+    }
 
     Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
         BackHeader(
             title = "本地视频",
             onBack = onBack,
-            eyebrow = listOf(title.takeIf { it.isNotBlank() }, "本地预览", "未接通媒体房间")
+            eyebrow = listOf(
+                title.takeIf { it.isNotBlank() },
+                "本地预览",
+                if (mediaState is LocalLiveState.Ready) "媒体房间已接通" else "等待媒体房间",
+            )
                 .filterNotNull()
                 .joinToString(" · "),
             trailing = {
+                val (text, tone) = when (val state = mediaState) {
+                    LocalLiveState.Starting -> "连接中" to StatusTone.Neutral
+                    is LocalLiveState.Ready -> "直播中" to StatusTone.Ok
+                    is LocalLiveState.Unavailable -> "媒体不可用" to StatusTone.Warn
+                    is LocalLiveState.Error -> "连接失败" to StatusTone.Danger
+                    LocalLiveState.Idle -> "预览中" to StatusTone.Neutral
+                }
                 StatusTag(
-                    text = if (cameraEnabled && hasCameraPermission) "预览中" else "已暂停",
-                    tone = if (cameraEnabled && hasCameraPermission) StatusTone.Ok else StatusTone.Neutral,
+                    text = if (cameraEnabled && hasCameraPermission) text else "已暂停",
+                    tone = if (cameraEnabled && hasCameraPermission) tone else StatusTone.Neutral,
                     showDot = true,
                 )
             },
@@ -120,6 +148,29 @@ fun LocalVideoPreviewRoute(
                         .padding(Gomob.spacing.s12),
                 ) {
                     StatusTag(text = cameraError.orEmpty(), tone = StatusTone.Warn, showDot = true)
+                }
+            }
+            val mediaMessage = when (val state = mediaState) {
+                is LocalLiveState.Unavailable -> state.message
+                is LocalLiveState.Error -> state.message
+                is LocalLiveState.Ready -> "LiveKit 房间已创建：${state.providerRoom}"
+                else -> null
+            }
+            if (mediaMessage != null) {
+                Box(
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(Gomob.spacing.s12),
+                ) {
+                    StatusTag(
+                        text = mediaMessage,
+                        tone = when (mediaState) {
+                            is LocalLiveState.Ready -> StatusTone.Ok
+                            is LocalLiveState.Error -> StatusTone.Danger
+                            else -> StatusTone.Warn
+                        },
+                        showDot = true,
+                    )
                 }
             }
         }
@@ -156,6 +207,42 @@ fun LocalVideoPreviewRoute(
             )
         }
     }
+}
+
+@HiltViewModel
+class LocalVideoPreviewViewModel @Inject constructor(
+    private val mediaSessionRepository: MediaSessionRepository,
+) : ViewModel() {
+    private val _state = MutableStateFlow<LocalLiveState>(LocalLiveState.Idle)
+    val state: StateFlow<LocalLiveState> = _state.asStateFlow()
+
+    fun startFirstPersonLive(title: String) {
+        if (_state.value is LocalLiveState.Ready || _state.value is LocalLiveState.Starting) return
+        viewModelScope.launch {
+            _state.value = LocalLiveState.Starting
+            _state.value = runCatching {
+                when (val result = mediaSessionRepository.startFirstPersonLive(title.ifBlank { "第一视角直播" })) {
+                    is LiveSessionStartResult.Ready -> LocalLiveState.Ready(
+                        providerRoom = result.providerRoom,
+                        url = result.url,
+                    )
+                    is LiveSessionStartResult.Unavailable -> LocalLiveState.Unavailable(
+                        "媒体房间未就绪，请检查 LiveKit 服务配置",
+                    )
+                }
+            }.getOrElse {
+                LocalLiveState.Error(it.message?.takeIf { msg -> msg.isNotBlank() } ?: "第一视角直播启动失败")
+            }
+        }
+    }
+}
+
+sealed interface LocalLiveState {
+    data object Idle : LocalLiveState
+    data object Starting : LocalLiveState
+    data class Ready(val providerRoom: String, val url: String) : LocalLiveState
+    data class Unavailable(val message: String) : LocalLiveState
+    data class Error(val message: String) : LocalLiveState
 }
 
 @Composable

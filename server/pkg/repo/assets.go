@@ -56,14 +56,18 @@ func (r *AssetRepo) CreateInspectionAsset(ctx context.Context, a *InspectionAsse
 		INSERT INTO inspection_assets (inspection_id, kind, object_key, sha256, size_bytes, mime, metadata)
 		VALUES ($1,$2,$3,$4,$5,$6,$7)
 		RETURNING id, created_at`
+	var inspectionID *int64
+	if a.InspectionID > 0 {
+		inspectionID = &a.InspectionID
+	}
 	return r.pool.QueryRow(ctx, q,
-		a.InspectionID, a.Kind, a.ObjectKey, a.SHA256, a.SizeBytes, a.MIME, a.Metadata,
+		inspectionID, a.Kind, a.ObjectKey, a.SHA256, a.SizeBytes, a.MIME, a.Metadata,
 	).Scan(&a.ID, &a.CreatedAt)
 }
 
 func (r *AssetRepo) FindAssetByID(ctx context.Context, id int64) (*InspectionAsset, error) {
 	const q = `
-		SELECT id, inspection_id, kind, object_key, sha256, size_bytes, mime, metadata, created_at
+		SELECT id, COALESCE(inspection_id, 0), kind, object_key, sha256, size_bytes, mime, metadata, created_at
 		FROM inspection_assets WHERE id = $1`
 	row := r.pool.QueryRow(ctx, q, id)
 	a := &InspectionAsset{}

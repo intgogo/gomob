@@ -23,9 +23,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 
 	"io.gomob/server/internal/api"
+	"io.gomob/server/internal/asset"
 	"io.gomob/server/internal/auth"
 	"io.gomob/server/internal/gateway"
 	"io.gomob/server/pkg/audit"
@@ -60,6 +62,7 @@ func main() {
 	devAutoActivate := os.Getenv("GOMOB_DEV_AUTO_ACTIVATE") != "false"
 	authH := auth.NewHandler(pool, devAutoActivate)
 	apiH := api.NewHandler(pool, audit.NewPG(pool), rbac.Baseline())
+	assetH := newDevAssetHandler(ctx, pool, log)
 	logRoot := envOr("GOMOB_LOG_UPLOAD_DIR", ".dev/server-logs")
 	logsH, err := api.NewLogsHandler(logRoot, 0)
 	if err != nil {
@@ -93,6 +96,13 @@ func main() {
 	protected.HandleFunc("POST /v1/auth/password", authH.ChangePassword)
 	protected.HandleFunc("GET /v1/me", authH.Me)
 	apiH.Mount(protected)
+	if assetH != nil {
+		assetH.Mount(protected)
+	} else {
+		protected.HandleFunc("/v1/assets/", func(w http.ResponseWriter, _ *http.Request) {
+			httpx.WriteError(w, httpx.NewError(40501, http.StatusServiceUnavailable, "资产服务未配置：请启动 MinIO 或设置 GOMOB_MINIO_*"))
+		})
+	}
 	logsH.Mount(protected)
 	protectedHandler := auth.Required(protected)
 	mux.Handle("/v1/auth/password", protectedHandler)
@@ -103,6 +113,11 @@ func main() {
 	mux.Handle("/v1/reviews/", protectedHandler)
 	mux.Handle("/v1/conversations", protectedHandler)
 	mux.Handle("/v1/conversations/", protectedHandler)
+	mux.Handle("/v1/assets/", protectedHandler)
+	mux.Handle("/v1/media/", protectedHandler)
+	mux.Handle("/v1/live-sessions", protectedHandler)
+	mux.Handle("/v1/live-sessions/", protectedHandler)
+	mux.Handle("/v1/livekit/", protectedHandler)
 	mux.Handle("/v1/logs/upload", protectedHandler)
 
 	addr := os.Getenv("GOMOB_LISTEN")
@@ -148,6 +163,36 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func newDevAssetHandler(ctx context.Context, pool *pgxpool.Pool, log interface{ Warn(string, ...any) }) *asset.Handler {
+	rdb := redis.NewClient(&redis.Options{
+		Addr: envOr("GOMOB_REDIS_ADDR", "127.0.0.1:6379"),
+	})
+	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := rdb.Ping(pingCtx).Err(); err != nil {
+		log.Warn("Redis 不可达，asset etag 缓存禁用", "err", err)
+		_ = rdb.Close()
+		rdb = nil
+	}
+
+	cfg := asset.DefaultConfig()
+	cfg.MinIOEndpoint = envOr("GOMOB_MINIO_ENDPOINT", cfg.MinIOEndpoint)
+	cfg.MinIOAccessKey = envOr("GOMOB_MINIO_ACCESS_KEY", cfg.MinIOAccessKey)
+	cfg.MinIOSecretKey = envOr("GOMOB_MINIO_SECRET_KEY", cfg.MinIOSecretKey)
+	cfg.Bucket = envOr("GOMOB_MINIO_BUCKET", cfg.Bucket)
+	cfg.MinIOUseSSL = os.Getenv("GOMOB_MINIO_USE_SSL") == "true"
+
+	h, err := asset.NewHandler(cfg, pool, rdb, audit.NewPG(pool))
+	if err != nil {
+		log.Warn("asset handler 初始化失败，上传接口将返回不可用", "err", err)
+		if rdb != nil {
+			_ = rdb.Close()
+		}
+		return nil
+	}
+	return h
 }
 
 // 简易访问日志中间件

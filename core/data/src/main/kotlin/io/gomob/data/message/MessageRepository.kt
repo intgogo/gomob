@@ -1,5 +1,6 @@
 package io.gomob.data.message
 
+import android.net.Uri
 import io.gomob.database.message.ConversationDao
 import io.gomob.database.message.ConversationEntity
 import io.gomob.database.message.MessageDao
@@ -31,6 +32,7 @@ import javax.inject.Singleton
 @Singleton
 class MessageRepository @Inject constructor(
     private val api: MessageApi,
+    private val mediaAssetUploader: MediaAssetUploader,
     private val conversationDao: ConversationDao,
     private val messageDao: MessageDao,
     private val json: Json,
@@ -118,30 +120,54 @@ class MessageRepository @Inject constructor(
         )
     }
 
-    suspend fun sendVoice(conversationId: Long): String {
-        val payload = buildJsonObject {
-            put("media_state", "awaiting_asset_upload")
-            put("duration_sec", 0)
-            put("source", "composer_voice")
-        }
+    suspend fun sendImage(conversationId: Long, uri: Uri): String {
+        val asset = mediaAssetUploader.upload(uri, MediaAssetKind.Image)
+        return sendUploadedImage(conversationId, asset)
+    }
+
+    internal suspend fun sendUploadedImage(conversationId: Long, asset: UploadedMediaAsset): String {
         return sendClientMessage(
             conversationId = conversationId,
-            kind = "voice",
-            payload = payload,
-            preview = "[语音待上传]",
+            kind = "image",
+            payload = mediaPayload(asset),
+            preview = "[图片]",
         )
     }
 
-    suspend fun sendVideoClip(conversationId: Long): String {
-        val payload = buildJsonObject {
-            put("media_state", "awaiting_asset_upload")
-            put("source", "composer_video")
-        }
+    suspend fun sendVoice(conversationId: Long, uri: Uri, durationSec: Int): String {
+        val asset = mediaAssetUploader.upload(uri, MediaAssetKind.Voice)
+        return sendUploadedVoice(conversationId, asset, durationSec)
+    }
+
+    internal suspend fun sendUploadedVoice(
+        conversationId: Long,
+        asset: UploadedMediaAsset,
+        durationSec: Int,
+    ): String {
+        return sendClientMessage(
+            conversationId = conversationId,
+            kind = "voice",
+            payload = mediaPayload(asset) {
+                put("duration_sec", durationSec.coerceAtLeast(0))
+                put("source", "composer_voice")
+            },
+            preview = if (durationSec > 0) "[语音 ${formatDuration(durationSec)}]" else "[语音消息]",
+        )
+    }
+
+    suspend fun sendVideoClip(conversationId: Long, uri: Uri): String {
+        val asset = mediaAssetUploader.upload(uri, MediaAssetKind.VideoClip)
+        return sendUploadedVideoClip(conversationId, asset)
+    }
+
+    internal suspend fun sendUploadedVideoClip(conversationId: Long, asset: UploadedMediaAsset): String {
         return sendClientMessage(
             conversationId = conversationId,
             kind = "video_clip",
-            payload = payload,
-            preview = "[视频待上传]",
+            payload = mediaPayload(asset) {
+                put("source", "composer_video")
+            },
+            preview = "[视频消息]",
         )
     }
 
@@ -258,7 +284,28 @@ internal fun pendingMessageEntity(
 )
 
 private fun retryableMessageKind(kind: String): Boolean =
-    kind == "text" || kind == "voice" || kind == "video_clip"
+    kind == "text" || kind == "image" || kind == "voice" || kind == "video_clip"
+
+private fun mediaPayload(
+    asset: UploadedMediaAsset,
+    extra: kotlinx.serialization.json.JsonObjectBuilder.() -> Unit = {},
+): JsonElement = buildJsonObject {
+    put("media_state", "ready")
+    put("asset_id", asset.assetId)
+    put("object_key", asset.objectKey)
+    put("mime", asset.mime)
+    put("size_bytes", asset.sizeBytes)
+    put("sha256", asset.sha256)
+    asset.downloadUrl?.takeIf { it.isNotBlank() }?.let { put("download_url", it) }
+    extra()
+}
+
+private fun formatDuration(sec: Int): String {
+    val normalized = sec.coerceAtLeast(0)
+    val m = normalized / 60
+    val s = normalized % 60
+    return "$m:" + s.toString().padStart(2, '0')
+}
 
 private fun ConversationDto.toEntity(): ConversationEntity {
     val conversationId = id.toLong()

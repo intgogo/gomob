@@ -1,5 +1,10 @@
 package io.gomob.feature.message
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -18,11 +23,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -32,21 +39,22 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.designsystem.component.ScreenHeader
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
-import io.gomob.designsystem.decoration.ticks
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
-import io.gomob.model.message.MessageStatus
 
 const val MESSAGE_ROUTE = "message"
 
@@ -65,6 +73,15 @@ fun MessageRoute(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val helpState by viewModel.helpUiState.collectAsStateWithLifecycle()
     val helpRoomState by viewModel.helpRoomUiState.collectAsStateWithLifecycle()
+    val imagePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia(),
+        onResult = { uri -> uri?.let(viewModel::sendHelpRoomImage) },
+    )
+    val videoPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia(),
+        onResult = { uri -> uri?.let(viewModel::sendHelpRoomVideoClip) },
+    )
+    val focusManager = LocalFocusManager.current
     var tab by remember { mutableStateOf(MsgTab.List) }
     val count = (state as? MessageListUiState.Content)?.conversations?.size ?: 0
 
@@ -72,18 +89,23 @@ fun MessageRoute(
         ScreenHeader(
             title = "消息中心",
             eyebrow = "实时协同 · 监管督查 · 专家会审",
+            modifier = Modifier.clearInputFocusOnPointerDown(focusManager),
             trailing = { ComposeIconButton() },
         )
         SegmentedTabs(
             tab = tab,
             messageCount = count,
-            onChange = { tab = it },
+            onChange = {
+                focusManager.clearFocus()
+                tab = it
+            },
         )
         when (tab) {
             MsgTab.List -> ListPane(
                 state = state,
                 onRefresh = viewModel::refresh,
                 onOpenConversation = { onOpenConversation(it.id.toString()) },
+                modifier = Modifier.weight(1f),
             )
             MsgTab.Help -> HelpPane(
                 state = helpState,
@@ -94,10 +116,17 @@ fun MessageRoute(
                 },
                 onOpenExpertDetail = { expert -> onOpenExpertDetail(expert.userId.toString()) },
                 onSendHelpMessage = viewModel::sendHelpRoomMessage,
+                onPickHelpImage = {
+                    imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                },
                 onSendHelpVoice = viewModel::sendHelpRoomVoice,
-                onSendHelpVideoClip = viewModel::sendHelpRoomVideoClip,
+                onSendHelpVideoClip = {
+                    videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
+                },
                 onRetry = viewModel::retryHelpRoomMessage,
+                onError = viewModel::showHelpRoomError,
                 onOpenLocalVideo = { onOpenLocalVideo("在线求助 · 第一视角") },
+                modifier = Modifier.weight(1f),
             )
         }
     }
@@ -191,9 +220,10 @@ private fun ListPane(
     state: MessageListUiState,
     onRefresh: () -> Unit,
     onOpenConversation: (ConversationRowUi) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     LazyColumn(
-        Modifier.fillMaxSize(),
+        modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = Gomob.spacing.s24),
     ) {
         item { SearchContainer() }
@@ -403,30 +433,100 @@ private fun HelpPane(
     onRefresh: () -> Unit,
     onOpenExpertDetail: (HelpExpertRowUi) -> Unit,
     onSendHelpMessage: (String) -> Unit,
-    onSendHelpVoice: () -> Unit,
+    onPickHelpImage: () -> Unit,
+    onSendHelpVoice: (android.net.Uri, Int) -> Unit,
     onSendHelpVideoClip: () -> Unit,
     onRetry: (String?) -> Unit,
+    onError: (String) -> Unit,
     onOpenLocalVideo: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     var draft by remember { mutableStateOf("") }
+    var inputFocused by remember { mutableStateOf(false) }
+    var voiceRecording by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val voiceRecorder = rememberVoiceRecorder()
+    val voicePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            runCatching {
+                voiceRecorder.start()
+                voiceRecording = true
+            }.onFailure { onError(it.message ?: "录音启动失败") }
+        } else {
+            onError("未授予录音权限")
+        }
+    }
+    val toggleVoiceRecording: () -> Unit = {
+        if (voiceRecording) {
+            runCatching { voiceRecorder.stop() }
+                .onSuccess { result -> onSendHelpVoice(result.uri, result.durationSec) }
+                .onFailure { onError(it.message ?: "录音失败") }
+            voiceRecording = false
+        } else if (
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            runCatching {
+                voiceRecorder.start()
+                voiceRecording = true
+            }.onFailure { onError(it.message ?: "录音启动失败") }
+        } else {
+            voicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
 
-    Column(Modifier.fillMaxSize()) {
-        HelpParticipantStrip(
-            state = state,
-            onOpenExpertDetail = onOpenExpertDetail,
-            onRefresh = onRefresh,
-        )
+    Column(modifier.fillMaxSize()) {
         when (roomState) {
-            HelpRoomUiState.Loading -> Box(Modifier.weight(1f)) {
-                StateBlock(text = "正在打开在线求助群", tone = StatusTone.Neutral)
+            HelpRoomUiState.Loading -> LazyColumn(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .clearInputFocusOnPointerDown(focusManager),
+                contentPadding = PaddingValues(
+                    horizontal = Gomob.spacing.s20,
+                    vertical = Gomob.spacing.s8,
+                ),
+                verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+            ) {
+                item {
+                    HelpParticipantCompactHeader(
+                        state = state,
+                        onOpenExpertDetail = onOpenExpertDetail,
+                        onRefresh = onRefresh,
+                    )
+                }
+                item { HelpInlineStatus(text = "正在打开在线求助群", tone = StatusTone.Neutral, onClick = null) }
             }
-            is HelpRoomUiState.Error -> Box(Modifier.weight(1f)) {
-                StateBlock(text = roomState.message, tone = StatusTone.Danger, onClick = onRefresh)
+            is HelpRoomUiState.Error -> LazyColumn(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .clearInputFocusOnPointerDown(focusManager),
+                contentPadding = PaddingValues(
+                    horizontal = Gomob.spacing.s20,
+                    vertical = Gomob.spacing.s8,
+                ),
+                verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+            ) {
+                item {
+                    HelpParticipantCompactHeader(
+                        state = state,
+                        onOpenExpertDetail = onOpenExpertDetail,
+                        onRefresh = onRefresh,
+                    )
+                }
+                item { HelpInlineStatus(text = roomState.message, tone = StatusTone.Danger, onClick = onRefresh) }
             }
             is HelpRoomUiState.Content -> HelpRoomMessageList(
                 state = roomState,
+                expertState = state,
                 onRefresh = onRefresh,
+                onOpenExpertDetail = onOpenExpertDetail,
                 onRetry = onRetry,
+                inputFocused = inputFocused,
                 modifier = Modifier.weight(1f),
             )
         }
@@ -434,9 +534,13 @@ private fun HelpPane(
             draft = draft,
             enabled = roomState is HelpRoomUiState.Content,
             onDraftChange = { draft = it },
-            onSendVoice = onSendHelpVoice,
+            onPickImage = onPickHelpImage,
+            onTakePhoto = onPickHelpImage,
+            onSendVoice = toggleVoiceRecording,
             onSendVideoClip = onSendHelpVideoClip,
             onOpenLocalVideo = onOpenLocalVideo,
+            voiceRecording = voiceRecording,
+            onInputFocusChanged = { inputFocused = it },
             onSendText = {
                 val text = draft.trim()
                 if (text.isNotEmpty()) {
@@ -449,40 +553,42 @@ private fun HelpPane(
 }
 
 @Composable
-private fun HelpParticipantStrip(
+private fun HelpParticipantCompactHeader(
     state: HelpExpertsUiState,
     onOpenExpertDetail: (HelpExpertRowUi) -> Unit,
     onRefresh: () -> Unit,
 ) {
     when (state) {
-        HelpExpertsUiState.Loading -> StatusStrip(
+        HelpExpertsUiState.Loading -> HelpInlineStatus(
             text = "正在加载固定专家",
             tone = StatusTone.Neutral,
             onClick = onRefresh,
         )
-        HelpExpertsUiState.Empty -> StatusStrip(
+        HelpExpertsUiState.Empty -> HelpInlineStatus(
             text = "服务端未配置固定专家",
             tone = StatusTone.Warn,
             onClick = onRefresh,
         )
-        is HelpExpertsUiState.Error -> StatusStrip(
+        is HelpExpertsUiState.Error -> HelpInlineStatus(
             text = state.message,
             tone = StatusTone.Danger,
             onClick = onRefresh,
         )
         is HelpExpertsUiState.Content -> {
-            if (state.offlineCached) {
-                StatusStrip(
-                    text = state.errorMessage ?: "专家列表使用本地缓存",
-                    tone = StatusTone.Warn,
-                    onClick = onRefresh,
+            Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8)) {
+                if (state.offlineCached) {
+                    HelpInlineStatus(
+                        text = state.errorMessage ?: "专家列表使用本地缓存",
+                        tone = StatusTone.Warn,
+                        onClick = onRefresh,
+                    )
+                }
+                ExpertParticipantCompactBar(
+                    experts = state.experts,
+                    onOpenExpertDetail = onOpenExpertDetail,
+                    onRefresh = onRefresh,
                 )
             }
-            ExpertParticipantCard(
-                experts = state.experts,
-                onOpenExpertDetail = onOpenExpertDetail,
-                onRefresh = onRefresh,
-            )
         }
     }
 }
@@ -490,18 +596,40 @@ private fun HelpParticipantStrip(
 @Composable
 private fun HelpRoomMessageList(
     state: HelpRoomUiState.Content,
+    expertState: HelpExpertsUiState,
     onRefresh: () -> Unit,
+    onOpenExpertDetail: (HelpExpertRowUi) -> Unit,
     onRetry: (String?) -> Unit,
+    inputFocused: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    val listState = rememberLazyListState()
+    val focusManager = LocalFocusManager.current
+    val targetItemCount = helpRoomListItemCount(state)
+    LaunchedEffect(inputFocused, state.messages.size, state.loading, state.errorMessage, state.offlineCached) {
+        if (inputFocused && targetItemCount > 0) {
+            listState.animateScrollToItem(targetItemCount - 1)
+        }
+    }
+
     LazyColumn(
-        modifier.fillMaxWidth(),
+        modifier
+            .fillMaxWidth()
+            .clearInputFocusOnPointerDown(focusManager),
+        state = listState,
         contentPadding = PaddingValues(
             horizontal = Gomob.spacing.s20,
-            vertical = Gomob.spacing.s12,
+            vertical = Gomob.spacing.s8,
         ),
         verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
     ) {
+        item {
+            HelpParticipantCompactHeader(
+                state = expertState,
+                onOpenExpertDetail = onOpenExpertDetail,
+                onRefresh = onRefresh,
+            )
+        }
         if (state.offlineCached) {
             item {
                 HelpInlineStatus(
@@ -522,7 +650,7 @@ private fun HelpRoomMessageList(
                 HelpInlineStatus(text = "暂无消息", tone = StatusTone.Neutral, onClick = null)
             }
             else -> items(state.messages, key = { it.localKey }) { bubble ->
-                HelpBubbleRow(
+                ChatMessageRow(
                     bubble = bubble,
                     onRetry = { onRetry(bubble.clientMsgId) },
                 )
@@ -531,155 +659,98 @@ private fun HelpRoomMessageList(
     }
 }
 
-@Composable
-private fun HelpBubbleRow(
-    bubble: MessageBubbleUi,
-    onRetry: () -> Unit,
-) {
-    val alignment = if (bubble.mine) Alignment.End else Alignment.Start
-    val bubbleBg = if (bubble.mine) Gomob.colors.accentSoft else Gomob.colors.bg1
-    val bubbleLine = when (bubble.status) {
-        MessageStatus.Failed -> Gomob.colors.dangerLine
-        MessageStatus.Pending -> Gomob.colors.warnLine
-        MessageStatus.Sent -> if (bubble.mine) Gomob.colors.accentLine else Gomob.colors.line1
+private fun helpRoomListItemCount(state: HelpRoomUiState.Content): Int {
+    val statusCount = if (state.offlineCached) 1 else 0
+    val bodyCount = when {
+        state.loading -> 1
+        state.errorMessage != null && state.messages.isEmpty() -> 1
+        state.empty -> 1
+        else -> state.messages.size
     }
-    val textColor = if (bubble.mine) Gomob.colors.accent else Gomob.colors.fg0
-    val statusText = when (bubble.status) {
-        MessageStatus.Pending -> "发送中"
-        MessageStatus.Failed -> "发送失败"
-        MessageStatus.Sent -> bubble.time
-    }
-
-    Column(
-        Modifier.fillMaxWidth(),
-        horizontalAlignment = alignment,
-    ) {
-        if (!bubble.mine && !bubble.senderLabel.isNullOrBlank()) {
-            Text(
-                bubble.senderLabel,
-                style = Gomob.type.numInline.copy(fontSize = 10.sp),
-                color = Gomob.colors.fg3,
-                modifier = Modifier.padding(start = Gomob.spacing.s4, bottom = Gomob.spacing.s2),
-            )
-        }
-        Box(
-            Modifier
-                .widthIn(max = 292.dp)
-                .clip(Gomob.shapes.r3)
-                .background(bubbleBg)
-                .border(Gomob.spacing.hairline, bubbleLine, Gomob.shapes.r3)
-                .let {
-                    if (bubble.status == MessageStatus.Failed) {
-                        it.clickable(onClick = onRetry)
-                    } else {
-                        it
-                    }
-                }
-                .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
-        ) {
-            Text(bubble.text, style = Gomob.type.bodySm, color = textColor)
-        }
-        Text(
-            statusText,
-            style = Gomob.type.numInline,
-            color = when (bubble.status) {
-                MessageStatus.Failed -> Gomob.colors.danger
-                MessageStatus.Pending -> Gomob.colors.warn
-                MessageStatus.Sent -> Gomob.colors.fg3
-            },
-            modifier = Modifier.padding(top = Gomob.spacing.s2, start = Gomob.spacing.s4, end = Gomob.spacing.s4),
-        )
-    }
+    return 1 + statusCount + bodyCount
 }
 
 @Composable
-private fun ExpertParticipantCard(
+private fun ExpertParticipantCompactBar(
     experts: List<HelpExpertRowUi>,
     onOpenExpertDetail: (HelpExpertRowUi) -> Unit,
     onRefresh: () -> Unit,
 ) {
-    Column(
-        Modifier.padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20),
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(52.dp)
+            .clip(Gomob.shapes.r2)
+            .background(Gomob.colors.bg1)
+            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r2)
+            .padding(horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text(
-            "固定多人群 · ${experts.size} 位专家",
-            fontSize = 10.sp,
-            fontFamily = FontFamily.Monospace,
-            color = Gomob.colors.fg3,
-            modifier = Modifier.padding(bottom = Gomob.spacing.s8),
-        )
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .clip(Gomob.shapes.r3)
-                .background(Gomob.colors.bg1)
-                .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
-                .ticks()
-                .padding(Gomob.spacing.s14),
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2)) {
+            Text("在线求助", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = Gomob.colors.fg0)
+            Text("${experts.size} 位固定专家", style = Gomob.type.numInline, color = Gomob.colors.fg3)
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                experts.forEach { expert ->
-                    ExpertChip(
-                        expert = expert,
-                        onAvatarClick = { onOpenExpertDetail(expert) },
-                    )
-                }
-                RefreshExpertsBox(onClick = onRefresh)
+            experts.take(4).forEach { expert ->
+                ExpertCompactAvatar(
+                    expert = expert,
+                    onAvatarClick = { onOpenExpertDetail(expert) },
+                )
             }
+            if (experts.size > 4) {
+                Text(
+                    "+${experts.size - 4}",
+                    style = Gomob.type.numInline,
+                    color = Gomob.colors.fg3,
+                    modifier = Modifier.padding(horizontal = Gomob.spacing.s2),
+                )
+            }
+            RefreshExpertsBox(onClick = onRefresh)
         }
     }
 }
 
 @Composable
-private fun ExpertChip(
+private fun ExpertCompactAvatar(
     expert: HelpExpertRowUi,
     onAvatarClick: () -> Unit,
 ) {
-    Column(
-        Modifier.width(56.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+    Box(
+        Modifier
+            .size(32.dp)
+            .clickable(onClick = onAvatarClick),
+        contentAlignment = Alignment.BottomEnd,
     ) {
         Box(
             Modifier
-                .size(48.dp)
-                .clickable(onClick = onAvatarClick),
-            contentAlignment = Alignment.BottomEnd,
+                .size(30.dp)
+                .align(Alignment.Center)
+                .clip(Gomob.shapes.r2)
+                .background(Gomob.colors.accentSoft)
+                .border(
+                    Gomob.spacing.hairline,
+                    Gomob.colors.accentLine,
+                    Gomob.shapes.r2,
+                ),
+            contentAlignment = Alignment.Center,
         ) {
-            Box(
-                Modifier
-                    .size(44.dp)
-                    .align(Alignment.Center)
-                    .clip(Gomob.shapes.r2)
-                    .background(Gomob.colors.accentSoft)
-                    .border(
-                        Gomob.spacing.hairline,
-                        Gomob.colors.accentLine,
-                        Gomob.shapes.r2,
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    expert.initials,
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Gomob.colors.accentStrong,
-                )
-            }
-            Box(
-                Modifier
-                    .size(9.dp)
-                    .clip(CircleShape)
-                    .background(if (expert.availabilityText == "可发消息") Gomob.colors.ok else Gomob.colors.fg3)
-                    .border(2.dp, Gomob.colors.bg1, CircleShape),
+            Text(
+                expert.initials,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                color = Gomob.colors.accentStrong,
             )
         }
-        Text(expert.name, fontSize = 11.sp, color = Gomob.colors.fg0, maxLines = 1)
-        Text(
-            expert.roleTitle,
-            fontSize = 9.sp,
-            color = Gomob.colors.fg3,
-            maxLines = 1,
+        Box(
+            Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(if (expert.availabilityText == "可发消息") Gomob.colors.ok else Gomob.colors.fg3)
+                .border(1.dp, Gomob.colors.bg1, CircleShape),
         )
     }
 }
@@ -688,7 +759,7 @@ private fun ExpertChip(
 private fun RefreshExpertsBox(onClick: () -> Unit) {
     Box(
         Modifier
-            .size(44.dp)
+            .size(32.dp)
             .clip(Gomob.shapes.r2)
             .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
             .clickable(onClick = onClick),
@@ -698,7 +769,7 @@ private fun RefreshExpertsBox(onClick: () -> Unit) {
             GomobIcons.Refresh,
             contentDescription = "刷新专家",
             tint = Gomob.colors.fg3,
-            modifier = Modifier.size(Gomob.spacing.icon16),
+            modifier = Modifier.size(14.dp),
         )
     }
 }

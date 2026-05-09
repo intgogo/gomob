@@ -1,5 +1,7 @@
 package io.gomob.feature.message
 
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -14,7 +16,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Text
@@ -23,17 +24,17 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
 import io.gomob.designsystem.theme.Gomob
-import io.gomob.model.message.MessageStatus
 
 @Composable
 fun ConversationRoute(
@@ -44,12 +45,53 @@ fun ConversationRoute(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var draft by remember { mutableStateOf("") }
+    var voiceRecording by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val voiceRecorder = rememberVoiceRecorder()
     val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
-        onResult = {},
+        onResult = { uri -> uri?.let(viewModel::sendImage) },
     )
-    val openImagePicker = {
+    val videoPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia(),
+        onResult = { uri -> uri?.let(viewModel::sendVideoClip) },
+    )
+    val voicePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            runCatching {
+                voiceRecorder.start()
+                voiceRecording = true
+            }.onFailure { viewModel.showError(it.message ?: "录音启动失败") }
+        } else {
+            viewModel.showError("未授予录音权限")
+        }
+    }
+    val openImagePicker: () -> Unit = {
         imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+    }
+    val openVideoPicker: () -> Unit = {
+        videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
+    }
+    val toggleVoiceRecording: () -> Unit = {
+        if (voiceRecording) {
+            runCatching { voiceRecorder.stop() }
+                .onSuccess { result -> viewModel.sendVoice(result.uri, result.durationSec) }
+                .onFailure { viewModel.showError(it.message ?: "录音失败") }
+            voiceRecording = false
+        } else if (
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            runCatching {
+                voiceRecorder.start()
+                voiceRecording = true
+            }.onFailure { viewModel.showError(it.message ?: "录音启动失败") }
+        } else {
+            voicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
     }
     val sendDraft = {
         val text = draft.trim()
@@ -64,6 +106,7 @@ fun ConversationRoute(
             title = state.title,
             onBack = onBack,
             eyebrow = state.eyebrow.ifBlank { "会话 · #$conversationId" },
+            modifier = Modifier.clearInputFocusOnPointerDown(focusManager),
             trailing = {
                 StatusTag(
                     text = if (state.offlineCached) "离线缓存" else "已同步",
@@ -87,8 +130,9 @@ fun ConversationRoute(
             onPickImage = openImagePicker,
             onTakePhoto = openImagePicker,
             onOpenLocalVideo = { onOpenLocalVideo(state.title) },
-            onSendVoice = viewModel::sendVoice,
-            onSendVideoClip = viewModel::sendVideoClip,
+            onSendVoice = toggleVoiceRecording,
+            onSendVideoClip = openVideoPicker,
+            voiceRecording = voiceRecording,
             onSendText = sendDraft,
         )
     }
@@ -101,8 +145,12 @@ private fun ConversationBody(
     onRetry: (String?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val focusManager = LocalFocusManager.current
+
     LazyColumn(
-        modifier.fillMaxWidth(),
+        modifier
+            .fillMaxWidth()
+            .clearInputFocusOnPointerDown(focusManager),
         contentPadding = PaddingValues(
             horizontal = Gomob.spacing.s16,
             vertical = Gomob.spacing.s12,
@@ -129,65 +177,15 @@ private fun ConversationBody(
                 InlineStatus(text = state.errorMessage, tone = StatusTone.Danger, onClick = onRefresh)
             }
             else -> items(state.messages, key = { it.localKey }) { bubble ->
-                BubbleRow(
+                ChatMessageRow(
                     bubble = bubble,
-                    onRetry = { onRetry(bubble.clientMsgId) },
+                    onRetry = {
+                        focusManager.clearFocus()
+                        onRetry(bubble.clientMsgId)
+                    },
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun BubbleRow(
-    bubble: MessageBubbleUi,
-    onRetry: () -> Unit,
-) {
-    val alignment = if (bubble.mine) Alignment.End else Alignment.Start
-    val bubbleBg = if (bubble.mine) Gomob.colors.accentSoft else Gomob.colors.bg1
-    val bubbleLine = when (bubble.status) {
-        MessageStatus.Failed -> Gomob.colors.dangerLine
-        MessageStatus.Pending -> Gomob.colors.warnLine
-        MessageStatus.Sent -> if (bubble.mine) Gomob.colors.accentLine else Gomob.colors.line1
-    }
-    val textColor = if (bubble.mine) Gomob.colors.accent else Gomob.colors.fg0
-    val statusText = when (bubble.status) {
-        MessageStatus.Pending -> "发送中"
-        MessageStatus.Failed -> "发送失败"
-        MessageStatus.Sent -> bubble.time
-    }
-
-    Column(
-        Modifier.fillMaxWidth(),
-        horizontalAlignment = alignment,
-    ) {
-        Box(
-            Modifier
-                .widthIn(max = 292.dp)
-                .clip(Gomob.shapes.r3)
-                .background(bubbleBg)
-                .border(Gomob.spacing.hairline, bubbleLine, Gomob.shapes.r3)
-                .let {
-                    if (bubble.status == MessageStatus.Failed) {
-                        it.clickable(onClick = onRetry)
-                    } else {
-                        it
-                    }
-                }
-                .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
-        ) {
-            Text(bubble.text, style = Gomob.type.bodySm, color = textColor)
-        }
-        Text(
-            statusText,
-            style = Gomob.type.numInline,
-            color = when (bubble.status) {
-                MessageStatus.Failed -> Gomob.colors.danger
-                MessageStatus.Pending -> Gomob.colors.warn
-                MessageStatus.Sent -> Gomob.colors.fg3
-            },
-            modifier = Modifier.padding(top = Gomob.spacing.s2, start = Gomob.spacing.s4, end = Gomob.spacing.s4),
-        )
     }
 }
 

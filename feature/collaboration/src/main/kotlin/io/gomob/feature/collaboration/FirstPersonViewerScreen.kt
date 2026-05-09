@@ -24,38 +24,67 @@ import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
+import dagger.hilt.android.lifecycle.HiltViewModel
+import io.gomob.data.message.MediaSessionRepository
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.HairlineCard
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
 import io.gomob.designsystem.theme.Gomob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import javax.inject.Inject
 
 /**
  * 第一视角观看页 — 监管员/复核员视角实时观看某位查验员的工作画面。
  *
  * 布局:
  *   - 顶 BackHeader: ← / 标题 / eyebrow=LIVE+时长 / trailing=观看数+信号
- *   - 中部: 全屏 RGB 预览(占位 — 真实接入走 WebRTC 流)
+ *   - 中部: 全屏 RGB 预览，媒体房间由 LiveKit 控制面签发 token
  *     - 左上 overlay: 采集者卡片(姓名 / 检测站 / 当前工单)
  *     - 右上 overlay: 实时指标(扫描部位 / AI 打分 / 异常计数)
  *     - 左下 overlay: 实时批注
  *   - 底部 hairline action bar: 5 圆按钮(介入语音 / 切视角 / 截图 / 标预警 / 通话)
  */
 @Composable
-fun FirstPersonViewerRoute(streamId: String, onBack: () -> Unit) {
+fun FirstPersonViewerRoute(
+    streamId: String,
+    onBack: () -> Unit,
+    viewModel: FirstPersonViewerViewModel = hiltViewModel(),
+) {
     val s = STREAM_DETAILS[streamId] ?: STREAM_DETAILS.values.first()
+    val mediaState by viewModel.state.collectAsStateWithLifecycle()
+    LaunchedEffect(streamId) {
+        viewModel.join(streamId)
+    }
 
     Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
         BackHeader(
-            title = "第一视角 · ${s.inspector}",
+            title = when (val state = mediaState) {
+                is ViewerLiveState.Ready -> "第一视角 · ${state.title}"
+                else -> "第一视角 · ${s.inspector}"
+            },
             onBack = onBack,
-            eyebrow = "LIVE · ${s.duration}",
+            eyebrow = when (mediaState) {
+                is ViewerLiveState.Ready -> "LIVE · 媒体房间已接通"
+                ViewerLiveState.Joining -> "正在接入 LiveKit"
+                is ViewerLiveState.Error -> "媒体房间不可用"
+                ViewerLiveState.Idle -> "等待媒体房间"
+            },
             trailing = {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -78,19 +107,29 @@ fun FirstPersonViewerRoute(streamId: String, onBack: () -> Unit) {
                 .fillMaxWidth()
                 .background(Gomob.colors.bg2),
         ) {
-            // 占位提示
+            // 真实视频轨道接入前只展示媒体控制面状态，不用假画面冒充远端视频。
             Column(
                 Modifier.align(Alignment.Center),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
             ) {
+                val state = mediaState
                 Text(
-                    "WebRTC 视频流",
+                    when (state) {
+                        is ViewerLiveState.Ready -> "LiveKit 房间已接通"
+                        ViewerLiveState.Joining -> "正在接入媒体房间"
+                        is ViewerLiveState.Error -> "媒体房间不可用"
+                        ViewerLiveState.Idle -> "等待直播信息"
+                    },
                     style = Gomob.type.metricMd,
                     color = Gomob.colors.fg3,
                 )
                 Text(
-                    s.taskId + " · " + s.vehicleModel,
+                    when (state) {
+                        is ViewerLiveState.Ready -> state.providerRoom
+                        is ViewerLiveState.Error -> state.message
+                        else -> s.taskId + " · " + s.vehicleModel
+                    },
                     style = Gomob.type.numInline,
                     color = Gomob.colors.fg2,
                 )
@@ -219,6 +258,42 @@ fun FirstPersonViewerRoute(streamId: String, onBack: () -> Unit) {
             ActionButton(icon = Icons.Filled.VideoCall, label = "视频通话", tone = ActionTone.Accent)
         }
     }
+}
+
+@HiltViewModel
+class FirstPersonViewerViewModel @Inject constructor(
+    private val mediaSessionRepository: MediaSessionRepository,
+) : ViewModel() {
+    private val _state = MutableStateFlow<ViewerLiveState>(ViewerLiveState.Idle)
+    val state: StateFlow<ViewerLiveState> = _state.asStateFlow()
+
+    fun join(streamId: String) {
+        val liveSessionId = streamId.toLongOrNull()
+        if (liveSessionId == null) {
+            _state.value = ViewerLiveState.Error("直播会话参数无效")
+            return
+        }
+        viewModelScope.launch {
+            _state.value = ViewerLiveState.Joining
+            _state.value = runCatching {
+                val joined = mediaSessionRepository.joinLiveSession(liveSessionId)
+                ViewerLiveState.Ready(
+                    title = joined.session.title,
+                    providerRoom = joined.providerRoom,
+                    url = joined.url,
+                )
+            }.getOrElse {
+                ViewerLiveState.Error(it.message?.takeIf { msg -> msg.isNotBlank() } ?: "接入直播失败")
+            }
+        }
+    }
+}
+
+sealed interface ViewerLiveState {
+    data object Idle : ViewerLiveState
+    data object Joining : ViewerLiveState
+    data class Ready(val title: String, val providerRoom: String, val url: String) : ViewerLiveState
+    data class Error(val message: String) : ViewerLiveState
 }
 
 @Composable

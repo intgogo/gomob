@@ -1,5 +1,6 @@
 package io.gomob.feature.message
 
+import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -173,9 +174,13 @@ class MessageListViewModel @Inject constructor(
     }
 
     fun sendHelpRoomVoice() {
+        helpRoomRefreshState.value = RefreshState.Error("语音文件缺失，请重新录制")
+    }
+
+    fun sendHelpRoomImage(uri: Uri) {
         viewModelScope.launch {
             runCatching {
-                repository.sendVoice(ensureHelpConversationId())
+                repository.sendImage(ensureHelpConversationId(), uri)
                 repository.refreshConversations()
                 helpRoomRefreshState.value = RefreshState.Ready
             }.onFailure { error ->
@@ -184,10 +189,22 @@ class MessageListViewModel @Inject constructor(
         }
     }
 
-    fun sendHelpRoomVideoClip() {
+    fun sendHelpRoomVoice(uri: Uri, durationSec: Int) {
         viewModelScope.launch {
             runCatching {
-                repository.sendVideoClip(ensureHelpConversationId())
+                repository.sendVoice(ensureHelpConversationId(), uri, durationSec)
+                repository.refreshConversations()
+                helpRoomRefreshState.value = RefreshState.Ready
+            }.onFailure { error ->
+                helpRoomRefreshState.value = RefreshState.Error(error.readableMessage())
+            }
+        }
+    }
+
+    fun sendHelpRoomVideoClip(uri: Uri) {
+        viewModelScope.launch {
+            runCatching {
+                repository.sendVideoClip(ensureHelpConversationId(), uri)
                 repository.refreshConversations()
                 helpRoomRefreshState.value = RefreshState.Ready
             }.onFailure { error ->
@@ -205,6 +222,10 @@ class MessageListViewModel @Inject constructor(
             }
                 .onFailure { helpRoomRefreshState.value = RefreshState.Error(it.readableMessage()) }
         }
+    }
+
+    fun showHelpRoomError(message: String) {
+        helpRoomRefreshState.value = RefreshState.Error(message)
     }
 
     private suspend fun ensureHelpConversationId(): Long =
@@ -314,21 +335,36 @@ class ConversationViewModel @Inject constructor(
     }
 
     fun sendVoice() {
+        refreshState.value = RefreshState.Error("语音文件缺失，请重新录制")
+    }
+
+    fun sendImage(uri: Uri) {
         if (conversationId <= 0) return
         viewModelScope.launch {
             runCatching {
-                repository.sendVoice(conversationId)
+                repository.sendImage(conversationId, uri)
                 refreshState.value = RefreshState.Ready
             }
                 .onFailure { refreshState.value = RefreshState.Error(it.readableMessage()) }
         }
     }
 
-    fun sendVideoClip() {
+    fun sendVoice(uri: Uri, durationSec: Int) {
         if (conversationId <= 0) return
         viewModelScope.launch {
             runCatching {
-                repository.sendVideoClip(conversationId)
+                repository.sendVoice(conversationId, uri, durationSec)
+                refreshState.value = RefreshState.Ready
+            }
+                .onFailure { refreshState.value = RefreshState.Error(it.readableMessage()) }
+        }
+    }
+
+    fun sendVideoClip(uri: Uri) {
+        if (conversationId <= 0) return
+        viewModelScope.launch {
+            runCatching {
+                repository.sendVideoClip(conversationId, uri)
                 refreshState.value = RefreshState.Ready
             }
                 .onFailure { refreshState.value = RefreshState.Error(it.readableMessage()) }
@@ -344,6 +380,10 @@ class ConversationViewModel @Inject constructor(
             }
                 .onFailure { refreshState.value = RefreshState.Error(it.readableMessage()) }
         }
+    }
+
+    fun showError(message: String) {
+        refreshState.value = RefreshState.Error(message)
     }
 }
 
@@ -429,6 +469,7 @@ data class MessageBubbleUi(
     val text: String,
     val mine: Boolean,
     val senderLabel: String?,
+    val avatarInitials: String,
     val time: String,
     val status: MessageStatus,
     val clientMsgId: String?,
@@ -470,16 +511,19 @@ private fun HelpExpert.toRowUi(): HelpExpertRowUi = HelpExpertRowUi(
     },
 )
 
-private fun MessageRecord.toBubbleUi(json: Json, currentUserId: Long?): MessageBubbleUi =
-    MessageBubbleUi(
+private fun MessageRecord.toBubbleUi(json: Json, currentUserId: Long?): MessageBubbleUi {
+    val mine = mineBySender(currentUserId)
+    return MessageBubbleUi(
         localKey = localKey,
         text = previewText(json),
-        mine = mineBySender(currentUserId),
+        mine = mine,
         senderLabel = null,
+        avatarInitials = if (mine) "我" else "对",
         time = createdAt.formatMessageTime(),
         status = status,
         clientMsgId = clientMsgId,
     )
+}
 
 private fun MessageRecord.toBubbleUi(
     json: Json,
@@ -487,11 +531,13 @@ private fun MessageRecord.toBubbleUi(
     currentUserId: Long?,
 ): MessageBubbleUi {
     val mine = mineBySender(currentUserId)
+    val expert = experts.firstOrNull { it.userId == senderId }
     return MessageBubbleUi(
         localKey = localKey,
         text = previewText(json),
         mine = mine,
-        senderLabel = if (mine) null else experts.firstOrNull { it.userId == senderId }?.name ?: "成员 #$senderId",
+        senderLabel = if (mine) null else expert?.name ?: "成员 #$senderId",
+        avatarInitials = if (mine) "我" else expert?.initials ?: "成",
         time = createdAt.formatMessageTime(),
         status = status,
         clientMsgId = clientMsgId,

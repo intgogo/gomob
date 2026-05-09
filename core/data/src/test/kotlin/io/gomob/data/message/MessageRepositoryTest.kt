@@ -1,5 +1,6 @@
 package io.gomob.data.message
 
+import android.net.Uri
 import com.google.common.truth.Truth.assertThat
 import io.gomob.database.message.ConversationDao
 import io.gomob.database.message.ConversationEntity
@@ -73,6 +74,7 @@ class MessageRepositoryTest {
         val messageDao = FakeMessageDao()
         val repository = MessageRepository(
             api = FakeMessageApi(),
+            mediaAssetUploader = FakeMediaAssetUploader(),
             conversationDao = FakeConversationDao(),
             messageDao = messageDao,
             json = Json { ignoreUnknownKeys = true },
@@ -90,37 +92,41 @@ class MessageRepositoryTest {
     }
 
     @Test
-    fun sendVoiceUsesVoiceKindAndAwaitingUploadPayload() = runTest {
+    fun sendVoiceUploadsAssetBeforeSendingReadyPayload() = runTest {
         val api = FakeMessageApi()
         val repository = MessageRepository(
             api = api,
+            mediaAssetUploader = FakeMediaAssetUploader(),
             conversationDao = FakeConversationDao(),
             messageDao = FakeMessageDao(),
             json = Json { ignoreUnknownKeys = true },
         )
 
-        repository.sendVoice(conversationId = 9)
+        repository.sendUploadedVoice(conversationId = 9, asset = fakeUploadedAsset(), durationSec = 6)
 
         val request = api.sentRequests.single()
         assertThat(request.kind).isEqualTo("voice")
-        assertThat(request.payload.toString()).contains("awaiting_asset_upload")
+        assertThat(request.payload.toString()).contains("\"media_state\":\"ready\"")
+        assertThat(request.payload.toString()).contains("\"asset_id\":\"901\"")
+        assertThat(request.payload.toString()).contains("\"duration_sec\":6")
     }
 
     @Test
-    fun sendVideoClipUsesVideoClipKindAndAwaitingUploadPayload() = runTest {
+    fun sendVideoClipUploadsAssetBeforeSendingReadyPayload() = runTest {
         val api = FakeMessageApi()
         val repository = MessageRepository(
             api = api,
+            mediaAssetUploader = FakeMediaAssetUploader(),
             conversationDao = FakeConversationDao(),
             messageDao = FakeMessageDao(),
             json = Json { ignoreUnknownKeys = true },
         )
 
-        repository.sendVideoClip(conversationId = 9)
+        repository.sendUploadedVideoClip(conversationId = 9, asset = fakeUploadedAsset())
 
         val request = api.sentRequests.single()
         assertThat(request.kind).isEqualTo("video_clip")
-        assertThat(request.payload.toString()).contains("awaiting_asset_upload")
+        assertThat(request.payload.toString()).contains("\"media_state\":\"ready\"")
     }
 
     @Test
@@ -139,6 +145,7 @@ class MessageRepositoryTest {
         )
         val repository = MessageRepository(
             api = api,
+            mediaAssetUploader = FakeMediaAssetUploader(),
             conversationDao = FakeConversationDao(),
             messageDao = messageDao,
             json = Json { ignoreUnknownKeys = true },
@@ -176,6 +183,7 @@ class MessageRepositoryTest {
                     ),
                 ),
             ),
+            mediaAssetUploader = FakeMediaAssetUploader(),
             conversationDao = FakeConversationDao(),
             messageDao = messageDao,
             json = Json { ignoreUnknownKeys = true },
@@ -231,6 +239,7 @@ class MessageRepositoryTest {
         )
         val repository = MessageRepository(
             api = api,
+            mediaAssetUploader = FakeMediaAssetUploader(),
             conversationDao = FakeConversationDao(),
             messageDao = messageDao,
             json = Json { ignoreUnknownKeys = true },
@@ -257,6 +266,7 @@ class MessageRepositoryTest {
                     ),
                 ),
             ),
+            mediaAssetUploader = FakeMediaAssetUploader(),
             conversationDao = FakeConversationDao(),
             messageDao = FakeMessageDao(),
             json = Json { ignoreUnknownKeys = true },
@@ -286,6 +296,7 @@ class MessageRepositoryTest {
                     updatedAt = "2026-05-08T12:00:00Z",
                 ),
             ),
+            mediaAssetUploader = FakeMediaAssetUploader(),
             conversationDao = conversationDao,
             messageDao = FakeMessageDao(),
             json = Json { ignoreUnknownKeys = true },
@@ -313,6 +324,7 @@ class MessageRepositoryTest {
                     updatedAt = "2026-05-08T12:00:00Z",
                 ),
             ),
+            mediaAssetUploader = FakeMediaAssetUploader(),
             conversationDao = conversationDao,
             messageDao = FakeMessageDao(),
             json = Json { ignoreUnknownKeys = true },
@@ -327,6 +339,32 @@ class MessageRepositoryTest {
         assertThat(conversationDao.upsertedSingle?.id).isEqualTo(77)
     }
 }
+
+private class FakeMediaAssetUploader : MediaAssetUploader {
+    val uploadedKinds = mutableListOf<MediaAssetKind>()
+
+    override suspend fun upload(uri: Uri, kind: MediaAssetKind): UploadedMediaAsset {
+        uploadedKinds += kind
+        return UploadedMediaAsset(
+            assetId = "901",
+            objectKey = "orphan/${kind.serverKind}/901.bin",
+            downloadUrl = "http://example.test/901",
+            mime = kind.fallbackMime,
+            sizeBytes = 1234,
+            sha256 = "a".repeat(64),
+        )
+    }
+}
+
+private fun fakeUploadedAsset(): UploadedMediaAsset =
+    UploadedMediaAsset(
+        assetId = "901",
+        objectKey = "orphan/message/901.bin",
+        downloadUrl = "http://example.test/901",
+        mime = "application/octet-stream",
+        sizeBytes = 1234,
+        sha256 = "a".repeat(64),
+    )
 
 private class FakeMessageApi(
     private val conversations: List<ConversationDto> = emptyList(),

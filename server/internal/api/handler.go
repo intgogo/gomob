@@ -28,6 +28,7 @@ type Handler struct {
 	users         *repo.UserRepo
 	conversations *repo.ConversationRepo
 	messages      *repo.MessageRepo
+	media         *repo.MediaRepo
 	audit         audit.Recorder
 	enforcer      rbac.Enforcer
 }
@@ -42,6 +43,7 @@ func NewHandler(pool *pgxpool.Pool, audit audit.Recorder, enforcer rbac.Enforcer
 		users:         repo.NewUserRepo(pool),
 		conversations: repo.NewConversationRepo(pool),
 		messages:      repo.NewMessageRepo(pool),
+		media:         repo.NewMediaRepo(pool),
 		audit:         audit,
 		enforcer:      enforcer,
 	}
@@ -72,6 +74,14 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/conversations/{id}/messages", h.ListConversationMessages)
 	mux.HandleFunc("POST /v1/conversations/{id}/messages", h.CreateConversationMessage)
 	mux.HandleFunc("POST /v1/conversations/{id}/read", h.MarkConversationRead)
+
+	// 媒体控制面
+	mux.HandleFunc("POST /v1/media/rooms", h.CreateMediaRoom)
+	mux.HandleFunc("POST /v1/media/rooms/{id}/token", h.CreateMediaRoomToken)
+	mux.HandleFunc("POST /v1/media/rooms/{id}/end", h.EndMediaRoom)
+	mux.HandleFunc("GET /v1/live-sessions", h.ListLiveSessions)
+	mux.HandleFunc("POST /v1/live-sessions", h.CreateLiveSession)
+	mux.HandleFunc("POST /v1/livekit/webhook", h.LiveKitWebhook)
 }
 
 // ---------- 通用工具 ----------

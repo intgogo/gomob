@@ -48,11 +48,11 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		MinIOEndpoint:   "127.0.0.1:9000",
-		MinIOAccessKey:  "gomob",
-		MinIOSecretKey:  "gomob_dev_minio",
-		MinIOUseSSL:     false,
-		Bucket:          "gomob-assets",
+		MinIOEndpoint:  "127.0.0.1:9000",
+		MinIOAccessKey: "gomob",
+		MinIOSecretKey: "gomob_dev_minio",
+		MinIOUseSSL:    false,
+		Bucket:         "gomob-assets",
 		// S3 / MinIO 强制：除最后一片外，每片最小 5 MB。默认 8 MB 留余量。
 		DefaultChunkMB:  8,
 		PresignDuration: 5 * time.Minute,
@@ -138,7 +138,7 @@ func (h *Handler) partsKey(uploadID string) string { return "upload:" + uploadID
 
 type uploadInitReq struct {
 	InspectionID string `json:"inspection_id,omitempty"`
-	Kind         string `json:"kind"`         // scan3d / vin_plate / nameplate / exterior / video / pdf
+	Kind         string `json:"kind"` // scan3d / vin_plate / nameplate / exterior / video / pdf
 	SizeBytes    int64  `json:"size_bytes"`
 	SHA256       string `json:"sha256"`
 	MIME         string `json:"mime"`
@@ -402,7 +402,7 @@ func (h *Handler) UploadComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 写 inspection_assets
+	// 写 asset 元数据；inspection_id 为空时是聊天 / 标定等通用媒体资产。
 	var inspectionID int64
 	if sess.InspectionID != nil {
 		inspectionID = *sess.InspectionID
@@ -415,17 +415,12 @@ func (h *Handler) UploadComplete(w http.ResponseWriter, r *http.Request) {
 		SizeBytes:    stat.Size,
 		MIME:         sess.MIME,
 	}
-	if asset.InspectionID > 0 {
-		if err := h.assets.CreateInspectionAsset(r.Context(), asset); err != nil {
-			h.log.Error("CreateInspectionAsset 失败", "upload_id", uploadID, "err", err)
-			httpx.WriteError(w, httpx.ErrInternal)
-			return
-		}
-		_ = h.assets.CompleteUploadSession(r.Context(), uploadID, asset.ID)
-	} else {
-		// 没有 inspection 关联（如标定用图）：不写 inspection_assets，仅更新 session
-		_ = h.assets.CompleteUploadSession(r.Context(), uploadID, 0)
+	if err := h.assets.CreateInspectionAsset(r.Context(), asset); err != nil {
+		h.log.Error("CreateInspectionAsset 失败", "upload_id", uploadID, "err", err)
+		httpx.WriteError(w, httpx.ErrInternal)
+		return
 	}
+	_ = h.assets.CompleteUploadSession(r.Context(), uploadID, asset.ID)
 
 	// audit
 	if h.audit != nil {
