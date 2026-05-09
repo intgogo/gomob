@@ -54,16 +54,73 @@ class LogcatTailer(
 
         try {
             val reader = BufferedReader(InputStreamReader(proc.inputStream))
+            var suppressLogUploadHttp = false
             while (coroutineContext.isActive) {
                 val line = reader.readLine() ?: break
                 val entry = parseLine(line) ?: continue
-                emit(entry)
+                val filtered = filterEntry(entry, suppressLogUploadHttp)
+                suppressLogUploadHttp = filtered.suppressLogUploadHttp
+                filtered.entry?.let { emit(it) }
             }
         } finally {
             // cancel 时杀子进程 (destroyForcibly 才能立即 kill；destroy 是 SIGTERM 在某些设备上不立即生效)
             try { proc.destroyForcibly() } catch (_: Throwable) {}
         }
     }
+
+    private fun filterEntry(entry: LogEntryDto, suppressLogUploadHttp: Boolean): FilteredEntry {
+        if (entry.tag != OKHTTP_TAG) {
+            return FilteredEntry(entry, suppressLogUploadHttp)
+        }
+
+        val msg = entry.msg
+        if (suppressLogUploadHttp) {
+            if (isNewOkHttpExchange(msg) && !msg.contains(LOG_UPLOAD_PATH)) {
+                return FilteredEntry(
+                    if (shouldDropNoisyOkHttp(msg)) null else redactOkHttp(entry),
+                    false,
+                )
+            }
+            val done = msg.startsWith("<-- END HTTP") || msg.contains("HTTP FAILED")
+            return FilteredEntry(null, !done)
+        }
+
+        if (msg.startsWith("--> ") && msg.contains(LOG_UPLOAD_PATH)) {
+            return FilteredEntry(null, true)
+        }
+        if (shouldDropNoisyOkHttp(msg)) {
+            return FilteredEntry(null, false)
+        }
+        return FilteredEntry(redactOkHttp(entry), false)
+    }
+
+    private fun redactOkHttp(entry: LogEntryDto): LogEntryDto =
+        if (entry.msg.startsWith("Authorization:", ignoreCase = true)) {
+            entry.copy(msg = "Authorization: <redacted>")
+        } else {
+            entry
+        }
+
+    private fun shouldDropNoisyOkHttp(msg: String): Boolean {
+        if (msg.contains(LOG_UPLOAD_PATH)) return true
+        if (msg.startsWith("--> END")) return true
+        if (msg.startsWith("<-- END")) return true
+        if (msg.startsWith("Authorization:", ignoreCase = true)) return true
+        if (msg.startsWith("X-Gomob-Client:", ignoreCase = true)) return true
+        if (msg.startsWith("Content-", ignoreCase = true)) return true
+        if (msg.startsWith("Access-Control-", ignoreCase = true)) return true
+        if (msg.startsWith("Date:", ignoreCase = true)) return true
+        if (msg.contains("\"accepted\"")) return true
+        return false
+    }
+
+    private fun isNewOkHttpExchange(msg: String): Boolean =
+        msg.startsWith("--> ") && !msg.startsWith("--> END")
+
+    private data class FilteredEntry(
+        val entry: LogEntryDto?,
+        val suppressLogUploadHttp: Boolean,
+    )
 
     private fun parseLine(line: String): LogEntryDto? {
         // logcat -v threadtime 格式（两个空格分隔可能不稳定，用 split + 去空过滤）
@@ -98,6 +155,8 @@ class LogcatTailer(
 
     companion object {
         private const val TAG = "LogcatTailer"
+        private const val OKHTTP_TAG = "okhttp.OkHttpClient"
+        private const val LOG_UPLOAD_PATH = "/v1/logs/upload"
 
         /** 默认抓的 tag 白名单 — 覆盖 native + 我们的 Kotlin VM/Service。 */
         val DEFAULT_TAG_FILTERS = listOf(
@@ -108,6 +167,11 @@ class LogcatTailer(
             "Scan3dVM",            // 3D 主页
             "AuthRepository",
             "GomobApplication",
+            "LogSyncManager",
+            OKHTTP_TAG,            // Retrofit / OkHttp 请求、状态码与 HTTP FAILED
+            "MessageViewModel",
+            "ConversationViewModel",
+            "RealtimeSocketClient",
         )
 
         private val LEVELS = setOf("V", "D", "I", "W", "E", "F")

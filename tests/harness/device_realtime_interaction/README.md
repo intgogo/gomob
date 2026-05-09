@@ -18,6 +18,8 @@
 可选环境变量：
 
 - `DEVICE_REALTIME_START_APP=0`：只采 ADB 设备信息，不启动已安装 App。
+- `DEVICE_REALTIME_ATTACH_APP_TO_HARNESS=1`：把 App 默认端口 `8808` 临时映射到本 harness 的 gateway；默认保持 `8808 -> 18808`，避免打断正在跑的 devserver。
+- `DEVICE_REALTIME_APP_REVERSE_PORT=18808`：指定 App 端 `8808` 反向映射到宿主机哪个端口。
 - `ADB=/path/to/adb`：指定 adb。
 - `OUTPUT_DIR=.dev/device_realtime_interaction-xxx`：切换输出目录。
 

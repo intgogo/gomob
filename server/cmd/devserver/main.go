@@ -60,6 +60,14 @@ func main() {
 	devAutoActivate := os.Getenv("GOMOB_DEV_AUTO_ACTIVATE") != "false"
 	authH := auth.NewHandler(pool, devAutoActivate)
 	apiH := api.NewHandler(pool, audit.NewPG(pool), rbac.Baseline())
+	logRoot := envOr("GOMOB_LOG_UPLOAD_DIR", ".dev/server-logs")
+	logsH, err := api.NewLogsHandler(logRoot, 0)
+	if err != nil {
+		log.Error("logs handler 初始化失败", "err", err)
+		os.Exit(1)
+	}
+	defer logsH.Close()
+	log.Info("logs upload 已挂载", "root", logRoot)
 
 	mux := http.NewServeMux()
 
@@ -85,6 +93,7 @@ func main() {
 	protected.HandleFunc("POST /v1/auth/password", authH.ChangePassword)
 	protected.HandleFunc("GET /v1/me", authH.Me)
 	apiH.Mount(protected)
+	logsH.Mount(protected)
 	protectedHandler := auth.Required(protected)
 	mux.Handle("/v1/auth/password", protectedHandler)
 	mux.Handle("/v1/me", protectedHandler)
@@ -94,6 +103,7 @@ func main() {
 	mux.Handle("/v1/reviews/", protectedHandler)
 	mux.Handle("/v1/conversations", protectedHandler)
 	mux.Handle("/v1/conversations/", protectedHandler)
+	mux.Handle("/v1/logs/upload", protectedHandler)
 
 	addr := os.Getenv("GOMOB_LISTEN")
 	if addr == "" {
@@ -131,6 +141,13 @@ func main() {
 	defer cancel()
 	_ = srv.Shutdown(shutCtx)
 	log.Info("bye")
+}
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 // 简易访问日志中间件

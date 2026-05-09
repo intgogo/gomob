@@ -11,17 +11,20 @@ OUTPUT_DIR="${OUTPUT_DIR:-$PROJ_DIR/.dev/device_realtime_interaction}"
 mkdir -p "$OUTPUT_DIR"
 RESULTS="$OUTPUT_DIR/results.jsonl"
 DEVICES_JSONL="$OUTPUT_DIR/devices.jsonl"
+REVERSE_QUEUE="$OUTPUT_DIR/reverse_queue.tsv"
 START_QUEUE="$OUTPUT_DIR/app_start_queue.tsv"
 START_RESULTS="$OUTPUT_DIR/app_starts.jsonl"
 CAPABILITIES="$OUTPUT_DIR/capabilities.json"
 : > "$RESULTS"
 : > "$DEVICES_JSONL"
+: > "$REVERSE_QUEUE"
 : > "$START_QUEUE"
 : > "$START_RESULTS"
 
 APP_START="${DEVICE_REALTIME_START_APP:-1}"
 ADB="${ADB:-${ANDROID_HOME:-/opt/android-sdk}/platform-tools/adb}"
 APP_PACKAGES=("io.gomob.scan.debug" "io.gomob.scan")
+APP_REVERSE_PORT="${DEVICE_REALTIME_APP_REVERSE_PORT:-18808}"
 
 PIDS=()
 LOGCAT_PIDS=()
@@ -43,6 +46,9 @@ if [[ -z "${DEVICE_REALTIME_GATEWAY:-}" && -z "${DEVICE_REALTIME_WS:-}" && -z "$
 fi
 GATEWAY="${DEVICE_REALTIME_GATEWAY:-http://127.0.0.1:$GATEWAY_PORT}"
 WS_GATEWAY="${DEVICE_REALTIME_WS:-ws://127.0.0.1:$GATEWAY_PORT/v1/ws}"
+if [[ "${DEVICE_REALTIME_ATTACH_APP_TO_HARNESS:-0}" == "1" ]]; then
+    APP_REVERSE_PORT="$GATEWAY_PORT"
+fi
 log "gateway 采样端口：$GATEWAY_PORT ($GATEWAY)"
 
 safe_name() {
@@ -51,6 +57,56 @@ safe_name() {
 
 json_escape() {
     printf "%s" "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+restore_dev_seed_login() {
+    podman ps --format '{{.Names}}' 2>/dev/null | grep -qx gomob-pg || return 0
+    podman exec -i gomob-pg psql -U gomob -d gomob -v ON_ERROR_STOP=1 >/dev/null 2>&1 <<'SQL' || true
+DO $$
+DECLARE
+    sid BIGINT;
+    uid BIGINT;
+BEGIN
+    SELECT id INTO sid FROM stations WHERE name='杭州市西湖区车管所检测站' ORDER BY id LIMIT 1;
+    IF sid IS NULL THEN
+        INSERT INTO stations(name, region, gateway_addr)
+        VALUES('杭州市西湖区车管所检测站', '浙江杭州', '127.0.0.1:18808')
+        RETURNING id INTO sid;
+    END IF;
+
+    SELECT id INTO uid
+    FROM users
+    WHERE username='shenhm' OR employee_id='ZAA0120230001'
+    ORDER BY CASE WHEN username='shenhm' THEN 0 ELSE 1 END, id
+    LIMIT 1;
+
+    IF uid IS NULL THEN
+        INSERT INTO users(username, real_name, employee_id, station_id, password_hash, role, status, note, activated_at)
+        VALUES(
+            'shenhm',
+            '沈海明',
+            'ZAA0120230001',
+            sid,
+            '$2a$12$vnvzmvcmNZ5twz/pW5qbTusMOPp2BMH3N/EdPPu9i4CxCTdgFwh5m',
+            'inspector',
+            'active',
+            'devserver seed login',
+            now()
+        );
+    ELSE
+        UPDATE users
+        SET username='shenhm',
+            real_name='沈海明',
+            employee_id='ZAA0120230001',
+            station_id=sid,
+            password_hash='$2a$12$vnvzmvcmNZ5twz/pW5qbTusMOPp2BMH3N/EdPPu9i4CxCTdgFwh5m',
+            role='inspector',
+            status='active',
+            activated_at=COALESCE(activated_at, now())
+        WHERE id=uid;
+    END IF;
+END $$;
+SQL
 }
 
 record_device() {
@@ -67,9 +123,16 @@ record_device() {
 }
 
 cleanup() {
+    restore_dev_seed_login
     for p in "${LOGCAT_PIDS[@]:-}"; do
         kill "$p" 2>/dev/null || true
     done
+    if [[ -x "$ADB" ]]; then
+        while IFS=$'\t' read -r serial _safe; do
+            [[ -n "$serial" ]] || continue
+            "$ADB" -s "$serial" reverse tcp:8808 tcp:18808 >/dev/null 2>&1 || true
+        done < "$REVERSE_QUEUE"
+    fi
     for p in "${PIDS[@]:-}"; do
         kill "$p" 2>/dev/null || true
     done
@@ -90,9 +153,10 @@ else
         [[ "$qemu" == "1" || "$serial" == emulator-* ]] && kind="emulator"
 
         reverse_ok=false
-        if "$ADB" -s "$serial" reverse "tcp:8808" "tcp:$GATEWAY_PORT" > "$OUTPUT_DIR/adb-reverse-$safe.log" 2>&1; then
+        if "$ADB" -s "$serial" reverse "tcp:8808" "tcp:$APP_REVERSE_PORT" > "$OUTPUT_DIR/adb-reverse-$safe.log" 2>&1; then
             reverse_ok=true
-            log "  $serial($kind) reverse tcp:8808 -> host tcp:$GATEWAY_PORT"
+            log "  $serial($kind) reverse tcp:8808 -> host tcp:$APP_REVERSE_PORT"
+            printf "%s\t%s\n" "$serial" "$safe" >> "$REVERSE_QUEUE"
         else
             log "  $serial($kind) reverse 失败，详情 $OUTPUT_DIR/adb-reverse-$safe.log"
         fi
@@ -225,11 +289,11 @@ if [[ "$APP_START" == "1" && -s "$START_QUEUE" ]]; then
     done < "$START_QUEUE"
 fi
 
-python3 - "$DEVICES_JSONL" "$START_RESULTS" "$CAPABILITIES" "$GATEWAY" "$WS_GATEWAY" <<'PY'
+python3 - "$DEVICES_JSONL" "$START_RESULTS" "$CAPABILITIES" "$GATEWAY" "$WS_GATEWAY" "$APP_REVERSE_PORT" <<'PY'
 import json
 import sys
 
-devices_path, starts_path, out_path, gateway, ws_gateway = sys.argv[1:6]
+devices_path, starts_path, out_path, gateway, ws_gateway, app_reverse_port = sys.argv[1:7]
 devices = []
 try:
     with open(devices_path, encoding="utf-8") as f:
@@ -258,6 +322,7 @@ for dev in devices:
 cap = {
     "gateway": gateway,
     "ws_gateway": ws_gateway,
+    "app_reverse_port": app_reverse_port,
     "emulator_count": sum(1 for d in devices if d.get("kind") == "emulator"),
     "physical_count": sum(1 for d in devices if d.get("kind") == "physical"),
     "devices": devices,
