@@ -4,18 +4,22 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.gomob.data.auth.TokenStore
 import io.gomob.data.message.MessageRepository
 import io.gomob.model.message.ConversationSummary
 import io.gomob.model.message.HelpExpert
 import io.gomob.model.message.MessageRecord
 import io.gomob.model.message.MessageStatus
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -30,14 +34,19 @@ import javax.inject.Inject
 @HiltViewModel
 class MessageListViewModel @Inject constructor(
     private val repository: MessageRepository,
+    private val tokenStore: TokenStore,
     private val json: Json,
 ) : ViewModel() {
     private val refreshState = MutableStateFlow<RefreshState>(RefreshState.Loading)
     private val helpExperts = MutableStateFlow<List<HelpExpertRowUi>>(emptyList())
     private val helpRefreshState = MutableStateFlow<RefreshState>(RefreshState.Loading)
-    private val openingExpertId = MutableStateFlow<Long?>(null)
-    private val _helpSendState = MutableStateFlow<HelpSendUiState>(HelpSendUiState.Idle)
-    val helpSendState: StateFlow<HelpSendUiState> = _helpSendState.asStateFlow()
+    private val helpRoomRefreshState = MutableStateFlow<RefreshState>(RefreshState.Loading)
+    private val helpConversationId = MutableStateFlow<Long?>(null)
+    private val currentUserId = tokenStore.currentUserIdFlow.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.Eagerly,
+        initialValue = tokenStore.currentUserId(),
+    )
 
     val uiState: StateFlow<MessageListUiState> =
         combine(repository.observeConversations(), refreshState) { conversations, refresh ->
@@ -59,10 +68,10 @@ class MessageListViewModel @Inject constructor(
         )
 
     val helpUiState: StateFlow<HelpExpertsUiState> =
-        combine(helpExperts, helpRefreshState, openingExpertId) { experts, refresh, openingId ->
+        combine(helpExperts, helpRefreshState) { experts, refresh ->
             when {
                 experts.isNotEmpty() -> HelpExpertsUiState.Content(
-                    experts = experts.map { it.copy(opening = it.userId == openingId) },
+                    experts = experts,
                     offlineCached = refresh is RefreshState.Error,
                     errorMessage = (refresh as? RefreshState.Error)?.message,
                 )
@@ -76,9 +85,43 @@ class MessageListViewModel @Inject constructor(
             initialValue = HelpExpertsUiState.Loading,
         )
 
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val helpRoomUiState: StateFlow<HelpRoomUiState> =
+        combine(
+            helpConversationId,
+            helpConversationId.flatMapLatest { id ->
+                id?.let { repository.observeConversation(it) } ?: flowOf(null)
+            },
+            helpConversationId.flatMapLatest { id ->
+                id?.let { repository.observeMessages(it) } ?: flowOf(emptyList<MessageRecord>())
+            },
+            helpExperts,
+            helpRoomRefreshState,
+        ) { conversationId, conversation, messages, experts, refresh ->
+            when {
+                conversationId == null && refresh is RefreshState.Loading -> HelpRoomUiState.Loading
+                conversationId == null && refresh is RefreshState.Error -> HelpRoomUiState.Error(refresh.message)
+                conversationId == null -> HelpRoomUiState.Loading
+                else -> HelpRoomUiState.Content(
+                    conversationId = conversationId,
+                    title = conversation?.displayTitle() ?: "在线求助",
+                    experts = experts,
+                    messages = messages.map { it.toBubbleUi(json, experts, currentUserId.value) },
+                    loading = messages.isEmpty() && refresh is RefreshState.Loading,
+                    offlineCached = messages.isNotEmpty() && refresh is RefreshState.Error,
+                    errorMessage = (refresh as? RefreshState.Error)?.message,
+                )
+            }
+        }.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = HelpRoomUiState.Loading,
+        )
+
     init {
         refresh()
         refreshHelpExperts()
+        refreshHelpRoom()
     }
 
     fun refresh() {
@@ -101,46 +144,74 @@ class MessageListViewModel @Inject constructor(
         }
     }
 
-    fun openExpertConversation(
-        expert: HelpExpertRowUi,
-        onOpened: (Long) -> Unit,
-    ) {
-        if (openingExpertId.value != null) return
+    fun refreshHelpRoom() {
         viewModelScope.launch {
-            openingExpertId.value = expert.userId
-            runCatching { repository.openDirectConversation(expert.userId) }
-                .onSuccess {
-                    refresh()
-                    onOpened(it.id)
-                }
-                .onFailure { helpRefreshState.value = RefreshState.Error(it.readableMessage()) }
-            openingExpertId.value = null
+            helpRoomRefreshState.value = RefreshState.Loading
+            helpRoomRefreshState.value = runCatching {
+                val room = repository.openHelpRoom()
+                helpConversationId.value = room.id
+                repository.refreshMessages(room.id, fullSync = true)
+                repository.refreshConversations()
+                RefreshState.Ready
+            }.getOrElse { RefreshState.Error(it.readableMessage()) }
         }
     }
 
-    fun sendHelpMessage(text: String) {
+    fun sendHelpRoomMessage(text: String) {
         val trimmed = text.trim()
-        if (trimmed.isEmpty() || _helpSendState.value is HelpSendUiState.Sending) return
+        if (trimmed.isEmpty()) return
         viewModelScope.launch {
-            _helpSendState.value = HelpSendUiState.Sending
             runCatching {
-                val targets = helpExperts.value.ifEmpty {
-                    repository.helpExperts().map { it.toRowUi() }.also { helpExperts.value = it }
-                }
-                require(targets.isNotEmpty()) { "服务端未配置固定专家" }
-                targets.forEach { expert ->
-                    val conversation = repository.openDirectConversation(expert.userId)
-                    repository.sendText(conversation.id, trimmed)
-                }
-                refresh()
-                targets.size
-            }.onSuccess { count ->
-                _helpSendState.value = HelpSendUiState.Sent("已发送给 $count 位专家")
+                val conversationId = ensureHelpConversationId()
+                repository.sendText(conversationId, trimmed)
+                repository.refreshConversations()
+                helpRoomRefreshState.value = RefreshState.Ready
             }.onFailure { error ->
-                _helpSendState.value = HelpSendUiState.Error(error.readableMessage())
+                helpRoomRefreshState.value = RefreshState.Error(error.readableMessage())
             }
         }
     }
+
+    fun sendHelpRoomVoice() {
+        viewModelScope.launch {
+            runCatching {
+                repository.sendVoice(ensureHelpConversationId())
+                repository.refreshConversations()
+                helpRoomRefreshState.value = RefreshState.Ready
+            }.onFailure { error ->
+                helpRoomRefreshState.value = RefreshState.Error(error.readableMessage())
+            }
+        }
+    }
+
+    fun sendHelpRoomVideoClip() {
+        viewModelScope.launch {
+            runCatching {
+                repository.sendVideoClip(ensureHelpConversationId())
+                repository.refreshConversations()
+                helpRoomRefreshState.value = RefreshState.Ready
+            }.onFailure { error ->
+                helpRoomRefreshState.value = RefreshState.Error(error.readableMessage())
+            }
+        }
+    }
+
+    fun retryHelpRoomMessage(clientMsgId: String?) {
+        if (clientMsgId.isNullOrBlank()) return
+        viewModelScope.launch {
+            runCatching {
+                repository.retryMessage(clientMsgId)
+                helpRoomRefreshState.value = RefreshState.Ready
+            }
+                .onFailure { helpRoomRefreshState.value = RefreshState.Error(it.readableMessage()) }
+        }
+    }
+
+    private suspend fun ensureHelpConversationId(): Long =
+        helpConversationId.value ?: repository.openHelpRoom().also {
+            helpConversationId.value = it.id
+        }.id
+
 }
 
 @HiltViewModel
@@ -174,6 +245,7 @@ class ExpertDetailViewModel @Inject constructor(
 class ConversationViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val repository: MessageRepository,
+    private val tokenStore: TokenStore,
     private val json: Json,
 ) : ViewModel() {
     private val conversationId = savedStateHandle.get<String>("id")?.toLongOrNull() ?: 0L
@@ -185,12 +257,13 @@ class ConversationViewModel @Inject constructor(
             repository.observeConversation(conversationId),
             repository.observeMessages(conversationId),
             refreshState,
-        ) { conversation, messages, refresh ->
+            tokenStore.currentUserIdFlow,
+        ) { conversation, messages, refresh, currentUserId ->
             ConversationUiState(
                 conversationId = conversationId,
                 title = conversation?.displayTitle() ?: "会话 #$conversationId",
                 eyebrow = if (conversationId > 0) "会话 · #$conversationId" else "会话",
-                messages = messages.map { it.toBubbleUi(json) },
+                messages = messages.map { it.toBubbleUi(json, currentUserId) },
                 loading = messages.isEmpty() && refresh is RefreshState.Loading,
                 offlineCached = messages.isNotEmpty() && refresh is RefreshState.Error,
                 errorMessage = (refresh as? RefreshState.Error)?.message,
@@ -232,7 +305,32 @@ class ConversationViewModel @Inject constructor(
         val trimmed = text.trim()
         if (trimmed.isEmpty() || conversationId <= 0) return
         viewModelScope.launch {
-            runCatching { repository.sendText(conversationId, trimmed) }
+            runCatching {
+                repository.sendText(conversationId, trimmed)
+                refreshState.value = RefreshState.Ready
+            }
+                .onFailure { refreshState.value = RefreshState.Error(it.readableMessage()) }
+        }
+    }
+
+    fun sendVoice() {
+        if (conversationId <= 0) return
+        viewModelScope.launch {
+            runCatching {
+                repository.sendVoice(conversationId)
+                refreshState.value = RefreshState.Ready
+            }
+                .onFailure { refreshState.value = RefreshState.Error(it.readableMessage()) }
+        }
+    }
+
+    fun sendVideoClip() {
+        if (conversationId <= 0) return
+        viewModelScope.launch {
+            runCatching {
+                repository.sendVideoClip(conversationId)
+                refreshState.value = RefreshState.Ready
+            }
                 .onFailure { refreshState.value = RefreshState.Error(it.readableMessage()) }
         }
     }
@@ -240,7 +338,10 @@ class ConversationViewModel @Inject constructor(
     fun retry(clientMsgId: String?) {
         if (clientMsgId.isNullOrBlank()) return
         viewModelScope.launch {
-            runCatching { repository.retryText(clientMsgId) }
+            runCatching {
+                repository.retryMessage(clientMsgId)
+                refreshState.value = RefreshState.Ready
+            }
                 .onFailure { refreshState.value = RefreshState.Error(it.readableMessage()) }
         }
     }
@@ -279,11 +380,20 @@ sealed interface HelpExpertsUiState {
     ) : HelpExpertsUiState
 }
 
-sealed interface HelpSendUiState {
-    data object Idle : HelpSendUiState
-    data object Sending : HelpSendUiState
-    data class Sent(val message: String) : HelpSendUiState
-    data class Error(val message: String) : HelpSendUiState
+sealed interface HelpRoomUiState {
+    data object Loading : HelpRoomUiState
+    data class Error(val message: String) : HelpRoomUiState
+    data class Content(
+        val conversationId: Long,
+        val title: String,
+        val experts: List<HelpExpertRowUi>,
+        val messages: List<MessageBubbleUi>,
+        val loading: Boolean,
+        val offlineCached: Boolean,
+        val errorMessage: String?,
+    ) : HelpRoomUiState {
+        val empty: Boolean get() = !loading && messages.isEmpty() && errorMessage == null
+    }
 }
 
 sealed interface ExpertDetailUiState {
@@ -300,7 +410,6 @@ data class HelpExpertRowUi(
     val specialty: String,
     val employeeId: String,
     val availabilityText: String,
-    val opening: Boolean = false,
 )
 
 data class ConversationUiState(
@@ -319,6 +428,7 @@ data class MessageBubbleUi(
     val localKey: String,
     val text: String,
     val mine: Boolean,
+    val senderLabel: String?,
     val time: String,
     val status: MessageStatus,
     val clientMsgId: String?,
@@ -360,15 +470,37 @@ private fun HelpExpert.toRowUi(): HelpExpertRowUi = HelpExpertRowUi(
     },
 )
 
-private fun MessageRecord.toBubbleUi(json: Json): MessageBubbleUi =
+private fun MessageRecord.toBubbleUi(json: Json, currentUserId: Long?): MessageBubbleUi =
     MessageBubbleUi(
         localKey = localKey,
         text = previewText(json),
-        mine = clientMsgId != null || senderId == null,
+        mine = mineBySender(currentUserId),
+        senderLabel = null,
         time = createdAt.formatMessageTime(),
         status = status,
         clientMsgId = clientMsgId,
     )
+
+private fun MessageRecord.toBubbleUi(
+    json: Json,
+    experts: List<HelpExpertRowUi>,
+    currentUserId: Long?,
+): MessageBubbleUi {
+    val mine = mineBySender(currentUserId)
+    return MessageBubbleUi(
+        localKey = localKey,
+        text = previewText(json),
+        mine = mine,
+        senderLabel = if (mine) null else experts.firstOrNull { it.userId == senderId }?.name ?: "成员 #$senderId",
+        time = createdAt.formatMessageTime(),
+        status = status,
+        clientMsgId = clientMsgId,
+    )
+}
+
+private fun MessageRecord.mineBySender(currentUserId: Long?): Boolean =
+    (senderId != null && senderId == currentUserId) ||
+        (senderId == null && clientMsgId != null)
 
 private fun ConversationSummary.displayTitle(): String =
     title?.takeIf { it.isNotBlank() }
@@ -378,7 +510,8 @@ private fun ConversationSummary.displayTitle(): String =
 private fun MessageRecord.previewText(json: Json): String = when (kind) {
     "text" -> preview?.takeIf { it.isNotBlank() } ?: textPayload(json).ifBlank { "[文本]" }
     "image" -> preview?.takeIf { it.isNotBlank() } ?: "[图片]"
-    "video_clip" -> preview?.takeIf { it.isNotBlank() } ?: "[视频]"
+    "voice" -> preview?.takeIf { it.isNotBlank() } ?: mediaPreview(json, awaiting = "[语音待上传]", ready = "[语音消息]")
+    "video_clip" -> preview?.takeIf { it.isNotBlank() } ?: mediaPreview(json, awaiting = "[视频待上传]", ready = "[视频]")
     "video_call" -> preview?.takeIf { it.isNotBlank() } ?: "[视频通话]"
     "system" -> preview?.takeIf { it.isNotBlank() } ?: "[系统消息]"
     else -> "[$kind]"
@@ -393,8 +526,15 @@ private fun MessageRecord.textPayload(json: Json): String {
     }
 }
 
+private fun MessageRecord.mediaPreview(json: Json, awaiting: String, ready: String): String {
+    val obj = runCatching { json.parseToJsonElement(payloadJson).jsonObject }.getOrNull() ?: return ready
+    val state = obj["media_state"]?.jsonPrimitive?.contentOrNull.orEmpty()
+    return if (state == "awaiting_asset_upload") awaiting else ready
+}
+
 private fun MessageRecord.avatarKind(): AvatarKind = when (kind) {
     "image" -> AvatarKind.Image
+    "voice" -> AvatarKind.Voice
     "video_clip" -> AvatarKind.Video
     "video_call" -> AvatarKind.Call
     "system" -> AvatarKind.System

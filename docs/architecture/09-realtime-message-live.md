@@ -9,7 +9,7 @@
 
 机动车查验现场有三类实时协作：
 
-1. **消息**：查验员、监管员、复核员之间围绕 VIN、工单、预审结果沟通；支持单聊、群、系统通知、图片 / 视频片段 / 查验资产引用。
+1. **消息**：查验员、监管员、复核员之间围绕 VIN、工单、预审结果沟通；支持单聊、群、系统通知、图片 / 语音 / 视频片段 / 查验资产引用。
 2. **视频通话**：从单聊里发起 1:1 或小范围会诊，通话结束后在会话里留下 `[视频通话 56:02]` 记录。
 3. **第一视角直播**：查验员在工位发布实时画面，监管员 / 复核员观看、语音介入、截图存档、标记预警；直播结束后可生成录像供培训或复核。
 
@@ -108,7 +108,7 @@ LiveKit Server + Redis + coturn + Egress → MinIO
 M5 扩展：
 
 ```sql
-ALTER TABLE conversations ADD COLUMN subject_kind TEXT;      -- none / inspection / review / live_session
+ALTER TABLE conversations ADD COLUMN subject_kind TEXT;      -- none / inspection / review / live_session / online_help
 ALTER TABLE conversations ADD COLUMN subject_id BIGINT;      -- 关联业务对象 id
 ALTER TABLE conversations ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
@@ -207,6 +207,8 @@ CREATE TABLE live_recordings (
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/v1/conversations?cursor=&limit=` | 会话列表，返回 last_message、unread_count、peer / group 元信息 |
+| `GET` | `/v1/conversations/help-experts` | 在线求助固定专家列表，仅用于头像条和专家详情入口 |
+| `POST` | `/v1/conversations/help-room` | 创建 / 复用在线求助固定群，成员为当前用户 + 固定专家 |
 | `GET` | `/v1/conversations/{id}/messages?since_seq=&limit=` | 历史消息，升序返回 |
 | `POST` | `/v1/conversations/{id}/messages` | HTTP 发送消息，和 WebSocket `msg.send` 共用幂等逻辑 |
 | `POST` | `/v1/conversations/{id}/read` | 更新 `last_read_seq` |
@@ -268,7 +270,7 @@ M5 新增事件：
 
 - 会话列表从 Room 读，后台用 REST / WS 同步。
 - 输入框发送后立即插入本地 `pending` 消息；收到 `msg.delivered` 后改成 `sent` 并补 `server_seq`。
-- 图片、视频片段、截图先走 asset 上传，消息 payload 只保存 asset id / object key。
+- 图片、语音、视频片段、截图先走 asset 上传，消息 payload 只保存 asset id / object key；资产上传未接通时只能发送 `media_state=awaiting_asset_upload` 的结构化状态消息，不能伪装成已可播放媒体。
 - 视频通话按钮走 `media` 控制面，不再直接拼 SDP。
 
 ### 7.4 `feature:collaboration`
@@ -326,4 +328,3 @@ M5 新增事件：
 - LiveKit Self-hosting：`https://docs.livekit.io/transport/self-hosting/`
 - ICE NAT traversal：`https://www.rfc-editor.org/rfc/rfc8445`
 - TURN：`https://www.rfc-editor.org/rfc/rfc8656.html`
-

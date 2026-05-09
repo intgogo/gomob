@@ -10,21 +10,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.PhotoCamera
-import androidx.compose.material.icons.filled.Videocam
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -34,15 +26,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
-import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.model.message.MessageStatus
 
@@ -91,13 +80,16 @@ fun ConversationRoute(
             modifier = Modifier.weight(1f),
         )
 
-        ComposerBar(
+        MessageComposerBar(
             draft = draft,
+            enabled = true,
             onDraftChange = { draft = it },
             onPickImage = openImagePicker,
             onTakePhoto = openImagePicker,
             onOpenLocalVideo = { onOpenLocalVideo(state.title) },
-            onSend = sendDraft,
+            onSendVoice = viewModel::sendVoice,
+            onSendVideoClip = viewModel::sendVideoClip,
+            onSendText = sendDraft,
         )
     }
 }
@@ -195,98 +187,6 @@ private fun BubbleRow(
                 MessageStatus.Sent -> Gomob.colors.fg3
             },
             modifier = Modifier.padding(top = Gomob.spacing.s2, start = Gomob.spacing.s4, end = Gomob.spacing.s4),
-        )
-    }
-}
-
-@Composable
-private fun ComposerBar(
-    draft: String,
-    onDraftChange: (String) -> Unit,
-    onPickImage: () -> Unit,
-    onTakePhoto: () -> Unit,
-    onOpenLocalVideo: () -> Unit,
-    onSend: () -> Unit,
-) {
-    Column(Modifier.fillMaxWidth().background(Gomob.colors.bg1)) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(Gomob.spacing.hairline)
-                .background(Gomob.colors.line1),
-        )
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-        ) {
-            ToolIcon(Icons.Filled.Image, "图片", onClick = onPickImage)
-            ToolIcon(Icons.Filled.PhotoCamera, "拍摄", onClick = onTakePhoto)
-            ToolIcon(Icons.Filled.Videocam, "开启本地视频", onClick = onOpenLocalVideo)
-            Box(
-                Modifier
-                    .weight(1f)
-                    .height(Gomob.spacing.touchMin)
-                    .clip(Gomob.shapes.r2)
-                    .background(Gomob.colors.bg2)
-                    .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
-                    .padding(horizontal = Gomob.spacing.s12),
-                contentAlignment = Alignment.CenterStart,
-            ) {
-                if (draft.isEmpty()) {
-                    Text("发消息…", style = Gomob.type.bodySm, color = Gomob.colors.fg3)
-                }
-                BasicTextField(
-                    value = draft,
-                    onValueChange = onDraftChange,
-                    singleLine = true,
-                    textStyle = Gomob.type.bodySm.copy(color = Gomob.colors.fg0),
-                    cursorBrush = SolidColor(Gomob.colors.accent),
-                )
-            }
-            Box(
-                Modifier
-                    .size(Gomob.spacing.touchMin)
-                    .clip(Gomob.shapes.r2)
-                    .background(if (draft.isBlank()) Gomob.colors.bg2 else Gomob.colors.accentSoft)
-                    .border(
-                        Gomob.spacing.hairline,
-                        if (draft.isBlank()) Gomob.colors.line2 else Gomob.colors.accentLine,
-                        Gomob.shapes.r2,
-                    )
-                    .clickable(enabled = draft.isNotBlank(), onClick = onSend),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    GomobIcons.Send,
-                    contentDescription = "发送",
-                    tint = if (draft.isBlank()) Gomob.colors.fg3 else Gomob.colors.accent,
-                    modifier = Modifier.size(16.dp),
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ToolIcon(
-    icon: ImageVector,
-    label: String,
-    enabled: Boolean = true,
-    onClick: () -> Unit,
-) {
-    Box(
-        Modifier
-            .clip(Gomob.shapes.r2)
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(Gomob.spacing.s8),
-    ) {
-        Icon(
-            icon,
-            contentDescription = label,
-            tint = if (enabled) Gomob.colors.fg2 else Gomob.colors.fg3.copy(alpha = 0.45f),
         )
     }
 }

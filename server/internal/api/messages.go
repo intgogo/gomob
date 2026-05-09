@@ -294,7 +294,7 @@ func toMessageDTO(m *repo.Message) messageDTO {
 
 func validClientMessageKind(kind string) bool {
 	switch kind {
-	case "text", "image", "video_clip":
+	case "text", "image", "voice", "video_clip":
 		return true
 	default:
 		return false
@@ -317,6 +317,20 @@ func messagePreview(kind string, payload json.RawMessage) string {
 		return "[文字]"
 	case "image":
 		return "[图片]"
+	case "voice":
+		var p struct {
+			MediaState  string `json:"media_state"`
+			DurationSec int    `json:"duration_sec"`
+		}
+		if err := json.Unmarshal(payload, &p); err == nil {
+			if p.MediaState == "awaiting_asset_upload" {
+				return "[语音待上传]"
+			}
+			if p.DurationSec > 0 {
+				return "[语音 " + formatDuration(p.DurationSec) + "]"
+			}
+		}
+		return "[语音消息]"
 	case "video_call":
 		var p struct {
 			DurationSec int `json:"duration_sec"`
@@ -326,6 +340,12 @@ func messagePreview(kind string, payload json.RawMessage) string {
 		}
 		return "[视频通话]"
 	case "video_clip":
+		var p struct {
+			MediaState string `json:"media_state"`
+		}
+		if err := json.Unmarshal(payload, &p); err == nil && p.MediaState == "awaiting_asset_upload" {
+			return "[视频待上传]"
+		}
 		return "[视频消息]"
 	case "system":
 		return "[系统消息]"

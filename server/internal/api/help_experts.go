@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -56,11 +57,22 @@ func (h *Handler) ListHelpExperts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	out, _, err := h.activeHelpExperts(r.Context())
+	if err != nil {
+		httpx.WriteError(w, httpx.ErrInternal)
+		return
+	}
+
+	httpx.OK(w, map[string]any{"items": out})
+}
+
+func (h *Handler) activeHelpExperts(ctx context.Context) ([]helpExpertDTO, []int64, error) {
 	out := make([]helpExpertDTO, 0, len(fixedHelpExperts))
+	ids := make([]int64, 0, len(fixedHelpExperts))
 	for _, def := range fixedHelpExperts {
 		var userID int64
 		var name, employeeID string
-		err := h.pool.QueryRow(r.Context(), `
+		err := h.pool.QueryRow(ctx, `
 			SELECT id, real_name, employee_id
 			FROM users
 			WHERE employee_id = $1 AND status = 'active'
@@ -71,9 +83,9 @@ func (h *Handler) ListHelpExperts(w http.ResponseWriter, r *http.Request) {
 			if errors.Is(err, pgx.ErrNoRows) {
 				continue
 			}
-			httpx.WriteError(w, httpx.ErrInternal)
-			return
+			return nil, nil, err
 		}
+		ids = append(ids, userID)
 		out = append(out, helpExpertDTO{
 			UserID:       strconv.FormatInt(userID, 10),
 			Name:         name,
@@ -83,8 +95,7 @@ func (h *Handler) ListHelpExperts(w http.ResponseWriter, r *http.Request) {
 			Availability: "message_ready",
 		})
 	}
-
-	httpx.OK(w, map[string]any{"items": out})
+	return out, ids, nil
 }
 
 type openP2PConversationReq struct {
@@ -127,6 +138,52 @@ func (h *Handler) OpenP2PConversation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	conv, err := h.conversations.GetOrCreateP2P(r.Context(), uid, peerID)
+	if err != nil {
+		httpx.WriteError(w, httpx.ErrInternal)
+		return
+	}
+	summary, err := h.conversations.FindForUser(r.Context(), uid, conv.ID)
+	if err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			httpx.WriteError(w, httpx.ErrNotFound)
+			return
+		}
+		httpx.WriteError(w, httpx.ErrInternal)
+		return
+	}
+
+	httpx.OK(w, toConversationDTO(summary))
+}
+
+func (h *Handler) OpenHelpRoom(w http.ResponseWriter, r *http.Request) {
+	uid := callerUserID(r)
+	if uid == 0 {
+		httpx.WriteError(w, httpx.ErrTokenInvalid)
+		return
+	}
+	if !h.enforcer.Allow(callerRole(r), "message", "send") {
+		httpx.WriteError(w, httpx.ErrPermDenied)
+		return
+	}
+
+	_, expertIDs, err := h.activeHelpExperts(r.Context())
+	if err != nil {
+		httpx.WriteError(w, httpx.ErrInternal)
+		return
+	}
+	if len(expertIDs) == 0 {
+		httpx.WriteError(w, httpx.ErrNotFound)
+		return
+	}
+
+	members := append([]int64{uid}, expertIDs...)
+	conv, err := h.conversations.GetOrCreateSubjectGroup(
+		r.Context(),
+		"在线求助",
+		"online_help",
+		uid,
+		members,
+	)
 	if err != nil {
 		httpx.WriteError(w, httpx.ErrInternal)
 		return

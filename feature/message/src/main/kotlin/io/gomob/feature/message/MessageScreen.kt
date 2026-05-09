@@ -20,8 +20,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -34,7 +32,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -49,12 +46,13 @@ import io.gomob.designsystem.component.StatusTone
 import io.gomob.designsystem.decoration.ticks
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
+import io.gomob.model.message.MessageStatus
 
 const val MESSAGE_ROUTE = "message"
 
 private enum class MsgTab { List, Help }
 
-enum class AvatarKind { System, Call, Video, Image, Neutral }
+enum class AvatarKind { System, Call, Video, Image, Voice, Neutral }
 enum class WatchTone { Accent, Warn, Danger, Ok, Neutral }
 
 @Composable
@@ -66,7 +64,7 @@ fun MessageRoute(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val helpState by viewModel.helpUiState.collectAsStateWithLifecycle()
-    val helpSendState by viewModel.helpSendState.collectAsStateWithLifecycle()
+    val helpRoomState by viewModel.helpRoomUiState.collectAsStateWithLifecycle()
     var tab by remember { mutableStateOf(MsgTab.List) }
     val count = (state as? MessageListUiState.Content)?.conversations?.size ?: 0
 
@@ -89,10 +87,16 @@ fun MessageRoute(
             )
             MsgTab.Help -> HelpPane(
                 state = helpState,
-                sendState = helpSendState,
-                onRefresh = viewModel::refreshHelpExperts,
+                roomState = helpRoomState,
+                onRefresh = {
+                    viewModel.refreshHelpExperts()
+                    viewModel.refreshHelpRoom()
+                },
                 onOpenExpertDetail = { expert -> onOpenExpertDetail(expert.userId.toString()) },
-                onSendHelpMessage = viewModel::sendHelpMessage,
+                onSendHelpMessage = viewModel::sendHelpRoomMessage,
+                onSendHelpVoice = viewModel::sendHelpRoomVoice,
+                onSendHelpVideoClip = viewModel::sendHelpRoomVideoClip,
+                onRetry = viewModel::retryHelpRoomMessage,
                 onOpenLocalVideo = { onOpenLocalVideo("在线求助 · 第一视角") },
             )
         }
@@ -340,6 +344,7 @@ private fun MsgAvatar(initials: String, kind: AvatarKind) {
         AvatarKind.Call -> Gomob.colors.ok
         AvatarKind.Video -> Gomob.colors.warn
         AvatarKind.Image -> Gomob.colors.danger
+        AvatarKind.Voice -> Gomob.colors.accent
         AvatarKind.Neutral -> Gomob.colors.fg1
     }
     val borderTone = if (kind == AvatarKind.Neutral) Gomob.colors.line2 else tone
@@ -394,77 +399,196 @@ private fun UnreadBadge(unread: Long, tone: WatchTone) {
 @Composable
 private fun HelpPane(
     state: HelpExpertsUiState,
-    sendState: HelpSendUiState,
+    roomState: HelpRoomUiState,
     onRefresh: () -> Unit,
     onOpenExpertDetail: (HelpExpertRowUi) -> Unit,
     onSendHelpMessage: (String) -> Unit,
+    onSendHelpVoice: () -> Unit,
+    onSendHelpVideoClip: () -> Unit,
+    onRetry: (String?) -> Unit,
     onOpenLocalVideo: () -> Unit,
 ) {
     var draft by remember { mutableStateOf("") }
-    val sending = sendState is HelpSendUiState.Sending
 
+    Column(Modifier.fillMaxSize()) {
+        HelpParticipantStrip(
+            state = state,
+            onOpenExpertDetail = onOpenExpertDetail,
+            onRefresh = onRefresh,
+        )
+        when (roomState) {
+            HelpRoomUiState.Loading -> Box(Modifier.weight(1f)) {
+                StateBlock(text = "正在打开在线求助群", tone = StatusTone.Neutral)
+            }
+            is HelpRoomUiState.Error -> Box(Modifier.weight(1f)) {
+                StateBlock(text = roomState.message, tone = StatusTone.Danger, onClick = onRefresh)
+            }
+            is HelpRoomUiState.Content -> HelpRoomMessageList(
+                state = roomState,
+                onRefresh = onRefresh,
+                onRetry = onRetry,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        MessageComposerBar(
+            draft = draft,
+            enabled = roomState is HelpRoomUiState.Content,
+            onDraftChange = { draft = it },
+            onSendVoice = onSendHelpVoice,
+            onSendVideoClip = onSendHelpVideoClip,
+            onOpenLocalVideo = onOpenLocalVideo,
+            onSendText = {
+                val text = draft.trim()
+                if (text.isNotEmpty()) {
+                    onSendHelpMessage(text)
+                    draft = ""
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun HelpParticipantStrip(
+    state: HelpExpertsUiState,
+    onOpenExpertDetail: (HelpExpertRowUi) -> Unit,
+    onRefresh: () -> Unit,
+) {
+    when (state) {
+        HelpExpertsUiState.Loading -> StatusStrip(
+            text = "正在加载固定专家",
+            tone = StatusTone.Neutral,
+            onClick = onRefresh,
+        )
+        HelpExpertsUiState.Empty -> StatusStrip(
+            text = "服务端未配置固定专家",
+            tone = StatusTone.Warn,
+            onClick = onRefresh,
+        )
+        is HelpExpertsUiState.Error -> StatusStrip(
+            text = state.message,
+            tone = StatusTone.Danger,
+            onClick = onRefresh,
+        )
+        is HelpExpertsUiState.Content -> {
+            if (state.offlineCached) {
+                StatusStrip(
+                    text = state.errorMessage ?: "专家列表使用本地缓存",
+                    tone = StatusTone.Warn,
+                    onClick = onRefresh,
+                )
+            }
+            ExpertParticipantCard(
+                experts = state.experts,
+                onOpenExpertDetail = onOpenExpertDetail,
+                onRefresh = onRefresh,
+            )
+        }
+    }
+}
+
+@Composable
+private fun HelpRoomMessageList(
+    state: HelpRoomUiState.Content,
+    onRefresh: () -> Unit,
+    onRetry: (String?) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     LazyColumn(
-        Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = Gomob.spacing.s24),
-        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
+        modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(
+            horizontal = Gomob.spacing.s20,
+            vertical = Gomob.spacing.s12,
+        ),
+        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
     ) {
-        when (state) {
-            HelpExpertsUiState.Loading -> item {
-                StateBlock(text = "正在加载专家", tone = StatusTone.Neutral)
-            }
-            HelpExpertsUiState.Empty -> item {
-                StateBlock(text = "服务端未配置固定专家", tone = StatusTone.Warn, onClick = onRefresh)
-            }
-            is HelpExpertsUiState.Error -> item {
-                StateBlock(text = state.message, tone = StatusTone.Danger, onClick = onRefresh)
-            }
-            is HelpExpertsUiState.Content -> {
-                if (state.offlineCached) {
-                    item {
-                        StatusStrip(
-                            text = state.errorMessage ?: "专家列表使用本地缓存",
-                            tone = StatusTone.Warn,
-                            onClick = onRefresh,
-                        )
-                    }
-                }
-                item {
-                    ExpertParticipantCard(
-                        experts = state.experts,
-                        onOpenExpertDetail = onOpenExpertDetail,
-                        onRefresh = onRefresh,
-                    )
-                }
-                when (sendState) {
-                    HelpSendUiState.Idle -> Unit
-                    HelpSendUiState.Sending -> item {
-                        HelpSendStatus(text = "发送中", tone = StatusTone.Neutral)
-                    }
-                    is HelpSendUiState.Sent -> item {
-                        HelpSendStatus(text = sendState.message, tone = StatusTone.Ok)
-                    }
-                    is HelpSendUiState.Error -> item {
-                        HelpSendStatus(text = sendState.message, tone = StatusTone.Danger)
-                    }
-                }
-                item {
-                    HelpComposerCard(
-                        draft = draft,
-                        sending = sending,
-                        enabled = state.experts.isNotEmpty(),
-                        onDraftChange = { draft = it },
-                        onOpenLocalVideo = onOpenLocalVideo,
-                        onSend = {
-                            val text = draft.trim()
-                            if (text.isNotEmpty()) {
-                                onSendHelpMessage(text)
-                                draft = ""
-                            }
-                        },
-                    )
-                }
+        if (state.offlineCached) {
+            item {
+                HelpInlineStatus(
+                    text = state.errorMessage ?: "在线求助群使用本地缓存",
+                    tone = StatusTone.Warn,
+                    onClick = onRefresh,
+                )
             }
         }
+        when {
+            state.loading -> item {
+                HelpInlineStatus(text = "正在加载在线求助消息", tone = StatusTone.Neutral, onClick = null)
+            }
+            state.errorMessage != null && state.messages.isEmpty() -> item {
+                HelpInlineStatus(text = state.errorMessage, tone = StatusTone.Danger, onClick = onRefresh)
+            }
+            state.empty -> item {
+                HelpInlineStatus(text = "暂无消息", tone = StatusTone.Neutral, onClick = null)
+            }
+            else -> items(state.messages, key = { it.localKey }) { bubble ->
+                HelpBubbleRow(
+                    bubble = bubble,
+                    onRetry = { onRetry(bubble.clientMsgId) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HelpBubbleRow(
+    bubble: MessageBubbleUi,
+    onRetry: () -> Unit,
+) {
+    val alignment = if (bubble.mine) Alignment.End else Alignment.Start
+    val bubbleBg = if (bubble.mine) Gomob.colors.accentSoft else Gomob.colors.bg1
+    val bubbleLine = when (bubble.status) {
+        MessageStatus.Failed -> Gomob.colors.dangerLine
+        MessageStatus.Pending -> Gomob.colors.warnLine
+        MessageStatus.Sent -> if (bubble.mine) Gomob.colors.accentLine else Gomob.colors.line1
+    }
+    val textColor = if (bubble.mine) Gomob.colors.accent else Gomob.colors.fg0
+    val statusText = when (bubble.status) {
+        MessageStatus.Pending -> "发送中"
+        MessageStatus.Failed -> "发送失败"
+        MessageStatus.Sent -> bubble.time
+    }
+
+    Column(
+        Modifier.fillMaxWidth(),
+        horizontalAlignment = alignment,
+    ) {
+        if (!bubble.mine && !bubble.senderLabel.isNullOrBlank()) {
+            Text(
+                bubble.senderLabel,
+                style = Gomob.type.numInline.copy(fontSize = 10.sp),
+                color = Gomob.colors.fg3,
+                modifier = Modifier.padding(start = Gomob.spacing.s4, bottom = Gomob.spacing.s2),
+            )
+        }
+        Box(
+            Modifier
+                .widthIn(max = 292.dp)
+                .clip(Gomob.shapes.r3)
+                .background(bubbleBg)
+                .border(Gomob.spacing.hairline, bubbleLine, Gomob.shapes.r3)
+                .let {
+                    if (bubble.status == MessageStatus.Failed) {
+                        it.clickable(onClick = onRetry)
+                    } else {
+                        it
+                    }
+                }
+                .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
+        ) {
+            Text(bubble.text, style = Gomob.type.bodySm, color = textColor)
+        }
+        Text(
+            statusText,
+            style = Gomob.type.numInline,
+            color = when (bubble.status) {
+                MessageStatus.Failed -> Gomob.colors.danger
+                MessageStatus.Pending -> Gomob.colors.warn
+                MessageStatus.Sent -> Gomob.colors.fg3
+            },
+            modifier = Modifier.padding(top = Gomob.spacing.s2, start = Gomob.spacing.s4, end = Gomob.spacing.s4),
+        )
     }
 }
 
@@ -478,7 +602,7 @@ private fun ExpertParticipantCard(
         Modifier.padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20),
     ) {
         Text(
-            "固定专家 · ${experts.size} 位可联系",
+            "固定多人群 · ${experts.size} 位专家",
             fontSize = 10.sp,
             fontFamily = FontFamily.Monospace,
             color = Gomob.colors.fg3,
@@ -503,118 +627,6 @@ private fun ExpertParticipantCard(
                 RefreshExpertsBox(onClick = onRefresh)
             }
         }
-    }
-}
-
-@Composable
-private fun HelpSendStatus(text: String, tone: StatusTone) {
-    Box(
-        Modifier
-            .padding(horizontal = Gomob.spacing.s20)
-            .fillMaxWidth(),
-    ) {
-        StatusTag(text = text, tone = tone, showDot = true)
-    }
-}
-
-@Composable
-private fun HelpComposerCard(
-    draft: String,
-    sending: Boolean,
-    enabled: Boolean,
-    onDraftChange: (String) -> Unit,
-    onOpenLocalVideo: () -> Unit,
-    onSend: () -> Unit,
-) {
-    Row(
-        Modifier
-            .padding(horizontal = Gomob.spacing.s20)
-            .fillMaxWidth()
-            .clip(Gomob.shapes.r3)
-            .background(Gomob.colors.bg1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
-            .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-    ) {
-        HelpToolIcon(
-            icon = Icons.Filled.Videocam,
-            label = "开启第一视角视频",
-            enabled = enabled && !sending,
-            onClick = onOpenLocalVideo,
-        )
-        Box(
-            Modifier
-                .weight(1f)
-                .height(Gomob.spacing.touchMin)
-                .clip(Gomob.shapes.r2)
-                .background(Gomob.colors.bg2)
-                .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
-                .padding(horizontal = Gomob.spacing.s12),
-            contentAlignment = Alignment.CenterStart,
-        ) {
-            if (draft.isEmpty()) {
-                Text("发消息…", style = Gomob.type.bodySm, color = Gomob.colors.fg3)
-            }
-            BasicTextField(
-                value = draft,
-                onValueChange = onDraftChange,
-                enabled = enabled && !sending,
-                singleLine = true,
-                textStyle = Gomob.type.bodySm.copy(color = Gomob.colors.fg0),
-                cursorBrush = SolidColor(Gomob.colors.accent),
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        Box(
-            Modifier
-                .size(Gomob.spacing.touchMin)
-                .clip(Gomob.shapes.r2)
-                .background(if (draft.isBlank() || !enabled || sending) Gomob.colors.bg2 else Gomob.colors.accentSoft)
-                .border(
-                    Gomob.spacing.hairline,
-                    if (draft.isBlank() || !enabled || sending) Gomob.colors.line2 else Gomob.colors.accentLine,
-                    Gomob.shapes.r2,
-                )
-                .clickable(enabled = draft.isNotBlank() && enabled && !sending, onClick = onSend),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                GomobIcons.Send,
-                contentDescription = if (sending) "发送中" else "发送",
-                tint = if (draft.isBlank() || !enabled || sending) Gomob.colors.fg3 else Gomob.colors.accent,
-                modifier = Modifier.size(16.dp),
-            )
-        }
-    }
-}
-
-@Composable
-private fun HelpToolIcon(
-    icon: ImageVector,
-    label: String,
-    enabled: Boolean,
-    onClick: () -> Unit,
-) {
-    Box(
-        Modifier
-            .size(Gomob.spacing.touchMin)
-            .clip(Gomob.shapes.r2)
-            .background(if (enabled) Gomob.colors.accentSoft else Gomob.colors.bg2)
-            .border(
-                Gomob.spacing.hairline,
-                if (enabled) Gomob.colors.accentLine else Gomob.colors.line2,
-                Gomob.shapes.r2,
-            )
-            .clickable(enabled = enabled, onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            icon,
-            contentDescription = label,
-            tint = if (enabled) Gomob.colors.accent else Gomob.colors.fg3.copy(alpha = 0.45f),
-            modifier = Modifier.size(18.dp),
-        )
     }
 }
 
@@ -700,6 +712,25 @@ private fun StateBlock(
     Box(
         Modifier
             .padding(horizontal = Gomob.spacing.s20, vertical = Gomob.spacing.s12)
+            .fillMaxWidth()
+            .clip(Gomob.shapes.r3)
+            .background(Gomob.colors.bg1)
+            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
+            .let { if (onClick != null) it.clickable(onClick = onClick) else it }
+            .padding(Gomob.spacing.s16),
+    ) {
+        StatusTag(text = text, tone = tone, showDot = tone != StatusTone.Neutral)
+    }
+}
+
+@Composable
+private fun HelpInlineStatus(
+    text: String,
+    tone: StatusTone,
+    onClick: (() -> Unit)?,
+) {
+    Box(
+        Modifier
             .fillMaxWidth()
             .clip(Gomob.shapes.r3)
             .background(Gomob.colors.bg1)

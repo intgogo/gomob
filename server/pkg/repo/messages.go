@@ -34,7 +34,7 @@ type Message struct {
 	ConversationID int64
 	SenderID       *int64
 	ServerSeq      int64
-	Kind           string // text / image / video_call / video_clip / system
+	Kind           string // text / image / voice / video_call / video_clip / system
 	Payload        json.RawMessage
 	ClientMsgID    *string
 	CreatedAt      time.Time
@@ -136,11 +136,104 @@ func (r *ConversationRepo) GetOrCreateP2P(ctx context.Context, a, b int64) (*Con
 	return c, nil
 }
 
+// GetOrCreateSubjectGroup 拿/建一个由业务 subject 唯一标识的固定群会话。
+func (r *ConversationRepo) GetOrCreateSubjectGroup(
+	ctx context.Context,
+	title string,
+	subjectKind string,
+	subjectID int64,
+	memberIDs []int64,
+) (*Conversation, error) {
+	if title == "" || subjectKind == "" || subjectID <= 0 {
+		return nil, errors.New("subject group 参数无效")
+	}
+	members := uniquePositiveInt64(memberIDs)
+	if len(members) == 0 {
+		return nil, errors.New("subject group 至少需要一个成员")
+	}
+
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	conv, err := r.findBySubjectTx(ctx, tx, subjectKind, subjectID)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	if conv == nil {
+		const insertConv = `
+			INSERT INTO conversations(kind, title, subject_kind, subject_id)
+			VALUES('group', $1, $2, $3)
+			ON CONFLICT (subject_kind, subject_id)
+			WHERE subject_kind IS NOT NULL AND subject_id IS NOT NULL
+			DO NOTHING
+			RETURNING id, kind, title, p2p_key, subject_kind, subject_id, next_seq, created_at, updated_at`
+		conv = &Conversation{}
+		err = tx.QueryRow(ctx, insertConv, title, subjectKind, subjectID).Scan(
+			&conv.ID, &conv.Kind, &conv.Title, &conv.P2PKey, &conv.SubjectKind, &conv.SubjectID,
+			&conv.NextSeq, &conv.CreatedAt, &conv.UpdatedAt,
+		)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				conv, err = r.findBySubjectTx(ctx, tx, subjectKind, subjectID)
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				return nil, err
+			}
+		}
+	}
+
+	for _, userID := range members {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO conversation_members(conversation_id, user_id) VALUES($1, $2)
+			 ON CONFLICT DO NOTHING`,
+			conv.ID, userID,
+		); err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO conversation_member_states(conversation_id, user_id) VALUES($1, $2)
+			 ON CONFLICT DO NOTHING`,
+			conv.ID, userID,
+		); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return conv, nil
+}
+
 func (r *ConversationRepo) findByP2PKeyTx(ctx context.Context, tx pgx.Tx, key string) (*Conversation, error) {
 	const q = `SELECT id, kind, title, p2p_key, next_seq, created_at FROM conversations WHERE p2p_key=$1`
 	row := tx.QueryRow(ctx, q, key)
 	c := &Conversation{}
 	if err := row.Scan(&c.ID, &c.Kind, &c.Title, &c.P2PKey, &c.NextSeq, &c.CreatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return c, nil
+}
+
+func (r *ConversationRepo) findBySubjectTx(ctx context.Context, tx pgx.Tx, subjectKind string, subjectID int64) (*Conversation, error) {
+	const q = `
+		SELECT id, kind, title, p2p_key, subject_kind, subject_id, next_seq, created_at, updated_at
+		FROM conversations
+		WHERE subject_kind=$1 AND subject_id=$2`
+	row := tx.QueryRow(ctx, q, subjectKind, subjectID)
+	c := &Conversation{}
+	if err := row.Scan(
+		&c.ID, &c.Kind, &c.Title, &c.P2PKey, &c.SubjectKind, &c.SubjectID,
+		&c.NextSeq, &c.CreatedAt, &c.UpdatedAt,
+	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -569,4 +662,20 @@ func nullTimePtr(v sql.NullTime) *time.Time {
 	}
 	t := v.Time
 	return &t
+}
+
+func uniquePositiveInt64(items []int64) []int64 {
+	seen := make(map[int64]struct{}, len(items))
+	out := make([]int64, 0, len(items))
+	for _, item := range items {
+		if item <= 0 {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
 }

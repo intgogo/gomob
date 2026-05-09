@@ -37,6 +37,7 @@ M5.8 harness 与观测闭环
 - 扩展 `messages`：`client_msg_id / edited_at / deleted_at`。
 - 新建 `conversation_member_states`。
 - 新建 `media_rooms / media_participants / live_sessions / live_annotations / live_recordings`。
+- 新增 `server/migrations/0011_help_room.up.sql`：给 `conversations(subject_kind, subject_id)` 建 partial unique index，保证每个发起人只有一个 `subject_kind=online_help / subject_id=user_id` 的固定求助群。
 
 Down migration 必须按 FK 反向删除。
 
@@ -48,17 +49,21 @@ Down migration 必须按 FK 反向删除。
 - `AppendIdempotent(ctx, msg, clientMsgID)`：同一 `sender_id + client_msg_id` 重发返回原消息，不重新分配 `server_seq`。
 - `MarkRead(ctx, conversationID, userID, lastReadSeq)`：只允许成员更新自己的已读水位。
 - `EnsureMemberState(ctx, conversationID, userID)`：创建会话成员时同步建 state。
+- `GetOrCreateSubjectGroup(ctx, title, subjectKind, subjectID, memberIDs)`：按业务 subject 创建 / 复用固定群会话，并补齐成员和已读状态。
 
 ### 2.3 API
 
 在 `server/internal/api/handler.go` 挂载：
 
 - `GET /v1/conversations`
+- `GET /v1/conversations/help-experts`
+- `POST /v1/conversations/help-room`
 - `GET /v1/conversations/{id}/messages`
 - `POST /v1/conversations/{id}/messages`
 - `POST /v1/conversations/{id}/read`
 
 返回格式遵守 `docs/architecture/server/02-api-contract.md`：int64 id 用字符串。
+`help-room` 是在线求助的固定多人聊天窗口：当前用户 + 固定专家加入同一个 `kind=group` 会话，App 只向该群发送消息，不再向每个专家拆分 P2P 消息。
 
 ### 2.4 验收
 
@@ -156,6 +161,7 @@ UI 状态：
 - 单聊进入时加载历史并自动 `markRead(lastVisibleSeq)`。
 - 发送文本后立刻出现 pending 气泡；失败显示重试状态。
 - 图片 / 拍摄按钮在 M5.3 只接 asset picker 入口，不上传假图片。
+- 语音 / 视频消息按钮先发送结构化 `voice` / `video_clip` 控制消息，payload 标记 `media_state=awaiting_asset_upload`；真实录音、视频文件可播放前必须接通 asset 上传和下载 URL，不在 UI 里伪装已上传媒体。
 - 视频通话按钮在 M5.5 前 disabled，显示真实不可用状态，不写 stub。
 
 ### 4.3 UI 验收

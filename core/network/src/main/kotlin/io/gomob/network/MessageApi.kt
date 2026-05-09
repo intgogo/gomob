@@ -25,6 +25,9 @@ interface MessageApi {
     @GET("v1/conversations/help-experts")
     suspend fun helpExperts(): Envelope<HelpExpertListResponse>
 
+    @POST("v1/conversations/help-room")
+    suspend fun openHelpRoom(): Envelope<ConversationDto>
+
     @POST("v1/conversations/p2p")
     suspend fun openDirectConversation(
         @Body request: OpenDirectConversationRequest,

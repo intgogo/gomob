@@ -86,6 +86,21 @@ class MessageRepository @Inject constructor(
         return entity.toDomain(lastMessage)
     }
 
+    suspend fun openHelpRoom(): ConversationSummary {
+        val resp = api.openHelpRoom()
+        val dto = resp.data ?: throw ApiException(50001, 500, "在线求助会话响应缺数据")
+        val lastMessage = dto.lastMessage?.toEntity(
+            conversationId = dto.id.toLong(),
+            json = json,
+        )
+        if (lastMessage != null) {
+            messageDao.upsertServerMessages(listOf(lastMessage))
+        }
+        val entity = dto.toEntity()
+        conversationDao.upsertConversation(entity)
+        return entity.toDomain(lastMessage)
+    }
+
     suspend fun refreshMessages(conversationId: Long, limit: Int = 100, fullSync: Boolean = false) {
         val since = if (fullSync) 0L else messageDao.maxServerSeq(conversationId) ?: 0L
         val resp = api.messages(conversationId.toString(), sinceSeq = since, limit = limit)
@@ -94,25 +109,54 @@ class MessageRepository @Inject constructor(
     }
 
     suspend fun sendText(conversationId: Long, text: String): String {
-        val clientMsgId = UUID.randomUUID().toString()
         val payload = buildJsonObject { put("text", text) }
-        messageDao.upsertMessage(
-            pendingTextEntity(
-                conversationId = conversationId,
-                text = text,
-                clientMsgId = clientMsgId,
-                now = Instant.now().toString(),
-            ),
+        return sendClientMessage(
+            conversationId = conversationId,
+            kind = "text",
+            payload = payload,
+            preview = text,
         )
-        sendExistingMessage(conversationId, clientMsgId, "text", payload)
-        return clientMsgId
+    }
+
+    suspend fun sendVoice(conversationId: Long): String {
+        val payload = buildJsonObject {
+            put("media_state", "awaiting_asset_upload")
+            put("duration_sec", 0)
+            put("source", "composer_voice")
+        }
+        return sendClientMessage(
+            conversationId = conversationId,
+            kind = "voice",
+            payload = payload,
+            preview = "[语音待上传]",
+        )
+    }
+
+    suspend fun sendVideoClip(conversationId: Long): String {
+        val payload = buildJsonObject {
+            put("media_state", "awaiting_asset_upload")
+            put("source", "composer_video")
+        }
+        return sendClientMessage(
+            conversationId = conversationId,
+            kind = "video_clip",
+            payload = payload,
+            preview = "[视频待上传]",
+        )
     }
 
     suspend fun retryText(clientMsgId: String) {
+        retryMessage(clientMsgId)
+    }
+
+    suspend fun retryMessage(clientMsgId: String) {
         val entity = messageDao.findByClientMsgId(clientMsgId) ?: return
         val payload = json.parseToJsonElement(entity.payloadJson)
-        val text = payload.jsonObject["text"]?.jsonPrimitive?.content.orEmpty()
-        if (entity.kind != "text" || text.isBlank()) return
+        if (!retryableMessageKind(entity.kind)) return
+        if (entity.kind == "text") {
+            val text = payload.jsonObject["text"]?.jsonPrimitive?.content.orEmpty()
+            if (text.isBlank()) return
+        }
         messageDao.markPending(clientMsgId)
         sendExistingMessage(entity.conversationId, clientMsgId, entity.kind, payload)
     }
@@ -154,11 +198,48 @@ class MessageRepository @Inject constructor(
             throw t
         }
     }
+
+    private suspend fun sendClientMessage(
+        conversationId: Long,
+        kind: String,
+        payload: JsonElement,
+        preview: String,
+    ): String {
+        val clientMsgId = UUID.randomUUID().toString()
+        messageDao.upsertMessage(
+            pendingMessageEntity(
+                conversationId = conversationId,
+                kind = kind,
+                payload = payload,
+                preview = preview,
+                clientMsgId = clientMsgId,
+                now = Instant.now().toString(),
+            ),
+        )
+        sendExistingMessage(conversationId, clientMsgId, kind, payload)
+        return clientMsgId
+    }
 }
 
 internal fun pendingTextEntity(
     conversationId: Long,
     text: String,
+    clientMsgId: String,
+    now: String,
+): MessageEntity = pendingMessageEntity(
+    conversationId = conversationId,
+    kind = "text",
+    payload = buildJsonObject { put("text", text) },
+    preview = text,
+    clientMsgId = clientMsgId,
+    now = now,
+)
+
+internal fun pendingMessageEntity(
+    conversationId: Long,
+    kind: String,
+    payload: JsonElement,
+    preview: String,
     clientMsgId: String,
     now: String,
 ): MessageEntity = MessageEntity(
@@ -167,14 +248,17 @@ internal fun pendingTextEntity(
     conversationId = conversationId,
     serverSeq = null,
     senderId = null,
-    kind = "text",
-    payloadJson = buildJsonObject { put("text", text) }.toString(),
-    preview = text,
+    kind = kind,
+    payloadJson = payload.toString(),
+    preview = preview,
     clientMsgId = clientMsgId,
     status = MessageStatus.Pending.name,
     createdAt = now,
     editedAt = null,
 )
+
+private fun retryableMessageKind(kind: String): Boolean =
+    kind == "text" || kind == "voice" || kind == "video_clip"
 
 private fun ConversationDto.toEntity(): ConversationEntity {
     val conversationId = id.toLong()

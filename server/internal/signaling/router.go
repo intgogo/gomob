@@ -76,7 +76,7 @@ func (r *Router) Dispatch(ctx context.Context, c *Conn, env Envelope) {
 
 type msgSendReq struct {
 	ToUserID    int64           `json:"to_user_id"`
-	Kind        string          `json:"kind"` // text / image / video_clip
+	Kind        string          `json:"kind"` // text / image / voice / video_clip
 	Content     json.RawMessage `json:"content"`
 	ClientMsgID string          `json:"client_msg_id,omitempty"`
 }

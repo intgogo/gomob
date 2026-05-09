@@ -46,6 +46,29 @@ class MessageRepositoryTest {
     }
 
     @Test
+    fun pendingMessageEntityStoresMediaKindAndPreview() {
+        val payload = buildJsonObject {
+            put("media_state", "awaiting_asset_upload")
+            put("source", "composer_voice")
+        }
+
+        val entity = pendingMessageEntity(
+            conversationId = 7,
+            kind = "voice",
+            payload = payload,
+            preview = "[语音待上传]",
+            clientMsgId = "voice-1",
+            now = "2026-05-08T12:00:00Z",
+        )
+
+        assertThat(entity.localKey).isEqualTo("c:voice-1")
+        assertThat(entity.kind).isEqualTo("voice")
+        assertThat(entity.payloadJson).contains("awaiting_asset_upload")
+        assertThat(entity.preview).isEqualTo("[语音待上传]")
+        assertThat(entity.status).isEqualTo(MessageStatus.Pending.name)
+    }
+
+    @Test
     fun sendTextUpdatesPendingRowToDeliveredWithoutDuplicateInsert() = runTest {
         val messageDao = FakeMessageDao()
         val repository = MessageRepository(
@@ -64,6 +87,69 @@ class MessageRepositoryTest {
         assertThat(saved.serverId).isEqualTo(101)
         assertThat(saved.serverSeq).isEqualTo(5)
         assertThat(saved.status).isEqualTo(MessageStatus.Sent.name)
+    }
+
+    @Test
+    fun sendVoiceUsesVoiceKindAndAwaitingUploadPayload() = runTest {
+        val api = FakeMessageApi()
+        val repository = MessageRepository(
+            api = api,
+            conversationDao = FakeConversationDao(),
+            messageDao = FakeMessageDao(),
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        repository.sendVoice(conversationId = 9)
+
+        val request = api.sentRequests.single()
+        assertThat(request.kind).isEqualTo("voice")
+        assertThat(request.payload.toString()).contains("awaiting_asset_upload")
+    }
+
+    @Test
+    fun sendVideoClipUsesVideoClipKindAndAwaitingUploadPayload() = runTest {
+        val api = FakeMessageApi()
+        val repository = MessageRepository(
+            api = api,
+            conversationDao = FakeConversationDao(),
+            messageDao = FakeMessageDao(),
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        repository.sendVideoClip(conversationId = 9)
+
+        val request = api.sentRequests.single()
+        assertThat(request.kind).isEqualTo("video_clip")
+        assertThat(request.payload.toString()).contains("awaiting_asset_upload")
+    }
+
+    @Test
+    fun retryMessageResendsMediaKind() = runTest {
+        val api = FakeMessageApi()
+        val messageDao = FakeMessageDao()
+        messageDao.upsertMessage(
+            pendingMessageEntity(
+                conversationId = 9,
+                kind = "voice",
+                payload = buildJsonObject { put("media_state", "awaiting_asset_upload") },
+                preview = "[语音待上传]",
+                clientMsgId = "voice-retry",
+                now = "2026-05-08T12:00:00Z",
+            ).copy(status = MessageStatus.Failed.name),
+        )
+        val repository = MessageRepository(
+            api = api,
+            conversationDao = FakeConversationDao(),
+            messageDao = messageDao,
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        repository.retryMessage("voice-retry")
+
+        val request = api.sentRequests.single()
+        assertThat(request.kind).isEqualTo("voice")
+        assertThat(request.clientMsgId).isEqualTo("voice-retry")
+        assertThat(messageDao.items.single().status).isEqualTo(MessageStatus.Sent.name)
     }
 
     @Test
@@ -211,6 +297,35 @@ class MessageRepositoryTest {
         assertThat(conversation.peer?.name).isEqualTo("陈若愚")
         assertThat(conversationDao.upsertedSingle?.id).isEqualTo(44)
     }
+
+    @Test
+    fun openHelpRoomStoresReturnedGroupConversation() = runTest {
+        val conversationDao = FakeConversationDao()
+        val repository = MessageRepository(
+            api = FakeMessageApi(
+                helpRoom = ConversationDto(
+                    id = "77",
+                    kind = "group",
+                    title = "在线求助",
+                    subjectKind = "online_help",
+                    subjectId = "3",
+                    createdAt = "2026-05-08T12:00:00Z",
+                    updatedAt = "2026-05-08T12:00:00Z",
+                ),
+            ),
+            conversationDao = conversationDao,
+            messageDao = FakeMessageDao(),
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        val conversation = repository.openHelpRoom()
+
+        assertThat(conversation.id).isEqualTo(77)
+        assertThat(conversation.kind).isEqualTo("group")
+        assertThat(conversation.title).isEqualTo("在线求助")
+        assertThat(conversation.subjectKind).isEqualTo("online_help")
+        assertThat(conversationDao.upsertedSingle?.id).isEqualTo(77)
+    }
 }
 
 private class FakeMessageApi(
@@ -218,14 +333,29 @@ private class FakeMessageApi(
     private val messages: List<MessageDto> = emptyList(),
     private val experts: List<HelpExpertDto> = emptyList(),
     private val directConversation: ConversationDto? = null,
+    private val helpRoom: ConversationDto? = null,
 ) : MessageApi {
     val messageSinceSeqRequests = mutableListOf<Long>()
+    val sentRequests = mutableListOf<CreateMessageRequest>()
 
     override suspend fun conversations(cursor: String?, limit: Int): Envelope<ConversationListResponse> =
         Envelope(code = 0, data = ConversationListResponse(items = conversations))
 
     override suspend fun helpExperts(): Envelope<HelpExpertListResponse> =
         Envelope(code = 0, data = HelpExpertListResponse(items = experts))
+
+    override suspend fun openHelpRoom(): Envelope<ConversationDto> =
+        Envelope(
+            code = 0,
+            data = helpRoom ?: ConversationDto(
+                id = "77",
+                kind = "group",
+                title = "在线求助",
+                subjectKind = "online_help",
+                createdAt = "2026-05-08T11:00:00Z",
+                updatedAt = "2026-05-08T11:00:00Z",
+            ),
+        )
 
     override suspend fun openDirectConversation(
         request: OpenDirectConversationRequest,
@@ -252,8 +382,9 @@ private class FakeMessageApi(
     override suspend fun sendMessage(
         conversationId: String,
         request: CreateMessageRequest,
-    ): Envelope<MessageDto> =
-        Envelope(
+    ): Envelope<MessageDto> {
+        sentRequests += request
+        return Envelope(
             code = 0,
             data = MessageDto(
                 id = "101",
@@ -266,6 +397,7 @@ private class FakeMessageApi(
                 createdAt = "2026-05-08T12:00:00Z",
             ),
         )
+    }
 
     override suspend fun markRead(
         conversationId: String,

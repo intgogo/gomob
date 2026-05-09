@@ -9,6 +9,11 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
+import java.util.Base64
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -33,6 +38,9 @@ class TokenStore @Inject constructor(
     val accessTokenFlow: Flow<String?> =
         context.tokenDataStore.data.map { it[keyAccess] }
 
+    val currentUserIdFlow: Flow<Long?> =
+        accessTokenFlow.map { it.accessTokenUserId() }
+
     suspend fun save(access: String, refresh: String) {
         context.tokenDataStore.edit {
             it[keyAccess] = access
@@ -52,6 +60,19 @@ class TokenStore @Inject constructor(
     /** 给网络层 TokenProvider 接口同步使用。 */
     fun currentAccessToken(): String? = runBlocking { accessTokenSuspend() }
 
+    fun currentUserId(): Long? = runBlocking { currentUserIdFlow.first() }
+
     suspend fun refreshTokenSuspend(): String? =
         context.tokenDataStore.data.map { it[keyRefresh] }.first()
+}
+
+private fun String?.accessTokenUserId(): Long? {
+    val token = this ?: return null
+    val payload = token.split('.').getOrNull(1) ?: return null
+    return runCatching {
+        val padding = (4 - payload.length % 4) % 4
+        val normalized = payload + "=".repeat(padding)
+        val json = Base64.getUrlDecoder().decode(normalized).decodeToString()
+        Json.parseToJsonElement(json).jsonObject["uid"]?.jsonPrimitive?.longOrNull
+    }.getOrNull()
 }
