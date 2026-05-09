@@ -11,6 +11,7 @@ import io.gomob.model.message.MessageRecord
 import io.gomob.model.message.MessageStatus
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -35,6 +36,8 @@ class MessageListViewModel @Inject constructor(
     private val helpExperts = MutableStateFlow<List<HelpExpertRowUi>>(emptyList())
     private val helpRefreshState = MutableStateFlow<RefreshState>(RefreshState.Loading)
     private val openingExpertId = MutableStateFlow<Long?>(null)
+    private val _helpSendState = MutableStateFlow<HelpSendUiState>(HelpSendUiState.Idle)
+    val helpSendState: StateFlow<HelpSendUiState> = _helpSendState.asStateFlow()
 
     val uiState: StateFlow<MessageListUiState> =
         combine(repository.observeConversations(), refreshState) { conversations, refresh ->
@@ -112,6 +115,57 @@ class MessageListViewModel @Inject constructor(
                 }
                 .onFailure { helpRefreshState.value = RefreshState.Error(it.readableMessage()) }
             openingExpertId.value = null
+        }
+    }
+
+    fun sendHelpMessage(text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty() || _helpSendState.value is HelpSendUiState.Sending) return
+        viewModelScope.launch {
+            _helpSendState.value = HelpSendUiState.Sending
+            runCatching {
+                val targets = helpExperts.value.ifEmpty {
+                    repository.helpExperts().map { it.toRowUi() }.also { helpExperts.value = it }
+                }
+                require(targets.isNotEmpty()) { "服务端未配置固定专家" }
+                targets.forEach { expert ->
+                    val conversation = repository.openDirectConversation(expert.userId)
+                    repository.sendText(conversation.id, trimmed)
+                }
+                refresh()
+                targets.size
+            }.onSuccess { count ->
+                _helpSendState.value = HelpSendUiState.Sent("已发送给 $count 位专家")
+            }.onFailure { error ->
+                _helpSendState.value = HelpSendUiState.Error(error.readableMessage())
+            }
+        }
+    }
+}
+
+@HiltViewModel
+class ExpertDetailViewModel @Inject constructor(
+    savedStateHandle: SavedStateHandle,
+    private val repository: MessageRepository,
+) : ViewModel() {
+    private val expertUserId = savedStateHandle.get<String>("id")?.toLongOrNull() ?: 0L
+    private val _state = MutableStateFlow<ExpertDetailUiState>(ExpertDetailUiState.Loading)
+    val state: StateFlow<ExpertDetailUiState> = _state.asStateFlow()
+
+    init {
+        refresh()
+    }
+
+    fun refresh() {
+        viewModelScope.launch {
+            _state.value = ExpertDetailUiState.Loading
+            _state.value = runCatching {
+                val expert = repository.helpExperts()
+                    .map { it.toRowUi() }
+                    .firstOrNull { it.userId == expertUserId }
+                    ?: throw IllegalArgumentException("专家不存在")
+                ExpertDetailUiState.Content(expert)
+            }.getOrElse { ExpertDetailUiState.Error(it.readableMessage()) }
         }
     }
 }
@@ -223,6 +277,19 @@ sealed interface HelpExpertsUiState {
         val offlineCached: Boolean,
         val errorMessage: String?,
     ) : HelpExpertsUiState
+}
+
+sealed interface HelpSendUiState {
+    data object Idle : HelpSendUiState
+    data object Sending : HelpSendUiState
+    data class Sent(val message: String) : HelpSendUiState
+    data class Error(val message: String) : HelpSendUiState
+}
+
+sealed interface ExpertDetailUiState {
+    data object Loading : ExpertDetailUiState
+    data class Error(val message: String) : ExpertDetailUiState
+    data class Content(val expert: HelpExpertRowUi) : ExpertDetailUiState
 }
 
 data class HelpExpertRowUi(

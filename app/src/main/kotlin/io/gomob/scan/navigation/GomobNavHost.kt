@@ -34,6 +34,7 @@ import io.gomob.feature.home.HomeAiChatRoute
 import io.gomob.feature.home.HomeRoute
 import io.gomob.feature.home.InspectionDetailRoute
 import io.gomob.feature.message.ConversationRoute
+import io.gomob.feature.message.ExpertDetailRoute
 import io.gomob.feature.message.LocalVideoPreviewRoute
 import io.gomob.feature.message.MessageRoute
 import io.gomob.feature.profile.HistoryRoute
@@ -113,7 +114,11 @@ fun GomobNavHost() {
                         onOpenLocalVideo = { title ->
                             nav.navigate("message/local-video/${Uri.encode(title)}")
                         },
+                        onOpenExpertDetail = { id -> nav.navigate("message/expert/$id") },
                     )
+                }
+                composable("message/expert/{id}") {
+                    ExpertDetailRoute(onBack = { nav.popBackStack() })
                 }
                 composable("message/conv/{id}") { entry ->
                     ConversationRoute(
