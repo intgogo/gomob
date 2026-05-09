@@ -178,6 +178,59 @@ func (r *ConversationRepo) CounterpartIDs(ctx context.Context, convID, self int6
 	return ids, rows.Err()
 }
 
+// FindForUser 返回当前用户可访问的单个会话摘要。
+func (r *ConversationRepo) FindForUser(ctx context.Context, userID, convID int64) (*ConversationSummary, error) {
+	const q = `
+		SELECT c.id, c.kind, c.title, c.p2p_key, c.subject_kind, c.subject_id,
+		       c.next_seq, c.created_at, c.updated_at,
+		       COALESCE(cms.last_read_seq, 0) AS last_read_seq,
+		       peer.id, peer.real_name, peer.employee_id,
+		       GREATEST(c.next_seq - 1 - COALESCE(cms.last_read_seq, 0), 0) AS unread_count
+		FROM conversations c
+		JOIN conversation_members cm
+		  ON cm.conversation_id = c.id AND cm.user_id = $1
+		LEFT JOIN conversation_member_states cms
+		  ON cms.conversation_id = c.id AND cms.user_id = $1
+		LEFT JOIN LATERAL (
+			SELECT u.id, u.real_name, u.employee_id
+			FROM conversation_members cm2
+			JOIN users u ON u.id = cm2.user_id
+			WHERE c.kind = 'p2p' AND cm2.conversation_id = c.id AND cm2.user_id <> $1
+			ORDER BY u.id
+			LIMIT 1
+		) peer ON true
+		WHERE c.id = $2`
+	var s ConversationSummary
+	var title, p2pKey, subjectKind sql.NullString
+	var subjectID sql.NullInt64
+	var peerID sql.NullInt64
+	var peerName, peerEmployee sql.NullString
+	err := r.pool.QueryRow(ctx, q, userID, convID).Scan(
+		&s.Conversation.ID, &s.Conversation.Kind, &title, &p2pKey, &subjectKind, &subjectID,
+		&s.Conversation.NextSeq, &s.Conversation.CreatedAt, &s.Conversation.UpdatedAt, &s.LastReadSeq,
+		&peerID, &peerName, &peerEmployee,
+		&s.UnreadCount,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	s.Conversation.Title = nullStringPtr(title)
+	s.Conversation.P2PKey = nullStringPtr(p2pKey)
+	s.Conversation.SubjectKind = nullStringPtr(subjectKind)
+	s.Conversation.SubjectID = nullInt64Ptr(subjectID)
+	if peerID.Valid {
+		s.Peer = &ConversationPeer{
+			ID:         peerID.Int64,
+			RealName:   peerName.String,
+			EmployeeID: peerEmployee.String,
+		}
+	}
+	return &s, nil
+}
+
 // ListForUser 返回当前用户参与的会话摘要，按 updated_at/id 倒序。
 func (r *ConversationRepo) ListForUser(ctx context.Context, userID int64, limit int, cursor int64) ([]ConversationSummary, int64, error) {
 	if limit <= 0 || limit > 100 {

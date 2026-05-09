@@ -34,6 +34,7 @@ import io.gomob.feature.home.HomeAiChatRoute
 import io.gomob.feature.home.HomeRoute
 import io.gomob.feature.home.InspectionDetailRoute
 import io.gomob.feature.message.ConversationRoute
+import io.gomob.feature.message.LocalVideoPreviewRoute
 import io.gomob.feature.message.MessageRoute
 import io.gomob.feature.profile.HistoryRoute
 import io.gomob.feature.profile.ProfileAboutRoute
@@ -107,11 +108,25 @@ fun GomobNavHost() {
 
                 // ---- 消息 + 二级 ----
                 composable(ROUTE_MESSAGE) {
-                    MessageRoute(onOpenConversation = { id -> nav.navigate("message/conv/$id") })
+                    MessageRoute(
+                        onOpenConversation = { id -> nav.navigate("message/conv/$id") },
+                        onOpenLocalVideo = { title ->
+                            nav.navigate("message/local-video/${Uri.encode(title)}")
+                        },
+                    )
                 }
                 composable("message/conv/{id}") { entry ->
                     ConversationRoute(
                         conversationId = entry.arguments?.getString("id") ?: "",
+                        onBack = { nav.popBackStack() },
+                        onOpenLocalVideo = { title ->
+                            nav.navigate("message/local-video/${Uri.encode(title)}")
+                        },
+                    )
+                }
+                composable("message/local-video/{title}") { entry ->
+                    LocalVideoPreviewRoute(
+                        title = Uri.decode(entry.arguments?.getString("title").orEmpty()),
                         onBack = { nav.popBackStack() },
                     )
                 }

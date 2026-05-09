@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.gomob.data.message.MessageRepository
 import io.gomob.model.message.ConversationSummary
+import io.gomob.model.message.HelpExpert
 import io.gomob.model.message.MessageRecord
 import io.gomob.model.message.MessageStatus
 import kotlinx.coroutines.flow.SharingStarted
@@ -31,6 +32,9 @@ class MessageListViewModel @Inject constructor(
     private val json: Json,
 ) : ViewModel() {
     private val refreshState = MutableStateFlow<RefreshState>(RefreshState.Loading)
+    private val helpExperts = MutableStateFlow<List<HelpExpertRowUi>>(emptyList())
+    private val helpRefreshState = MutableStateFlow<RefreshState>(RefreshState.Loading)
+    private val openingExpertId = MutableStateFlow<Long?>(null)
 
     val uiState: StateFlow<MessageListUiState> =
         combine(repository.observeConversations(), refreshState) { conversations, refresh ->
@@ -51,8 +55,27 @@ class MessageListViewModel @Inject constructor(
             initialValue = MessageListUiState.Loading,
         )
 
+    val helpUiState: StateFlow<HelpExpertsUiState> =
+        combine(helpExperts, helpRefreshState, openingExpertId) { experts, refresh, openingId ->
+            when {
+                experts.isNotEmpty() -> HelpExpertsUiState.Content(
+                    experts = experts.map { it.copy(opening = it.userId == openingId) },
+                    offlineCached = refresh is RefreshState.Error,
+                    errorMessage = (refresh as? RefreshState.Error)?.message,
+                )
+                refresh is RefreshState.Loading -> HelpExpertsUiState.Loading
+                refresh is RefreshState.Error -> HelpExpertsUiState.Error(refresh.message)
+                else -> HelpExpertsUiState.Empty
+            }
+        }.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = HelpExpertsUiState.Loading,
+        )
+
     init {
         refresh()
+        refreshHelpExperts()
     }
 
     fun refresh() {
@@ -62,6 +85,33 @@ class MessageListViewModel @Inject constructor(
                 repository.refreshConversations()
                 RefreshState.Ready
             }.getOrElse { RefreshState.Error(it.readableMessage()) }
+        }
+    }
+
+    fun refreshHelpExperts() {
+        viewModelScope.launch {
+            helpRefreshState.value = RefreshState.Loading
+            helpRefreshState.value = runCatching {
+                helpExperts.value = repository.helpExperts().map { it.toRowUi() }
+                RefreshState.Ready
+            }.getOrElse { RefreshState.Error(it.readableMessage()) }
+        }
+    }
+
+    fun openExpertConversation(
+        expert: HelpExpertRowUi,
+        onOpened: (Long) -> Unit,
+    ) {
+        if (openingExpertId.value != null) return
+        viewModelScope.launch {
+            openingExpertId.value = expert.userId
+            runCatching { repository.openDirectConversation(expert.userId) }
+                .onSuccess {
+                    refresh()
+                    onOpened(it.id)
+                }
+                .onFailure { helpRefreshState.value = RefreshState.Error(it.readableMessage()) }
+            openingExpertId.value = null
         }
     }
 }
@@ -164,6 +214,28 @@ data class ConversationRowUi(
     val unreadTone: WatchTone,
 )
 
+sealed interface HelpExpertsUiState {
+    data object Loading : HelpExpertsUiState
+    data object Empty : HelpExpertsUiState
+    data class Error(val message: String) : HelpExpertsUiState
+    data class Content(
+        val experts: List<HelpExpertRowUi>,
+        val offlineCached: Boolean,
+        val errorMessage: String?,
+    ) : HelpExpertsUiState
+}
+
+data class HelpExpertRowUi(
+    val userId: Long,
+    val name: String,
+    val initials: String,
+    val roleTitle: String,
+    val specialty: String,
+    val employeeId: String,
+    val availabilityText: String,
+    val opening: Boolean = false,
+)
+
 data class ConversationUiState(
     val conversationId: Long = 0,
     val title: String = "会话",
@@ -207,6 +279,19 @@ private fun ConversationSummary.toRowUi(json: Json): ConversationRowUi {
         unreadTone = if (unreadCount > 0) WatchTone.Accent else WatchTone.Neutral,
     )
 }
+
+private fun HelpExpert.toRowUi(): HelpExpertRowUi = HelpExpertRowUi(
+    userId = userId,
+    name = name,
+    initials = initialsFor(name),
+    roleTitle = roleTitle,
+    specialty = specialty,
+    employeeId = employeeId,
+    availabilityText = when (availability) {
+        "message_ready" -> "可发消息"
+        else -> "可联系"
+    },
+)
 
 private fun MessageRecord.toBubbleUi(json: Json): MessageBubbleUi =
     MessageBubbleUi(

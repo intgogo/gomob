@@ -18,6 +18,9 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ChatBubble
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -54,9 +57,11 @@ enum class WatchTone { Accent, Warn, Danger, Ok, Neutral }
 @Composable
 fun MessageRoute(
     onOpenConversation: (String) -> Unit = {},
+    onOpenLocalVideo: (String) -> Unit = {},
     viewModel: MessageListViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val helpState by viewModel.helpUiState.collectAsStateWithLifecycle()
     var tab by remember { mutableStateOf(MsgTab.List) }
     val count = (state as? MessageListUiState.Content)?.conversations?.size ?: 0
 
@@ -77,7 +82,16 @@ fun MessageRoute(
                 onRefresh = viewModel::refresh,
                 onOpenConversation = { onOpenConversation(it.id.toString()) },
             )
-            MsgTab.Help -> HelpPane()
+            MsgTab.Help -> HelpPane(
+                state = helpState,
+                onRefresh = viewModel::refreshHelpExperts,
+                onMessageExpert = { expert ->
+                    viewModel.openExpertConversation(expert) { conversationId ->
+                        onOpenConversation(conversationId.toString())
+                    }
+                },
+                onOpenLocalVideo = { expert -> onOpenLocalVideo(expert.name) },
+            )
         }
     }
 }
@@ -375,13 +389,163 @@ private fun UnreadBadge(unread: Long, tone: WatchTone) {
 }
 
 @Composable
-private fun HelpPane() {
+private fun HelpPane(
+    state: HelpExpertsUiState,
+    onRefresh: () -> Unit,
+    onMessageExpert: (HelpExpertRowUi) -> Unit,
+    onOpenLocalVideo: (HelpExpertRowUi) -> Unit,
+) {
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = Gomob.spacing.s24),
+        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+    ) {
+        item {
+            StatusStrip(
+                text = "固定专家 · 消息 / 本地视频",
+                tone = StatusTone.Neutral,
+                onClick = onRefresh,
+            )
+        }
+        when (state) {
+            HelpExpertsUiState.Loading -> item {
+                StateBlock(text = "正在加载专家", tone = StatusTone.Neutral)
+            }
+            HelpExpertsUiState.Empty -> item {
+                StateBlock(text = "服务端未配置固定专家", tone = StatusTone.Warn, onClick = onRefresh)
+            }
+            is HelpExpertsUiState.Error -> item {
+                StateBlock(text = state.message, tone = StatusTone.Danger, onClick = onRefresh)
+            }
+            is HelpExpertsUiState.Content -> {
+                if (state.offlineCached) {
+                    item {
+                        StatusStrip(
+                            text = state.errorMessage ?: "专家列表使用本地缓存",
+                            tone = StatusTone.Warn,
+                            onClick = onRefresh,
+                        )
+                    }
+                }
+                items(state.experts, key = { it.userId }) { expert ->
+                    Box(
+                        Modifier
+                            .padding(horizontal = Gomob.spacing.s20)
+                            .padding(bottom = Gomob.spacing.s2),
+                    ) {
+                        ExpertRow(
+                            expert = expert,
+                            onMessage = { onMessageExpert(expert) },
+                            onLocalVideo = { onOpenLocalVideo(expert) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ExpertRow(
+    expert: HelpExpertRowUi,
+    onMessage: () -> Unit,
+    onLocalVideo: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(Gomob.shapes.r3)
+            .background(Gomob.colors.bg1)
+            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
+            .padding(horizontal = Gomob.spacing.s14, vertical = Gomob.spacing.s12),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
+    ) {
+        MsgAvatar(initials = expert.initials, kind = AvatarKind.Call)
+        Column(Modifier.weight(1f)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+            ) {
+                Text(
+                    expert.name,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Gomob.colors.fg0,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f),
+                )
+                StatusTag(
+                    text = if (expert.opening) "打开中" else expert.availabilityText,
+                    tone = if (expert.opening) StatusTone.Neutral else StatusTone.Ok,
+                    showDot = false,
+                )
+            }
+            Spacer(Modifier.height(Gomob.spacing.s4))
+            Text(
+                expert.roleTitle,
+                fontSize = 12.sp,
+                color = Gomob.colors.accent,
+                maxLines = 1,
+            )
+            Spacer(Modifier.height(Gomob.spacing.s2))
+            Text(
+                expert.specialty,
+                fontSize = 12.sp,
+                color = Gomob.colors.fg2,
+                maxLines = 2,
+            )
+            Spacer(Modifier.height(Gomob.spacing.s2))
+            Text(
+                expert.employeeId,
+                style = Gomob.type.numInline.copy(fontSize = 10.sp),
+                color = Gomob.colors.fg3,
+                maxLines = 1,
+            )
+        }
+        Column(
+            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            ExpertActionIcon(
+                icon = Icons.Filled.ChatBubble,
+                label = "发消息",
+                enabled = !expert.opening,
+                onClick = onMessage,
+            )
+            ExpertActionIcon(
+                icon = Icons.Filled.Videocam,
+                label = "本地视频",
+                enabled = !expert.opening,
+                onClick = onLocalVideo,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ExpertActionIcon(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
     Box(
         Modifier
-            .fillMaxSize()
-            .padding(horizontal = Gomob.spacing.s20),
+            .size(34.dp)
+            .clip(Gomob.shapes.r2)
+            .background(if (enabled) Gomob.colors.bg2 else Gomob.colors.bg2.copy(alpha = 0.55f))
+            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
     ) {
-        StateBlock(text = "暂无在线求助会话", tone = StatusTone.Neutral)
+        Icon(
+            icon,
+            contentDescription = label,
+            tint = if (enabled) Gomob.colors.fg2 else Gomob.colors.fg3.copy(alpha = 0.45f),
+            modifier = Modifier.size(17.dp),
+        )
     }
 }
 

@@ -66,6 +66,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 
 	// 消息
 	mux.HandleFunc("GET /v1/conversations", h.ListConversations)
+	mux.HandleFunc("GET /v1/conversations/help-experts", h.ListHelpExperts)
+	mux.HandleFunc("POST /v1/conversations/p2p", h.OpenP2PConversation)
 	mux.HandleFunc("GET /v1/conversations/{id}/messages", h.ListConversationMessages)
 	mux.HandleFunc("POST /v1/conversations/{id}/messages", h.CreateConversationMessage)
 	mux.HandleFunc("POST /v1/conversations/{id}/read", h.MarkConversationRead)

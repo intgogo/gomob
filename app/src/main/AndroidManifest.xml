@@ -38,6 +38,7 @@
             android:name=".MainActivity"
             android:exported="true"
             android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout|uiMode|navigation"
+            android:screenOrientation="portrait"
             android:theme="@style/Theme.Gomob">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

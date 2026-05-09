@@ -242,7 +242,10 @@ func ensureDevSeedLogin(ctx context.Context, pool *pgxpool.Pool) error {
 			VALUES ($1, $2, $3, $4, $5, 'inspector', 'active', 'devserver seed login', now())`,
 			devSeedUsername, devSeedRealName, devSeedEmployee, stationID, string(hash),
 		)
-		return err
+		if err != nil {
+			return err
+		}
+		return ensureDevHelpExperts(ctx, pool, stationID)
 	}
 
 	_, err = pool.Exec(ctx, `
@@ -258,7 +261,99 @@ func ensureDevSeedLogin(ctx context.Context, pool *pgxpool.Pool) error {
 		WHERE id=$6`,
 		devSeedUsername, devSeedRealName, devSeedEmployee, stationID, string(hash), userID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	return ensureDevHelpExperts(ctx, pool, stationID)
+}
+
+type devHelpExpert struct {
+	Username   string
+	RealName   string
+	EmployeeID string
+	Role       string
+	Note       string
+}
+
+var devHelpExperts = []devHelpExpert{
+	{
+		Username:   "expert_vin",
+		RealName:   "陈若愚",
+		EmployeeID: "EXP-VIN-0001",
+		Role:       "reviewer",
+		Note:       "devserver fixed help expert: VIN 拓印专家",
+	},
+	{
+		Username:   "expert_3d",
+		RealName:   "林知远",
+		EmployeeID: "EXP-3D-0002",
+		Role:       "reviewer",
+		Note:       "devserver fixed help expert: 三维外廓专家",
+	},
+	{
+		Username:   "expert_device",
+		RealName:   "周一苇",
+		EmployeeID: "EXP-DEV-0003",
+		Role:       "supervisor",
+		Note:       "devserver fixed help expert: 设备链路专家",
+	},
+	{
+		Username:   "expert_reg",
+		RealName:   "许明庭",
+		EmployeeID: "EXP-REG-0004",
+		Role:       "supervisor",
+		Note:       "devserver fixed help expert: 监管会审专家",
+	},
+}
+
+func ensureDevHelpExperts(ctx context.Context, pool *pgxpool.Pool, stationID int64) error {
+	hash, err := bcrypt.GenerateFromPassword([]byte(devSeedPassword), 12)
+	if err != nil {
+		return err
+	}
+	for _, expert := range devHelpExperts {
+		var userID int64
+		err = pool.QueryRow(ctx, `
+			SELECT id
+			FROM users
+			WHERE username=$1 OR employee_id=$2
+			ORDER BY CASE WHEN username=$1 THEN 0 ELSE 1 END, id
+			LIMIT 1`,
+			expert.Username, expert.EmployeeID,
+		).Scan(&userID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			_, err = pool.Exec(ctx, `
+				INSERT INTO users (username, real_name, employee_id, station_id, password_hash, role, status, note, activated_at)
+				VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, now())`,
+				expert.Username, expert.RealName, expert.EmployeeID, stationID, string(hash), expert.Role, expert.Note,
+			)
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		_, err = pool.Exec(ctx, `
+			UPDATE users
+			SET username=$1,
+			    real_name=$2,
+			    employee_id=$3,
+			    station_id=$4,
+			    password_hash=$5,
+			    role=$6,
+			    status='active',
+			    note=$7,
+			    activated_at=COALESCE(activated_at, now())
+			WHERE id=$8`,
+			expert.Username, expert.RealName, expert.EmployeeID, stationID, string(hash), expert.Role, expert.Note, userID,
+		)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func ensureDevSeedStation(ctx context.Context, pool *pgxpool.Pool) (int64, error) {

@@ -12,6 +12,21 @@ data class ConversationListResponse(
 )
 
 @Serializable
+data class HelpExpertListResponse(
+    val items: List<HelpExpertDto>,
+)
+
+@Serializable
+data class HelpExpertDto(
+    @SerialName("user_id") val userId: String,
+    val name: String,
+    @SerialName("employee_id") val employeeId: String,
+    @SerialName("role_title") val roleTitle: String,
+    val specialty: String,
+    val availability: String,
+)
+
+@Serializable
 data class ConversationDto(
     val id: String,
     val kind: String,
@@ -58,6 +73,11 @@ data class CreateMessageRequest(
     @SerialName("client_msg_id") val clientMsgId: String,
     val kind: String,
     val payload: JsonElement,
+)
+
+@Serializable
+data class OpenDirectConversationRequest(
+    @SerialName("peer_user_id") val peerUserId: String,
 )
 
 @Serializable

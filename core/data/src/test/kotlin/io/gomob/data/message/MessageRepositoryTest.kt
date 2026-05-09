@@ -12,10 +12,13 @@ import io.gomob.network.MessageApi
 import io.gomob.network.dto.ConversationDto
 import io.gomob.network.dto.ConversationListResponse
 import io.gomob.network.dto.CreateMessageRequest
+import io.gomob.network.dto.HelpExpertDto
+import io.gomob.network.dto.HelpExpertListResponse
 import io.gomob.network.dto.MarkReadRequest
 import io.gomob.network.dto.MarkReadResponse
 import io.gomob.network.dto.MessageDto
 import io.gomob.network.dto.MessageListResponse
+import io.gomob.network.dto.OpenDirectConversationRequest
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
@@ -152,16 +155,90 @@ class MessageRepositoryTest {
         assertThat(api.messageSinceSeqRequests).containsExactly(0L)
         assertThat(messageDao.items.map { it.serverSeq }).containsExactly(1L, 5L)
     }
+
+    @Test
+    fun helpExpertsMapServerFixedExperts() = runTest {
+        val repository = MessageRepository(
+            api = FakeMessageApi(
+                experts = listOf(
+                    HelpExpertDto(
+                        userId = "31",
+                        name = "陈若愚",
+                        employeeId = "EXP-VIN-0001",
+                        roleTitle = "VIN 拓印专家",
+                        specialty = "VIN 字符复核",
+                        availability = "message_ready",
+                    ),
+                ),
+            ),
+            conversationDao = FakeConversationDao(),
+            messageDao = FakeMessageDao(),
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        val experts = repository.helpExperts()
+
+        assertThat(experts).hasSize(1)
+        assertThat(experts.single().userId).isEqualTo(31)
+        assertThat(experts.single().roleTitle).isEqualTo("VIN 拓印专家")
+    }
+
+    @Test
+    fun openDirectConversationStoresReturnedConversation() = runTest {
+        val conversationDao = FakeConversationDao()
+        val repository = MessageRepository(
+            api = FakeMessageApi(
+                directConversation = ConversationDto(
+                    id = "44",
+                    kind = "p2p",
+                    peer = io.gomob.network.dto.ConversationPeerDto(
+                        id = "31",
+                        name = "陈若愚",
+                        employeeId = "EXP-VIN-0001",
+                    ),
+                    createdAt = "2026-05-08T12:00:00Z",
+                    updatedAt = "2026-05-08T12:00:00Z",
+                ),
+            ),
+            conversationDao = conversationDao,
+            messageDao = FakeMessageDao(),
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        val conversation = repository.openDirectConversation(peerUserId = 31)
+
+        assertThat(conversation.id).isEqualTo(44)
+        assertThat(conversation.peer?.name).isEqualTo("陈若愚")
+        assertThat(conversationDao.upsertedSingle?.id).isEqualTo(44)
+    }
 }
 
 private class FakeMessageApi(
     private val conversations: List<ConversationDto> = emptyList(),
     private val messages: List<MessageDto> = emptyList(),
+    private val experts: List<HelpExpertDto> = emptyList(),
+    private val directConversation: ConversationDto? = null,
 ) : MessageApi {
     val messageSinceSeqRequests = mutableListOf<Long>()
 
     override suspend fun conversations(cursor: String?, limit: Int): Envelope<ConversationListResponse> =
         Envelope(code = 0, data = ConversationListResponse(items = conversations))
+
+    override suspend fun helpExperts(): Envelope<HelpExpertListResponse> =
+        Envelope(code = 0, data = HelpExpertListResponse(items = experts))
+
+    override suspend fun openDirectConversation(
+        request: OpenDirectConversationRequest,
+    ): Envelope<ConversationDto> =
+        Envelope(
+            code = 0,
+            data = directConversation ?: ConversationDto(
+                id = "9",
+                kind = "p2p",
+                createdAt = "2026-05-08T11:00:00Z",
+                updatedAt = "2026-05-08T11:00:00Z",
+            ),
+        )
 
     override suspend fun messages(
         conversationId: String,
@@ -207,6 +284,7 @@ private class FakeMessageApi(
 private class FakeConversationDao : ConversationDao {
     private val empty = MutableStateFlow<List<ConversationWithLastMessage>>(emptyList())
     private val current = MutableStateFlow<ConversationWithLastMessage?>(null)
+    var upsertedSingle: ConversationEntity? = null
 
     override fun observeConversations(): Flow<List<ConversationWithLastMessage>> = empty
 
@@ -216,7 +294,9 @@ private class FakeConversationDao : ConversationDao {
 
     override suspend fun upsertConversations(items: List<ConversationEntity>) = Unit
 
-    override suspend fun upsertConversation(item: ConversationEntity) = Unit
+    override suspend fun upsertConversation(item: ConversationEntity) {
+        upsertedSingle = item
+    }
 
     override suspend fun markRead(conversationId: Long, lastReadSeq: Long, unreadCount: Long) = Unit
 }

@@ -50,6 +50,7 @@ import io.gomob.model.message.MessageStatus
 fun ConversationRoute(
     conversationId: String,
     onBack: () -> Unit,
+    onOpenLocalVideo: (String) -> Unit = {},
     viewModel: ConversationViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -95,6 +96,7 @@ fun ConversationRoute(
             onDraftChange = { draft = it },
             onPickImage = openImagePicker,
             onTakePhoto = openImagePicker,
+            onOpenLocalVideo = { onOpenLocalVideo(state.title) },
             onSend = sendDraft,
         )
     }
@@ -203,6 +205,7 @@ private fun ComposerBar(
     onDraftChange: (String) -> Unit,
     onPickImage: () -> Unit,
     onTakePhoto: () -> Unit,
+    onOpenLocalVideo: () -> Unit,
     onSend: () -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().background(Gomob.colors.bg1)) {
@@ -221,7 +224,7 @@ private fun ComposerBar(
         ) {
             ToolIcon(Icons.Filled.Image, "图片", onClick = onPickImage)
             ToolIcon(Icons.Filled.PhotoCamera, "拍摄", onClick = onTakePhoto)
-            ToolIcon(Icons.Filled.Videocam, "视频通话", enabled = false, onClick = {})
+            ToolIcon(Icons.Filled.Videocam, "开启本地视频", onClick = onOpenLocalVideo)
             Box(
                 Modifier
                     .weight(1f)

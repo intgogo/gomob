@@ -10,5 +10,8 @@ android {
 dependencies {
     implementation(project(":core:data"))
     implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
     implementation(libs.kotlinx.serialization.json)
 }

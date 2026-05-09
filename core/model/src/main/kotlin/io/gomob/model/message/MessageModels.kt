@@ -20,6 +20,15 @@ data class ConversationPeer(
     val employeeId: String?,
 )
 
+data class HelpExpert(
+    val userId: Long,
+    val name: String,
+    val employeeId: String,
+    val roleTitle: String,
+    val specialty: String,
+    val availability: String,
+)
+
 data class MessageRecord(
     val localKey: String,
     val serverId: Long?,

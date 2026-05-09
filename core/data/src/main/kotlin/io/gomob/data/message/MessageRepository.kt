@@ -5,13 +5,16 @@ import io.gomob.database.message.ConversationEntity
 import io.gomob.database.message.MessageDao
 import io.gomob.database.message.MessageEntity
 import io.gomob.model.message.ConversationSummary
+import io.gomob.model.message.HelpExpert
 import io.gomob.model.message.MessageRecord
 import io.gomob.model.message.MessageStatus
 import io.gomob.network.ApiException
 import io.gomob.network.MessageApi
 import io.gomob.network.dto.ConversationDto
 import io.gomob.network.dto.CreateMessageRequest
+import io.gomob.network.dto.HelpExpertDto
 import io.gomob.network.dto.MessageDto
+import io.gomob.network.dto.OpenDirectConversationRequest
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.json.JsonElement
@@ -58,6 +61,29 @@ class MessageRepository @Inject constructor(
             messageDao.upsertServerMessages(messageEntities)
         }
         conversationDao.upsertConversations(data.items.map { it.toEntity() })
+    }
+
+    suspend fun helpExperts(): List<HelpExpert> {
+        val resp = api.helpExperts()
+        val data = resp.data ?: throw ApiException(50001, 500, "专家列表响应缺数据")
+        return data.items.map { it.toDomain() }
+    }
+
+    suspend fun openDirectConversation(peerUserId: Long): ConversationSummary {
+        val resp = api.openDirectConversation(
+            OpenDirectConversationRequest(peerUserId = peerUserId.toString()),
+        )
+        val dto = resp.data ?: throw ApiException(50001, 500, "专家会话响应缺数据")
+        val lastMessage = dto.lastMessage?.toEntity(
+            conversationId = dto.id.toLong(),
+            json = json,
+        )
+        if (lastMessage != null) {
+            messageDao.upsertServerMessages(listOf(lastMessage))
+        }
+        val entity = dto.toEntity()
+        conversationDao.upsertConversation(entity)
+        return entity.toDomain(lastMessage)
     }
 
     suspend fun refreshMessages(conversationId: Long, limit: Int = 100, fullSync: Boolean = false) {
@@ -169,6 +195,15 @@ private fun ConversationDto.toEntity(): ConversationEntity {
         updatedAt = updatedAt,
     )
 }
+
+private fun HelpExpertDto.toDomain(): HelpExpert = HelpExpert(
+    userId = userId.toLong(),
+    name = name,
+    employeeId = employeeId,
+    roleTitle = roleTitle,
+    specialty = specialty,
+    availability = availability,
+)
 
 private fun MessageDto.toEntity(conversationId: Long, json: Json): MessageEntity {
     val serverId = id.toLong()
