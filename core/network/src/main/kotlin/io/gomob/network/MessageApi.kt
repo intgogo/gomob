@@ -3,6 +3,7 @@ package io.gomob.network
 import io.gomob.network.dto.ConversationListResponse
 import io.gomob.network.dto.ConversationDto
 import io.gomob.network.dto.CreateMessageRequest
+import io.gomob.network.dto.HelpExpertCaseListResponse
 import io.gomob.network.dto.HelpExpertListResponse
 import io.gomob.network.dto.MarkReadRequest
 import io.gomob.network.dto.MarkReadResponse
@@ -24,6 +25,11 @@ interface MessageApi {
 
     @GET("v1/conversations/help-experts")
     suspend fun helpExperts(): Envelope<HelpExpertListResponse>
+
+    @GET("v1/conversations/help-experts/{id}/cases")
+    suspend fun helpExpertCases(
+        @Path("id") expertUserId: String,
+    ): Envelope<HelpExpertCaseListResponse>
 
     @POST("v1/conversations/help-room")
     suspend fun openHelpRoom(): Envelope<ConversationDto>

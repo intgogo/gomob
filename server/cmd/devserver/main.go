@@ -318,6 +318,13 @@ type devHelpExpert struct {
 	EmployeeID string
 	Role       string
 	Note       string
+	Cases      []devHelpExpertCase
+}
+
+type devHelpExpertCase struct {
+	Title    string
+	Summary  string
+	Category string
 }
 
 var devHelpExperts = []devHelpExpert{
@@ -327,6 +334,18 @@ var devHelpExperts = []devHelpExpert{
 		EmployeeID: "EXP-VIN-0001",
 		Role:       "reviewer",
 		Note:       "devserver fixed help expert: VIN 拓印专家",
+		Cases: []devHelpExpertCase{
+			{
+				Title:    "新能源 VIN 浅刻复核",
+				Summary:  "现场补光后复拍铭牌与拓印图，定位两处浅刻字符误读。",
+				Category: "VIN",
+			},
+			{
+				Title:    "铭牌换装疑点会审",
+				Summary:  "通过字符间距、铆钉痕迹与历史档案比对确认异常。",
+				Category: "合规",
+			},
+		},
 	},
 	{
 		Username:   "expert_3d",
@@ -334,6 +353,18 @@ var devHelpExperts = []devHelpExpert{
 		EmployeeID: "EXP-3D-0002",
 		Role:       "reviewer",
 		Note:       "devserver fixed help expert: 三维外廓专家",
+		Cases: []devHelpExpertCase{
+			{
+				Title:    "厢式货车外廓复核",
+				Summary:  "结合多视角 RGBD 与人工量测，复核顶棚加装导致的高度偏差。",
+				Category: "3D 外廓",
+			},
+			{
+				Title:    "点云空洞质量判定",
+				Summary:  "根据遮挡区域和采样轨迹判断需要补扫的关键视角。",
+				Category: "点云",
+			},
+		},
 	},
 	{
 		Username:   "expert_device",
@@ -341,6 +372,13 @@ var devHelpExperts = []devHelpExpert{
 		EmployeeID: "EXP-DEV-0003",
 		Role:       "supervisor",
 		Note:       "devserver fixed help expert: 设备链路专家",
+		Cases: []devHelpExpertCase{
+			{
+				Title:    "深度相机掉线排障",
+				Summary:  "从 OTG 供电、USB 枚举和帧时间戳三层定位现场链路抖动。",
+				Category: "设备",
+			},
+		},
 	},
 	{
 		Username:   "expert_reg",
@@ -348,6 +386,13 @@ var devHelpExperts = []devHelpExpert{
 		EmployeeID: "EXP-REG-0004",
 		Role:       "supervisor",
 		Note:       "devserver fixed help expert: 监管会审专家",
+		Cases: []devHelpExpertCase{
+			{
+				Title:    "跨站异常查验复盘",
+				Summary:  "汇总多站同类异常，形成复核口径与会审留痕模板。",
+				Category: "监管",
+			},
+		},
 	},
 }
 
@@ -370,29 +415,50 @@ func ensureDevHelpExperts(ctx context.Context, pool *pgxpool.Pool, stationID int
 			return err
 		}
 		if errors.Is(err, pgx.ErrNoRows) {
-			_, err = pool.Exec(ctx, `
+			err = pool.QueryRow(ctx, `
 				INSERT INTO users (username, real_name, employee_id, station_id, password_hash, role, status, note, activated_at)
-				VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, now())`,
+				VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, now())
+				RETURNING id`,
 				expert.Username, expert.RealName, expert.EmployeeID, stationID, string(hash), expert.Role, expert.Note,
+			).Scan(&userID)
+			if err != nil {
+				return err
+			}
+		} else {
+			_, err = pool.Exec(ctx, `
+				UPDATE users
+				SET username=$1,
+				    real_name=$2,
+				    employee_id=$3,
+				    station_id=$4,
+				    password_hash=$5,
+				    role=$6,
+				    status='active',
+				    note=$7,
+				    activated_at=COALESCE(activated_at, now())
+				WHERE id=$8`,
+				expert.Username, expert.RealName, expert.EmployeeID, stationID, string(hash), expert.Role, expert.Note, userID,
 			)
 			if err != nil {
 				return err
 			}
-			continue
 		}
-		_, err = pool.Exec(ctx, `
-			UPDATE users
-			SET username=$1,
-			    real_name=$2,
-			    employee_id=$3,
-			    station_id=$4,
-			    password_hash=$5,
-			    role=$6,
-			    status='active',
-			    note=$7,
-			    activated_at=COALESCE(activated_at, now())
-			WHERE id=$8`,
-			expert.Username, expert.RealName, expert.EmployeeID, stationID, string(hash), expert.Role, expert.Note, userID,
+		if err := ensureDevHelpExpertCases(ctx, pool, userID, expert.Cases); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureDevHelpExpertCases(ctx context.Context, pool *pgxpool.Pool, userID int64, cases []devHelpExpertCase) error {
+	for index, item := range cases {
+		_, err := pool.Exec(ctx, `
+			INSERT INTO help_expert_cases (author_id, title, summary, category, status, published_at)
+			SELECT $1, $2, $3, $4, 'published', now() - ($5::int * interval '1 day')
+			WHERE NOT EXISTS (
+				SELECT 1 FROM help_expert_cases WHERE author_id = $1 AND title = $2
+			)`,
+			userID, item.Title, item.Summary, item.Category, index,
 		)
 		if err != nil {
 			return err

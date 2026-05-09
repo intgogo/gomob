@@ -340,6 +340,7 @@ func (r *ConversationRepo) ListForUser(ctx context.Context, userID int64, limit 
 			LEFT JOIN conversation_member_states cms
 			  ON cms.conversation_id = c.id AND cms.user_id = $1
 			WHERE ($2 = 0 OR c.id < $2)
+			  AND COALESCE(c.subject_kind, '') <> 'online_help'
 			ORDER BY c.updated_at DESC, c.id DESC
 			LIMIT $3
 		)

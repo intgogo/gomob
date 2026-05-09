@@ -17,6 +17,11 @@ data class HelpExpertListResponse(
 )
 
 @Serializable
+data class HelpExpertCaseListResponse(
+    val items: List<HelpExpertCaseDto>,
+)
+
+@Serializable
 data class HelpExpertDto(
     @SerialName("user_id") val userId: String,
     val name: String,
@@ -24,6 +29,16 @@ data class HelpExpertDto(
     @SerialName("role_title") val roleTitle: String,
     val specialty: String,
     val availability: String,
+)
+
+@Serializable
+data class HelpExpertCaseDto(
+    val id: String,
+    @SerialName("author_id") val authorId: String,
+    val title: String,
+    val summary: String,
+    val category: String,
+    @SerialName("published_at") val publishedAt: String,
 )
 
 @Serializable

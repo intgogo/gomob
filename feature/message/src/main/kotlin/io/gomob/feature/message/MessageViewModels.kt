@@ -9,12 +9,15 @@ import io.gomob.data.auth.TokenStore
 import io.gomob.data.message.MessageRepository
 import io.gomob.model.message.ConversationSummary
 import io.gomob.model.message.HelpExpert
+import io.gomob.model.message.HelpExpertCase
 import io.gomob.model.message.MessageRecord
 import io.gomob.model.message.MessageStatus
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
@@ -51,7 +54,7 @@ class MessageListViewModel @Inject constructor(
 
     val uiState: StateFlow<MessageListUiState> =
         combine(repository.observeConversations(), refreshState) { conversations, refresh ->
-            val rows = conversations.map { it.toRowUi(json) }
+            val rows = visibleMessageConversations(conversations).map { it.toRowUi(json) }
             when {
                 rows.isNotEmpty() -> MessageListUiState.Content(
                     conversations = rows,
@@ -152,7 +155,6 @@ class MessageListViewModel @Inject constructor(
                 val room = repository.openHelpRoom()
                 helpConversationId.value = room.id
                 repository.refreshMessages(room.id, fullSync = true)
-                repository.refreshConversations()
                 RefreshState.Ready
             }.getOrElse { RefreshState.Error(it.readableMessage()) }
         }
@@ -165,7 +167,6 @@ class MessageListViewModel @Inject constructor(
             runCatching {
                 val conversationId = ensureHelpConversationId()
                 repository.sendText(conversationId, trimmed)
-                repository.refreshConversations()
                 helpRoomRefreshState.value = RefreshState.Ready
             }.onFailure { error ->
                 helpRoomRefreshState.value = RefreshState.Error(error.readableMessage())
@@ -181,7 +182,6 @@ class MessageListViewModel @Inject constructor(
         viewModelScope.launch {
             runCatching {
                 repository.sendImage(ensureHelpConversationId(), uri)
-                repository.refreshConversations()
                 helpRoomRefreshState.value = RefreshState.Ready
             }.onFailure { error ->
                 helpRoomRefreshState.value = RefreshState.Error(error.readableMessage())
@@ -193,7 +193,6 @@ class MessageListViewModel @Inject constructor(
         viewModelScope.launch {
             runCatching {
                 repository.sendVoice(ensureHelpConversationId(), uri, durationSec)
-                repository.refreshConversations()
                 helpRoomRefreshState.value = RefreshState.Ready
             }.onFailure { error ->
                 helpRoomRefreshState.value = RefreshState.Error(error.readableMessage())
@@ -205,7 +204,6 @@ class MessageListViewModel @Inject constructor(
         viewModelScope.launch {
             runCatching {
                 repository.sendVideoClip(ensureHelpConversationId(), uri)
-                repository.refreshConversations()
                 helpRoomRefreshState.value = RefreshState.Ready
             }.onFailure { error ->
                 helpRoomRefreshState.value = RefreshState.Error(error.readableMessage())
@@ -243,6 +241,8 @@ class ExpertDetailViewModel @Inject constructor(
     private val expertUserId = savedStateHandle.get<String>("id")?.toLongOrNull() ?: 0L
     private val _state = MutableStateFlow<ExpertDetailUiState>(ExpertDetailUiState.Loading)
     val state: StateFlow<ExpertDetailUiState> = _state.asStateFlow()
+    private val _openConversationEvents = MutableSharedFlow<Long>()
+    val openConversationEvents = _openConversationEvents.asSharedFlow()
 
     init {
         refresh()
@@ -256,8 +256,29 @@ class ExpertDetailViewModel @Inject constructor(
                     .map { it.toRowUi() }
                     .firstOrNull { it.userId == expertUserId }
                     ?: throw IllegalArgumentException("专家不存在")
-                ExpertDetailUiState.Content(expert)
+                val cases = repository.helpExpertCases(expertUserId).map { it.toRowUi() }
+                ExpertDetailUiState.Content(expert = expert, cases = cases)
             }.getOrElse { ExpertDetailUiState.Error(it.readableMessage()) }
+        }
+    }
+
+    fun openDirectConversation() {
+        val content = _state.value as? ExpertDetailUiState.Content ?: return
+        if (content.openingMessage) return
+        viewModelScope.launch {
+            _state.value = content.copy(openingMessage = true, messageError = null)
+            runCatching {
+                repository.openDirectConversation(expertUserId)
+            }.onSuccess { conversation ->
+                _state.value = (_state.value as? ExpertDetailUiState.Content)
+                    ?.copy(openingMessage = false)
+                    ?: _state.value
+                _openConversationEvents.emit(conversation.id)
+            }.onFailure { error ->
+                _state.value = (_state.value as? ExpertDetailUiState.Content)
+                    ?.copy(openingMessage = false, messageError = error.readableMessage())
+                    ?: ExpertDetailUiState.Error(error.readableMessage())
+            }
         }
     }
 }
@@ -439,7 +460,12 @@ sealed interface HelpRoomUiState {
 sealed interface ExpertDetailUiState {
     data object Loading : ExpertDetailUiState
     data class Error(val message: String) : ExpertDetailUiState
-    data class Content(val expert: HelpExpertRowUi) : ExpertDetailUiState
+    data class Content(
+        val expert: HelpExpertRowUi,
+        val cases: List<ExpertCaseRowUi>,
+        val openingMessage: Boolean = false,
+        val messageError: String? = null,
+    ) : ExpertDetailUiState
 }
 
 data class HelpExpertRowUi(
@@ -450,6 +476,14 @@ data class HelpExpertRowUi(
     val specialty: String,
     val employeeId: String,
     val availabilityText: String,
+)
+
+data class ExpertCaseRowUi(
+    val id: Long,
+    val title: String,
+    val summary: String,
+    val category: String,
+    val publishedAt: String,
 )
 
 data class ConversationUiState(
@@ -498,6 +532,9 @@ private fun ConversationSummary.toRowUi(json: Json): ConversationRowUi {
     )
 }
 
+internal fun visibleMessageConversations(conversations: List<ConversationSummary>): List<ConversationSummary> =
+    conversations.filterNot { it.subjectKind == "online_help" || (it.kind == "group" && it.title == "在线求助") }
+
 private fun HelpExpert.toRowUi(): HelpExpertRowUi = HelpExpertRowUi(
     userId = userId,
     name = name,
@@ -509,6 +546,14 @@ private fun HelpExpert.toRowUi(): HelpExpertRowUi = HelpExpertRowUi(
         "message_ready" -> "可发消息"
         else -> "可联系"
     },
+)
+
+private fun HelpExpertCase.toRowUi(): ExpertCaseRowUi = ExpertCaseRowUi(
+    id = id,
+    title = title,
+    summary = summary,
+    category = category,
+    publishedAt = publishedAt.formatCaseTime(),
 )
 
 private fun MessageRecord.toBubbleUi(json: Json, currentUserId: Long?): MessageBubbleUi {
@@ -593,6 +638,11 @@ private fun initialsFor(title: String): String =
 private fun String.formatMessageTime(): String =
     runCatching {
         Instant.parse(this).atZone(ZoneId.systemDefault()).format(messageTimeFormatter)
+    }.getOrDefault("")
+
+private fun String.formatCaseTime(): String =
+    runCatching {
+        Instant.parse(this).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("MM-dd HH:mm"))
     }.getOrDefault("")
 
 private fun Throwable.readableMessage(): String =

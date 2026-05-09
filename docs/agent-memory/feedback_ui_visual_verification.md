@@ -1,6 +1,6 @@
 ---
 name: UI 改动必须真实运行并截图自查
-description: 涉及 Compose 界面 / HUD / 布局 / 点击区域改动, 必须 install 真机/模拟器 + 截图复核, 不靠编译/单测过就算完
+description: 涉及 Compose 界面 / HUD / 布局 / 点击区域改动, 默认同时 install 真机和模拟器；必要时截图复核, 不靠编译/单测过就算完
 type: feedback
 ---
 
@@ -11,8 +11,8 @@ type: feedback
 
 必须执行：
 
-1. `./dev.sh install` 推到真机或模拟器
-2. `./dev.sh shot <screen-name>` 自动跳到指定 screen 并截图到 `.dev/screenshots/<screen-name>.png`
+1. 更新 APK 后默认同时推到真机和模拟器；多 adb 设备时显式指定 `ADB_DEVICE` / `adb -s` / `adb -t`，避免装错目标
+2. 必要时执行 `./dev.sh shot <screen-name>` 自动跳到指定 screen 并截图到 `.dev/screenshots/<screen-name>.png`
 3. 打开截图检查布局、遮挡、比例、信息密度、文字居中、点击目标与视觉目标是否一致
 4. 发现视觉问题要继续修，不要把"测试通过"当成 UI 完成
 

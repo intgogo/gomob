@@ -2,6 +2,7 @@ package io.gomob.feature.message
 
 import android.Manifest
 import android.content.pm.PackageManager
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -32,15 +34,18 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -58,6 +63,8 @@ import io.gomob.designsystem.theme.Gomob
 
 const val MESSAGE_ROUTE = "message"
 
+enum class MessageEntryTab { List, Help }
+
 private enum class MsgTab { List, Help }
 
 enum class AvatarKind { System, Call, Video, Image, Voice, Neutral }
@@ -68,6 +75,8 @@ fun MessageRoute(
     onOpenConversation: (String) -> Unit = {},
     onOpenLocalVideo: (String) -> Unit = {},
     onOpenExpertDetail: (String) -> Unit = {},
+    requestedTab: MessageEntryTab? = null,
+    onRequestedTabConsumed: () -> Unit = {},
     viewModel: MessageListViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -82,8 +91,15 @@ fun MessageRoute(
         onResult = { uri -> uri?.let(viewModel::sendHelpRoomVideoClip) },
     )
     val focusManager = LocalFocusManager.current
-    var tab by remember { mutableStateOf(MsgTab.List) }
+    var tab by rememberSaveable { mutableStateOf((requestedTab ?: MessageEntryTab.List).toMsgTab()) }
     val count = (state as? MessageListUiState.Content)?.conversations?.size ?: 0
+
+    LaunchedEffect(requestedTab) {
+        requestedTab?.let {
+            tab = it.toMsgTab()
+            onRequestedTabConsumed()
+        }
+    }
 
     Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
         ScreenHeader(
@@ -130,6 +146,11 @@ fun MessageRoute(
             )
         }
     }
+}
+
+private fun MessageEntryTab.toMsgTab(): MsgTab = when (this) {
+    MessageEntryTab.List -> MsgTab.List
+    MessageEntryTab.Help -> MsgTab.Help
 }
 
 @Composable
@@ -222,58 +243,78 @@ private fun ListPane(
     onOpenConversation: (ConversationRowUi) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    LazyColumn(
-        modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = Gomob.spacing.s24),
-    ) {
-        item { SearchContainer() }
-        when (state) {
-            MessageListUiState.Loading -> item {
-                StateBlock(text = "正在加载会话", tone = StatusTone.Neutral)
-            }
-            MessageListUiState.Empty -> item {
-                StateBlock(text = "暂无会话", tone = StatusTone.Neutral)
-            }
-            is MessageListUiState.Error -> item {
-                StateBlock(text = state.message, tone = StatusTone.Danger, onClick = onRefresh)
-            }
-            is MessageListUiState.Content -> {
-                if (state.offlineCached) {
-                    item {
-                        StatusStrip(
-                            text = state.errorMessage ?: "未连接实时通道",
-                            tone = StatusTone.Warn,
-                            onClick = onRefresh,
-                        )
-                    }
+    var searchActive by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val exitSearch = remember(focusManager, keyboardController) {
+        {
+            searchActive = false
+            focusManager.clearFocus()
+            keyboardController?.hide()
+            Unit
+        }
+    }
+    BackHandler(enabled = searchActive, onBack = exitSearch)
+
+    Box(modifier.fillMaxSize()) {
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = Gomob.spacing.s24),
+        ) {
+            item { SearchContainer(onActiveChange = { searchActive = it }) }
+            when (state) {
+                MessageListUiState.Loading -> item {
+                    StateBlock(text = "正在加载会话", tone = StatusTone.Neutral)
                 }
-                items(state.conversations, key = { it.id }) { item ->
-                    Box(
-                        Modifier
-                            .padding(horizontal = Gomob.spacing.s20)
-                            .padding(bottom = Gomob.spacing.s8),
-                    ) {
-                        MsgRow(item, onClick = { onOpenConversation(item) })
+                MessageListUiState.Empty -> item {
+                    StateBlock(text = "暂无会话", tone = StatusTone.Neutral)
+                }
+                is MessageListUiState.Error -> item {
+                    StateBlock(text = state.message, tone = StatusTone.Danger, onClick = onRefresh)
+                }
+                is MessageListUiState.Content -> {
+                    if (state.offlineCached) {
+                        item {
+                            StatusStrip(
+                                text = state.errorMessage ?: "未连接实时通道",
+                                tone = StatusTone.Warn,
+                                onClick = onRefresh,
+                            )
+                        }
+                    }
+                    items(state.conversations, key = { it.id }) { item ->
+                        Box(
+                            Modifier
+                                .padding(horizontal = Gomob.spacing.s20)
+                                .padding(bottom = Gomob.spacing.s8),
+                        ) {
+                            MsgRow(item, onClick = { onOpenConversation(item) })
+                        }
                     }
                 }
             }
         }
+        SearchInputScrim(
+            visible = searchActive,
+            onDismiss = exitSearch,
+            modifier = Modifier.padding(top = 50.dp),
+        )
     }
 }
 
 @Composable
-private fun SearchContainer() {
+private fun SearchContainer(onActiveChange: (Boolean) -> Unit) {
     Box(
         Modifier
             .padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20, bottom = 14.dp)
             .fillMaxWidth(),
     ) {
-        SearchBar()
+        SearchBar(onActiveChange = onActiveChange)
     }
 }
 
 @Composable
-private fun SearchBar() {
+private fun SearchBar(onActiveChange: (Boolean) -> Unit) {
     var draft by remember { mutableStateOf("") }
     Row(
         Modifier
@@ -292,23 +333,55 @@ private fun SearchBar() {
             tint = Gomob.colors.fg3,
             modifier = Modifier.size(14.dp),
         )
-        Box(Modifier.weight(1f)) {
-            if (draft.isEmpty()) {
-                Text(
-                    "搜索消息 / 联系人 / VIN",
-                    fontSize = 12.sp,
-                    color = Gomob.colors.fg3,
-                )
-            }
+        Box(
+            Modifier
+                .weight(1f)
+                .fillMaxHeight(),
+            contentAlignment = Alignment.CenterStart,
+        ) {
             BasicTextField(
                 value = draft,
                 onValueChange = { draft = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { onActiveChange(it.isFocused) },
                 singleLine = true,
-                textStyle = TextStyle(fontSize = 12.sp, color = Gomob.colors.fg0),
+                textStyle = TextStyle(fontSize = 12.sp, lineHeight = 18.sp, color = Gomob.colors.fg0),
                 cursorBrush = SolidColor(Gomob.colors.accent),
+                decorationBox = { innerTextField ->
+                    Box(
+                        Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        if (draft.isEmpty()) {
+                            Text(
+                                "搜索消息 / 联系人 / VIN",
+                                fontSize = 12.sp,
+                                lineHeight = 18.sp,
+                                color = Gomob.colors.fg3,
+                            )
+                        }
+                        innerTextField()
+                    }
+                },
             )
         }
     }
+}
+
+@Composable
+private fun SearchInputScrim(
+    visible: Boolean,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (!visible) return
+    Box(
+        modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.1f))
+            .clickable(onClick = onDismiss),
+    )
 }
 
 @Composable

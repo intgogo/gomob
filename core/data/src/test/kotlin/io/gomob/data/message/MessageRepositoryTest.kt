@@ -13,6 +13,8 @@ import io.gomob.network.MessageApi
 import io.gomob.network.dto.ConversationDto
 import io.gomob.network.dto.ConversationListResponse
 import io.gomob.network.dto.CreateMessageRequest
+import io.gomob.network.dto.HelpExpertCaseDto
+import io.gomob.network.dto.HelpExpertCaseListResponse
 import io.gomob.network.dto.HelpExpertDto
 import io.gomob.network.dto.HelpExpertListResponse
 import io.gomob.network.dto.MarkReadRequest
@@ -280,6 +282,35 @@ class MessageRepositoryTest {
     }
 
     @Test
+    fun helpExpertCasesMapServerPublishedCases() = runTest {
+        val repository = MessageRepository(
+            api = FakeMessageApi(
+                expertCases = listOf(
+                    HelpExpertCaseDto(
+                        id = "801",
+                        authorId = "31",
+                        title = "新能源 VIN 浅刻复核",
+                        summary = "现场补光后复拍铭牌与拓印图",
+                        category = "VIN",
+                        publishedAt = "2026-05-08T12:00:00Z",
+                    ),
+                ),
+            ),
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = FakeConversationDao(),
+            messageDao = FakeMessageDao(),
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        val cases = repository.helpExpertCases(expertUserId = 31)
+
+        assertThat(cases).hasSize(1)
+        assertThat(cases.single().id).isEqualTo(801)
+        assertThat(cases.single().authorId).isEqualTo(31)
+        assertThat(cases.single().title).contains("VIN")
+    }
+
+    @Test
     fun openDirectConversationStoresReturnedConversation() = runTest {
         val conversationDao = FakeConversationDao()
         val repository = MessageRepository(
@@ -370,6 +401,7 @@ private class FakeMessageApi(
     private val conversations: List<ConversationDto> = emptyList(),
     private val messages: List<MessageDto> = emptyList(),
     private val experts: List<HelpExpertDto> = emptyList(),
+    private val expertCases: List<HelpExpertCaseDto> = emptyList(),
     private val directConversation: ConversationDto? = null,
     private val helpRoom: ConversationDto? = null,
 ) : MessageApi {
@@ -381,6 +413,9 @@ private class FakeMessageApi(
 
     override suspend fun helpExperts(): Envelope<HelpExpertListResponse> =
         Envelope(code = 0, data = HelpExpertListResponse(items = experts))
+
+    override suspend fun helpExpertCases(expertUserId: String): Envelope<HelpExpertCaseListResponse> =
+        Envelope(code = 0, data = HelpExpertCaseListResponse(items = expertCases))
 
     override suspend fun openHelpRoom(): Envelope<ConversationDto> =
         Envelope(

@@ -18,6 +18,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
@@ -36,6 +37,7 @@ import io.gomob.feature.home.InspectionDetailRoute
 import io.gomob.feature.message.ConversationRoute
 import io.gomob.feature.message.ExpertDetailRoute
 import io.gomob.feature.message.LocalVideoPreviewRoute
+import io.gomob.feature.message.MessageEntryTab
 import io.gomob.feature.message.MessageRoute
 import io.gomob.feature.profile.HistoryRoute
 import io.gomob.feature.profile.ProfileAboutRoute
@@ -57,6 +59,9 @@ private const val ROUTE_MESSAGE = "message"
 private const val ROUTE_SCAN3D = "scan3d"
 private const val ROUTE_COLLAB = "collaboration"
 private const val ROUTE_PROFILE = "profile"
+private const val MESSAGE_TAB_REQUEST = "message_tab_request"
+private const val MESSAGE_TAB_HELP = "help"
+private const val MESSAGE_TAB_LIST = "list"
 
 private val TABS = listOf(
     TabItemVector(ROUTE_HOME, "首页", Icons.Filled.AutoAwesome),
@@ -108,17 +113,35 @@ fun GomobNavHost() {
                 }
 
                 // ---- 消息 + 二级 ----
-                composable(ROUTE_MESSAGE) {
+                composable(ROUTE_MESSAGE) { entry ->
+                    val requestedTabValue by entry.savedStateHandle
+                        .getStateFlow(MESSAGE_TAB_REQUEST, "")
+                        .collectAsStateWithLifecycle()
+                    val requestedTab = when (requestedTabValue) {
+                        MESSAGE_TAB_HELP -> MessageEntryTab.Help
+                        MESSAGE_TAB_LIST -> MessageEntryTab.List
+                        else -> null
+                    }
                     MessageRoute(
+                        requestedTab = requestedTab,
+                        onRequestedTabConsumed = {
+                            entry.savedStateHandle[MESSAGE_TAB_REQUEST] = ""
+                        },
                         onOpenConversation = { id -> nav.navigate("message/conv/$id") },
                         onOpenLocalVideo = { title ->
                             nav.navigate("message/local-video/${Uri.encode(title)}")
                         },
-                        onOpenExpertDetail = { id -> nav.navigate("message/expert/$id") },
+                        onOpenExpertDetail = { id ->
+                            entry.savedStateHandle[MESSAGE_TAB_REQUEST] = MESSAGE_TAB_HELP
+                            nav.navigate("message/expert/$id")
+                        },
                     )
                 }
                 composable("message/expert/{id}") {
-                    ExpertDetailRoute(onBack = { nav.popBackStack() })
+                    ExpertDetailRoute(
+                        onBack = { nav.popBackStack() },
+                        onOpenConversation = { id -> nav.navigate("message/conv/$id") },
+                    )
                 }
                 composable("message/conv/{id}") { entry ->
                     ConversationRoute(

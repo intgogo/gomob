@@ -91,8 +91,8 @@ const val HOME_ROUTE = "home"
  *
  * 视觉骨架：
  *   1. 固定 ScreenHeader "AI 助手 / 大模型辅助作业 · 检测站智能体" + History 按钮
- *   2. 建议关注（3 行 AiWatchRow，左侧 4dp 色条 + VIN mono + 助手注释）
- *   3. 快捷指令 2×2 网格（QuickAction 编号 01-04 + 标题 + 副）
+ *   2. 建议关注（竖排 AiWatchRow + VIN mono + 助手注释）
+ *   3. 快速专家 2×2 网格（预定义指令 + 点按开始新会话）
  *   4. ChatComposer 吸底；提交后进入新会话子页
  *   5. 历史会话收进右上角侧窗
  */
@@ -140,7 +140,7 @@ fun HomeRoute(
             ) {
                 item { SectionTitle(title = "建议关注", hint = "助手主动发现 · 4") }
                 item { AiWatchCard(onOpenInspection = onOpenInspection) }
-                item { SectionTitle(title = "快捷指令", hint = "点按开始新会话") }
+                item { SectionTitle(title = "快速专家", hint = "点按开始新会话") }
                 item { QuickActionGrid(onSelect = onOpenNewChat) }
                 item { Spacer(Modifier.height(Gomob.spacing.s24)) }
             }
@@ -615,7 +615,7 @@ private fun InsetDivider() {
     )
 }
 
-// ─── 快捷指令 2×2 网格 ──────────────────────────────────────────────────────
+// ─── 快速专家 2×2 网格 ──────────────────────────────────────────────────────
 private data class QuickActionItem(val k: String, val title: String, val sub: String)
 
 @Composable
@@ -691,15 +691,15 @@ private fun QuickActionCell(
 }
 
 // ─── AI 建议关注 ────────────────────────────────────────────────────────────
-private data class AiWatchItem(val tone: WatchTone, val vin: String, val note: String, val ts: String)
-private enum class WatchTone { Accent, Warn, Danger }
+private data class AiWatchItem(val vin: String, val note: String, val ts: String)
 
 @Composable
 private fun AiWatchCard(onOpenInspection: (String) -> Unit) {
-    val items = listOf(
-        AiWatchItem(WatchTone.Danger, "LSVHM133022221761", "OBD P0420 + 外廓尺寸超差，置信度 87% 建议人工复核", "11:45"),
-        AiWatchItem(WatchTone.Warn, "LSVHM41182123456", "VIN 与出厂日期不一致 · 可能为系统录入差异", "12:18"),
-        AiWatchItem(WatchTone.Accent, "LSVHM98277661003", "历史 3 次外观异常已排除 · 助手判定正常", "12:42"),
+    val watchItems = listOf(
+        AiWatchItem("LSVHM133022221761", "OBD P0420 + 外廓尺寸超差，置信度 87% 建议人工复核", "11:45"),
+        AiWatchItem("LSVHM41182123456", "VIN 与出厂日期不一致 · 可能为系统录入差异", "12:18"),
+        AiWatchItem("LSVHM98277661003", "历史 3 次外观异常已排除 · 助手判定正常", "12:42"),
+        AiWatchItem("LSVHM72811490562", "同批次车辆灯光角度偏差集中出现 · 建议抽样复查", "13:05"),
     )
     Box(Modifier.padding(horizontal = Gomob.spacing.s20)) {
         Column(
@@ -709,9 +709,9 @@ private fun AiWatchCard(onOpenInspection: (String) -> Unit) {
                 .background(Gomob.colors.bg1)
                 .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3),
         ) {
-            items.forEachIndexed { i, item ->
+            watchItems.forEachIndexed { i, item ->
                 AiWatchRow(item, onClick = { onOpenInspection(item.vin) })
-                if (i != items.lastIndex) InsetDivider()
+                if (i != watchItems.lastIndex) InsetDivider()
             }
         }
     }
@@ -719,11 +719,6 @@ private fun AiWatchCard(onOpenInspection: (String) -> Unit) {
 
 @Composable
 private fun AiWatchRow(item: AiWatchItem, onClick: () -> Unit) {
-    val color = when (item.tone) {
-        WatchTone.Accent -> Gomob.colors.accent
-        WatchTone.Warn -> Gomob.colors.warn
-        WatchTone.Danger -> Gomob.colors.danger
-    }
     Row(
         Modifier
             .fillMaxWidth()
@@ -732,12 +727,6 @@ private fun AiWatchRow(item: AiWatchItem, onClick: () -> Unit) {
             .padding(horizontal = Gomob.spacing.s14, vertical = Gomob.spacing.s12),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Box(
-            Modifier
-                .width(Gomob.spacing.dot4)
-                .fillMaxHeight()
-                .background(color),
-        )
         Column(Modifier.weight(1f)) {
             Row(
                 Modifier.fillMaxWidth(),
@@ -765,7 +754,7 @@ private fun AiWatchRow(item: AiWatchItem, onClick: () -> Unit) {
                     fontSize = 9.sp,
                     fontFamily = FontFamily.Monospace,
                     letterSpacing = 0.08.em,
-                    color = color,
+                    color = Gomob.colors.accent,
                     modifier = Modifier.padding(top = 1.dp),
                 )
                 Text(

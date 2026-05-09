@@ -7,12 +7,14 @@ import io.gomob.database.message.MessageDao
 import io.gomob.database.message.MessageEntity
 import io.gomob.model.message.ConversationSummary
 import io.gomob.model.message.HelpExpert
+import io.gomob.model.message.HelpExpertCase
 import io.gomob.model.message.MessageRecord
 import io.gomob.model.message.MessageStatus
 import io.gomob.network.ApiException
 import io.gomob.network.MessageApi
 import io.gomob.network.dto.ConversationDto
 import io.gomob.network.dto.CreateMessageRequest
+import io.gomob.network.dto.HelpExpertCaseDto
 import io.gomob.network.dto.HelpExpertDto
 import io.gomob.network.dto.MessageDto
 import io.gomob.network.dto.OpenDirectConversationRequest
@@ -68,6 +70,12 @@ class MessageRepository @Inject constructor(
     suspend fun helpExperts(): List<HelpExpert> {
         val resp = api.helpExperts()
         val data = resp.data ?: throw ApiException(50001, 500, "专家列表响应缺数据")
+        return data.items.map { it.toDomain() }
+    }
+
+    suspend fun helpExpertCases(expertUserId: Long): List<HelpExpertCase> {
+        val resp = api.helpExpertCases(expertUserId.toString())
+        val data = resp.data ?: throw ApiException(50001, 500, "专家案例响应缺数据")
         return data.items.map { it.toDomain() }
     }
 
@@ -334,6 +342,15 @@ private fun HelpExpertDto.toDomain(): HelpExpert = HelpExpert(
     roleTitle = roleTitle,
     specialty = specialty,
     availability = availability,
+)
+
+private fun HelpExpertCaseDto.toDomain(): HelpExpertCase = HelpExpertCase(
+    id = id.toLong(),
+    authorId = authorId.toLong(),
+    title = title,
+    summary = summary,
+    category = category,
+    publishedAt = publishedAt,
 )
 
 private fun MessageDto.toEntity(conversationId: Long, json: Json): MessageEntity {

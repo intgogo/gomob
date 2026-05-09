@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -51,6 +52,15 @@ type helpExpertDTO struct {
 	Availability string `json:"availability"`
 }
 
+type helpExpertCaseDTO struct {
+	ID          string `json:"id"`
+	AuthorID    string `json:"author_id"`
+	Title       string `json:"title"`
+	Summary     string `json:"summary"`
+	Category    string `json:"category"`
+	PublishedAt string `json:"published_at"`
+}
+
 func (h *Handler) ListHelpExperts(w http.ResponseWriter, r *http.Request) {
 	if callerUserID(r) == 0 {
 		httpx.WriteError(w, httpx.ErrTokenInvalid)
@@ -59,6 +69,62 @@ func (h *Handler) ListHelpExperts(w http.ResponseWriter, r *http.Request) {
 
 	out, _, err := h.activeHelpExperts(r.Context())
 	if err != nil {
+		httpx.WriteError(w, httpx.ErrInternal)
+		return
+	}
+
+	httpx.OK(w, map[string]any{"items": out})
+}
+
+func (h *Handler) ListHelpExpertCases(w http.ResponseWriter, r *http.Request) {
+	if callerUserID(r) == 0 {
+		httpx.WriteError(w, httpx.ErrTokenInvalid)
+		return
+	}
+	expertID, err := parsePathID(r, "id")
+	if err != nil || expertID <= 0 {
+		httpx.WriteError(w, httpx.ErrBadParam)
+		return
+	}
+	active, err := h.isActiveHelpExpert(r.Context(), expertID)
+	if err != nil {
+		httpx.WriteError(w, httpx.ErrInternal)
+		return
+	}
+	if !active {
+		httpx.WriteError(w, httpx.ErrNotFound)
+		return
+	}
+
+	rows, err := h.pool.Query(r.Context(), `
+		SELECT id, author_id, title, summary, category, published_at
+		FROM help_expert_cases
+		WHERE author_id = $1 AND status = 'published'
+		ORDER BY published_at DESC, id DESC
+		LIMIT 20`,
+		expertID,
+	)
+	if err != nil {
+		httpx.WriteError(w, httpx.ErrInternal)
+		return
+	}
+	defer rows.Close()
+
+	out := make([]helpExpertCaseDTO, 0, 8)
+	for rows.Next() {
+		var item helpExpertCaseDTO
+		var id, authorID int64
+		var publishedAt time.Time
+		if err := rows.Scan(&id, &authorID, &item.Title, &item.Summary, &item.Category, &publishedAt); err != nil {
+			httpx.WriteError(w, httpx.ErrInternal)
+			return
+		}
+		item.ID = strconv.FormatInt(id, 10)
+		item.AuthorID = strconv.FormatInt(authorID, 10)
+		item.PublishedAt = formatTime(publishedAt)
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
 		httpx.WriteError(w, httpx.ErrInternal)
 		return
 	}
@@ -96,6 +162,19 @@ func (h *Handler) activeHelpExperts(ctx context.Context) ([]helpExpertDTO, []int
 		})
 	}
 	return out, ids, nil
+}
+
+func (h *Handler) isActiveHelpExpert(ctx context.Context, userID int64) (bool, error) {
+	_, ids, err := h.activeHelpExperts(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, id := range ids {
+		if id == userID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 type openP2PConversationReq struct {

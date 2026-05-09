@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,8 +14,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -28,25 +33,34 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
+import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 
 @Composable
 fun ExpertDetailRoute(
     onBack: () -> Unit,
+    onOpenConversation: (String) -> Unit,
     viewModel: ExpertDetailViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val content = state as? ExpertDetailUiState.Content
+
+    LaunchedEffect(viewModel) {
+        viewModel.openConversationEvents.collect { conversationId ->
+            onOpenConversation(conversationId.toString())
+        }
+    }
 
     Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
         BackHeader(
-            title = (state as? ExpertDetailUiState.Content)?.expert?.name ?: "专家详情",
+            title = content?.expert?.name ?: "专家详情",
             onBack = onBack,
             eyebrow = "在线求助 · 固定专家",
             trailing = {
-                StatusTag(
-                    text = if (state is ExpertDetailUiState.Content) "可联系" else "加载中",
-                    tone = if (state is ExpertDetailUiState.Content) StatusTone.Ok else StatusTone.Neutral,
-                    showDot = true,
+                ExpertMessageButton(
+                    enabled = content != null && !content.openingMessage,
+                    loading = content?.openingMessage == true,
+                    onClick = viewModel::openDirectConversation,
                 )
             },
         )
@@ -58,7 +72,34 @@ fun ExpertDetailRoute(
                 tone = StatusTone.Danger,
                 onClick = viewModel::refresh,
             )
-            is ExpertDetailUiState.Content -> ExpertDetailCard((state as ExpertDetailUiState.Content).expert)
+            is ExpertDetailUiState.Content -> ExpertDetailContent(state as ExpertDetailUiState.Content)
+        }
+    }
+}
+
+@Composable
+private fun ExpertDetailContent(state: ExpertDetailUiState.Content) {
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(
+            horizontal = Gomob.spacing.s20,
+            vertical = Gomob.spacing.s12,
+        ),
+        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
+    ) {
+        item { ExpertDetailCard(state.expert) }
+        state.messageError?.let { error ->
+            item { ExpertInlineStatus(error, StatusTone.Danger) }
+        }
+        item {
+            Text("发布案例", style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
+        }
+        if (state.cases.isEmpty()) {
+            item { ExpertInlineStatus("暂无已发布案例", StatusTone.Neutral) }
+        } else {
+            items(state.cases, key = { it.id }) { item ->
+                ExpertCaseCard(item)
+            }
         }
     }
 }
@@ -67,7 +108,6 @@ fun ExpertDetailRoute(
 private fun ExpertDetailCard(expert: HelpExpertRowUi) {
     Column(
         Modifier
-            .padding(horizontal = Gomob.spacing.s20)
             .fillMaxWidth()
             .clip(Gomob.shapes.r3)
             .background(Gomob.colors.bg1)
@@ -112,10 +152,97 @@ private fun ExpertDetailCard(expert: HelpExpertRowUi) {
 }
 
 @Composable
+private fun ExpertCaseCard(item: ExpertCaseRowUi) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(Gomob.shapes.r3)
+            .background(Gomob.colors.bg1)
+            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
+            .padding(Gomob.spacing.s14),
+        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                item.title,
+                style = Gomob.type.body,
+                fontWeight = FontWeight.Medium,
+                color = Gomob.colors.fg0,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                item.category,
+                style = Gomob.type.eyebrow,
+                color = Gomob.colors.accent,
+                modifier = Modifier.padding(start = Gomob.spacing.s8),
+            )
+        }
+        if (item.summary.isNotBlank()) {
+            Text(item.summary, style = Gomob.type.bodySm, color = Gomob.colors.fg2)
+        }
+        Text(item.publishedAt, style = Gomob.type.numInline, color = Gomob.colors.fg3)
+    }
+}
+
+@Composable
 private fun DetailLine(label: String, value: String) {
     Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4)) {
         Text(label, style = Gomob.type.eyebrow, color = Gomob.colors.fg3)
         Text(value, style = Gomob.type.bodySm, color = Gomob.colors.fg1)
+    }
+}
+
+@Composable
+private fun ExpertMessageButton(
+    enabled: Boolean,
+    loading: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .height(32.dp)
+            .clip(Gomob.shapes.r2)
+            .background(if (enabled) Gomob.colors.accentSoft else Gomob.colors.bg2)
+            .border(
+                Gomob.spacing.hairline,
+                if (enabled) Gomob.colors.accentLine else Gomob.colors.line1,
+                Gomob.shapes.r2,
+            )
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = Gomob.spacing.s12),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+    ) {
+        Icon(
+            GomobIcons.Compose,
+            contentDescription = "发消息",
+            tint = if (enabled) Gomob.colors.accent else Gomob.colors.fg3,
+            modifier = Modifier.size(14.dp),
+        )
+        Text(
+            if (loading) "打开中" else "发消息",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            color = if (enabled) Gomob.colors.accent else Gomob.colors.fg3,
+        )
+    }
+}
+
+@Composable
+private fun ExpertInlineStatus(text: String, tone: StatusTone) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(Gomob.shapes.r3)
+            .background(Gomob.colors.bg1)
+            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
+            .padding(Gomob.spacing.s14),
+    ) {
+        StatusTag(text = text, tone = tone, showDot = tone != StatusTone.Neutral)
     }
 }
 

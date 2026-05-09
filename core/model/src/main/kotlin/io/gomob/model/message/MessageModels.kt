@@ -29,6 +29,15 @@ data class HelpExpert(
     val availability: String,
 )
 
+data class HelpExpertCase(
+    val id: Long,
+    val authorId: Long,
+    val title: String,
+    val summary: String,
+    val category: String,
+    val publishedAt: String,
+)
+
 data class MessageRecord(
     val localKey: String,
     val serverId: Long?,
