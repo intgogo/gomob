@@ -12,7 +12,9 @@ import okhttp3.ResponseBody.Companion.toResponseBody
  *
  * 实现：把 body 复制出来 peek 解析 code/message，若是错误则 throw；否则把 body 重新塞回去给下游 Retrofit converter。
  */
-internal class EnvelopeErrorInterceptor : Interceptor {
+internal class EnvelopeErrorInterceptor(
+    private val tokenProvider: TokenProvider,
+) : Interceptor {
     private val json = Json { ignoreUnknownKeys = true }
 
     override fun intercept(chain: Interceptor.Chain): Response {
@@ -42,7 +44,12 @@ internal class EnvelopeErrorInterceptor : Interceptor {
             // JSON 解析失败 → 当成正常响应继续
             null
         }
-        if (apiErr != null) throw apiErr
+        if (apiErr != null) {
+            if (apiErr.isAuthExpired) {
+                tokenProvider.onAuthExpired(apiErr.message)
+            }
+            throw apiErr
+        }
 
         return resp.newBuilder().body(raw.toResponseBody(mt)).build()
     }

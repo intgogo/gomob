@@ -8,4 +8,7 @@ package io.gomob.network
 interface TokenProvider {
     /** 同步取 token；登录前可能 null。 */
     fun currentAccessToken(): String?
+
+    /** 网络层识别到登录态失效时通知外部清理本地会话。 */
+    fun onAuthExpired(message: String) = Unit
 }

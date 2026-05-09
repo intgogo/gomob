@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -27,7 +28,13 @@ import io.gomob.scan.navigation.GomobNavHost
 @Composable
 fun AppRoot(vm: AuthGateViewModel = hiltViewModel()) {
     val loggedIn by vm.isLoggedIn.collectAsStateWithLifecycle(initialValue = null)
+    val sessionNotice by vm.sessionNotice.collectAsStateWithLifecycle(initialValue = null)
     var registerMode by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(sessionNotice) {
+        if (!sessionNotice.isNullOrBlank()) {
+            registerMode = false
+        }
+    }
     when (loggedIn) {
         null -> SplashLoading()
         false -> if (registerMode) {
@@ -39,6 +46,8 @@ fun AppRoot(vm: AuthGateViewModel = hiltViewModel()) {
             LoginRoute(
                 onLoggedIn = { /* isLoggedIn flow 自动重组 */ },
                 onGoRegister = { registerMode = true },
+                sessionNotice = sessionNotice,
+                onSessionNoticeShown = vm::clearSessionNotice,
             )
         }
         true -> GomobNavHost()

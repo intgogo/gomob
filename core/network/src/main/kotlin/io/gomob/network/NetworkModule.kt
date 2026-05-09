@@ -38,7 +38,7 @@ object NetworkModule {
             // 顺序: HostSelection 必须在最前 —— 改完 host:port 再走 Auth/Envelope/Logging
             .addInterceptor(hostSelection)
             .addInterceptor(AuthInterceptor(tokenProvider))
-            .addInterceptor(EnvelopeErrorInterceptor())
+            .addInterceptor(EnvelopeErrorInterceptor(tokenProvider))
             .addInterceptor(logging)
             // ping/healthz 路径短，统一短超时让 UI 反馈快
             .connectTimeout(5, TimeUnit.SECONDS)

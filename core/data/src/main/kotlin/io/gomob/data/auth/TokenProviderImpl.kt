@@ -10,4 +10,10 @@ class TokenProviderImpl @Inject constructor(
     private val tokenStore: TokenStore,
 ) : TokenProvider {
     override fun currentAccessToken(): String? = tokenStore.currentAccessToken()
+
+    override fun onAuthExpired(message: String) {
+        kotlinx.coroutines.runBlocking {
+            tokenStore.expireSession(message)
+        }
+    }
 }

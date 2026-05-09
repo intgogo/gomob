@@ -34,9 +34,13 @@ class TokenStore @Inject constructor(
 ) {
     private val keyAccess = stringPreferencesKey("access_token")
     private val keyRefresh = stringPreferencesKey("refresh_token")
+    private val keySessionNotice = stringPreferencesKey("session_notice")
 
     val accessTokenFlow: Flow<String?> =
         context.tokenDataStore.data.map { it[keyAccess] }
+
+    val sessionNoticeFlow: Flow<String?> =
+        context.tokenDataStore.data.map { it[keySessionNotice] }
 
     val currentUserIdFlow: Flow<Long?> =
         accessTokenFlow.map { it.accessTokenUserId() }
@@ -45,6 +49,7 @@ class TokenStore @Inject constructor(
         context.tokenDataStore.edit {
             it[keyAccess] = access
             it[keyRefresh] = refresh
+            it.remove(keySessionNotice)
         }
     }
 
@@ -52,6 +57,20 @@ class TokenStore @Inject constructor(
         context.tokenDataStore.edit {
             it.remove(keyAccess)
             it.remove(keyRefresh)
+        }
+    }
+
+    suspend fun expireSession(message: String) {
+        context.tokenDataStore.edit {
+            it.remove(keyAccess)
+            it.remove(keyRefresh)
+            it[keySessionNotice] = message.ifBlank { "登录已超时，请重新登录" }
+        }
+    }
+
+    suspend fun clearSessionNotice() {
+        context.tokenDataStore.edit {
+            it.remove(keySessionNotice)
         }
     }
 

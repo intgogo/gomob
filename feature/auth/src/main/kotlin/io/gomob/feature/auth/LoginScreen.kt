@@ -64,9 +64,17 @@ const val LOGIN_ROUTE = "auth/login"
 fun LoginRoute(
     onLoggedIn: () -> Unit,
     onGoRegister: () -> Unit = {},
+    sessionNotice: String? = null,
+    onSessionNoticeShown: () -> Unit = {},
     vm: LoginViewModel = hiltViewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
+    LaunchedEffect(sessionNotice) {
+        if (!sessionNotice.isNullOrBlank()) {
+            vm.showSessionNotice(sessionNotice)
+            onSessionNoticeShown()
+        }
+    }
     LaunchedEffect(state.loggedIn) {
         if (state.loggedIn) onLoggedIn()
     }

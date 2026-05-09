@@ -20,6 +20,8 @@ class AuthRepository @Inject constructor(
     /** 是否已登录（access_token 是否存在）。 */
     val isLoggedIn: Flow<Boolean> = tokenStore.accessTokenFlow.map { !it.isNullOrEmpty() }
 
+    val sessionNotice: Flow<String?> = tokenStore.sessionNoticeFlow
+
     /**
      * 登录 — 成功后写 token；失败抛 [ApiException]（含 code 区分 40101 / 40104）。
      */
@@ -62,6 +64,10 @@ class AuthRepository @Inject constructor(
 
     suspend fun logout() {
         tokenStore.clear()
+    }
+
+    suspend fun clearSessionNotice() {
+        tokenStore.clearSessionNotice()
     }
 }
 

@@ -89,6 +89,16 @@ class LoginViewModel @Inject constructor(
     fun setPassword(v: String) = _state.update { it.copy(password = v, errorMessage = null) }
     fun setRemember(v: Boolean) = _state.update { it.copy(rememberMe = v) }
 
+    fun showSessionNotice(message: String) {
+        _state.update {
+            it.copy(
+                loading = false,
+                loggedIn = false,
+                errorMessage = message.ifBlank { "登录已超时，请重新登录" },
+            )
+        }
+    }
+
     /**
      * 调试通道：写入假 token 跳过登录鉴权，立即进入主 App。
      *
