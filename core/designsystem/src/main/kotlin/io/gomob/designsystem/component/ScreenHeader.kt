@@ -10,6 +10,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import io.gomob.designsystem.motion.fixedDuringPageDrag
 import io.gomob.designsystem.theme.Gomob
 
 /**
@@ -29,6 +30,7 @@ fun ScreenHeader(
 ) {
     Row(
         modifier
+            .fixedDuringPageDrag()
             .fillMaxWidth()
             .background(Gomob.colors.bg0)
             .padding(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s12),

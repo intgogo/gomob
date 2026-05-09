@@ -20,6 +20,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.AndroidEntryPoint
 import io.gomob.data.prefs.ThemeMode
+import io.gomob.designsystem.motion.DefaultPageDragBox
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.designsystem.theme.GomobTheme
 import io.gomob.feature.profile.AppearanceViewModel
@@ -51,7 +52,9 @@ class MainActivity : ComponentActivity() {
                         .background(Gomob.colors.bg0)
                         .windowInsetsPadding(WindowInsets.systemBars),
                 ) {
-                    AppRoot()
+                    DefaultPageDragBox(Modifier.fillMaxSize()) {
+                        AppRoot()
+                    }
                 }
             }
         }

@@ -66,25 +66,25 @@ fun Scan3dRoute(
     vm: Scan3dViewModel = hiltViewModel(),
 ) {
     val ui by vm.uiState.collectAsStateWithLifecycle()
-    LazyColumn(
-        modifier = Modifier.fillMaxSize().background(Gomob.colors.bg0),
-        contentPadding = PaddingValues(bottom = 28.dp),
-    ) {
-        item {
-            ScreenHeader(
-                title = "三维扫描",
-                eyebrow = "Berxel iHawk · 主从合一采集",
-            )
+    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
+        ScreenHeader(
+            title = "三维扫描",
+            eyebrow = "Berxel iHawk · 主从合一采集",
+        )
+        LazyColumn(
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            contentPadding = PaddingValues(bottom = 28.dp),
+        ) {
+            // 设备卡 → 深度相机详情页（看预览 + 调控制 + 标定）
+            item { DeviceCard(state = ui, onClick = onOpenDepthCamera) }
+            item { Spacer(Modifier.height(Gomob.spacing.s12)) }
+            // ActionTile 01 三维外廓扫描 → 直接进 RecordingScreen（自包含预览 + 开始/停止）
+            // ActionTile 02 VIN 数码拓印 → ScanCaptureRoute (M4 实施前的 VIN 风格 stub)
+            item { ActionTilePair(onOpenContourScan = onOpenContourScan, onOpenVinRectify = onOpenVinRectify) }
+            item { Spacer(Modifier.height(Gomob.spacing.s20)) }
+            item { AssetSectionHeader() }
+            item { AssetGrid() }
         }
-        // 设备卡 → 深度相机详情页（看预览 + 调控制 + 标定）
-        item { DeviceCard(state = ui, onClick = onOpenDepthCamera) }
-        item { Spacer(Modifier.height(Gomob.spacing.s12)) }
-        // ActionTile 01 三维外廓扫描 → 直接进 RecordingScreen（自包含预览 + 开始/停止）
-        // ActionTile 02 VIN 数码拓印 → ScanCaptureRoute (M4 实施前的 VIN 风格 stub)
-        item { ActionTilePair(onOpenContourScan = onOpenContourScan, onOpenVinRectify = onOpenVinRectify) }
-        item { Spacer(Modifier.height(Gomob.spacing.s20)) }
-        item { AssetSectionHeader() }
-        item { AssetGrid() }
     }
 }
 
@@ -497,4 +497,3 @@ private fun AssetCell(name: String, pts: String, modifier: Modifier = Modifier) 
         )
     }
 }
-

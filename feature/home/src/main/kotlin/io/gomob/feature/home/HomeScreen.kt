@@ -867,7 +867,7 @@ private fun ChatComposer(
     val keyboardOffset = (imeBottom - navigationBottom).coerceAtLeast(0)
     val imeVisible = imeBottom > 0
     val expanded = active || localActive || imeVisible
-    val bottomPadding = if (imeVisible) 0.dp else 10.dp
+    val bottomPadding = if (imeVisible) Gomob.spacing.s8 else 10.dp
 
     fun showKeyboard() {
         keyboardController?.show()

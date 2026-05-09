@@ -16,6 +16,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import io.gomob.designsystem.motion.fixedDuringPageDrag
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 
@@ -34,7 +35,7 @@ fun BackHeader(
     modifier: Modifier = Modifier,
     trailing: @Composable (() -> Unit)? = null,
 ) {
-    Column(modifier.fillMaxWidth().background(Gomob.colors.bg0)) {
+    Column(modifier.fixedDuringPageDrag().fillMaxWidth().background(Gomob.colors.bg0)) {
         Row(
             Modifier
                 .fillMaxWidth()

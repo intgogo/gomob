@@ -32,6 +32,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import io.gomob.designsystem.icons.GomobIcons
+import io.gomob.designsystem.motion.fixedDuringPageDrag
 import io.gomob.designsystem.theme.Gomob
 
 @Composable
@@ -52,7 +53,7 @@ internal fun MessageComposerBar(
 ) {
     val canSendText = enabled && draft.isNotBlank()
 
-    Column(modifier.fillMaxWidth().background(Gomob.colors.bg1).imePadding()) {
+    Column(modifier.fixedDuringPageDrag().fillMaxWidth().background(Gomob.colors.bg1).imePadding()) {
         Box(
             Modifier
                 .fillMaxWidth()

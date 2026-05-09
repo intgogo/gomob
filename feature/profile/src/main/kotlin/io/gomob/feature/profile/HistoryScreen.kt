@@ -35,6 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import io.gomob.designsystem.motion.fixedDuringPageDrag
 import io.gomob.designsystem.decoration.ticks
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
@@ -118,6 +119,7 @@ fun HistoryRoute(onBack: () -> Unit) {
 private fun TopHistoryHeader(onBack: () -> Unit) {
     Row(
         Modifier
+            .fixedDuringPageDrag()
             .fillMaxWidth()
             .padding(start = Gomob.spacing.s8, end = Gomob.spacing.s20, top = 16.dp, bottom = Gomob.spacing.s12),
         verticalAlignment = Alignment.CenterVertically,

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -20,6 +21,7 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import io.gomob.designsystem.motion.fixedDuringPageDrag
 import io.gomob.designsystem.theme.Gomob
 
 /** Tab 项。`icon` 用 Painter（[androidx.compose.ui.graphics.vector.rememberVectorPainter] 也行）。 */
@@ -48,7 +50,7 @@ fun TabBar(
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(modifier.fillMaxWidth().background(Gomob.colors.bg0)) {
+    Column(modifier.fixedDuringPageDrag().fillMaxWidth().background(Gomob.colors.bg0)) {
         Box(
             Modifier
                 .fillMaxWidth()
@@ -66,6 +68,7 @@ fun TabBar(
                 Column(
                     Modifier
                         .weight(1f)
+                        .fillMaxHeight()
                         .clickable { onSelect(item.key) }
                         .padding(vertical = Gomob.spacing.s8),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -92,7 +95,7 @@ fun TabBarVector(
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(modifier.fillMaxWidth().background(Gomob.colors.bg0)) {
+    Column(modifier.fixedDuringPageDrag().fillMaxWidth().background(Gomob.colors.bg0)) {
         Box(
             Modifier
                 .fillMaxWidth()
@@ -110,6 +113,7 @@ fun TabBarVector(
                 Column(
                     Modifier
                         .weight(1f)
+                        .fillMaxHeight()
                         .clickable { onSelect(item.key) }
                         .padding(vertical = Gomob.spacing.s8),
                     horizontalAlignment = Alignment.CenterHorizontally,
