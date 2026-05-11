@@ -563,6 +563,10 @@ func (h *Handler) finalizeCallRoom(ctx context.Context, room *repo.MediaRoom, en
 	if accepted {
 		status = "completed"
 	}
+	reason := ""
+	if !accepted {
+		reason = firstNonBlank(mediaMetadataString(room.Metadata, "end_error"), defaultCallFailureReason(status))
+	}
 	roomID := room.ID
 	_, err = h.media.InsertCallLogOnce(ctx, &repo.CallLog{
 		RoomID:         &roomID,
@@ -579,21 +583,25 @@ func (h *Handler) finalizeCallRoom(ctx context.Context, room *repo.MediaRoom, en
 	}
 	senderID := room.CreatedBy
 	clientMsgID := fmt.Sprintf("media-room-%d-video-call", room.ID)
+	payload := map[string]any{
+		"room_id":       strconv.FormatInt(room.ID, 10),
+		"provider_room": room.ProviderRoom,
+		"caller_id":     strconv.FormatInt(room.CreatedBy, 10),
+		"callee_id":     strconv.FormatInt(calleeID, 10),
+		"ended_by":      strconv.FormatInt(endedBy, 10),
+		"status":        status,
+		"duration_sec":  durationSec,
+		"started_at":    startedAt.UTC().Format(time.RFC3339Nano),
+		"ended_at":      endedAt.UTC().Format(time.RFC3339Nano),
+	}
+	if reason != "" {
+		payload["reason"] = reason
+	}
 	message := &repo.Message{
 		ConversationID: conversationID,
 		SenderID:       &senderID,
 		Kind:           "video_call",
-		Payload: mustRawJSON(map[string]any{
-			"room_id":       strconv.FormatInt(room.ID, 10),
-			"provider_room": room.ProviderRoom,
-			"caller_id":     strconv.FormatInt(room.CreatedBy, 10),
-			"callee_id":     strconv.FormatInt(calleeID, 10),
-			"ended_by":      strconv.FormatInt(endedBy, 10),
-			"status":        status,
-			"duration_sec":  durationSec,
-			"started_at":    startedAt.UTC().Format(time.RFC3339Nano),
-			"ended_at":      endedAt.UTC().Format(time.RFC3339Nano),
-		}),
+		Payload:        mustRawJSON(payload),
 	}
 	inserted, err := h.messages.AppendIdempotent(ctx, message, clientMsgID)
 	if err != nil {
@@ -601,6 +609,23 @@ func (h *Handler) finalizeCallRoom(ctx context.Context, room *repo.MediaRoom, en
 	}
 	h.notifyRealtimeMessage(ctx, senderID, message, inserted)
 	return nil
+}
+
+func mediaMetadataString(raw json.RawMessage, key string) string {
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return ""
+	}
+	value, ok := obj[key]
+	if !ok {
+		return ""
+	}
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
 }
 
 func normalizeMediaKind(kind string) string {

@@ -1199,6 +1199,9 @@ private class FakeMessageDao : MessageDao {
     override suspend fun findByClientMsgId(clientMsgId: String): MessageEntity? =
         items.firstOrNull { it.clientMsgId == clientMsgId }
 
+    override suspend fun findByLocalKey(localKey: String): MessageEntity? =
+        items.firstOrNull { it.localKey == localKey }
+
     override suspend fun findByServerId(serverId: Long): MessageEntity? =
         items.firstOrNull { it.serverId == serverId }
 

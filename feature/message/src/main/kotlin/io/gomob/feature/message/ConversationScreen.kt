@@ -2,7 +2,6 @@ package io.gomob.feature.message
 
 import android.Manifest
 import android.content.pm.PackageManager
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -26,7 +25,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material3.AlertDialog
@@ -44,12 +42,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -73,7 +68,9 @@ import io.gomob.designsystem.theme.Gomob
 @Composable
 fun ConversationRoute(
     conversationId: String,
+    targetLocalKey: String? = null,
     onBack: () -> Unit,
+    onOpenSearch: (String) -> Unit = {},
     onOpenLocalVideo: (String) -> Unit = {},
     onOpenVideoCall: (roomId: String, title: String, mode: VideoCallMode) -> Unit = { _, _, _ -> },
     onOpenInspection: (String) -> Unit = {},
@@ -84,8 +81,6 @@ fun ConversationRoute(
     var draft by remember { mutableStateOf("") }
     var voiceRecording by remember { mutableStateOf(false) }
     var inspectionPickerOpen by rememberSaveable { mutableStateOf(false) }
-    var searchActive by rememberSaveable { mutableStateOf(false) }
-    var searchQuery by rememberSaveable { mutableStateOf("") }
     var inputFocused by remember { mutableStateOf(false) }
     var clearConfirmOpen by remember { mutableStateOf(false) }
     var quoteDraft by remember { mutableStateOf<QuoteDraftUi?>(null) }
@@ -235,14 +230,6 @@ fun ConversationRoute(
             MessageQuickAction.TranscribeVoice -> viewModel.retryVoiceTranscript(bubble.serverId)
         }
     }
-    val closeSearch = {
-        searchActive = false
-        searchQuery = ""
-        focusManager.clearFocus()
-    }
-
-    BackHandler(enabled = searchActive, onBack = closeSearch)
-
     LaunchedEffect(Unit) {
         viewModel.forwardResultEvents.collect { message ->
             context.showMessageActionToast(message)
@@ -264,7 +251,6 @@ fun ConversationRoute(
                 TextButton(
                     onClick = {
                         clearConfirmOpen = false
-                        closeSearch()
                         viewModel.clearMessages()
                     },
                 ) {
@@ -299,21 +285,15 @@ fun ConversationRoute(
                 onBack = onBack,
                 pinned = state.pinned,
                 modifier = Modifier.clearInputFocusOnPointerDown(focusManager),
-                onSearch = { searchActive = true },
+                onSearch = { onOpenSearch(conversationId) },
                 onClearMessages = { clearConfirmOpen = true },
                 onTogglePinned = viewModel::togglePinned,
             )
-            if (searchActive) {
-                ConversationSearchBar(
-                    query = searchQuery,
-                    onQueryChange = { searchQuery = it },
-                    onClose = closeSearch,
-                )
-            }
 
             ConversationBody(
                 state = state,
-                searchQuery = if (searchActive) searchQuery else "",
+                searchQuery = "",
+                targetLocalKey = targetLocalKey,
                 onRefresh = viewModel::refresh,
                 onRetry = viewModel::retry,
                 onRetryTranscript = viewModel::retryVoiceTranscript,
@@ -556,69 +536,10 @@ private fun ConversationMenuItem(
 }
 
 @Composable
-private fun ConversationSearchBar(
-    query: String,
-    onQueryChange: (String) -> Unit,
-    onClose: () -> Unit,
-) {
-    val focusRequester = remember { FocusRequester() }
-
-    LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
-    }
-
-    Row(
-        Modifier
-            .fixedDuringPageDrag()
-            .fillMaxWidth()
-            .background(Gomob.colors.bg0)
-            .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-    ) {
-        Row(
-            Modifier
-                .weight(1f)
-                .height(38.dp)
-                .clip(Gomob.shapes.r3)
-                .background(Gomob.colors.bg1)
-                .padding(horizontal = Gomob.spacing.s12),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
-        ) {
-            Icon(
-                imageVector = GomobIcons.Search,
-                contentDescription = "搜索",
-                tint = Gomob.colors.fg3,
-                modifier = Modifier.size(Gomob.spacing.icon16),
-            )
-            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-                BasicTextField(
-                    value = query,
-                    onValueChange = onQueryChange,
-                    singleLine = true,
-                    textStyle = Gomob.type.bodySm.copy(color = Gomob.colors.fg0),
-                    cursorBrush = SolidColor(Gomob.colors.accent),
-                    modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
-                )
-                if (query.isEmpty()) {
-                    Text("搜索聊天记录", style = Gomob.type.bodySm, color = Gomob.colors.fg3)
-                }
-            }
-        }
-        Text(
-            "取消",
-            style = Gomob.type.bodySm,
-            color = Gomob.colors.fg2,
-            modifier = Modifier.clickable(onClick = onClose).padding(Gomob.spacing.s6),
-        )
-    }
-}
-
-@Composable
 private fun ConversationBody(
     state: ConversationUiState,
     searchQuery: String,
+    targetLocalKey: String?,
     onRefresh: () -> Unit,
     onRetry: (String?) -> Unit,
     onRetryTranscript: (Long?) -> Unit,
@@ -662,7 +583,11 @@ private fun ConversationBody(
         state.loading,
         state.errorMessage,
         normalizedQuery,
+        targetLocalKey,
     ) {
+        if (!targetLocalKey.isNullOrBlank()) {
+            return@LaunchedEffect
+        }
         val latestKey = latestMessage?.localKey
         val latestChanged = latestKey != null && latestKey != lastObservedLatestMessageKey
         val newOwnMessage = latestChanged && hasObservedInitialLatestMessage && latestMessage?.mine == true
@@ -682,6 +607,16 @@ private fun ConversationBody(
                 lastObservedLatestMessageKey = latestKey
                 hasObservedInitialLatestMessage = true
             }
+        }
+    }
+
+    LaunchedEffect(targetLocalKey, displayItems, state.loading) {
+        val target = targetLocalKey?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
+        val targetIndex = displayItems.indexOfFirst { item ->
+            item is ChatTimelineItem.Message && item.bubble.localKey == target
+        }
+        if (targetIndex >= 0) {
+            listState.scrollToItem(targetIndex)
         }
     }
 

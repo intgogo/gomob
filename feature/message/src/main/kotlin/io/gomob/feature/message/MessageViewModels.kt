@@ -846,6 +846,7 @@ data class MessageBubbleUi(
     val isVoice: Boolean = false,
     val inspectionCard: InspectionCardUi? = null,
     val callInvite: CallInviteUi? = null,
+    val callResult: CallResultUi? = null,
     val voiceTranscript: VoiceTranscriptUi? = null,
     val quote: QuoteReferenceUi? = null,
 )
@@ -891,9 +892,47 @@ data class CallInviteUi(
     val status: String,
     val liveKitConfigured: Boolean,
     val message: String?,
+    val durationSec: Int? = null,
+    val failureReason: String? = null,
 ) {
-    val searchText: String get() = listOf(roomId, providerRoom, title, status, message.orEmpty())
+    val ringing: Boolean get() = status == "ringing"
+    val succeeded: Boolean get() = status.isSuccessfulCallStatus()
+    val statusText: String get() = status.callStatusText()
+    val durationText: String? get() = durationSec?.takeIf { it > 0 }?.let(::formatVoiceDuration)
+    val searchText: String get() = listOf(
+        roomId,
+        providerRoom,
+        title,
+        status,
+        statusText,
+        message.orEmpty(),
+        durationText.orEmpty(),
+        failureReason.orEmpty(),
+    )
         .joinToString(" ")
+}
+
+data class CallResultUi(
+    val kind: String,
+    val title: String,
+    val status: String,
+    val statusText: String,
+    val durationSec: Int?,
+    val failureReason: String?,
+) {
+    val succeeded: Boolean get() = status.isSuccessfulCallStatus()
+    val durationText: String? get() = durationSec?.takeIf { it > 0 }?.let(::formatVoiceDuration)
+    val previewText: String
+        get() = when {
+            succeeded && durationText != null -> "[$title $durationText]"
+            succeeded -> "[$title]"
+            !failureReason.isNullOrBlank() -> "[$title$statusText] $failureReason"
+            statusText.isNotBlank() -> "[$title$statusText]"
+            else -> "[$title]"
+        }
+    val searchText: String
+        get() = listOf(title, status, statusText, durationText.orEmpty(), failureReason.orEmpty())
+            .joinToString(" ")
 }
 
 data class VideoCallOpenEvent(
@@ -992,13 +1031,14 @@ private fun MessageRecord.toBubbleUi(json: Json, currentUserId: Long?): MessageB
     val mine = mineBySender(currentUserId)
     val card = inspectionCardPayload(json)
     val call = callInvitePayload(json)
+    val callResult = callResultPayload(json)
     val transcript = voiceTranscriptPayload(json)
     val quote = quoteReferencePayload(json)
     return MessageBubbleUi(
         localKey = localKey,
         serverId = serverId,
         kind = kind,
-        text = card?.searchText ?: call?.searchText ?: if (kind == "voice") voiceBaseText(json) else previewText(json),
+        text = card?.searchText ?: call?.searchText ?: callResult?.searchText ?: if (kind == "voice") voiceBaseText(json) else previewText(json),
         mine = mine,
         senderLabel = null,
         avatarKey = if (mine) "me" else "peer-${senderId ?: localKey}",
@@ -1010,6 +1050,7 @@ private fun MessageRecord.toBubbleUi(json: Json, currentUserId: Long?): MessageB
         isVoice = kind == "voice",
         inspectionCard = card,
         callInvite = call,
+        callResult = callResult,
         voiceTranscript = transcript,
         quote = quote,
     )
@@ -1024,13 +1065,14 @@ private fun MessageRecord.toBubbleUi(
     val expert = experts.firstOrNull { it.userId == senderId }
     val card = inspectionCardPayload(json)
     val call = callInvitePayload(json)
+    val callResult = callResultPayload(json)
     val transcript = voiceTranscriptPayload(json)
     val quote = quoteReferencePayload(json)
     return MessageBubbleUi(
         localKey = localKey,
         serverId = serverId,
         kind = kind,
-        text = card?.searchText ?: call?.searchText ?: if (kind == "voice") voiceBaseText(json) else previewText(json),
+        text = card?.searchText ?: call?.searchText ?: callResult?.searchText ?: if (kind == "voice") voiceBaseText(json) else previewText(json),
         mine = mine,
         senderLabel = if (mine) null else expert?.name ?: "成员 #$senderId",
         avatarKey = if (mine) {
@@ -1046,6 +1088,7 @@ private fun MessageRecord.toBubbleUi(
         isVoice = kind == "voice",
         inspectionCard = card,
         callInvite = call,
+        callResult = callResult,
         voiceTranscript = transcript,
         quote = quote,
     )
@@ -1060,14 +1103,14 @@ private fun ConversationSummary.displayTitle(): String =
         ?: peer?.name?.takeIf { it.isNotBlank() }
         ?: "会话 #$id"
 
-private fun MessageRecord.previewText(json: Json): String = when (kind) {
+internal fun MessageRecord.previewText(json: Json): String = when (kind) {
     "text" -> preview?.takeIf { it.isNotBlank() } ?: textPayload(json).ifBlank { "[文本]" }
     "image" -> preview?.takeIf { it.isNotBlank() } ?: "[图片]"
     "voice" -> preview?.takeIf { it.isNotBlank() } ?: mediaPreview(json, awaiting = "[语音待上传]", ready = "[语音消息]")
     "video_clip" -> preview?.takeIf { it.isNotBlank() } ?: mediaPreview(json, awaiting = "[视频待上传]", ready = "[视频]")
     "inspection_card" -> preview?.takeIf { it.isNotBlank() } ?: inspectionCardPayload(json)?.let { "[流水] ${it.vin}" } ?: "[业务流水]"
     "call_invite" -> preview?.takeIf { it.isNotBlank() } ?: callInvitePayload(json)?.let { "[视频通话] ${it.title}" } ?: "[视频通话邀请]"
-    "video_call" -> preview?.takeIf { it.isNotBlank() } ?: "[视频通话]"
+    "video_call", "audio_call" -> callResultPayload(json)?.previewText ?: preview?.takeIf { it.isNotBlank() } ?: "[${kind.callTitle()}]"
     "system" -> preview?.takeIf { it.isNotBlank() } ?: "[系统消息]"
     else -> "[$kind]"
 }
@@ -1157,13 +1200,43 @@ private fun MessageRecord.callInvitePayload(json: Json): CallInviteUi? {
     val roomId = obj["room_id"]?.jsonPrimitive?.contentOrNull
         ?: obj["call_id"]?.jsonPrimitive?.contentOrNull
         ?: return null
+    val status = obj["status"]?.jsonPrimitive?.contentOrNull.orEmpty().ifBlank { "ringing" }
+    val reason = listOf("reason", "failure_reason", "error", "end_error", "message")
+        .firstNotNullOfOrNull { key ->
+            obj[key]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotBlank() }
+        }
+        ?: status.defaultCallFailureReason()
     return CallInviteUi(
         roomId = roomId,
         providerRoom = obj["provider_room"]?.jsonPrimitive?.contentOrNull.orEmpty(),
         title = obj["title"]?.jsonPrimitive?.contentOrNull.orEmpty().ifBlank { "视频通话" },
-        status = obj["status"]?.jsonPrimitive?.contentOrNull.orEmpty().ifBlank { "ringing" },
+        status = status,
         liveKitConfigured = obj["livekit_configured"]?.jsonPrimitive?.contentOrNull == "true",
         message = obj["message"]?.jsonPrimitive?.contentOrNull,
+        durationSec = obj["duration_sec"]?.jsonPrimitive?.contentOrNull?.toIntOrNull(),
+        failureReason = reason.takeUnless { status.isSuccessfulCallStatus() || status == "ringing" },
+    )
+}
+
+internal fun MessageRecord.callResultPayload(json: Json): CallResultUi? {
+    if (!kind.isCallResultKind()) return null
+    val obj = runCatching { json.parseToJsonElement(payloadJson).jsonObject }.getOrNull() ?: return null
+    val durationSec = obj["duration_sec"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+        ?: obj["duration_ms"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()?.let { (it / 1000).toInt() }
+    val status = obj["status"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        .ifBlank { if ((durationSec ?: 0) > 0) "completed" else "failed" }
+    val reason = listOf("reason", "failure_reason", "error", "end_error", "message")
+        .firstNotNullOfOrNull { key ->
+            obj[key]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotBlank() }
+        }
+        ?: status.defaultCallFailureReason()
+    return CallResultUi(
+        kind = kind,
+        title = kind.callTitle(),
+        status = status,
+        statusText = status.callStatusText(),
+        durationSec = durationSec?.coerceAtLeast(0),
+        failureReason = reason.takeUnless { status.isSuccessfulCallStatus() },
     )
 }
 
@@ -1174,6 +1247,7 @@ private fun MessageRecord.avatarKind(): AvatarKind = when (kind) {
     "inspection_card" -> AvatarKind.System
     "call_invite" -> AvatarKind.Call
     "video_call" -> AvatarKind.Call
+    "audio_call" -> AvatarKind.Call
     "system" -> AvatarKind.System
     else -> AvatarKind.Neutral
 }
@@ -1186,6 +1260,38 @@ private fun formatVoiceDuration(sec: Int): String {
     val m = normalized / 60
     val s = normalized % 60
     return "$m:" + s.toString().padStart(2, '0')
+}
+
+private fun String.isCallResultKind(): Boolean =
+    this == "video_call" || this == "audio_call"
+
+private fun String.callTitle(): String = when (this) {
+    "audio_call" -> "语音通话"
+    else -> "视频通话"
+}
+
+private fun String.isSuccessfulCallStatus(): Boolean =
+    this == "completed" || this == "success" || this == "ended"
+
+private fun String.callStatusText(): String = when (this) {
+    "completed", "success", "ended" -> "已结束"
+    "active" -> "通话中"
+    "ringing" -> "等待接听"
+    "missed" -> "未接通"
+    "rejected" -> "已拒绝"
+    "dropped" -> "异常断开"
+    "cancelled", "canceled" -> "已取消"
+    "failed" -> "失败"
+    else -> if (isBlank()) "失败" else this
+}
+
+private fun String.defaultCallFailureReason(): String? = when (this) {
+    "missed" -> "对方未接听"
+    "rejected" -> "对方已拒绝"
+    "dropped" -> "媒体连接异常断开"
+    "cancelled", "canceled" -> "通话已取消"
+    "failed" -> "媒体房间未建立或连接失败"
+    else -> null
 }
 
 private fun String.formatMessageTime(): String =

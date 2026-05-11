@@ -52,6 +52,20 @@ func TestMessagePreviewCallInvite(t *testing.T) {
 	}
 }
 
+func TestMessagePreviewVideoCallCompletedShowsDuration(t *testing.T) {
+	payload := json.RawMessage(`{"status":"completed","duration_sec":75}`)
+	if got, want := messagePreview("video_call", payload), "[视频通话 1:15]"; got != want {
+		t.Fatalf("video call preview=%q want %q", got, want)
+	}
+}
+
+func TestMessagePreviewVideoCallFailedShowsReason(t *testing.T) {
+	payload := json.RawMessage(`{"status":"failed","reason":"LiveKit token 过期"}`)
+	if got, want := messagePreview("video_call", payload), "[视频通话失败] LiveKit token 过期"; got != want {
+		t.Fatalf("video call preview=%q want %q", got, want)
+	}
+}
+
 func TestToLastMessageDTOCarriesClientMsgID(t *testing.T) {
 	senderID := int64(2)
 	clientMsgID := "echo-1"

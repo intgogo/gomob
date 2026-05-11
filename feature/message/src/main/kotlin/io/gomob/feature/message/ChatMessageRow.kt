@@ -208,6 +208,7 @@ private fun ChatBubble(
 
     val card = bubble.inspectionCard
     val call = bubble.callInvite
+    val callResult = bubble.callResult
 
     if (bubble.isImageOrVideoFile()) {
         MediaFileMessageBubble(
@@ -233,6 +234,14 @@ private fun ChatBubble(
             bubbleBg = bubbleBg,
             textColor = textColor,
             onAcceptCall = onAcceptCall,
+        )
+    } else if (callResult != null) {
+        CallResultCard(
+            call = callResult,
+            mine = bubble.mine,
+            maxWidth = maxWidth,
+            bubbleBg = bubbleBg,
+            textColor = textColor,
         )
     } else if (bubble.isVoice) {
         VoiceMessageBubble(
@@ -584,6 +593,74 @@ private fun VoiceTranscriptUi?.displayText(messageId: Long?): String = when (thi
 }
 
 @Composable
+private fun CallResultCard(
+    call: CallResultUi,
+    mine: Boolean,
+    maxWidth: Dp,
+    bubbleBg: Color,
+    textColor: Color,
+) {
+    MessageBubbleShell(
+        mine = mine,
+        maxWidth = maxWidth,
+        bubbleBg = bubbleBg,
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier
+                        .size(36.dp)
+                        .clip(Gomob.shapes.r2)
+                        .background(textColor.copy(alpha = 0.10f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = if (call.kind == "audio_call") GomobIcons.VoiceCircle else Icons.Filled.Videocam,
+                        contentDescription = null,
+                        tint = if (call.succeeded) {
+                            if (mine) Color(0xD9000000) else Gomob.colors.accent
+                        } else {
+                            Gomob.colors.danger
+                        },
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(call.title, style = Gomob.type.bodySm, color = textColor, maxLines = 1)
+                        StatusTag(
+                            text = call.statusText,
+                            tone = if (call.succeeded) StatusTone.Ok else StatusTone.Danger,
+                            showDot = true,
+                        )
+                    }
+                    Text(
+                        call.callResultDetail(),
+                        style = Gomob.type.caption,
+                        color = if (call.succeeded) textColor.copy(alpha = 0.64f) else Gomob.colors.danger,
+                        maxLines = 2,
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun CallResultUi.callResultDetail(): String =
+    if (succeeded) {
+        durationText?.let { "通话时长 $it" } ?: "通话已结束"
+    } else {
+        failureReason?.takeIf { it.isNotBlank() }?.let { "失败原因：$it" } ?: statusText
+    }
+
+@Composable
 private fun VideoCallInviteCard(
     call: CallInviteUi,
     mine: Boolean,
@@ -592,6 +669,7 @@ private fun VideoCallInviteCard(
     textColor: Color,
     onAcceptCall: (CallInviteUi) -> Unit,
 ) {
+    val callDanger = !call.ringing && !call.succeeded && call.status != "active"
     MessageBubbleShell(
         mine = mine,
         maxWidth = maxWidth,
@@ -618,16 +696,28 @@ private fun VideoCallInviteCard(
                     )
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(call.title, style = Gomob.type.bodySm, color = textColor, maxLines = 1)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(call.title, style = Gomob.type.bodySm, color = textColor, maxLines = 1)
+                        if (!call.ringing) {
+                            StatusTag(
+                                text = call.statusText,
+                                tone = if (callDanger) StatusTone.Danger else StatusTone.Ok,
+                                showDot = true,
+                            )
+                        }
+                    }
                     Text(
-                        if (mine) "已发起，等待对方接受" else "邀请你视频通话",
+                        call.inviteDetailText(mine),
                         style = Gomob.type.caption,
-                        color = textColor.copy(alpha = 0.64f),
-                        maxLines = 1,
+                        color = if (callDanger) Gomob.colors.danger else textColor.copy(alpha = 0.64f),
+                        maxLines = 2,
                     )
                 }
             }
-            if (!mine && call.status == "ringing") {
+            if (!mine && call.ringing) {
                 Row(
                     Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End,
@@ -648,6 +738,14 @@ private fun VideoCallInviteCard(
         }
     }
 }
+
+private fun CallInviteUi.inviteDetailText(mine: Boolean): String =
+    when {
+        ringing -> if (mine) "已发起，等待对方接受" else "邀请你视频通话"
+        succeeded -> durationText?.let { "通话时长 $it" } ?: "通话已结束"
+        !failureReason.isNullOrBlank() -> "失败原因：$failureReason"
+        else -> statusText
+    }
 
 @Composable
 private fun MessageRetryWarning(onClick: () -> Unit) {

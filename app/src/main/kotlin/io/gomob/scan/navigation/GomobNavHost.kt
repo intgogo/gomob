@@ -49,6 +49,7 @@ import io.gomob.feature.home.HomeAiChatRoute
 import io.gomob.feature.home.HomeRoute
 import io.gomob.feature.home.InspectionDetailRoute
 import io.gomob.feature.message.ConversationRoute
+import io.gomob.feature.message.ChatSearchRoute
 import io.gomob.feature.message.ExpertDetailRoute
 import io.gomob.feature.message.LocalVideoPreviewRoute
 import io.gomob.feature.message.MessageEntryTab
@@ -189,7 +190,11 @@ fun GomobNavHost() {
             composable("message/conv/{id}") { entry ->
                 ConversationRoute(
                     conversationId = entry.arguments?.getString("id") ?: "",
+                    targetLocalKey = null,
                     onBack = { nav.popBackStack() },
+                    onOpenSearch = { id ->
+                        nav.navigate("message/conv/${Uri.encode(id)}/search")
+                    },
                     onOpenLocalVideo = { title ->
                         nav.navigate("message/local-video/${Uri.encode(title)}")
                     },
@@ -200,6 +205,40 @@ fun GomobNavHost() {
                     },
                     onOpenInspection = { id ->
                         nav.navigate("home/inspection/${Uri.encode(id)}")
+                    },
+                )
+            }
+            composable("message/conv/{id}/target/{localKey}") { entry ->
+                ConversationRoute(
+                    conversationId = entry.arguments?.getString("id") ?: "",
+                    targetLocalKey = Uri.decode(entry.arguments?.getString("localKey").orEmpty()),
+                    onBack = { nav.popBackStack() },
+                    onOpenSearch = { id ->
+                        nav.navigate("message/conv/${Uri.encode(id)}/search")
+                    },
+                    onOpenLocalVideo = { title ->
+                        nav.navigate("message/local-video/${Uri.encode(title)}")
+                    },
+                    onOpenVideoCall = { roomId, title, mode ->
+                        nav.navigate(
+                            "message/video-call/${Uri.encode(roomId)}/${mode.routeValue}/${Uri.encode(title)}",
+                        )
+                    },
+                    onOpenInspection = { id ->
+                        nav.navigate("home/inspection/${Uri.encode(id)}")
+                    },
+                )
+            }
+            composable("message/conv/{id}/search") { entry ->
+                val conversationId = entry.arguments?.getString("id").orEmpty()
+                ChatSearchRoute(
+                    onBack = { nav.popBackStack() },
+                    onOpenMessage = { localKey ->
+                        nav.navigate(
+                            "message/conv/${Uri.encode(conversationId)}/target/${Uri.encode(localKey)}",
+                        ) {
+                            popUpTo(ROUTE_MESSAGE)
+                        }
                     },
                 )
             }

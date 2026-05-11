@@ -492,14 +492,8 @@ func messagePreview(kind string, payload json.RawMessage) string {
 			}
 		}
 		return "[语音消息]"
-	case "video_call":
-		var p struct {
-			DurationSec int `json:"duration_sec"`
-		}
-		if err := json.Unmarshal(payload, &p); err == nil && p.DurationSec > 0 {
-			return "[视频通话 " + formatDuration(p.DurationSec) + "]"
-		}
-		return "[视频通话]"
+	case "video_call", "audio_call":
+		return callMessagePreview(kind, payload)
 	case "video_clip":
 		var p struct {
 			MediaState string `json:"media_state"`
@@ -529,6 +523,104 @@ func messagePreview(kind string, payload json.RawMessage) string {
 	default:
 		return "[" + kind + "]"
 	}
+}
+
+func callMessagePreview(kind string, payload json.RawMessage) string {
+	title := "视频通话"
+	if kind == "audio_call" {
+		title = "语音通话"
+	}
+	var p struct {
+		Status        string `json:"status"`
+		DurationSec   int    `json:"duration_sec"`
+		Reason        string `json:"reason"`
+		FailureReason string `json:"failure_reason"`
+		Error         string `json:"error"`
+		EndError      string `json:"end_error"`
+		Message       string `json:"message"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return "[" + title + "]"
+	}
+	status := strings.TrimSpace(p.Status)
+	if status == "" {
+		if p.DurationSec > 0 {
+			status = "completed"
+		} else {
+			status = "failed"
+		}
+	}
+	if successfulCallStatus(status) {
+		if p.DurationSec > 0 {
+			return "[" + title + " " + formatDuration(p.DurationSec) + "]"
+		}
+		return "[" + title + "]"
+	}
+	reason := firstNonBlank(
+		p.Reason,
+		p.FailureReason,
+		p.Error,
+		p.EndError,
+		p.Message,
+		defaultCallFailureReason(status),
+	)
+	if reason == "" {
+		return "[" + title + callStatusText(status) + "]"
+	}
+	return "[" + title + callStatusText(status) + "] " + trimPreview(reason, 42)
+}
+
+func successfulCallStatus(status string) bool {
+	return status == "completed" || status == "success" || status == "ended"
+}
+
+func callStatusText(status string) string {
+	switch status {
+	case "completed", "success", "ended":
+		return "已结束"
+	case "missed":
+		return "未接通"
+	case "rejected":
+		return "已拒绝"
+	case "dropped":
+		return "异常断开"
+	case "cancelled", "canceled":
+		return "已取消"
+	case "failed":
+		return "失败"
+	default:
+		status = strings.TrimSpace(status)
+		if status == "" {
+			return "失败"
+		}
+		return status
+	}
+}
+
+func defaultCallFailureReason(status string) string {
+	switch status {
+	case "missed":
+		return "对方未接听"
+	case "rejected":
+		return "对方已拒绝"
+	case "dropped":
+		return "媒体连接异常断开"
+	case "cancelled", "canceled":
+		return "通话已取消"
+	case "failed":
+		return "媒体房间未建立或连接失败"
+	default:
+		return ""
+	}
+}
+
+func firstNonBlank(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func trimPreview(s string, maxRunes int) string {

@@ -799,6 +799,7 @@ private fun MessageEntity.forwardPreviewText(json: Json): String {
         "video_clip" -> "[视频消息]"
         "inspection_card" -> "[业务流水]"
         "call_invite", "video_call" -> "[视频通话]"
+        "audio_call" -> "[语音通话]"
         "system" -> "[系统消息]"
         else -> "[$kind]"
     }
@@ -944,7 +945,7 @@ private fun realtimePreview(kind: String, payload: JsonElement?): String? = when
     "video_clip" -> "[视频消息]"
     "inspection_card" -> payload.jsonField("vin")?.let { "[流水] $it" } ?: "[业务流水]"
     "call_invite" -> payload.jsonField("title")?.let { "[视频通话] $it" } ?: "[视频通话邀请]"
-    "video_call" -> "[视频通话]"
+    "video_call", "audio_call" -> payload.callResultPreview(kind)
     "system" -> payload.textContent().takeIf { it.isNotBlank() } ?: "[系统消息]"
     else -> null
 }
@@ -974,6 +975,49 @@ private fun JsonElement?.voiceTranscriptPreview(): String? {
         "failed" -> "[语音转写失败]"
         else -> null
     }
+}
+
+private fun JsonElement?.callResultPreview(kind: String): String {
+    val obj = this as? JsonObject ?: return "[${kind.callTitle()}]"
+    val durationSec = obj["duration_sec"].asPrimitiveString()?.toIntOrNull()
+        ?: obj["duration_ms"].asPrimitiveString()?.toLongOrNull()?.let { (it / 1000).toInt() }
+    val status = obj["status"].asPrimitiveString().orEmpty()
+        .ifBlank { if ((durationSec ?: 0) > 0) "completed" else "failed" }
+    val title = kind.callTitle()
+    if (status.isSuccessfulCallStatus()) {
+        return durationSec?.takeIf { it > 0 }?.let { "[$title ${formatDuration(it)}]" } ?: "[$title]"
+    }
+    val reason = listOf("reason", "failure_reason", "error", "end_error", "message")
+        .firstNotNullOfOrNull { key -> obj[key].asPrimitiveString()?.trim()?.takeIf(String::isNotBlank) }
+        ?: status.defaultCallFailureReason()
+    return if (reason.isNullOrBlank()) "[$title${status.callStatusText()}]" else "[$title${status.callStatusText()}] $reason"
+}
+
+private fun String.callTitle(): String = when (this) {
+    "audio_call" -> "语音通话"
+    else -> "视频通话"
+}
+
+private fun String.isSuccessfulCallStatus(): Boolean =
+    this == "completed" || this == "success" || this == "ended"
+
+private fun String.callStatusText(): String = when (this) {
+    "completed", "success", "ended" -> "已结束"
+    "missed" -> "未接通"
+    "rejected" -> "已拒绝"
+    "dropped" -> "异常断开"
+    "cancelled", "canceled" -> "已取消"
+    "failed" -> "失败"
+    else -> if (isBlank()) "失败" else this
+}
+
+private fun String.defaultCallFailureReason(): String? = when (this) {
+    "missed" -> "对方未接听"
+    "rejected" -> "对方已拒绝"
+    "dropped" -> "媒体连接异常断开"
+    "cancelled", "canceled" -> "通话已取消"
+    "failed" -> "媒体房间未建立或连接失败"
+    else -> null
 }
 
 private fun JsonElement?.asPrimitiveString(): String? =
