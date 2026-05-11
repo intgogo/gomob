@@ -17,7 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.VideoCall
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -228,10 +228,10 @@ private fun ExpertBottomActions(
                 primary = false,
                 icon = { tint ->
                     Icon(
-                        Icons.Filled.VideoCall,
+                        Icons.Filled.Videocam,
                         contentDescription = null,
                         tint = tint,
-                        modifier = Modifier.size(Gomob.spacing.icon20),
+                        modifier = Modifier.size(22.dp),
                     )
                 },
                 onClick = onAudioVideo,

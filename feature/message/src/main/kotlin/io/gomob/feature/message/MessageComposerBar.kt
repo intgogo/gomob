@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -22,10 +21,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.PhotoCamera
-import androidx.compose.material.icons.filled.VideoCall
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.LaunchedEffect
@@ -70,6 +70,8 @@ internal fun MessageComposerBar(
     onSendVideoClip: (() -> Unit)? = null,
     onOpenLocalVideo: (() -> Unit)? = null,
     voiceRecording: Boolean = false,
+    quoteDraft: QuoteDraftUi? = null,
+    onClearQuote: () -> Unit = {},
     onInputFocusChanged: (Boolean) -> Unit = {},
 ) {
     var voiceInputMode by rememberSaveable { mutableStateOf(false) }
@@ -84,7 +86,7 @@ internal fun MessageComposerBar(
         }
     }
 
-    Column(modifier.fixedDuringPageDrag().fillMaxWidth().background(Gomob.colors.bg1).imePadding()) {
+    Column(modifier.fixedDuringPageDrag().fillMaxWidth().background(Gomob.colors.bg1)) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -93,6 +95,9 @@ internal fun MessageComposerBar(
         ) {
             if (voiceInputMode && voicePressTarget != null) {
                 VoiceRecordLiftPanel(target = voicePressTarget ?: VoicePressTarget.Send)
+            }
+            quoteDraft?.let {
+                ComposerQuotePreview(quoteDraft = it, onClear = onClearQuote)
             }
             Row(
                 Modifier.fillMaxWidth(),
@@ -187,10 +192,10 @@ internal fun MessageComposerBar(
                     ComposerToolIcon(Icons.Filled.PhotoCamera, "拍摄", enabled = enabled, onClick = it)
                 }
                 onStartVideoCall?.let {
-                    ComposerToolIcon(Icons.Filled.VideoCall, "视频通话", enabled = enabled, onClick = it)
+                    ComposerToolIcon(Icons.Filled.Videocam, "视频通话", enabled = enabled, onClick = it)
                 }
                 onOpenLocalVideo?.let {
-                    ComposerToolIcon(Icons.Filled.VideoCall, "开启第一视角视频", enabled = enabled, onClick = it)
+                    ComposerToolIcon(Icons.Filled.Videocam, "开启第一视角视频", enabled = enabled, onClick = it)
                 }
                 Spacer(Modifier.weight(1f))
                 ComposerSendButton(
@@ -198,6 +203,46 @@ internal fun MessageComposerBar(
                     onClick = onSendText,
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun ComposerQuotePreview(
+    quoteDraft: QuoteDraftUi,
+    onClear: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(Gomob.shapes.r1)
+            .background(Gomob.colors.bg2)
+            .padding(start = Gomob.spacing.s8, end = Gomob.spacing.s6, top = Gomob.spacing.s6, bottom = Gomob.spacing.s6),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+    ) {
+        Box(
+            Modifier
+                .width(2.dp)
+                .height(28.dp)
+                .background(Gomob.colors.fg3.copy(alpha = 0.32f)),
+        )
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            Text(
+                "${quoteDraft.quote.senderLabel}: ${quoteDraft.quote.text}",
+                style = Gomob.type.caption,
+                color = Gomob.colors.fg2,
+                maxLines = 2,
+            )
+        }
+        Box(
+            Modifier
+                .size(28.dp)
+                .clip(CircleShape)
+                .clickable(onClick = onClear),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Filled.Close, contentDescription = "取消引用", tint = Gomob.colors.fg2, modifier = Modifier.size(16.dp))
         }
     }
 }

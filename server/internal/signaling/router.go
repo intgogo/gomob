@@ -172,13 +172,6 @@ func (r *Router) handleMsgSend(ctx context.Context, c *Conn, env Envelope) {
 		r.sendError(c, 50001, "服务端内部错误", env)
 		return
 	}
-	if inserted && r.trRepo != nil {
-		if _, _, err := r.trRepo.EnsureForVoiceMessage(ctx, m); err != nil {
-			r.log.Error("语音转写任务创建失败", "err", err, "message_id", m.ID)
-			r.sendError(c, 50001, "服务端内部错误", env)
-			return
-		}
-	}
 	// 发送方回执
 	delivered := msgDeliveredPayload{
 		ClientMsgID:    req.ClientMsgID,

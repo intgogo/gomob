@@ -14,9 +14,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -48,9 +51,11 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -75,6 +80,7 @@ fun ConversationRoute(
     viewModel: ConversationViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val forwardTargets by viewModel.forwardTargets.collectAsStateWithLifecycle()
     var draft by remember { mutableStateOf("") }
     var voiceRecording by remember { mutableStateOf(false) }
     var inspectionPickerOpen by rememberSaveable { mutableStateOf(false) }
@@ -82,7 +88,13 @@ fun ConversationRoute(
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var inputFocused by remember { mutableStateOf(false) }
     var clearConfirmOpen by remember { mutableStateOf(false) }
+    var quoteDraft by remember { mutableStateOf<QuoteDraftUi?>(null) }
+    var favoriteMessageKeys by rememberSaveable { mutableStateOf(emptyList<String>()) }
+    var multiSelectMode by rememberSaveable { mutableStateOf(false) }
+    var selectedMessageKeys by rememberSaveable { mutableStateOf(emptyList<String>()) }
+    var forwardingMessages by remember { mutableStateOf<List<MessageBubbleUi>>(emptyList()) }
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     val focusManager = LocalFocusManager.current
     val voiceRecorder = rememberVoiceRecorder()
     val imagePicker = rememberLauncherForActivityResult(
@@ -175,8 +187,52 @@ fun ConversationRoute(
     val sendDraft = {
         val text = draft.trim()
         if (text.isNotEmpty()) {
-            viewModel.send(text)
+            viewModel.send(text, quoteDraft?.quote)
             draft = ""
+            quoteDraft = null
+        }
+    }
+    fun toggleMessageSelection(localKey: String) {
+        selectedMessageKeys = if (localKey in selectedMessageKeys) {
+            selectedMessageKeys - localKey
+        } else {
+            selectedMessageKeys + localKey
+        }
+        if (selectedMessageKeys.isEmpty()) {
+            multiSelectMode = false
+        }
+    }
+    fun selectedMessages(): List<MessageBubbleUi> =
+        state.messages.filter { it.localKey in selectedMessageKeys }
+
+    fun exitMultiSelect() {
+        multiSelectMode = false
+        selectedMessageKeys = emptyList()
+    }
+    fun copyMessages(messages: List<MessageBubbleUi>) {
+        val text = messageShareText(messages)
+        if (text.isBlank()) return
+        clipboard.setText(AnnotatedString(text))
+        context.showMessageActionToast("已复制")
+    }
+    fun handleMessageAction(action: MessageQuickAction, bubble: MessageBubbleUi) {
+        when (action) {
+            MessageQuickAction.Copy -> copyMessages(listOf(bubble))
+            MessageQuickAction.Forward -> forwardingMessages = listOf(bubble)
+            MessageQuickAction.Favorite -> {
+                val added = bubble.localKey !in favoriteMessageKeys
+                favoriteMessageKeys = if (added) favoriteMessageKeys + bubble.localKey else favoriteMessageKeys - bubble.localKey
+                context.showMessageActionToast(if (added) "已收藏" else "已取消收藏")
+            }
+            MessageQuickAction.MultiSelect -> {
+                multiSelectMode = true
+                selectedMessageKeys = listOf(bubble.localKey)
+            }
+            MessageQuickAction.Quote -> {
+                quoteDraft = QuoteDraftUi(bubble.toMessageQuote())
+                context.showMessageActionToast("已引用")
+            }
+            MessageQuickAction.TranscribeVoice -> viewModel.retryVoiceTranscript(bubble.serverId)
         }
     }
     val closeSearch = {
@@ -186,6 +242,12 @@ fun ConversationRoute(
     }
 
     BackHandler(enabled = searchActive, onBack = closeSearch)
+
+    LaunchedEffect(Unit) {
+        viewModel.forwardResultEvents.collect { message ->
+            context.showMessageActionToast(message)
+        }
+    }
 
     LaunchedEffect(Unit) {
         viewModel.videoCallEvents.collect { event ->
@@ -217,8 +279,21 @@ fun ConversationRoute(
         )
     }
 
+    MessageForwardTargetDialog(
+        visible = forwardingMessages.isNotEmpty(),
+        targets = forwardTargets,
+        messageCount = forwardingMessages.size,
+        onDismiss = { forwardingMessages = emptyList() },
+        onSelectTarget = { target ->
+            val sourceLocalKeys = forwardingMessages.map { it.localKey }
+            forwardingMessages = emptyList()
+            exitMultiSelect()
+            viewModel.forwardMessages(target, sourceLocalKeys)
+        },
+    )
+
     Box(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        Column(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().imePadding()) {
             ConversationTopBar(
                 title = state.title,
                 onBack = onBack,
@@ -245,29 +320,50 @@ fun ConversationRoute(
                 onOpenInspection = onOpenInspection,
                 onAcceptCall = viewModel::acceptVideoCall,
                 inputFocused = inputFocused,
+                favoriteMessageKeys = favoriteMessageKeys,
+                selectedMessageKeys = selectedMessageKeys,
+                multiSelectMode = multiSelectMode,
+                onToggleSelected = ::toggleMessageSelection,
+                onQuickAction = ::handleMessageAction,
                 modifier = Modifier.weight(1f),
             )
 
-            MessageComposerBar(
-                draft = draft,
-                enabled = true,
-                onDraftChange = { draft = it },
-                onShareInspection = {
-                    focusManager.clearFocus()
-                    inspectionPickerOpen = true
-                },
-                onPickImage = openImagePicker,
-                onTakePhoto = { photoCapture.launch(null) },
-                onStartVideoCall = startVideoCall,
-                onStartVoice = startVoiceRecording,
-                onSendVoice = sendVoiceRecording,
-                onCancelVoice = cancelVoiceRecording,
-                onTranscribeVoice = transcribeVoiceRecording,
-                onSendVideoClip = openVideoPicker,
-                voiceRecording = voiceRecording,
-                onInputFocusChanged = { inputFocused = it },
-                onSendText = sendDraft,
-            )
+            if (multiSelectMode) {
+                MessageMultiSelectBar(
+                    selectedCount = selectedMessageKeys.size,
+                    onCancel = ::exitMultiSelect,
+                    onCopy = {
+                        copyMessages(selectedMessages())
+                        exitMultiSelect()
+                    },
+                    onForward = {
+                        forwardingMessages = selectedMessages()
+                    },
+                )
+            } else {
+                MessageComposerBar(
+                    draft = draft,
+                    enabled = true,
+                    onDraftChange = { draft = it },
+                    onShareInspection = {
+                        focusManager.clearFocus()
+                        inspectionPickerOpen = true
+                    },
+                    onPickImage = openImagePicker,
+                    onTakePhoto = { photoCapture.launch(null) },
+                    onStartVideoCall = startVideoCall,
+                    onStartVoice = startVoiceRecording,
+                    onSendVoice = sendVoiceRecording,
+                    onCancelVoice = cancelVoiceRecording,
+                    onTranscribeVoice = transcribeVoiceRecording,
+                    onSendVideoClip = openVideoPicker,
+                    voiceRecording = voiceRecording,
+                    quoteDraft = quoteDraft,
+                    onClearQuote = { quoteDraft = null },
+                    onInputFocusChanged = { inputFocused = it },
+                    onSendText = sendDraft,
+                )
+            }
         }
         InspectionSharePicker(
             visible = inspectionPickerOpen,
@@ -529,9 +625,15 @@ private fun ConversationBody(
     onOpenInspection: (String) -> Unit,
     onAcceptCall: (CallInviteUi) -> Unit,
     inputFocused: Boolean,
+    favoriteMessageKeys: List<String>,
+    selectedMessageKeys: List<String>,
+    multiSelectMode: Boolean,
+    onToggleSelected: (String) -> Unit,
+    onQuickAction: (MessageQuickAction, MessageBubbleUi) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val focusManager = LocalFocusManager.current
+    val density = LocalDensity.current
     val listState = rememberLazyListState()
     val normalizedQuery = searchQuery.trim()
     val visibleMessages = remember(state.messages, normalizedQuery) {
@@ -541,11 +643,45 @@ private fun ConversationBody(
             state.messages.filter { it.text.contains(normalizedQuery, ignoreCase = true) }
         }
     }
-    val targetItemCount = conversationListItemCount(state, visibleMessages, normalizedQuery)
+    val reverseMessages = normalizedQuery.isBlank()
+    val timelineItems = remember(visibleMessages) { buildChatTimeline(visibleMessages) }
+    val displayItems = remember(timelineItems, reverseMessages) {
+        if (reverseMessages) timelineItems.asReversed() else timelineItems
+    }
+    val targetItemCount = conversationListItemCount(state, visibleMessages, displayItems, normalizedQuery)
+    val latestMessage = visibleMessages.lastOrNull()
+    var lastObservedLatestMessageKey by remember { mutableStateOf<String?>(null) }
+    var hasObservedInitialLatestMessage by remember { mutableStateOf(false) }
+    val imeBottom = WindowInsets.ime.getBottom(density)
 
-    LaunchedEffect(inputFocused, visibleMessages.size, state.loading, state.errorMessage) {
-        if (inputFocused && targetItemCount > 0) {
-            listState.animateScrollToItem(targetItemCount - 1)
+    LaunchedEffect(
+        inputFocused,
+        imeBottom,
+        latestMessage?.localKey,
+        latestMessage?.mine,
+        state.loading,
+        state.errorMessage,
+        normalizedQuery,
+    ) {
+        val latestKey = latestMessage?.localKey
+        val latestChanged = latestKey != null && latestKey != lastObservedLatestMessageKey
+        val newOwnMessage = latestChanged && hasObservedInitialLatestMessage && latestMessage?.mine == true
+        if (normalizedQuery.isBlank()) {
+            if (targetItemCount > 0) {
+                val visibleIndexes = listState.layoutInfo.visibleItemsInfo.map { it.index }
+                val alreadyNearLatest = if (reverseMessages) {
+                    visibleIndexes.any { it <= 1 }
+                } else {
+                    (visibleIndexes.maxOrNull() ?: -1) >= targetItemCount - 2
+                }
+                if (inputFocused || newOwnMessage || alreadyNearLatest) {
+                    listState.animateScrollToItem(if (reverseMessages) 0 else targetItemCount - 1)
+                }
+            }
+            if (latestKey != null) {
+                lastObservedLatestMessageKey = latestKey
+                hasObservedInitialLatestMessage = true
+            }
         }
     }
 
@@ -564,6 +700,7 @@ private fun ConversationBody(
                 vertical = Gomob.spacing.s12,
             ),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+            reverseLayout = reverseMessages,
         ) {
             when {
                 state.empty -> Unit
@@ -571,23 +708,34 @@ private fun ConversationBody(
                 normalizedQuery.isNotBlank() && visibleMessages.isEmpty() -> item {
                     InlineStatus(text = "未找到相关消息", tone = StatusTone.Neutral, onClick = null)
                 }
-                else -> items(visibleMessages, key = { it.localKey }) { bubble ->
-                    ChatMessageRow(
-                        bubble = bubble,
-                        onOpenInspection = onOpenInspection,
-                        onAcceptCall = {
-                            focusManager.clearFocus()
-                            onAcceptCall(it)
-                        },
-                        onRetry = {
-                            focusManager.clearFocus()
-                            onRetry(bubble.clientMsgId)
-                        },
-                        onRetryTranscript = {
-                            focusManager.clearFocus()
-                            onRetryTranscript(bubble.serverId)
-                        },
-                    )
+                else -> items(displayItems, key = { it.key }) { item ->
+                    when (item) {
+                        is ChatTimelineItem.TimeDivider -> ChatTimeDivider(item.label)
+                        is ChatTimelineItem.Message -> {
+                            val bubble = item.bubble
+                                ChatMessageRow(
+                                    bubble = bubble,
+                                    favorite = bubble.localKey in favoriteMessageKeys,
+                                    selected = bubble.localKey in selectedMessageKeys,
+                                    multiSelectMode = multiSelectMode,
+                                    onToggleSelected = { onToggleSelected(bubble.localKey) },
+                                    onQuickAction = onQuickAction,
+                                    onOpenInspection = onOpenInspection,
+                                    onAcceptCall = {
+                                    focusManager.clearFocus()
+                                    onAcceptCall(it)
+                                },
+                                onRetry = {
+                                    focusManager.clearFocus()
+                                    onRetry(bubble.clientMsgId)
+                                },
+                                onRetryTranscript = {
+                                    focusManager.clearFocus()
+                                    onRetryTranscript(bubble.serverId)
+                                },
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -597,12 +745,13 @@ private fun ConversationBody(
 private fun conversationListItemCount(
     state: ConversationUiState,
     visibleMessages: List<MessageBubbleUi>,
+    displayItems: List<ChatTimelineItem>,
     normalizedQuery: String,
 ): Int = when {
     normalizedQuery.isNotBlank() && visibleMessages.isEmpty() -> 1
     state.empty -> 0
     state.errorMessage != null && state.messages.isEmpty() -> 0
-    else -> visibleMessages.size
+    else -> displayItems.size
 }
 
 @Composable

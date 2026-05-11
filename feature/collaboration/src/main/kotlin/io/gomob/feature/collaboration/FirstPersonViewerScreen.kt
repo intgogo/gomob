@@ -18,7 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.SwapHoriz
-import androidx.compose.material.icons.filled.VideoCall
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -241,7 +241,7 @@ fun FirstPersonViewerRoute(
             ActionButton(icon = Icons.Filled.SwapHoriz, label = "切视角", tone = ActionTone.Neutral)
             ActionButton(icon = Icons.Filled.CameraAlt, label = "截图存档", tone = ActionTone.Neutral)
             ActionButton(icon = Icons.Filled.WarningAmber, label = "标记预警", tone = ActionTone.Danger)
-            ActionButton(icon = Icons.Filled.VideoCall, label = "视频通话", tone = ActionTone.Accent)
+            ActionButton(icon = Icons.Filled.Videocam, label = "视频通话", tone = ActionTone.Accent)
         }
     }
 }

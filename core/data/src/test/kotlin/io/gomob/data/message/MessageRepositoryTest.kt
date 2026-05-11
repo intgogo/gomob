@@ -312,7 +312,7 @@ class MessageRepositoryTest {
     }
 
     @Test
-    fun fullRefreshMessagesStartsFromZeroEvenWhenSummaryCachedLastMessage() = runTest {
+    fun fullRefreshMessagesRequestsLatestPageEvenWhenSummaryCachedLastMessage() = runTest {
         val messageDao = FakeMessageDao()
         messageDao.upsertMessage(
             MessageEntity(
@@ -363,7 +363,118 @@ class MessageRepositoryTest {
         repository.refreshMessages(conversationId = 9, fullSync = true)
 
         assertThat(api.messageSinceSeqRequests).containsExactly(0L)
+        assertThat(api.messageLatestRequests).containsExactly(true)
         assertThat(messageDao.items.map { it.serverSeq }).containsExactly(1L, 5L)
+    }
+
+    @Test
+    fun fullRefreshMessagesPrunesCachedServerMessagesBeforeLatestWindow() = runTest {
+        val messageDao = FakeMessageDao()
+        messageDao.upsertMessage(
+            MessageEntity(
+                localKey = "s:1",
+                serverId = 1,
+                conversationId = 9,
+                serverSeq = 1,
+                senderId = 2,
+                kind = "text",
+                payloadJson = "{}",
+                preview = "旧缓存第一条",
+                clientMsgId = null,
+                status = MessageStatus.Sent.name,
+                createdAt = "2026-05-08T11:00:00Z",
+                editedAt = null,
+            ),
+        )
+        messageDao.upsertMessage(
+            pendingMessageEntity(
+                conversationId = 9,
+                kind = "text",
+                payload = buildJsonObject { put("text", "本地待发送") },
+                preview = "本地待发送",
+                clientMsgId = "pending-1",
+                now = "2026-05-08T12:00:00Z",
+            ),
+        )
+        val repository = MessageRepository(
+            api = FakeMessageApi(
+                messages = listOf(
+                    MessageDto(
+                        id = "170",
+                        conversationId = "9",
+                        serverSeq = 70,
+                        senderId = "2",
+                        kind = "text",
+                        payload = buildJsonObject { put("text", "最新窗口第一条") },
+                        createdAt = "2026-05-08T12:30:00Z",
+                    ),
+                    MessageDto(
+                        id = "199",
+                        conversationId = "9",
+                        serverSeq = 99,
+                        senderId = "1",
+                        kind = "text",
+                        payload = buildJsonObject { put("text", "最新窗口最后一条") },
+                        createdAt = "2026-05-08T12:59:00Z",
+                    ),
+                ),
+            ),
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = FakeConversationDao(),
+            messageDao = messageDao,
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        repository.warmConversationSnapshot(conversationId = 9)
+        repository.refreshMessages(conversationId = 9, fullSync = true)
+
+        assertThat(messageDao.items.map { it.localKey }).containsExactly("c:pending-1", "s:170", "s:199")
+        assertThat(repository.cachedMessages(9).map { it.serverSeq }).containsExactly(70L, 99L, null).inOrder()
+    }
+
+    @Test
+    fun fullRefreshMessagesReplacesPendingEchoByClientMsgId() = runTest {
+        val messageDao = FakeMessageDao()
+        messageDao.upsertMessage(
+            pendingMessageEntity(
+                conversationId = 9,
+                kind = "text",
+                payload = buildJsonObject { put("text", "详情页打开前发送") },
+                preview = "详情页打开前发送",
+                clientMsgId = "echo-1",
+                now = "2026-05-08T12:00:00Z",
+            ),
+        )
+        val repository = MessageRepository(
+            api = FakeMessageApi(
+                messages = listOf(
+                    MessageDto(
+                        id = "101",
+                        conversationId = "9",
+                        serverSeq = 5,
+                        senderId = "2",
+                        kind = "text",
+                        payload = buildJsonObject { put("text", "详情页打开前发送") },
+                        clientMsgId = "echo-1",
+                        createdAt = "2026-05-08T12:00:01Z",
+                    ),
+                ),
+            ),
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = FakeConversationDao(),
+            messageDao = messageDao,
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        repository.refreshMessages(conversationId = 9, fullSync = true)
+
+        assertThat(messageDao.items).hasSize(1)
+        val saved = messageDao.items.single()
+        assertThat(saved.localKey).isEqualTo("s:101")
+        assertThat(saved.serverId).isEqualTo(101)
+        assertThat(saved.clientMsgId).isEqualTo("echo-1")
+        assertThat(saved.status).isEqualTo(MessageStatus.Sent.name)
+        assertThat(saved.payloadJson).contains("详情页打开前发送")
     }
 
     @Test
@@ -599,6 +710,70 @@ class MessageRepositoryTest {
     }
 
     @Test
+    fun realtimeDeliveredReplacesServerSummaryRowWhenItArrivedFirst() = runTest {
+        val conversationDao = FakeConversationDao(
+            initialConversations = listOf(
+                ConversationWithLastMessage(
+                    conversation = conversationEntity(id = 9),
+                    lastMessage = null,
+                ),
+            ),
+        )
+        val messageDao = FakeMessageDao()
+        messageDao.upsertMessage(
+            pendingMessageEntity(
+                conversationId = 9,
+                kind = "text",
+                payload = buildJsonObject { put("text", "摘要先到") },
+                preview = "摘要先到",
+                clientMsgId = "rt-echo",
+                now = "2026-05-08T12:00:00Z",
+            ),
+        )
+        messageDao.upsertServerMessages(
+            listOf(
+                MessageEntity(
+                    localKey = "s:301",
+                    serverId = 301,
+                    conversationId = 9,
+                    serverSeq = 6,
+                    senderId = 2,
+                    kind = "text",
+                    payloadJson = "{}",
+                    preview = "摘要先到",
+                    clientMsgId = null,
+                    status = MessageStatus.Sent.name,
+                    createdAt = "2026-05-08T12:00:01Z",
+                    editedAt = null,
+                ),
+            ),
+        )
+        val repository = MessageRepository(
+            api = FakeMessageApi(),
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = conversationDao,
+            messageDao = messageDao,
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        repository.applyRealtimeEvent(
+            RealtimeEvent.MessageDelivered(
+                clientMsgId = "rt-echo",
+                conversationId = 9,
+                serverSeq = 6,
+                messageId = 301,
+                createdAt = "2026-05-08T12:00:01Z",
+            ),
+        )
+
+        assertThat(messageDao.items).hasSize(1)
+        val saved = messageDao.items.single()
+        assertThat(saved.localKey).isEqualTo("s:301")
+        assertThat(saved.clientMsgId).isEqualTo("rt-echo")
+        assertThat(saved.status).isEqualTo(MessageStatus.Sent.name)
+    }
+
+    @Test
     fun realtimeReceivedPersistsServerMessageAndIncrementsUnread() = runTest {
         val conversationDao = FakeConversationDao(
             initialConversations = listOf(
@@ -754,6 +929,7 @@ private class FakeMessageApi(
     private val draftTranscriptText: String = "你好世界。",
 ) : MessageApi {
     val messageSinceSeqRequests = mutableListOf<Long>()
+    val messageLatestRequests = mutableListOf<Boolean>()
     val sentRequests = mutableListOf<CreateMessageRequest>()
     val callInviteRequests = mutableListOf<CreateCallInviteRequest>()
     val transcriptRetryRequests = mutableListOf<String>()
@@ -798,9 +974,11 @@ private class FakeMessageApi(
         conversationId: String,
         sinceSeq: Long,
         limit: Int,
+        latest: Boolean,
     ): Envelope<MessageListResponse> {
         messagesError?.let { throw it }
         messageSinceSeqRequests += sinceSeq
+        messageLatestRequests += latest
         return Envelope(code = 0, data = MessageListResponse(items = messages))
     }
 
@@ -1025,7 +1203,18 @@ private class FakeMessageDao : MessageDao {
         items.firstOrNull { it.serverId == serverId }
 
     override suspend fun upsertServerMessages(items: List<MessageEntity>) {
-        items.forEach { upsertMessage(it) }
+        items.forEach { item ->
+            this.items.removeAll { existing ->
+                existing.localKey == item.localKey ||
+                    (item.serverId != null && existing.serverId == item.serverId) ||
+                    (item.serverSeq != null &&
+                        existing.conversationId == item.conversationId &&
+                        existing.serverSeq == item.serverSeq) ||
+                    (item.clientMsgId != null && existing.clientMsgId == item.clientMsgId)
+            }
+            this.items += item
+        }
+        messagesFlow.value = this.items.toList()
     }
 
     override suspend fun upsertMessage(item: MessageEntity) {
@@ -1042,13 +1231,20 @@ private class FakeMessageDao : MessageDao {
         val index = items.indexOfFirst { it.clientMsgId == clientMsgId }
         if (index < 0) return
         val old = items[index]
-        items[index] = old.copy(
+        val delivered = old.copy(
             localKey = "s:$serverId",
             serverId = serverId,
             serverSeq = serverSeq,
             status = MessageStatus.Sent.name,
             createdAt = createdAt,
         )
+        items.removeAt(index)
+        items.removeAll { existing ->
+            existing.localKey == delivered.localKey ||
+                existing.serverId == serverId ||
+                (existing.conversationId == delivered.conversationId && existing.serverSeq == serverSeq)
+        }
+        items += delivered
         messagesFlow.value = items.toList()
     }
 
@@ -1080,6 +1276,14 @@ private class FakeMessageDao : MessageDao {
         items.removeAll {
             val serverSeq = it.serverSeq
             it.conversationId == conversationId && (serverSeq == null || serverSeq <= clearedBeforeSeq)
+        }
+        messagesFlow.value = items.toList()
+    }
+
+    override suspend fun deleteServerMessagesBefore(conversationId: Long, minServerSeq: Long) {
+        items.removeAll {
+            val serverSeq = it.serverSeq
+            it.conversationId == conversationId && serverSeq != null && serverSeq < minServerSeq
         }
         messagesFlow.value = items.toList()
     }

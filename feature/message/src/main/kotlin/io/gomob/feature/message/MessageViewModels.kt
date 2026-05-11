@@ -12,6 +12,7 @@ import io.gomob.model.message.HelpExpert
 import io.gomob.model.message.HelpExpertCase
 import io.gomob.model.message.InspectionShareCard
 import io.gomob.model.message.MessageRecord
+import io.gomob.model.message.MessageQuote
 import io.gomob.model.message.MessageStatus
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.SharingStarted
@@ -37,6 +38,8 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 
+private const val INITIAL_MESSAGE_PAGE_LIMIT = 30
+
 @HiltViewModel
 class MessageListViewModel @Inject constructor(
     private val repository: MessageRepository,
@@ -50,6 +53,7 @@ class MessageListViewModel @Inject constructor(
     private val helpConversationId = MutableStateFlow<Long?>(null)
     private val _contactActionError = MutableStateFlow<String?>(null)
     private val _openConversationEvents = MutableSharedFlow<Long>()
+    private val _forwardResultEvents = MutableSharedFlow<String>()
     private val currentUserId = tokenStore.currentUserIdFlow.stateIn(
         scope = viewModelScope,
         started = SharingStarted.Eagerly,
@@ -57,6 +61,7 @@ class MessageListViewModel @Inject constructor(
     )
     val contactActionError: StateFlow<String?> = _contactActionError.asStateFlow()
     val openConversationEvents = _openConversationEvents.asSharedFlow()
+    val forwardResultEvents = _forwardResultEvents.asSharedFlow()
 
     val uiState: StateFlow<MessageListUiState> =
         combine(repository.observeConversations(), refreshState) { conversations, refresh ->
@@ -75,6 +80,22 @@ class MessageListViewModel @Inject constructor(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),
             initialValue = MessageListUiState.Loading,
+        )
+
+    val forwardTargets: StateFlow<List<MessageForwardTargetUi>> =
+        combine(repository.observeConversations(), helpExperts, helpConversationId) { conversations, experts, helpId ->
+            val conversationTargets = visibleMessageConversations(conversations)
+                .filterNot { it.id == helpId }
+                .map { it.toForwardTargetUi() }
+            val conversationPeerIds = conversations.mapNotNull { it.peer?.id }.toSet()
+            val expertTargets = experts
+                .filterNot { it.userId in conversationPeerIds }
+                .map { it.toForwardTargetUi() }
+            (conversationTargets + expertTargets).dedupeForwardTargets()
+        }.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = emptyList(),
         )
 
     val helpUiState: StateFlow<HelpExpertsUiState> =
@@ -113,6 +134,7 @@ class MessageListViewModel @Inject constructor(
                 title = conversation?.displayTitle() ?: "专家连线",
                 experts = experts,
                 messages = messages.map { it.toBubbleUi(json, experts, currentUserId.value) },
+                unreadCount = conversation?.unreadCount ?: 0L,
                 loading = false,
                 offlineCached = messages.isNotEmpty() && refresh is RefreshState.Error,
                 errorMessage = (refresh as? RefreshState.Error)?.message,
@@ -125,6 +147,7 @@ class MessageListViewModel @Inject constructor(
                 title = "专家连线",
                 experts = emptyList(),
                 messages = emptyList(),
+                unreadCount = 0L,
                 loading = false,
                 offlineCached = false,
                 errorMessage = null,
@@ -181,6 +204,7 @@ class MessageListViewModel @Inject constructor(
                 helpConversationId.value = room.id
                 repository.refreshMessages(
                     conversationId = room.id,
+                    limit = INITIAL_MESSAGE_PAGE_LIMIT,
                     fullSync = repository.shouldHydrateConversationHistory(room.id),
                 )
                 RefreshState.Ready
@@ -188,13 +212,13 @@ class MessageListViewModel @Inject constructor(
         }
     }
 
-    fun sendHelpRoomMessage(text: String) {
+    fun sendHelpRoomMessage(text: String, quote: MessageQuote? = null) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
         viewModelScope.launch {
             runCatching {
                 val conversationId = ensureHelpConversationId()
-                repository.sendText(conversationId, trimmed)
+                repository.sendText(conversationId, trimmed, quote)
                 helpRoomRefreshState.value = RefreshState.Ready
             }.onFailure { error ->
                 helpRoomRefreshState.value = RefreshState.Error(error.readableMessage())
@@ -294,11 +318,15 @@ class MessageListViewModel @Inject constructor(
     fun openConversation(conversationId: Long) {
         if (conversationId <= 0) return
         viewModelScope.launch {
-            runCatching { repository.warmConversationSnapshot(conversationId) }
-            _openConversationEvents.emit(conversationId)
-            launch {
-                runCatching { repository.prewarmConversationHistory(conversationId) }
+            runCatching {
+                repository.prewarmConversationHistory(
+                    conversationId = conversationId,
+                    messageLimit = INITIAL_MESSAGE_PAGE_LIMIT,
+                )
+            }.onFailure {
+                runCatching { repository.warmConversationSnapshot(conversationId, INITIAL_MESSAGE_PAGE_LIMIT) }
             }
+            _openConversationEvents.emit(conversationId)
         }
     }
 
@@ -314,18 +342,42 @@ class MessageListViewModel @Inject constructor(
                     _contactActionError.value = error.readableMessage()
                     return@launch
                 }
-            repository.warmConversationSnapshot(conversation.id)
+            runCatching {
+                repository.prewarmConversationHistory(
+                    conversationId = conversation.id,
+                    messageLimit = INITIAL_MESSAGE_PAGE_LIMIT,
+                )
+            }.onFailure {
+                runCatching { repository.warmConversationSnapshot(conversation.id, INITIAL_MESSAGE_PAGE_LIMIT) }
+            }
             repository.refreshConversations()
             _openConversationEvents.emit(conversation.id)
-            launch {
-                runCatching { repository.prewarmConversationHistory(conversation.id) }
-            }
         }
     }
 
     fun clearContactActionError() {
         _contactActionError.value = null
     }
+
+    fun forwardHelpRoomMessages(target: MessageForwardTargetUi, sourceLocalKeys: List<String>) {
+        if (sourceLocalKeys.isEmpty()) return
+        viewModelScope.launch {
+            runCatching {
+                val targetConversationId = resolveForwardTargetConversationId(target)
+                val count = repository.forwardMessages(targetConversationId, sourceLocalKeys)
+                repository.refreshConversations()
+                _forwardResultEvents.emit("已转发给 ${target.title}${if (count > 1) " · $count 条" else ""}")
+                helpRoomRefreshState.value = RefreshState.Ready
+            }.onFailure { error ->
+                helpRoomRefreshState.value = RefreshState.Error(error.readableMessage())
+            }
+        }
+    }
+
+    private suspend fun resolveForwardTargetConversationId(target: MessageForwardTargetUi): Long =
+        target.conversationId
+            ?: target.peerUserId?.let { repository.openDirectConversation(it).id }
+            ?: throw IllegalArgumentException("该联系人暂未同步到服务端")
 
     private suspend fun ensureHelpConversationId(): Long =
         helpConversationId.value ?: repository.openHelpRoom().also {
@@ -375,14 +427,18 @@ class ExpertDetailViewModel @Inject constructor(
                         ?: ExpertDetailUiState.Error(error.readableMessage())
                     return@launch
                 }
-            repository.warmConversationSnapshot(conversation.id)
+            runCatching {
+                repository.prewarmConversationHistory(
+                    conversationId = conversation.id,
+                    messageLimit = INITIAL_MESSAGE_PAGE_LIMIT,
+                )
+            }.onFailure {
+                runCatching { repository.warmConversationSnapshot(conversation.id, INITIAL_MESSAGE_PAGE_LIMIT) }
+            }
             _state.value = (_state.value as? ExpertDetailUiState.Content)
                 ?.copy(openingMessage = false)
                 ?: _state.value
             _openConversationEvents.emit(conversation.id)
-            launch {
-                runCatching { repository.prewarmConversationHistory(conversation.id) }
-            }
         }
     }
 }
@@ -396,9 +452,12 @@ class ConversationViewModel @Inject constructor(
 ) : ViewModel() {
     private val conversationId = savedStateHandle.get<String>("id")?.toLongOrNull() ?: 0L
     private val refreshState = MutableStateFlow<RefreshState>(RefreshState.Ready)
+    private val forwardExperts = MutableStateFlow<List<HelpExpertRowUi>>(emptyList())
     private val _videoCallEvents = MutableSharedFlow<VideoCallOpenEvent>()
+    private val _forwardResultEvents = MutableSharedFlow<String>()
     private var markedReadSeq = 0L
     val videoCallEvents = _videoCallEvents.asSharedFlow()
+    val forwardResultEvents = _forwardResultEvents.asSharedFlow()
 
     val uiState: StateFlow<ConversationUiState> =
         combine(
@@ -428,8 +487,25 @@ class ConversationViewModel @Inject constructor(
             ),
         )
 
+    val forwardTargets: StateFlow<List<MessageForwardTargetUi>> =
+        combine(repository.observeConversations(), forwardExperts) { conversations, experts ->
+            val conversationTargets = visibleMessageConversations(conversations)
+                .filterNot { it.id == conversationId }
+                .map { it.toForwardTargetUi() }
+            val conversationPeerIds = conversations.mapNotNull { it.peer?.id }.toSet()
+            val expertTargets = experts
+                .filterNot { it.userId in conversationPeerIds }
+                .map { it.toForwardTargetUi() }
+            (conversationTargets + expertTargets).dedupeForwardTargets()
+        }.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = emptyList(),
+        )
+
     init {
         refresh()
+        refreshForwardExperts()
         viewModelScope.launch {
             repository.observeMessages(conversationId).collect { messages ->
                 val lastSeq = messages.mapNotNull { it.serverSeq }.maxOrNull() ?: return@collect
@@ -438,6 +514,13 @@ class ConversationViewModel @Inject constructor(
                     runCatching { repository.markRead(conversationId, lastSeq) }
                 }
             }
+        }
+    }
+
+    private fun refreshForwardExperts() {
+        viewModelScope.launch {
+            runCatching { repository.helpExperts().map { it.toRowUi() } }
+                .onSuccess { forwardExperts.value = it }
         }
     }
 
@@ -450,6 +533,7 @@ class ConversationViewModel @Inject constructor(
             refreshState.value = runCatching {
                 repository.refreshMessages(
                     conversationId = conversationId,
+                    limit = INITIAL_MESSAGE_PAGE_LIMIT,
                     fullSync = repository.shouldHydrateConversationHistory(conversationId),
                 )
                 RefreshState.Ready
@@ -457,12 +541,12 @@ class ConversationViewModel @Inject constructor(
         }
     }
 
-    fun send(text: String) {
+    fun send(text: String, quote: MessageQuote? = null) {
         val trimmed = text.trim()
         if (trimmed.isEmpty() || conversationId <= 0) return
         viewModelScope.launch {
             runCatching {
-                repository.sendText(conversationId, trimmed)
+                repository.sendText(conversationId, trimmed, quote)
                 refreshState.value = RefreshState.Ready
             }
                 .onFailure { refreshState.value = RefreshState.Error(it.readableMessage()) }
@@ -611,6 +695,26 @@ class ConversationViewModel @Inject constructor(
         }
     }
 
+    fun forwardMessages(target: MessageForwardTargetUi, sourceLocalKeys: List<String>) {
+        if (sourceLocalKeys.isEmpty()) return
+        viewModelScope.launch {
+            runCatching {
+                val targetConversationId = resolveForwardTargetConversationId(target)
+                val count = repository.forwardMessages(targetConversationId, sourceLocalKeys)
+                repository.refreshConversations()
+                _forwardResultEvents.emit("已转发给 ${target.title}${if (count > 1) " · $count 条" else ""}")
+                refreshState.value = RefreshState.Ready
+            }.onFailure { error ->
+                refreshState.value = RefreshState.Error(error.readableMessage())
+            }
+        }
+    }
+
+    private suspend fun resolveForwardTargetConversationId(target: MessageForwardTargetUi): Long =
+        target.conversationId
+            ?: target.peerUserId?.let { repository.openDirectConversation(it).id }
+            ?: throw IllegalArgumentException("该联系人暂未同步到服务端")
+
     fun showError(message: String) {
         refreshState.value = RefreshState.Error(message)
     }
@@ -657,6 +761,7 @@ sealed interface HelpRoomUiState {
         val title: String,
         val experts: List<HelpExpertRowUi>,
         val messages: List<MessageBubbleUi>,
+        val unreadCount: Long,
         val loading: Boolean,
         val offlineCached: Boolean,
         val errorMessage: String?,
@@ -728,17 +833,37 @@ private fun conversationUiState(
 data class MessageBubbleUi(
     val localKey: String,
     val serverId: Long?,
+    val kind: String,
     val text: String,
     val mine: Boolean,
     val senderLabel: String?,
     val avatarKey: String,
     val time: String,
+    val timeDividerLabel: String,
+    val createdAtEpochMillis: Long?,
     val status: MessageStatus,
     val clientMsgId: String?,
     val isVoice: Boolean = false,
     val inspectionCard: InspectionCardUi? = null,
     val callInvite: CallInviteUi? = null,
     val voiceTranscript: VoiceTranscriptUi? = null,
+    val quote: QuoteReferenceUi? = null,
+)
+
+data class QuoteReferenceUi(
+    val localKey: String,
+    val serverId: Long?,
+    val senderLabel: String,
+    val text: String,
+)
+
+data class MessageForwardTargetUi(
+    val stableKey: String,
+    val title: String,
+    val subtitle: String,
+    val initials: String,
+    val conversationId: Long?,
+    val peerUserId: Long?,
 )
 
 data class VoiceTranscriptUi(
@@ -805,6 +930,40 @@ private fun ConversationSummary.toRowUi(json: Json): ConversationRowUi {
     )
 }
 
+private fun ConversationSummary.toForwardTargetUi(): MessageForwardTargetUi {
+    val title = displayTitle()
+    val subtitle = peer?.employeeId?.takeIf { it.isNotBlank() }
+        ?: when (kind) {
+            "group" -> subjectKind?.takeIf { it.isNotBlank() } ?: "群聊"
+            else -> "最近会话"
+        }
+    return MessageForwardTargetUi(
+        stableKey = "conversation-$id",
+        title = title,
+        subtitle = subtitle,
+        initials = initialsFor(title),
+        conversationId = id,
+        peerUserId = peer?.id,
+    )
+}
+
+private fun HelpExpertRowUi.toForwardTargetUi(): MessageForwardTargetUi = MessageForwardTargetUi(
+    stableKey = "expert-$userId",
+    title = name,
+    subtitle = "$roleTitle · $employeeId",
+    initials = initials,
+    conversationId = null,
+    peerUserId = userId,
+)
+
+private fun List<MessageForwardTargetUi>.dedupeForwardTargets(): List<MessageForwardTargetUi> {
+    val seen = linkedSetOf<String>()
+    return filter { target ->
+        val key = target.peerUserId?.let { "peer-$it" } ?: target.stableKey
+        seen.add(key)
+    }
+}
+
 internal fun visibleMessageConversations(conversations: List<ConversationSummary>): List<ConversationSummary> =
     conversations.filterNot { it.subjectKind == "online_help" || (it.kind == "group" && it.title == "在线求助") }
 
@@ -834,20 +993,25 @@ private fun MessageRecord.toBubbleUi(json: Json, currentUserId: Long?): MessageB
     val card = inspectionCardPayload(json)
     val call = callInvitePayload(json)
     val transcript = voiceTranscriptPayload(json)
+    val quote = quoteReferencePayload(json)
     return MessageBubbleUi(
         localKey = localKey,
         serverId = serverId,
+        kind = kind,
         text = card?.searchText ?: call?.searchText ?: if (kind == "voice") voiceBaseText(json) else previewText(json),
         mine = mine,
         senderLabel = null,
         avatarKey = if (mine) "me" else "peer-${senderId ?: localKey}",
         time = createdAt.formatMessageTime(),
+        timeDividerLabel = createdAt.formatChatDividerTime(),
+        createdAtEpochMillis = createdAt.toEpochMillisOrNull(),
         status = status,
         clientMsgId = clientMsgId,
         isVoice = kind == "voice",
         inspectionCard = card,
         callInvite = call,
         voiceTranscript = transcript,
+        quote = quote,
     )
 }
 
@@ -861,9 +1025,11 @@ private fun MessageRecord.toBubbleUi(
     val card = inspectionCardPayload(json)
     val call = callInvitePayload(json)
     val transcript = voiceTranscriptPayload(json)
+    val quote = quoteReferencePayload(json)
     return MessageBubbleUi(
         localKey = localKey,
         serverId = serverId,
+        kind = kind,
         text = card?.searchText ?: call?.searchText ?: if (kind == "voice") voiceBaseText(json) else previewText(json),
         mine = mine,
         senderLabel = if (mine) null else expert?.name ?: "成员 #$senderId",
@@ -873,12 +1039,15 @@ private fun MessageRecord.toBubbleUi(
             expert?.let { "expert-${it.userId}-${it.name}" } ?: "member-${senderId ?: localKey}"
         },
         time = createdAt.formatMessageTime(),
+        timeDividerLabel = createdAt.formatChatDividerTime(),
+        createdAtEpochMillis = createdAt.toEpochMillisOrNull(),
         status = status,
         clientMsgId = clientMsgId,
         isVoice = kind == "voice",
         inspectionCard = card,
         callInvite = call,
         voiceTranscript = transcript,
+        quote = quote,
     )
 }
 
@@ -910,6 +1079,21 @@ private fun MessageRecord.textPayload(json: Json): String {
         is JsonPrimitive -> element.contentOrNull.orEmpty()
         else -> ""
     }
+}
+
+private fun MessageRecord.quoteReferencePayload(json: Json): QuoteReferenceUi? {
+    if (kind != "text") return null
+    val obj = runCatching { json.parseToJsonElement(payloadJson).jsonObject }.getOrNull() ?: return null
+    val quote = runCatching { obj["quote"]?.jsonObject }.getOrNull() ?: return null
+    val text = quote["text"]?.jsonPrimitive?.contentOrNull.orEmpty().trim()
+    if (text.isBlank()) return null
+    val senderLabel = quote["sender_label"]?.jsonPrimitive?.contentOrNull.orEmpty().ifBlank { "引用消息" }
+    return QuoteReferenceUi(
+        localKey = quote["local_key"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+        serverId = quote["server_id"]?.jsonPrimitive?.contentOrNull?.toLongOrNull(),
+        senderLabel = senderLabel,
+        text = text,
+    )
 }
 
 private fun MessageRecord.mediaPreview(json: Json, awaiting: String, ready: String): String {
@@ -1008,6 +1192,22 @@ private fun String.formatMessageTime(): String =
     runCatching {
         Instant.parse(this).atZone(ZoneId.systemDefault()).format(messageTimeFormatter)
     }.getOrDefault("")
+
+private fun String.formatChatDividerTime(): String =
+    runCatching {
+        val zoned = Instant.parse(this).atZone(ZoneId.systemDefault())
+        val today = Instant.now().atZone(ZoneId.systemDefault()).toLocalDate()
+        val date = zoned.toLocalDate()
+        when {
+            date == today -> zoned.format(messageTimeFormatter)
+            date == today.minusDays(1) -> "昨天 ${zoned.format(messageTimeFormatter)}"
+            date.year == today.year -> zoned.format(DateTimeFormatter.ofPattern("MM-dd HH:mm"))
+            else -> zoned.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+        }
+    }.getOrDefault("")
+
+private fun String.toEpochMillisOrNull(): Long? =
+    runCatching { Instant.parse(this).toEpochMilli() }.getOrNull()
 
 private fun String.formatCaseTime(): String =
     runCatching {

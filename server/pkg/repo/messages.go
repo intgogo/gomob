@@ -599,6 +599,45 @@ func (r *MessageRepo) ListSince(ctx context.Context, convID, since int64, limit 
 	return out, rows.Err()
 }
 
+// ListLatest 返回 conversation 最新 limit 条消息（升序）；用于首屏/预热缓存。
+func (r *MessageRepo) ListLatest(ctx context.Context, convID int64, limit int) ([]Message, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 30
+	}
+	const q = `
+		SELECT id, conversation_id, sender_id, server_seq, kind, payload, client_msg_id,
+		       created_at, edited_at, deleted_at
+		FROM (
+			SELECT id, conversation_id, sender_id, server_seq, kind, payload, client_msg_id,
+			       created_at, edited_at, deleted_at
+			FROM messages
+			WHERE conversation_id=$1 AND deleted_at IS NULL
+			ORDER BY server_seq DESC
+			LIMIT $2
+		) latest
+		ORDER BY server_seq ASC`
+	rows, err := r.pool.Query(ctx, q, convID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Message, 0, limit)
+	for rows.Next() {
+		var m Message
+		var clientMsgID sql.NullString
+		var editedAt, deletedAt sql.NullTime
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.ServerSeq,
+			&m.Kind, &m.Payload, &clientMsgID, &m.CreatedAt, &editedAt, &deletedAt); err != nil {
+			return nil, err
+		}
+		m.ClientMsgID = nullStringPtr(clientMsgID)
+		m.EditedAt = nullTimePtr(editedAt)
+		m.DeletedAt = nullTimePtr(deletedAt)
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // FindByClientMsgID 返回某发送者 client_msg_id 对应的已入库消息。
 func (r *MessageRepo) FindByClientMsgID(ctx context.Context, senderID int64, clientMsgID string) (*Message, error) {
 	if clientMsgID == "" {

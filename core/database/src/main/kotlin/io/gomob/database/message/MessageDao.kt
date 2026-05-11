@@ -1,6 +1,8 @@
 package io.gomob.database.message
 
 import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
@@ -36,10 +38,13 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE clientMsgId = :clientMsgId LIMIT 1")
     suspend fun findByClientMsgId(clientMsgId: String): MessageEntity?
 
+    @Query("SELECT * FROM messages WHERE localKey = :localKey LIMIT 1")
+    suspend fun findByLocalKey(localKey: String): MessageEntity?
+
     @Query("SELECT * FROM messages WHERE serverId = :serverId LIMIT 1")
     suspend fun findByServerId(serverId: Long): MessageEntity?
 
-    @Upsert
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertServerMessages(items: List<MessageEntity>)
 
     @Upsert
@@ -47,7 +52,7 @@ interface MessageDao {
 
     @Query(
         """
-        UPDATE messages
+        UPDATE OR REPLACE messages
         SET localKey = 's:' || :serverId,
             serverId = :serverId,
             serverSeq = :serverSeq,
@@ -88,6 +93,16 @@ interface MessageDao {
         """,
     )
     suspend fun deleteClearedMessages(conversationId: Long, clearedBeforeSeq: Long)
+
+    @Query(
+        """
+        DELETE FROM messages
+        WHERE conversationId = :conversationId
+          AND serverSeq IS NOT NULL
+          AND serverSeq < :minServerSeq
+        """,
+    )
+    suspend fun deleteServerMessagesBefore(conversationId: Long, minServerSeq: Long)
 
     @Query("DELETE FROM messages WHERE conversationId = :conversationId")
     suspend fun deleteByConversationId(conversationId: Long)

@@ -1,7 +1,10 @@
 package io.gomob.feature.message
 
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -15,18 +18,36 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.VideoCall
+import androidx.compose.material.icons.filled.Checklist
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.FormatQuote
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
 import io.gomob.designsystem.icons.GomobIcons
@@ -40,12 +61,17 @@ internal fun ChatMessageRow(
     onRetryTranscript: () -> Unit = {},
     onOpenInspection: (String) -> Unit = {},
     onAcceptCall: (CallInviteUi) -> Unit = {},
+    favorite: Boolean = false,
+    selected: Boolean = false,
+    multiSelectMode: Boolean = false,
+    onToggleSelected: () -> Unit = {},
+    onQuickAction: (MessageQuickAction, MessageBubbleUi) -> Unit = { _, _ -> },
 ) {
     val hasSenderLabel = !bubble.mine && !bubble.senderLabel.isNullOrBlank()
     val statusText = when (bubble.status) {
         MessageStatus.Pending -> "发送中"
         MessageStatus.Failed -> null
-        MessageStatus.Sent -> bubble.time
+        MessageStatus.Sent -> null
     }
     val statusColor = when (bubble.status) {
         MessageStatus.Pending -> Gomob.colors.warn
@@ -53,8 +79,13 @@ internal fun ChatMessageRow(
         MessageStatus.Failed -> Gomob.colors.fg3
     }
     val showRetryIcon = bubble.status == MessageStatus.Failed && bubble.clientMsgId != null
+    var actionPanelOpen by remember(bubble.localKey) { mutableStateOf(false) }
 
-    BoxWithConstraints(Modifier.fillMaxWidth()) {
+    BoxWithConstraints(
+        Modifier
+            .fillMaxWidth()
+            .then(if (multiSelectMode) Modifier.clickable(onClick = onToggleSelected) else Modifier),
+    ) {
         val avatarSize = 36.dp
         val avatarGap = Gomob.spacing.s8
         val bubbleMaxWidth = minOf(maxWidth * 0.72f, maxWidth - avatarSize - avatarGap)
@@ -66,6 +97,12 @@ internal fun ChatMessageRow(
             horizontalArrangement = if (bubble.mine) Arrangement.End else Arrangement.Start,
             verticalAlignment = Alignment.Top,
         ) {
+            if (multiSelectMode) {
+                MessageSelectionMark(
+                    selected = selected,
+                    modifier = Modifier.padding(top = 7.dp, end = Gomob.spacing.s8),
+                )
+            }
             if (!bubble.mine) {
                 ChatAvatar(
                     seed = bubble.avatarKey,
@@ -96,13 +133,35 @@ internal fun ChatMessageRow(
                     if (bubble.mine && showRetryIcon) {
                         MessageRetryWarning(onClick = onRetry)
                     }
-                    ChatBubble(
-                        bubble = bubble,
-                        maxWidth = bubbleMaxWidth,
-                        onOpenInspection = onOpenInspection,
-                        onAcceptCall = onAcceptCall,
-                        onRetryTranscript = onRetryTranscript,
-                    )
+                    Box(
+                        Modifier.messageActionTouch(
+                            onClick = {
+                                if (multiSelectMode) onToggleSelected()
+                            },
+                            onLongPress = { actionPanelOpen = true },
+                        ),
+                    ) {
+                        ChatBubble(
+                            bubble = bubble,
+                            maxWidth = bubbleMaxWidth,
+                            onOpenInspection = onOpenInspection,
+                            onAcceptCall = onAcceptCall,
+                        )
+                        if (actionPanelOpen) {
+                            MessageActionPopup(
+                                actions = bubble.quickActions(),
+                                onDismiss = { actionPanelOpen = false },
+                                onAction = { action ->
+                                    actionPanelOpen = false
+                                    if (action == MessageQuickAction.TranscribeVoice) {
+                                        onRetryTranscript()
+                                    } else {
+                                        onQuickAction(action, bubble)
+                                    }
+                                },
+                            )
+                        }
+                    }
                 }
                 statusText?.let {
                     Text(
@@ -110,6 +169,16 @@ internal fun ChatMessageRow(
                         style = Gomob.type.numInline,
                         color = statusColor,
                         modifier = Modifier.padding(horizontal = Gomob.spacing.s2),
+                    )
+                }
+                if (favorite) {
+                    Icon(
+                        imageVector = Icons.Filled.Star,
+                        contentDescription = "已收藏",
+                        tint = Gomob.colors.warn,
+                        modifier = Modifier
+                            .padding(horizontal = Gomob.spacing.s2)
+                            .size(13.dp),
                     )
                 }
             }
@@ -133,7 +202,6 @@ private fun ChatBubble(
     maxWidth: Dp,
     onOpenInspection: (String) -> Unit,
     onAcceptCall: (CallInviteUi) -> Unit,
-    onRetryTranscript: () -> Unit,
 ) {
     val bubbleBg = if (bubble.mine) WechatMineBubble else Gomob.colors.bg1
     val textColor = if (bubble.mine) Color(0xF5000000) else Gomob.colors.fg0
@@ -141,10 +209,20 @@ private fun ChatBubble(
     val card = bubble.inspectionCard
     val call = bubble.callInvite
 
-    if (card != null) {
+    if (bubble.isImageOrVideoFile()) {
+        MediaFileMessageBubble(
+            bubble = bubble,
+            maxWidth = maxWidth,
+            bubbleBg = bubbleBg,
+            textColor = textColor,
+        )
+    } else if (card != null) {
         InspectionMessageCard(
             card = card,
+            mine = bubble.mine,
             maxWidth = maxWidth,
+            bubbleBg = bubbleBg,
+            textColor = textColor,
             onOpenInspection = onOpenInspection,
         )
     } else if (call != null) {
@@ -152,6 +230,8 @@ private fun ChatBubble(
             call = call,
             mine = bubble.mine,
             maxWidth = maxWidth,
+            bubbleBg = bubbleBg,
+            textColor = textColor,
             onAcceptCall = onAcceptCall,
         )
     } else if (bubble.isVoice) {
@@ -160,18 +240,287 @@ private fun ChatBubble(
             maxWidth = maxWidth,
             bubbleBg = bubbleBg,
             textColor = textColor,
-            onRetryTranscript = onRetryTranscript,
         )
     } else {
+        TextMessageBubble(
+            bubble = bubble,
+            maxWidth = maxWidth,
+            bubbleBg = bubbleBg,
+            textColor = textColor,
+        )
+    }
+}
+
+@Composable
+private fun TextMessageBubble(
+    bubble: MessageBubbleUi,
+    maxWidth: Dp,
+    bubbleBg: Color,
+    textColor: Color,
+) {
+    MessageBubbleShell(
+        mine = bubble.mine,
+        maxWidth = maxWidth,
+        bubbleBg = bubbleBg,
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6)) {
+            Text(bubble.text, style = Gomob.type.bodySm, color = textColor)
+            bubble.quote?.let { quote ->
+                QuoteReferenceBlock(quote = quote, textColor = textColor, mine = bubble.mine)
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuoteReferenceBlock(
+    quote: QuoteReferenceUi,
+    textColor: Color,
+    mine: Boolean,
+) {
+    Row(
+        Modifier
+            .clip(Gomob.shapes.r1)
+            .background(Color.Black.copy(alpha = if (mine) 0.08f else 0.045f))
+            .padding(horizontal = Gomob.spacing.s8, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+    ) {
         Box(
             Modifier
-                .widthIn(max = maxWidth)
+                .width(2.dp)
+                .height(26.dp)
+                .background(textColor.copy(alpha = 0.22f)),
+        )
+        Text(
+            "${quote.senderLabel}: ${quote.text}",
+            style = Gomob.type.caption,
+            color = textColor.copy(alpha = 0.58f),
+            maxLines = 2,
+        )
+    }
+}
+
+@Composable
+private fun MediaFileMessageBubble(
+    bubble: MessageBubbleUi,
+    maxWidth: Dp,
+    bubbleBg: Color,
+    textColor: Color,
+) {
+    Box(
+        Modifier
+            .widthIn(max = maxWidth)
+            .clip(Gomob.shapes.r2)
+            .background(bubbleBg)
+            .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
+    ) {
+        Text(bubble.text, style = Gomob.type.bodySm, color = textColor)
+    }
+}
+
+private fun MessageBubbleUi.isImageOrVideoFile(): Boolean =
+    kind == "image" || kind == "video_clip"
+
+private fun MessageBubbleUi.quickActions(): List<MessageQuickAction> =
+    MessageQuickAction.values()
+        .filter { action -> action != MessageQuickAction.TranscribeVoice || canRequestVoiceTranscript() }
+
+private fun MessageBubbleUi.canRequestVoiceTranscript(): Boolean =
+    isVoice &&
+        serverId != null &&
+        serverId > 0 &&
+        (voiceTranscript == null || voiceTranscript.status == "failed")
+
+@OptIn(ExperimentalFoundationApi::class)
+private fun Modifier.messageActionTouch(
+    onClick: () -> Unit,
+    onLongPress: () -> Unit,
+): Modifier =
+    combinedClickable(
+        onClick = onClick,
+        onLongClick = onLongPress,
+    )
+
+@Composable
+private fun MessageSelectionMark(
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val stroke = if (selected) Gomob.colors.accent else Gomob.colors.fg3.copy(alpha = 0.72f)
+    Box(
+        modifier.size(22.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.size(20.dp)) {
+            drawCircle(color = if (selected) stroke else Color.Transparent, radius = size.minDimension / 2f)
+            drawCircle(color = stroke, radius = size.minDimension / 2f, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx()))
+        }
+        if (selected) {
+            Icon(
+                imageVector = GomobIcons.Check,
+                contentDescription = "已选择",
+                tint = Color.White,
+                modifier = Modifier.size(12.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun MessageActionPopup(
+    actions: List<MessageQuickAction>,
+    onDismiss: () -> Unit,
+    onAction: (MessageQuickAction) -> Unit,
+) {
+    Popup(
+        popupPositionProvider = MessageActionPopupPositionProvider(),
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(focusable = true),
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Row(
+                Modifier
+                    .clip(Gomob.shapes.r2)
+                    .background(MessageActionPanelBg)
+                    .padding(horizontal = Gomob.spacing.s12, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s14),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                actions.forEach { action ->
+                    MessageActionButton(
+                        action = action,
+                        onClick = { onAction(action) },
+                    )
+                }
+            }
+            Canvas(Modifier.size(width = 18.dp, height = 8.dp)) {
+                val path = Path().apply {
+                    moveTo(size.width * 0.5f, size.height)
+                    lineTo(0f, 0f)
+                    lineTo(size.width, 0f)
+                    close()
+                }
+                drawPath(path = path, color = MessageActionPanelBg)
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageActionButton(
+    action: MessageQuickAction,
+    onClick: () -> Unit,
+) {
+    Column(
+        Modifier
+            .width(42.dp)
+            .clip(Gomob.shapes.r1)
+            .clickable(onClick = onClick)
+            .padding(vertical = Gomob.spacing.s4),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Icon(
+            imageVector = action.icon,
+            contentDescription = action.label,
+            tint = Color.White,
+            modifier = Modifier.size(22.dp),
+        )
+        Text(
+            action.label,
+            style = Gomob.type.caption,
+            color = Color.White.copy(alpha = 0.92f),
+            maxLines = 1,
+        )
+    }
+}
+
+internal enum class MessageQuickAction(
+    val label: String,
+    val icon: ImageVector,
+) {
+    Copy("复制", Icons.Filled.ContentCopy),
+    Forward("转发", MessageForwardActionIcon),
+    Favorite("收藏", Icons.Filled.StarBorder),
+    MultiSelect("多选", Icons.Filled.Checklist),
+    Quote("引用", Icons.Filled.FormatQuote),
+    TranscribeVoice("转文字", GomobIcons.Compose),
+}
+
+private class MessageActionPopupPositionProvider : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset {
+        val margin = 8
+        val x = (anchorBounds.left + (anchorBounds.width - popupContentSize.width) / 2)
+            .coerceIn(margin, (windowSize.width - popupContentSize.width - margin).coerceAtLeast(margin))
+        val y = (anchorBounds.top - popupContentSize.height - margin)
+            .coerceAtLeast(margin)
+        return IntOffset(x, y)
+    }
+}
+
+private val MessageActionPanelBg = Color(0xEE4A4A4A)
+
+@Composable
+private fun MessageBubbleShell(
+    mine: Boolean,
+    maxWidth: Dp,
+    bubbleBg: Color,
+    content: @Composable () -> Unit,
+) {
+    val contentMaxWidth = (maxWidth - MessageBubbleTailWidth).coerceAtLeast(96.dp)
+    Row(verticalAlignment = Alignment.Top) {
+        if (!mine) {
+            MessageBubbleTail(
+                mine = false,
+                color = bubbleBg,
+                modifier = Modifier.padding(top = MessageBubbleTailTop),
+            )
+        }
+        Box(
+            Modifier
+                .widthIn(max = contentMaxWidth)
                 .clip(Gomob.shapes.r2)
                 .background(bubbleBg)
                 .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
         ) {
-            Text(bubble.text, style = Gomob.type.bodySm, color = textColor)
+            content()
         }
+        if (mine) {
+            MessageBubbleTail(
+                mine = true,
+                color = bubbleBg,
+                modifier = Modifier.padding(top = MessageBubbleTailTop),
+            )
+        }
+    }
+}
+
+@Composable
+private fun MessageBubbleTail(
+    mine: Boolean,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier.size(width = MessageBubbleTailWidth, height = MessageBubbleTailHeight)) {
+        val path = Path().apply {
+            if (mine) {
+                moveTo(0f, size.height * 0.08f)
+                lineTo(0f, size.height * 0.92f)
+                lineTo(size.width, size.height * 0.50f)
+            } else {
+                moveTo(size.width, size.height * 0.08f)
+                lineTo(size.width, size.height * 0.92f)
+                lineTo(0f, size.height * 0.50f)
+            }
+            close()
+        }
+        drawPath(path = path, color = color)
     }
 }
 
@@ -181,70 +530,50 @@ private fun VoiceMessageBubble(
     maxWidth: Dp,
     bubbleBg: Color,
     textColor: Color,
-    onRetryTranscript: () -> Unit,
 ) {
     val transcript = bubble.voiceTranscript
-    val actionLabel = transcript.voiceTranscriptActionLabel(bubble.serverId)
-    Column(
-        Modifier
-            .widthIn(max = maxWidth)
-            .clip(Gomob.shapes.r2)
-            .background(bubbleBg)
-            .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
-        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+    MessageBubbleShell(
+        mine = bubble.mine,
+        maxWidth = maxWidth,
+        bubbleBg = bubbleBg,
     ) {
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                GomobIcons.VoiceCircle,
-                contentDescription = null,
-                tint = textColor.copy(alpha = 0.82f),
-                modifier = Modifier.size(17.dp),
-            )
-            Text(bubble.text, style = Gomob.type.bodySm, color = textColor, maxLines = 1)
-        }
-        Spacer(
-            Modifier
-                .fillMaxWidth()
-                .height(1.dp)
-                .background(textColor.copy(alpha = 0.10f)),
-        )
-        Text(
-            transcript.displayText(bubble.serverId),
-            style = Gomob.type.caption,
-            color = when (transcript?.status) {
-                "failed" -> Gomob.colors.danger
-                "pending", "processing" -> Gomob.colors.fg3
-                else -> textColor
-            },
-        )
-        if (actionLabel != null) {
+        Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6)) {
             Row(
-                Modifier
-                    .clip(Gomob.shapes.r1)
-                    .clickable(onClick = onRetryTranscript)
-                    .padding(horizontal = Gomob.spacing.s6, vertical = 3.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(
-                    GomobIcons.Search,
-                    contentDescription = actionLabel,
-                    tint = if (bubble.mine) Color(0xD9000000) else Gomob.colors.accent,
-                    modifier = Modifier.size(13.dp),
+                    GomobIcons.VoiceCircle,
+                    contentDescription = null,
+                    tint = textColor.copy(alpha = 0.82f),
+                    modifier = Modifier.size(17.dp),
+                )
+                Text(bubble.text, style = Gomob.type.bodySm, color = textColor, maxLines = 1)
+            }
+            if (transcript != null) {
+                Spacer(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(textColor.copy(alpha = 0.10f)),
                 )
                 Text(
-                    actionLabel,
+                    transcript.displayText(bubble.serverId),
                     style = Gomob.type.caption,
-                    color = if (bubble.mine) Color(0xD9000000) else Gomob.colors.accent,
-                    maxLines = 1,
+                    color = when (transcript.status) {
+                        "failed" -> Gomob.colors.danger
+                        "pending", "processing" -> Gomob.colors.fg3
+                        else -> textColor
+                    },
                 )
             }
         }
     }
 }
+
+private val MessageBubbleTailWidth = 5.dp
+private val MessageBubbleTailHeight = 11.dp
+private val MessageBubbleTailTop = 8.dp
 
 private fun VoiceTranscriptUi?.displayText(messageId: Long?): String = when (this?.status) {
     "done" -> text.orEmpty().ifBlank { "转写结果为空" }
@@ -254,74 +583,66 @@ private fun VoiceTranscriptUi?.displayText(messageId: Long?): String = when (thi
     else -> if (messageId == null || messageId <= 0) "等待上传完成" else "可转成文字"
 }
 
-private fun VoiceTranscriptUi?.voiceTranscriptActionLabel(messageId: Long?): String? {
-    if (messageId == null || messageId <= 0) return null
-    return when (this?.status) {
-        null -> "转文字"
-        "failed" -> "重新转文字"
-        else -> null
-    }
-}
-
 @Composable
 private fun VideoCallInviteCard(
     call: CallInviteUi,
     mine: Boolean,
     maxWidth: Dp,
+    bubbleBg: Color,
+    textColor: Color,
     onAcceptCall: (CallInviteUi) -> Unit,
 ) {
-    Column(
-        Modifier
-            .widthIn(max = maxWidth)
-            .clip(Gomob.shapes.r2)
-            .background(Gomob.colors.bg1)
-            .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
-        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+    MessageBubbleShell(
+        mine = mine,
+        maxWidth = maxWidth,
+        bubbleBg = bubbleBg,
     ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                Modifier
-                    .size(34.dp)
-                    .clip(Gomob.shapes.r2)
-                    .background(Gomob.colors.accentSoft),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Filled.VideoCall,
-                    contentDescription = null,
-                    tint = Gomob.colors.accent,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(call.title, style = Gomob.type.bodySm, color = Gomob.colors.fg0, maxLines = 1)
-                Text(
-                    if (mine) "已发起，等待对方接受" else "邀请你视频通话",
-                    style = Gomob.type.caption,
-                    color = Gomob.colors.fg2,
-                    maxLines = 1,
-                )
-            }
-        }
-        if (!mine && call.status == "ringing") {
+        Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8)) {
             Row(
                 Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
+                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(
                     Modifier
+                        .size(36.dp)
                         .clip(Gomob.shapes.r2)
-                        .background(Gomob.colors.accent)
-                        .clickable { onAcceptCall(call) }
-                        .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s6),
+                        .background(textColor.copy(alpha = 0.10f)),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("接受", style = Gomob.type.caption, color = Gomob.colors.bg0)
+                    Icon(
+                        Icons.Filled.Videocam,
+                        contentDescription = null,
+                        tint = if (mine) Color(0xD9000000) else Gomob.colors.accent,
+                        modifier = Modifier.size(23.dp),
+                    )
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(call.title, style = Gomob.type.bodySm, color = textColor, maxLines = 1)
+                    Text(
+                        if (mine) "已发起，等待对方接受" else "邀请你视频通话",
+                        style = Gomob.type.caption,
+                        color = textColor.copy(alpha = 0.64f),
+                        maxLines = 1,
+                    )
+                }
+            }
+            if (!mine && call.status == "ringing") {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier
+                            .clip(Gomob.shapes.r2)
+                            .background(Gomob.colors.accent)
+                            .clickable { onAcceptCall(call) }
+                            .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s6),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("接受", style = Gomob.type.caption, color = Gomob.colors.bg0)
+                    }
                 }
             }
         }
@@ -349,79 +670,87 @@ private fun MessageRetryWarning(onClick: () -> Unit) {
 @Composable
 private fun InspectionMessageCard(
     card: InspectionCardUi,
+    mine: Boolean,
     maxWidth: Dp,
+    bubbleBg: Color,
+    textColor: Color,
     onOpenInspection: (String) -> Unit,
 ) {
-    Column(
-        Modifier
-            .widthIn(max = maxWidth)
-            .clip(Gomob.shapes.r2)
-            .background(Gomob.colors.bg1)
-            .clickable { onOpenInspection(card.inspectionId) }
-            .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
-        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+    MessageBubbleShell(
+        mine = mine,
+        maxWidth = maxWidth,
+        bubbleBg = bubbleBg,
     ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
+        Column(
+            Modifier.clickable { onOpenInspection(card.inspectionId) },
+            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
         ) {
             Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
             ) {
-                Icon(
-                    GomobIcons.LinkShare,
-                    contentDescription = null,
-                    tint = Gomob.colors.accent,
-                    modifier = Modifier.size(15.dp),
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+                ) {
+                    Icon(
+                        GomobIcons.LinkShare,
+                        contentDescription = null,
+                        tint = if (mine) Color(0xD9000000) else Gomob.colors.accent,
+                        modifier = Modifier.size(15.dp),
+                    )
+                    Text("业务流水", style = Gomob.type.eyebrow, color = textColor.copy(alpha = 0.64f))
+                }
+                StatusTag(
+                    text = card.status.toInspectionStatusText(),
+                    tone = card.status.toInspectionStatusTone(),
+                    showDot = true,
                 )
-                Text("业务流水", style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
             }
-            StatusTag(
-                text = card.status.toInspectionStatusText(),
-                tone = card.status.toInspectionStatusTone(),
-                showDot = true,
+            Text(
+                card.vin,
+                style = Gomob.type.numInline.copy(fontSize = 14.sp),
+                color = textColor,
+                maxLines = 1,
             )
-        }
-        Text(
-            card.vin,
-            style = Gomob.type.numInline.copy(fontSize = 14.sp),
-            color = Gomob.colors.fg0,
-            maxLines = 1,
-        )
-        Text(
-            card.vehicleLine,
-            style = Gomob.type.caption,
-            color = Gomob.colors.fg2,
-            maxLines = 2,
-        )
-        if (card.tags.isNotEmpty()) {
-            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                card.tags.take(2).forEach { tag ->
-                    Box(
-                        Modifier
-                            .clip(Gomob.shapes.r1)
-                            .background(Gomob.colors.bg2)
-                            .padding(horizontal = Gomob.spacing.s6, vertical = 2.dp),
-                    ) {
-                        Text(tag, fontSize = 10.sp, color = Gomob.colors.fg2, maxLines = 1)
+            Text(
+                card.vehicleLine,
+                style = Gomob.type.caption,
+                color = textColor.copy(alpha = 0.64f),
+                maxLines = 2,
+            )
+            if (card.tags.isNotEmpty()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    card.tags.take(2).forEach { tag ->
+                        Box(
+                            Modifier
+                                .clip(Gomob.shapes.r1)
+                                .background(textColor.copy(alpha = 0.10f))
+                                .padding(horizontal = Gomob.spacing.s6, vertical = 2.dp),
+                        ) {
+                            Text(tag, fontSize = 10.sp, color = textColor.copy(alpha = 0.72f), maxLines = 1)
+                        }
                     }
                 }
             }
-        }
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(card.timeLabel.ifBlank { "查看流水详情" }, style = Gomob.type.numInline, color = Gomob.colors.fg3)
-            Icon(
-                GomobIcons.ChevronRight,
-                contentDescription = "查看流水详情",
-                tint = Gomob.colors.fg3,
-                modifier = Modifier.size(14.dp),
-            )
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    card.timeLabel.ifBlank { "查看流水详情" },
+                    style = Gomob.type.numInline,
+                    color = textColor.copy(alpha = 0.54f),
+                )
+                Icon(
+                    GomobIcons.ChevronRight,
+                    contentDescription = "查看流水详情",
+                    tint = textColor.copy(alpha = 0.54f),
+                    modifier = Modifier.size(14.dp),
+                )
+            }
         }
     }
 }

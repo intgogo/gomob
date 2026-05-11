@@ -11,6 +11,7 @@ import io.gomob.model.message.HelpExpert
 import io.gomob.model.message.HelpExpertCase
 import io.gomob.model.message.InspectionShareCard
 import io.gomob.model.message.MessageRecord
+import io.gomob.model.message.MessageQuote
 import io.gomob.model.message.MessageStatus
 import io.gomob.network.ApiException
 import io.gomob.network.MessageApi
@@ -53,7 +54,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val DEFAULT_PREWARM_CONVERSATION_LIMIT = 12
-private const val DEFAULT_PREWARM_MESSAGE_LIMIT = 100
+private const val DEFAULT_PREWARM_MESSAGE_LIMIT = 30
 private const val MESSAGE_REPOSITORY_TAG = "MessageRepository"
 private const val STALE_CONVERSATION_MESSAGE = "会话已失效，请返回消息中心重新打开"
 
@@ -302,7 +303,12 @@ class MessageRepository @Inject constructor(
     suspend fun refreshMessages(conversationId: Long, limit: Int = 100, fullSync: Boolean = false) {
         val since = if (fullSync) 0L else messageDao.maxServerSeq(conversationId) ?: 0L
         val resp = try {
-            api.messages(conversationId.toString(), sinceSeq = since, limit = limit)
+            api.messages(
+                conversationId = conversationId.toString(),
+                sinceSeq = since,
+                limit = limit,
+                latest = fullSync,
+            )
         } catch (error: ApiException) {
             if (error.isPermissionDenied) {
                 forgetInaccessibleConversation(conversationId)
@@ -315,6 +321,12 @@ class MessageRepository @Inject constructor(
         val entities = data.items
             .filter { it.serverSeq > clearedBeforeSeq }
             .map { it.toEntity(conversationId, json) }
+        if (fullSync) {
+            entities.mapNotNull { it.serverSeq }.minOrNull()?.let { minServerSeq ->
+                messageDao.deleteServerMessagesBefore(conversationId, minServerSeq)
+                pruneCachedServerMessagesBefore(conversationId, minServerSeq)
+            }
+        }
         messageDao.upsertServerMessages(entities)
         rememberMessages(conversationId, entities.map { it.toDomain() })
         if (fullSync) {
@@ -322,14 +334,53 @@ class MessageRepository @Inject constructor(
         }
     }
 
-    suspend fun sendText(conversationId: Long, text: String): String {
-        val payload = buildJsonObject { put("text", text) }
+    suspend fun sendText(conversationId: Long, text: String, quote: MessageQuote? = null): String {
+        val payload = buildJsonObject {
+            put("text", text)
+            quote?.let { quoted ->
+                put(
+                    "quote",
+                    buildJsonObject {
+                        put("local_key", quoted.localKey)
+                        quoted.serverId?.let { put("server_id", it) }
+                        put("sender_label", quoted.senderLabel)
+                        put("text", quoted.text)
+                    },
+                )
+            }
+        }
         return sendClientMessage(
             conversationId = conversationId,
             kind = "text",
             payload = payload,
             preview = text,
         )
+    }
+
+    suspend fun forwardMessages(targetConversationId: Long, sourceLocalKeys: List<String>): Int {
+        if (targetConversationId <= 0) {
+            throw IllegalArgumentException("转发目标无效")
+        }
+        val sourceMessages = sourceLocalKeys
+            .distinct()
+            .mapNotNull { localKey -> messageDao.findByLocalKey(localKey) }
+        if (sourceMessages.isEmpty()) {
+            throw IllegalArgumentException("原消息不存在，无法转发")
+        }
+        sourceMessages.forEach { source ->
+            val payload = runCatching { json.parseToJsonElement(source.payloadJson) }.getOrNull()
+            if (payload != null && source.canForwardOriginalPayload()) {
+                sendClientMessage(
+                    conversationId = targetConversationId,
+                    kind = source.kind,
+                    payload = payload,
+                    preview = source.forwardPreviewText(json),
+                )
+            } else {
+                sendText(targetConversationId, source.forwardPreviewText(json))
+            }
+        }
+        return sourceMessages.size
     }
 
     suspend fun sendImage(conversationId: Long, uri: Uri): String {
@@ -641,6 +692,13 @@ class MessageRepository @Inject constructor(
         records.forEach { rememberMessage(conversationId, it) }
     }
 
+    private fun pruneCachedServerMessagesBefore(conversationId: Long, minServerSeq: Long) {
+        messageSnapshots[conversationId] = messageSnapshots[conversationId].orEmpty().filter { record ->
+            val serverSeq = record.serverSeq
+            serverSeq == null || serverSeq >= minServerSeq
+        }
+    }
+
     private fun rememberMessage(conversationId: Long, record: MessageRecord) {
         val current = messageSnapshots[conversationId].orEmpty()
         val next = current
@@ -718,6 +776,33 @@ internal fun pendingMessageEntity(
 
 private fun retryableMessageKind(kind: String): Boolean =
     kind == "text" || kind == "image" || kind == "voice" || kind == "video_clip" || kind == "inspection_card"
+
+private fun MessageEntity.canForwardOriginalPayload(): Boolean =
+    kind == "text" ||
+        (status == MessageStatus.Sent.name && (kind == "image" || kind == "voice" || kind == "video_clip" || kind == "inspection_card"))
+
+private fun MessageEntity.forwardPreviewText(json: Json): String {
+    if (kind == "text") {
+        val text = runCatching {
+            val element = json.parseToJsonElement(payloadJson)
+            when (element) {
+                is JsonObject -> element["text"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                is JsonPrimitive -> element.contentOrNull.orEmpty()
+                else -> ""
+            }
+        }.getOrDefault("")
+        if (text.isNotBlank()) return text
+    }
+    return preview?.takeIf { it.isNotBlank() } ?: when (kind) {
+        "image" -> "[图片]"
+        "voice" -> "[语音消息]"
+        "video_clip" -> "[视频消息]"
+        "inspection_card" -> "[业务流水]"
+        "call_invite", "video_call" -> "[视频通话]"
+        "system" -> "[系统消息]"
+        else -> "[$kind]"
+    }
+}
 
 private fun ConversationSummary.isOnlineHelpConversation(): Boolean =
     subjectKind == "online_help" || (kind == "group" && title == "在线求助")

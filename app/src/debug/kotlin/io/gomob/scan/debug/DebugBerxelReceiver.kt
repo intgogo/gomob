@@ -1,0 +1,49 @@
+package io.gomob.scan.debug
+
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.util.Log
+import dagger.hilt.EntryPoint
+import dagger.hilt.InstallIn
+import dagger.hilt.android.EntryPointAccessors
+import dagger.hilt.components.SingletonComponent
+import io.gomob.nativebridge.berxel.BerxelService
+
+class DebugBerxelReceiver : BroadcastReceiver() {
+
+    override fun onReceive(context: Context, intent: Intent) {
+        val berxel = EntryPointAccessors
+            .fromApplication(context.applicationContext, BerxelEntryPoint::class.java)
+            .berxelService()
+        when (intent.action) {
+            ACTION_START -> {
+                val stream = intent.getStringExtra(EXTRA_STREAM)?.lowercase()
+                Log.i(TAG, "debug 广播启动 Berxel stream=${stream ?: "dual"}")
+                when (stream) {
+                    "color" -> berxel.startColorOnlyForDebug()
+                    "depth" -> berxel.startDepthOnlyForDebug()
+                    else -> berxel.start()
+                }
+            }
+            ACTION_STOP -> {
+                Log.i(TAG, "debug 广播停止 Berxel")
+                berxel.stop()
+            }
+            else -> Log.w(TAG, "未知 action=${intent.action}")
+        }
+    }
+
+    @EntryPoint
+    @InstallIn(SingletonComponent::class)
+    interface BerxelEntryPoint {
+        fun berxelService(): BerxelService
+    }
+
+    private companion object {
+        const val TAG = "DebugBerxelReceiver"
+        const val ACTION_START = "io.gomob.scan.debug.DEBUG_BERXEL_START"
+        const val ACTION_STOP = "io.gomob.scan.debug.DEBUG_BERXEL_STOP"
+        const val EXTRA_STREAM = "stream"
+    }
+}

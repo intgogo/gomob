@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"io.gomob/server/pkg/repo"
 )
@@ -48,6 +49,25 @@ func TestMessagePreviewCallInvite(t *testing.T) {
 	payload := json.RawMessage(`{"title":"和陈若愚的视频通话"}`)
 	if got, want := messagePreview("call_invite", payload), "[视频通话] 和陈若愚的视频通话"; got != want {
 		t.Fatalf("call invite preview=%q want %q", got, want)
+	}
+}
+
+func TestToLastMessageDTOCarriesClientMsgID(t *testing.T) {
+	senderID := int64(2)
+	clientMsgID := "echo-1"
+	dto := toLastMessageDTO(&repo.Message{
+		ID:             101,
+		ConversationID: 9,
+		SenderID:       &senderID,
+		ServerSeq:      5,
+		Kind:           "text",
+		Payload:        json.RawMessage(`{"text":"详情页打开前发送"}`),
+		ClientMsgID:    &clientMsgID,
+		CreatedAt:      time.Date(2026, 5, 8, 12, 0, 1, 0, time.UTC),
+	})
+
+	if got, want := dto.ClientMsgID, clientMsgID; got != want {
+		t.Fatalf("last_message client_msg_id=%q want %q", got, want)
 	}
 }
 

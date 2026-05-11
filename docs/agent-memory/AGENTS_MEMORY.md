@@ -15,7 +15,7 @@
 - [开发闭环：自驱动验证](feedback_dev_loop.md) — 写完功能必须自己跑通采样 → 分析闭环，不等用户报。
 - [设计决策风格偏好](feedback_design_style.md) — 激进决策、长期主义、严格反馈、设计/实施文档分层。
 - [Git Push 策略](feedback_git_push_policy.md) — 本地可 commit；只在用户明确要求时 push。
-- [UI 改动真实运行；日志优先必要时截图](feedback_ui_visual_verification.md) — 优先日志/harness/uiautomator，视觉风险再截图。
+- [UI 改动真实运行；默认不截图](feedback_ui_visual_verification.md) — 优先日志/harness/uiautomator；用户主动要求才截图。
 - [用户全程 VNC 远程](feedback_vnc_remote_dev.md) — emulator / 任何 GUI 必须走 DISPLAY=:1（TigerVNC 5901 端口），不能起 Xvfb headless 否则用户看不到。
 - [重要不确定模块必须建 harness](feedback_harness_mandatory.md) — 五条触发标准命中时先建 harness 再写业务代码。
 

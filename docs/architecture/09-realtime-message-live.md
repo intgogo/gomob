@@ -209,7 +209,7 @@ CREATE TABLE live_recordings (
 | `GET` | `/v1/conversations?cursor=&limit=` | 会话列表，返回 last_message、unread_count、peer / group 元信息 |
 | `GET` | `/v1/conversations/help-experts` | 在线求助固定专家列表，仅用于头像条和专家详情入口 |
 | `POST` | `/v1/conversations/help-room` | 创建 / 复用在线求助固定群，成员为当前用户 + 固定专家 |
-| `GET` | `/v1/conversations/{id}/messages?since_seq=&limit=` | 历史消息，升序返回 |
+| `GET` | `/v1/conversations/{id}/messages?since_seq=&limit=&latest=` | 历史消息，升序返回；`latest=true` 返回最新窗口 |
 | `POST` | `/v1/conversations/{id}/messages` | HTTP 发送消息，和 WebSocket `msg.send` 共用幂等逻辑 |
 | `POST` | `/v1/conversations/{id}/read` | 更新 `last_read_seq` |
 | `POST` | `/v1/media/rooms` | 创建 call / first_person_live room |

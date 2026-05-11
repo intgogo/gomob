@@ -34,12 +34,13 @@ type conversationPeerDTO struct {
 }
 
 type lastMessageDTO struct {
-	ID        string `json:"id"`
-	SenderID  string `json:"sender_id,omitempty"`
-	ServerSeq int64  `json:"server_seq"`
-	Kind      string `json:"kind"`
-	Preview   string `json:"preview"`
-	CreatedAt string `json:"created_at"`
+	ID          string `json:"id"`
+	SenderID    string `json:"sender_id,omitempty"`
+	ServerSeq   int64  `json:"server_seq"`
+	Kind        string `json:"kind"`
+	Preview     string `json:"preview"`
+	ClientMsgID string `json:"client_msg_id,omitempty"`
+	CreatedAt   string `json:"created_at"`
 }
 
 type messageDTO struct {
@@ -102,7 +103,13 @@ func (h *Handler) ListConversationMessages(w http.ResponseWriter, r *http.Reques
 	q := r.URL.Query()
 	since, _ := strconv.ParseInt(q.Get("since_seq"), 10, 64)
 	limit, _ := strconv.Atoi(q.Get("limit"))
-	items, err := h.messages.ListSince(r.Context(), id, since, limit)
+	latest := q.Get("latest") == "1" || strings.EqualFold(q.Get("latest"), "true")
+	var items []repo.Message
+	if latest {
+		items, err = h.messages.ListLatest(r.Context(), id, limit)
+	} else {
+		items, err = h.messages.ListSince(r.Context(), id, since, limit)
+	}
 	if err != nil {
 		httpx.WriteError(w, httpx.ErrInternal)
 		return
@@ -175,15 +182,6 @@ func (h *Handler) CreateConversationMessage(w http.ResponseWriter, r *http.Reque
 		}
 		httpx.WriteError(w, httpx.ErrInternal)
 		return
-	}
-	if inserted {
-		if _, _, err := h.transcripts.EnsureForVoiceMessage(r.Context(), msg); err != nil {
-			if h.log != nil {
-				h.log.Error("语音转写任务创建失败", "err", err, "message_id", msg.ID)
-			}
-			httpx.WriteError(w, httpx.ErrInternal)
-			return
-		}
 	}
 	h.notifyRealtimeMessage(r.Context(), uid, msg, inserted)
 	h.recordAudit(r, "message.send", "conversation:"+strconv.FormatInt(id, 10), nil, map[string]any{
@@ -410,6 +408,9 @@ func toLastMessageDTO(m *repo.Message) *lastMessageDTO {
 	}
 	if m.SenderID != nil {
 		dto.SenderID = strconv.FormatInt(*m.SenderID, 10)
+	}
+	if m.ClientMsgID != nil {
+		dto.ClientMsgID = *m.ClientMsgID
 	}
 	return dto
 }

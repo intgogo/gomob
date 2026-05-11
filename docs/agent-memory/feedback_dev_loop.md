@@ -11,8 +11,8 @@ type: feedback
 **闭环流程（铁律）：**
 1. **开发功能** → 写代码
 2. **开发测试** → 单元测试 + 集成测试
-3. **执行模拟** → `./dev.sh install && ./dev.sh shot ...` 推到设备 / 模拟器，触发用例
-4. **分析日志** → 知道日志在哪（`adb logcat -s gomob:*`、`.dev/*.log`、`.dev/screenshots/`）
+3. **执行模拟** → `./dev.sh install` 或 `./dev.sh run` 推到设备 / 模拟器，触发用例
+4. **分析日志** → 知道日志在哪（`adb logcat -s gomob:*`、`.dev/*.log`）；用户主动要求截图时再查看 `.dev/screenshots/`
 5. **发现问题** → 自己对比预期 vs 实际，不依赖用户告知
 6. **回到设计** → 问题出在哪一层？是设计缺陷还是实现 bug？从第一性原理重新审视
 7. **迭代** → 如果是设计问题就重新设计，不堆补丁
@@ -29,4 +29,4 @@ type: feedback
 - **RGBD 同步问题**：先看 `tests/harness/rgbd_sync/analyze.py` 给出"正常 / 警告 / 异常"判定，
   不靠"看一眼帧好像对齐了"
 - **重建漂移**：跑长时序场景，看 mesh trajectory 是否回环，不靠目视"差不多"
-- **UI 不对**：`./dev.sh shot <screen>` 出截图，对比上一版基线，不靠"我跑了一下感觉还行"
+- **UI 不对**：先用 uiautomator / instrumentation / logcat / 渲染日志定位；只有用户主动要求截图时才执行 `./dev.sh shot <screen>`

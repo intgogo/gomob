@@ -20,20 +20,24 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -50,13 +54,16 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
@@ -68,6 +75,7 @@ import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
+import io.gomob.model.message.MessageQuote
 
 const val MESSAGE_ROUTE = "message"
 
@@ -108,6 +116,7 @@ fun MessageRoute(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val helpState by viewModel.helpUiState.collectAsStateWithLifecycle()
     val helpRoomState by viewModel.helpRoomUiState.collectAsStateWithLifecycle()
+    val forwardTargets by viewModel.forwardTargets.collectAsStateWithLifecycle()
     val contactActionError by viewModel.contactActionError.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val imagePicker = rememberLauncherForActivityResult(
@@ -128,7 +137,10 @@ fun MessageRoute(
     var tab by rememberSaveable { mutableStateOf((requestedTab ?: MessageEntryTab.List).toMsgTab()) }
     var contactsOpen by rememberSaveable { mutableStateOf(false) }
     var helpInspectionPickerOpen by rememberSaveable { mutableStateOf(false) }
-    val count = (state as? MessageListUiState.Content)?.conversations?.size ?: 0
+    val hasMessageUnread = (state as? MessageListUiState.Content)
+        ?.conversations
+        ?.any { it.unreadCount > 0 } == true
+    val hasHelpUnread = (helpRoomState as? HelpRoomUiState.Content)?.unreadCount?.let { it > 0 } == true
     val pageErrorText = messageRouteErrorText(
         tab = tab,
         messageState = state,
@@ -151,6 +163,12 @@ fun MessageRoute(
         }
     }
 
+    LaunchedEffect(Unit) {
+        viewModel.forwardResultEvents.collect { message ->
+            context.showMessageActionToast(message)
+        }
+    }
+
     Box(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
         Column(Modifier.fillMaxSize()) {
             ScreenHeader(
@@ -169,7 +187,8 @@ fun MessageRoute(
             )
             SegmentedTabs(
                 tab = tab,
-                messageCount = count,
+                hasMessageUnread = hasMessageUnread,
+                hasHelpUnread = hasHelpUnread,
                 onChange = {
                     focusManager.clearFocus()
                     tab = it
@@ -208,6 +227,8 @@ fun MessageRoute(
                     onRetryTranscript = viewModel::retryHelpRoomVoiceTranscript,
                     onError = viewModel::showHelpRoomError,
                     onOpenLocalVideo = { onOpenLocalVideo("专家连线 · 第一视角") },
+                    forwardTargets = forwardTargets,
+                    onForwardHelpMessages = viewModel::forwardHelpRoomMessages,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -639,7 +660,7 @@ private fun ContactDrawerBottomBar(
             ContactActionIcon(GomobIcons.Phone, "语音通话") {
                 selected?.let(onOpenAudioVideo)
             }
-            ContactActionIcon(GomobIcons.Video, "视频通话") {
+            ContactActionIcon(Icons.Filled.Videocam, "视频通话", iconSize = 18.dp) {
                 selected?.let(onOpenAudioVideo)
             }
         }
@@ -650,6 +671,7 @@ private fun ContactDrawerBottomBar(
 private fun ContactActionIcon(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     description: String,
+    iconSize: Dp = 15.dp,
     onClick: () -> Unit,
 ) {
     Box(
@@ -660,7 +682,7 @@ private fun ContactActionIcon(
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, contentDescription = description, tint = Gomob.colors.fg2, modifier = Modifier.size(15.dp))
+        Icon(icon, contentDescription = description, tint = Gomob.colors.fg2, modifier = Modifier.size(iconSize))
     }
 }
 
@@ -840,7 +862,8 @@ private fun WatchTone.toContactTone(): Color = when (this) {
 @Composable
 private fun SegmentedTabs(
     tab: MsgTab,
-    messageCount: Int,
+    hasMessageUnread: Boolean,
+    hasHelpUnread: Boolean,
     onChange: (MsgTab) -> Unit,
 ) {
     Row(
@@ -864,14 +887,7 @@ private fun SegmentedTabs(
                     fontSize = 12.sp,
                     color = if (tab == MsgTab.List) Gomob.colors.accent else Gomob.colors.fg2,
                 )
-                Text(
-                    messageCount.toString(),
-                    style = Gomob.type.numInline.copy(fontSize = 12.sp),
-                    color = if (tab == MsgTab.List)
-                        Gomob.colors.accent.copy(alpha = 0.7f)
-                    else
-                        Gomob.colors.fg2.copy(alpha = 0.7f),
-                )
+                if (hasMessageUnread) UnreadStatusDot(WatchTone.Accent)
             }
         }
         SegItem(
@@ -879,11 +895,17 @@ private fun SegmentedTabs(
             active = tab == MsgTab.Help,
             onClick = { onChange(MsgTab.Help) },
         ) {
-            Text(
-                "专家连线",
-                fontSize = 12.sp,
-                color = if (tab == MsgTab.Help) Gomob.colors.accent else Gomob.colors.fg2,
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+            ) {
+                Text(
+                    "专家连线",
+                    fontSize = 12.sp,
+                    color = if (tab == MsgTab.Help) Gomob.colors.accent else Gomob.colors.fg2,
+                )
+                if (hasHelpUnread) UnreadStatusDot(WatchTone.Accent)
+            }
         }
     }
 }
@@ -1095,7 +1117,7 @@ private fun MsgRow(item: ConversationRowUi, onClick: () -> Unit) {
                     )
                 }
                 if (item.unreadCount > 0) {
-                    UnreadBadge(item.unreadCount, item.unreadTone)
+                    UnreadStatusDot(item.unreadTone, modifier = Modifier.padding(start = Gomob.spacing.s8))
                 }
             }
         }
@@ -1112,7 +1134,10 @@ private fun MsgAvatar(seed: String, kind: AvatarKind) {
 }
 
 @Composable
-private fun UnreadBadge(unread: Long, tone: WatchTone) {
+private fun UnreadStatusDot(
+    tone: WatchTone,
+    modifier: Modifier = Modifier,
+) {
     val color = when (tone) {
         WatchTone.Danger -> Gomob.colors.danger
         WatchTone.Warn -> Gomob.colors.warn
@@ -1121,25 +1146,11 @@ private fun UnreadBadge(unread: Long, tone: WatchTone) {
         WatchTone.Neutral -> Gomob.colors.fg2
     }
     Box(
-        Modifier
-            .padding(start = Gomob.spacing.s8)
-            .height(22.dp)
-            .widthIn(min = 22.dp)
-            .clip(Gomob.shapes.pill)
+        modifier
+            .size(7.dp)
+            .clip(CircleShape)
             .background(color)
-            .padding(horizontal = Gomob.spacing.s6),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            unread.coerceAtMost(99).toString(),
-            fontSize = 11.sp,
-            lineHeight = 11.sp,
-            fontFamily = FontFamily.Monospace,
-            fontWeight = FontWeight.SemiBold,
-            textAlign = TextAlign.Center,
-            color = Color.Black,
-        )
-    }
+    )
 }
 
 @Composable
@@ -1148,7 +1159,7 @@ private fun HelpPane(
     roomState: HelpRoomUiState,
     onRefresh: () -> Unit,
     onOpenExpertDetail: (HelpExpertRowUi) -> Unit,
-    onSendHelpMessage: (String) -> Unit,
+    onSendHelpMessage: (String, MessageQuote?) -> Unit,
     onPickHelpImage: () -> Unit,
     onTakeHelpPhoto: () -> Unit,
     onSendHelpVoice: (android.net.Uri, Int) -> Unit,
@@ -1159,12 +1170,20 @@ private fun HelpPane(
     onRetryTranscript: (Long?) -> Unit,
     onError: (String) -> Unit,
     onOpenLocalVideo: () -> Unit,
+    forwardTargets: List<MessageForwardTargetUi>,
+    onForwardHelpMessages: (MessageForwardTargetUi, List<String>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var draft by remember { mutableStateOf("") }
     var inputFocused by remember { mutableStateOf(false) }
     var voiceRecording by remember { mutableStateOf(false) }
+    var quoteDraft by remember { mutableStateOf<QuoteDraftUi?>(null) }
+    var favoriteMessageKeys by rememberSaveable { mutableStateOf(emptyList<String>()) }
+    var multiSelectMode by rememberSaveable { mutableStateOf(false) }
+    var selectedMessageKeys by rememberSaveable { mutableStateOf(emptyList<String>()) }
+    var forwardingMessages by remember { mutableStateOf<List<MessageBubbleUi>>(emptyList()) }
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     val focusManager = LocalFocusManager.current
     val voiceRecorder = rememberVoiceRecorder()
     val voicePermissionLauncher = rememberLauncherForActivityResult(
@@ -1212,8 +1231,62 @@ private fun HelpPane(
             .onFailure { onError(it.message ?: "录音失败") }
         voiceRecording = false
     }
+    fun toggleMessageSelection(localKey: String) {
+        selectedMessageKeys = if (localKey in selectedMessageKeys) {
+            selectedMessageKeys - localKey
+        } else {
+            selectedMessageKeys + localKey
+        }
+        if (selectedMessageKeys.isEmpty()) multiSelectMode = false
+    }
+    fun selectedMessages(): List<MessageBubbleUi> =
+        (roomState as? HelpRoomUiState.Content)?.messages.orEmpty().filter { it.localKey in selectedMessageKeys }
 
-    Column(modifier.fillMaxSize()) {
+    fun exitMultiSelect() {
+        multiSelectMode = false
+        selectedMessageKeys = emptyList()
+    }
+    fun copyMessages(messages: List<MessageBubbleUi>) {
+        val text = messageShareText(messages)
+        if (text.isBlank()) return
+        clipboard.setText(AnnotatedString(text))
+        context.showMessageActionToast("已复制")
+    }
+    fun handleMessageAction(action: MessageQuickAction, bubble: MessageBubbleUi) {
+        when (action) {
+            MessageQuickAction.Copy -> copyMessages(listOf(bubble))
+            MessageQuickAction.Forward -> forwardingMessages = listOf(bubble)
+            MessageQuickAction.Favorite -> {
+                val added = bubble.localKey !in favoriteMessageKeys
+                favoriteMessageKeys = if (added) favoriteMessageKeys + bubble.localKey else favoriteMessageKeys - bubble.localKey
+                context.showMessageActionToast(if (added) "已收藏" else "已取消收藏")
+            }
+            MessageQuickAction.MultiSelect -> {
+                multiSelectMode = true
+                selectedMessageKeys = listOf(bubble.localKey)
+            }
+            MessageQuickAction.Quote -> {
+                quoteDraft = QuoteDraftUi(bubble.toMessageQuote())
+                context.showMessageActionToast("已引用")
+            }
+            MessageQuickAction.TranscribeVoice -> onRetryTranscript(bubble.serverId)
+        }
+    }
+
+    MessageForwardTargetDialog(
+        visible = forwardingMessages.isNotEmpty(),
+        targets = forwardTargets,
+        messageCount = forwardingMessages.size,
+        onDismiss = { forwardingMessages = emptyList() },
+        onSelectTarget = { target ->
+            val sourceLocalKeys = forwardingMessages.map { it.localKey }
+            forwardingMessages = emptyList()
+            exitMultiSelect()
+            onForwardHelpMessages(target, sourceLocalKeys)
+        },
+    )
+
+    Column(modifier.fillMaxSize().imePadding()) {
         when (roomState) {
             HelpRoomUiState.Loading -> LazyColumn(
                 Modifier
@@ -1261,32 +1334,54 @@ private fun HelpPane(
                 onRetry = onRetry,
                 onRetryTranscript = onRetryTranscript,
                 inputFocused = inputFocused,
+                favoriteMessageKeys = favoriteMessageKeys,
+                selectedMessageKeys = selectedMessageKeys,
+                multiSelectMode = multiSelectMode,
+                onToggleSelected = ::toggleMessageSelection,
+                onQuickAction = ::handleMessageAction,
                 modifier = Modifier.weight(1f),
             )
         }
-        MessageComposerBar(
-            draft = draft,
-            enabled = roomState is HelpRoomUiState.Content,
-            onDraftChange = { draft = it },
-            onShareInspection = onShareHelpInspection,
-            onPickImage = onPickHelpImage,
-            onTakePhoto = onTakeHelpPhoto,
-            onStartVoice = startVoiceRecording,
-            onSendVoice = sendVoiceRecording,
-            onCancelVoice = cancelVoiceRecording,
-            onTranscribeVoice = transcribeVoiceRecording,
-            onSendVideoClip = onSendHelpVideoClip,
-            onOpenLocalVideo = onOpenLocalVideo,
-            voiceRecording = voiceRecording,
-            onInputFocusChanged = { inputFocused = it },
-            onSendText = {
-                val text = draft.trim()
-                if (text.isNotEmpty()) {
-                    onSendHelpMessage(text)
-                    draft = ""
-                }
-            },
-        )
+        if (multiSelectMode) {
+            MessageMultiSelectBar(
+                selectedCount = selectedMessageKeys.size,
+                onCancel = ::exitMultiSelect,
+                onCopy = {
+                    copyMessages(selectedMessages())
+                    exitMultiSelect()
+                },
+                onForward = {
+                    forwardingMessages = selectedMessages()
+                },
+            )
+        } else {
+            MessageComposerBar(
+                draft = draft,
+                enabled = roomState is HelpRoomUiState.Content,
+                onDraftChange = { draft = it },
+                onShareInspection = onShareHelpInspection,
+                onPickImage = onPickHelpImage,
+                onTakePhoto = onTakeHelpPhoto,
+                onStartVoice = startVoiceRecording,
+                onSendVoice = sendVoiceRecording,
+                onCancelVoice = cancelVoiceRecording,
+                onTranscribeVoice = transcribeVoiceRecording,
+                onSendVideoClip = onSendHelpVideoClip,
+                onOpenLocalVideo = onOpenLocalVideo,
+                voiceRecording = voiceRecording,
+                quoteDraft = quoteDraft,
+                onClearQuote = { quoteDraft = null },
+                onInputFocusChanged = { inputFocused = it },
+                onSendText = {
+                    val text = draft.trim()
+                    if (text.isNotEmpty()) {
+                        onSendHelpMessage(text, quoteDraft?.quote)
+                        draft = ""
+                        quoteDraft = null
+                    }
+                },
+            )
+        }
     }
 }
 
@@ -1332,14 +1427,44 @@ private fun HelpRoomMessageList(
     onRetry: (String?) -> Unit,
     onRetryTranscript: (Long?) -> Unit,
     inputFocused: Boolean,
+    favoriteMessageKeys: List<String>,
+    selectedMessageKeys: List<String>,
+    multiSelectMode: Boolean,
+    onToggleSelected: (String) -> Unit,
+    onQuickAction: (MessageQuickAction, MessageBubbleUi) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
-    val targetItemCount = helpRoomListItemCount(state)
-    LaunchedEffect(inputFocused, state.messages.size, state.loading, state.errorMessage, state.offlineCached) {
-        if (inputFocused && targetItemCount > 0) {
-            listState.animateScrollToItem(targetItemCount - 1)
+    val density = LocalDensity.current
+    val latestMessage = state.messages.lastOrNull()
+    val timelineItems = remember(state.messages) { buildChatTimeline(state.messages) }
+    val displayItems = remember(timelineItems) { timelineItems.asReversed() }
+    val targetItemCount = helpRoomListItemCount(state, displayItems)
+    var lastObservedLatestMessageKey by remember { mutableStateOf<String?>(null) }
+    var hasObservedInitialLatestMessage by remember { mutableStateOf(false) }
+    val imeBottom = WindowInsets.ime.getBottom(density)
+    LaunchedEffect(
+        inputFocused,
+        imeBottom,
+        latestMessage?.localKey,
+        latestMessage?.mine,
+        state.loading,
+        state.errorMessage,
+        state.offlineCached,
+    ) {
+        val latestKey = latestMessage?.localKey
+        val latestChanged = latestKey != null && latestKey != lastObservedLatestMessageKey
+        val newOwnMessage = latestChanged && hasObservedInitialLatestMessage && latestMessage?.mine == true
+        if (targetItemCount > 0) {
+            val alreadyNearLatest = listState.layoutInfo.visibleItemsInfo.any { it.index <= 1 }
+            if (inputFocused || newOwnMessage || alreadyNearLatest) {
+                listState.animateScrollToItem(0)
+            }
+        }
+        if (latestKey != null) {
+            lastObservedLatestMessageKey = latestKey
+            hasObservedInitialLatestMessage = true
         }
     }
 
@@ -1350,44 +1475,66 @@ private fun HelpRoomMessageList(
             .clearInputFocusOnPointerDown(focusManager),
     ) {
         StarfieldBackground(Modifier.matchParentSize())
-        LazyColumn(
-            Modifier.fillMaxSize(),
-            state = listState,
-            contentPadding = PaddingValues(
-                horizontal = Gomob.spacing.s20,
-                vertical = Gomob.spacing.s8,
-            ),
-            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-        ) {
-            item {
+        Column(Modifier.fillMaxSize()) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Gomob.spacing.s20, vertical = Gomob.spacing.s8),
+            ) {
                 HelpParticipantCompactHeader(
                     state = expertState,
                     onOpenExpertDetail = onOpenExpertDetail,
                     onRefresh = onRefresh,
                 )
             }
-            when {
-                state.errorMessage != null && state.messages.isEmpty() -> Unit
-                state.empty -> Unit
-                else -> items(state.messages, key = { it.localKey }) { bubble ->
-                    ChatMessageRow(
-                        bubble = bubble,
-                        onRetry = { onRetry(bubble.clientMsgId) },
-                        onRetryTranscript = { onRetryTranscript(bubble.serverId) },
-                    )
+            LazyColumn(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                state = listState,
+                contentPadding = PaddingValues(
+                    horizontal = Gomob.spacing.s20,
+                    vertical = Gomob.spacing.s8,
+                ),
+                verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+                reverseLayout = true,
+            ) {
+                when {
+                    state.errorMessage != null && state.messages.isEmpty() -> Unit
+                    state.empty -> Unit
+                    else -> items(displayItems, key = { it.key }) { item ->
+                        when (item) {
+                            is ChatTimelineItem.TimeDivider -> ChatTimeDivider(item.label)
+                            is ChatTimelineItem.Message -> {
+                                val bubble = item.bubble
+                                ChatMessageRow(
+                                    bubble = bubble,
+                                    favorite = bubble.localKey in favoriteMessageKeys,
+                                    selected = bubble.localKey in selectedMessageKeys,
+                                    multiSelectMode = multiSelectMode,
+                                    onToggleSelected = { onToggleSelected(bubble.localKey) },
+                                    onQuickAction = onQuickAction,
+                                    onRetry = { onRetry(bubble.clientMsgId) },
+                                    onRetryTranscript = { onRetryTranscript(bubble.serverId) },
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-private fun helpRoomListItemCount(state: HelpRoomUiState.Content): Int {
-    val bodyCount = when {
+private fun helpRoomListItemCount(
+    state: HelpRoomUiState.Content,
+    displayItems: List<ChatTimelineItem>,
+): Int {
+    return when {
         state.errorMessage != null && state.messages.isEmpty() -> 0
         state.empty -> 0
-        else -> state.messages.size
+        else -> displayItems.size
     }
-    return 1 + bodyCount
 }
 
 @Composable

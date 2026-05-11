@@ -172,12 +172,11 @@ UI 状态：
 ### 4.3 UI 验收
 
 - `./dev.sh run`
-- `./dev.sh shot message-list`
-- `./dev.sh shot message-conversation`
-- 截图要求：
+- `uiautomator dump` / instrumentation 覆盖消息列表与会话页。
+- 验收要求：
   - 无静态假数据。
-  - 离线提示不遮挡输入框。
-  - pending / sent / failed 状态可读。
+  - 离线提示状态可达，输入框仍可聚焦。
+  - pending / sent / failed 状态可读且可由测试断言。
 
 ## 5. M5.4 LiveKit 媒体控制面
 
@@ -265,11 +264,11 @@ interface MediaRoomClient {
 
 ### 6.3 验收
 
-- `./dev.sh shot video-call-active`
 - `tests/harness/livekit_call_quality`：
   - 同机两个客户端模拟加入。
   - 首帧时间 ≤ 2s。
   - 挂断后 conversation 出现 `video_call` 消息。
+- uiautomator / instrumentation 确认远端视频容器、本地预览、挂断 / 静音 / 摄像头按钮存在且可点击。
 
 ## 7. M5.6 第一视角直播
 
@@ -293,13 +292,12 @@ interface MediaRoomClient {
 
 ### 7.3 验收
 
-- `./dev.sh shot collaboration-live-list`
-- `./dev.sh shot first-person-live`
 - `tests/harness/first_person_live_quality`：
   - publisher 发布 720p/15fps 测试视频源。
   - viewer 收到非空视频帧。
   - P95 延迟 ≤ 1500ms。
   - 标预警后 publisher 收到 `live.annotation`。
+- uiautomator / logcat 确认直播列表可进入观看页，观看页已订阅真实 video track。
 
 ## 8. M5.7 录制与回放
 

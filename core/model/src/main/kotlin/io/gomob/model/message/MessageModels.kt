@@ -54,6 +54,13 @@ data class MessageRecord(
     val editedAt: String? = null,
 )
 
+data class MessageQuote(
+    val localKey: String,
+    val serverId: Long?,
+    val senderLabel: String,
+    val text: String,
+)
+
 data class InspectionShareCard(
     val inspectionId: String,
     val vin: String,

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <receiver
+            android:name=".debug.DebugBerxelReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="io.gomob.scan.debug.DEBUG_BERXEL_START" />
+                <action android:name="io.gomob.scan.debug.DEBUG_BERXEL_STOP" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

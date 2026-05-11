@@ -413,6 +413,7 @@ Body：原始字节流（非 multipart，简化）。Header：`Content-Length: <
         "server_seq": 42,
         "kind": "video_call",
         "preview": "[视频通话 56:02]",
+        "client_msg_id": "可选，发送方本地 UUID",
         "created_at": "2026-05-08T17:11:00Z"
       },
       "last_read_seq": 40,
@@ -427,7 +428,10 @@ Body：原始字节流（非 multipart，简化）。Header：`Content-Length: <
 
 ### 7.2 单会话历史
 
-`GET /v1/conversations/:id/messages?since_seq=&limit=`
+`GET /v1/conversations/:id/messages?since_seq=&limit=&latest=`
+
+默认按 `since_seq` 做离线增量补齐；`latest=true` 时忽略 `since_seq`，返回该会话最新
+`limit` 条消息，并仍按 `server_seq` 升序排列，供 App 首屏预热使用。
 
 ```json
 {

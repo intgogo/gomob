@@ -48,6 +48,7 @@ interface MessageApi {
         @Path("id") conversationId: String,
         @Query("since_seq") sinceSeq: Long = 0,
         @Query("limit") limit: Int = 100,
+        @Query("latest") latest: Boolean = false,
     ): Envelope<MessageListResponse>
 
     @POST("v1/conversations/{id}/messages")

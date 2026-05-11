@@ -4,11 +4,12 @@
         Berxel iHawk 系列深度相机 USB filter。
 
         实测真机 (HONOR LOG-AN10 / Android 15) 上 dumpsys usb 拿到:
-          vendor_id  = 1539 (0x603)   厂商 Berxel
-          product_id = 12   (0x0C)    iHawk-071 (072 等子型号 PID 可能不同)
+          vendor_id  = 1539 (0x0603)  product_id = 12/31  Berxel iHawk071 / iHawk100RS
+          vendor_id  = 13656 (0x3558) product_id = 4114   iHawk100RS 伴随 UVC 节点
 
-        只填 vendor-id 不填 product-id —— 一条规则覆盖所有 Berxel iHawk 子型号
-        (072/071/071A/...)，避免新型号到货时还要手动加 PID。
+        0x0603 只填 vendor-id —— 覆盖 Berxel iHawk 子型号。
+        0x3558:0x1012 是 P100R3 / iHawk100RS 的第二个 USB 节点；SDK openDevice()
+        会枚举并读取它的 serial，缺这个授权会抛 SecurityException。
 
         Why 这条 filter 关键: app 在 manifest 声明这条 USB intent-filter +
         meta-data 后，用户首次允许"打开 mob3d 处理此设备"时系统会**自动授予
@@ -16,4 +17,5 @@
         Android 14+ 还有 BroadcastReceiver flag 兼容问题，远不如 manifest 路径稳）。
     -->
     <usb-device vendor-id="1539" />
+    <usb-device vendor-id="13656" product-id="4114" />
 </resources>

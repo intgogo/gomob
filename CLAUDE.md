@@ -152,16 +152,16 @@
 - 新建模块命中上述五条判定标准时，先设计 harness，再写业务代码。
 - 与扫描质量相关的现有入口优先查 `tests/harness/scan_quality/`、`cv_vin_pipeline/`、`cv_vin_compare/`、`device_sync/`、`tests/native_host/`。
 
-## UI 验证规范（强制）
+## UI 验证规范（默认不截图）
 
 涉及 Compose 界面、HUD、点击区域、显示/隐藏逻辑、3D 预览画面的改动，不能只靠编译或单元测试结束。
 
-必须执行：
+默认执行：
 
 1. `./dev.sh install` 或 `./dev.sh run` 推到真机 / 模拟器。
-2. `./dev.sh shot <screen-name>` 截图到 `.dev/screenshots/<screen-name>.png`。
-3. 打开截图人工 + 程序协同检查布局、遮挡、比例、信息密度、文字居中、3D 视图非空。
-4. 视觉问题继续修，不把"测试通过"当成 UI 完成。
+2. 优先用 harness、logcat、服务端日志、API 返回、`uiautomator dump`、Compose / instrumentation 测试判断崩溃、空数据、权限、可点击性、状态切换、渲染首帧等问题。
+3. 只有用户主动要求截图时，才执行 `./dev.sh shot <screen-name>` 到 `.dev/screenshots/<screen-name>.png` 并做截图复核。
+4. 发现 UI / 交互问题继续修，不把"测试通过"当成 UI 完成。
 
 ## 设计文档维护规范
 

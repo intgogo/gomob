@@ -19,6 +19,7 @@ import com.berxel.berxelInterface.api.admitenum.BerxelHawkPixelTypeEnum
 import com.berxel.berxelInterface.api.admitenum.BerxelHawkStreamFlagEnum
 import com.berxel.berxelInterface.api.admitenum.BerxelHawkStreamTypeEnum
 import com.berxel.berxelInterface.api.admitmode.BerxelHawkCameraIntrinsic
+import com.berxel.berxelInterface.api.admitmode.BerxelHawkDeviceInfo
 import com.berxel.berxelInterface.api.admitmode.BerxelHawkFrame
 import com.berxel.berxelInterface.api.admitmode.BerxelHawkStreamFrameMode
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -31,6 +32,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -41,6 +43,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -142,18 +146,29 @@ class BerxelService @Inject constructor(
 
     @Volatile private var hawkContext: BerxelHawkContext? = null
     @Volatile private var device: BerxelHawkDevice? = null
+    @Volatile private var deviceStatusCallbackRegistered = false
     @Volatile private var readerRunning = false
     private var colorReader: Thread? = null
     private var depthReader: Thread? = null
     private var pendingStartJob: Job? = null
-    /** 来自 USB_DEVICE_ATTACHED intent extras 的 UsbDevice —— 持有有效读权限。 */
-    @Volatile private var authorizedDevice: UsbDevice? = null
+    private var companionRetryJob: Job? = null
+    @Volatile private var partialNodeRetryCount = 0
+    @Volatile private var lastPhysicalDisconnectAtMs = 0L
+    @Volatile private var pendingUsbPermissionMode = StartupStreamMode.DUAL
+    private val startEpoch = AtomicLong(0L)
+    /**
+     * 来自 USB_DEVICE_ATTACHED intent extras / requestPermission broadcast 的 UsbDevice。
+     *
+     * P100R3 / iHawk100RS 会枚举成两个 USB 节点；Android 的授权按 deviceName 绑定，
+     * 所以这里按节点缓存，避免只记住其中一个导致 SDK 内部枚举另一个节点时读 serial 崩掉。
+     */
+    private val authorizedDevicesByName = ConcurrentHashMap<String, UsbDevice>()
 
     private val deviceStatusCallback = BerxelHawkContext.DeviceStatusChangedCallBack { vid, pid, status ->
         Log.i(TAG, "device status change vid=0x${vid.toString(16)} pid=0x${pid.toString(16)} -> $status")
         if (status == BerxelHawkDeviceStatusEnum.BERXEL_HAWK_DEVICE_STATUS_DISCONNECT) {
-            // 异步：调用方可能正在 reader 线程，立即停掉自己再 update state
-            scope.launch { stopInternal(reason = null); _state.value = BerxelDeviceState.NoDevice }
+            // 物理断开时 SDK 自身也会 stop/close stream；这里再调 stopInternal 会和厂商线程抢释放。
+            scope.launch { handlePhysicalDisconnect() }
         }
     }
 
@@ -163,12 +178,14 @@ class BerxelService @Inject constructor(
             val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
             val grantedDevice = @Suppress("DEPRECATION") intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
             Log.i(TAG, "USB permission broadcast granted=$granted device=${grantedDevice?.deviceName}")
-            if (granted && grantedDevice != null) {
+            if (granted && grantedDevice != null && needsBerxelSdkUsbPermission(grantedDevice)) {
                 // 拿到权限后把 device 喂回 service，再走完整启动
-                authorizedDevice = grantedDevice
-                scope.launch { startInternal() }
+                authorizedDevicesByName[grantedDevice.deviceName] = grantedDevice
+                scope.launch { startInternal(startEpoch.incrementAndGet(), pendingUsbPermissionMode) }
             } else {
-                _state.value = BerxelDeviceState.Error("用户拒绝了 USB 权限 — 拔出重插以重试")
+                // HONOR Magic OS 实测：用户点了允许后，dumpsys 已经有 device_permissions，
+                // 但广播仍可能回 granted=false/device=null。这里不信广播，立刻用 openDevice 复查。
+                scope.launch { continueAfterUsbPermissionBroadcastDenied() }
             }
         }
     }
@@ -178,7 +195,13 @@ class BerxelService @Inject constructor(
      * 启动整套生命周期：加载 SDK → 弹 USB 权限 → 开 device → 起 reader 线程。
      * 幂等：当前已 Streaming/Opening/WaitingPermission 时直接返回，不重复触发权限弹窗。
      */
-    fun start() {
+    fun start() = start(StartupStreamMode.DUAL)
+
+    fun startColorOnlyForDebug() = start(StartupStreamMode.COLOR_ONLY)
+
+    fun startDepthOnlyForDebug() = start(StartupStreamMode.DEPTH_ONLY)
+
+    private fun start(mode: StartupStreamMode) {
         when (_state.value) {
             is BerxelDeviceState.Streaming,
             is BerxelDeviceState.Opening,
@@ -190,7 +213,10 @@ class BerxelService @Inject constructor(
             else -> Unit
         }
         pendingStartJob?.cancel()
-        pendingStartJob = scope.launch { startInternal() }
+        companionRetryJob?.cancel()
+        val token = startEpoch.incrementAndGet()
+        pendingUsbPermissionMode = mode
+        pendingStartJob = scope.launch { startInternal(token, mode) }
     }
 
     /**
@@ -202,17 +228,18 @@ class BerxelService @Inject constructor(
      * 真实通过 SDK 的 getSerialNumber/openDevice 调用链。
      */
     fun attachAuthorizedDevice(device: UsbDevice) {
-        Log.i(TAG, "attachAuthorizedDevice ${device.deviceName} vid=0x${device.vendorId.toString(16)}")
-        if (device.vendorId != BERXEL_VID) {
-            Log.w(TAG, "ignoring non-Berxel device vid=0x${device.vendorId.toString(16)}")
+        Log.i(TAG, "attachAuthorizedDevice ${usbLabel(device)}")
+        if (!isBerxelUsbDevice(device)) {
+            Log.w(TAG, "ignoring non-Berxel device ${usbLabel(device)}")
             return
         }
-        authorizedDevice = device
+        authorizedDevicesByName[device.deviceName] = device
         start()
     }
 
     /** 主动停止：reader 退出 → close device → destroy context → 状态回 Idle。 */
     fun stop() {
+        startEpoch.incrementAndGet()
         pendingStartJob?.cancel()
         scope.launch {
             stopInternal(reason = null)
@@ -220,49 +247,98 @@ class BerxelService @Inject constructor(
         }
     }
 
-    private fun startInternal() {
+    private fun startInternal(token: Long, mode: StartupStreamMode) {
         try {
+            if (token != startEpoch.get()) return
             _state.value = BerxelDeviceState.Initializing
 
             val usbManager = appContext.getSystemService(Context.USB_SERVICE) as UsbManager
 
-            // Step 1: 优先用 attachAuthorizedDevice 喂进来的 device。
-            // 否则退回扫 deviceList。
-            val authDev = authorizedDevice
-            val workingDev = authDev ?: run {
-                val list = usbManager.deviceList.values.filter { it.vendorId == BERXEL_VID }
-                if (list.isEmpty()) {
-                    _state.value = BerxelDeviceState.NoDevice
-                    return
-                }
-                list.first()
+            // Step 1: 找到当前 iHawk 的所有 USB 节点。
+            // P100R3 / iHawk100RS 实机会同时出现 0x0603:0x001f 和 0x3558:0x1012。
+            // Berxel SDK openDevice() 内部会枚举并读取这些节点的 serial，任一节点没权限都会抛
+            // SecurityException，所以启动 SDK 前必须逐个确认 fd 能打开。
+            val usbDevices = usbManager.deviceList.values
+                .filter { isBerxelUsbDevice(it) }
+                .map { authorizedDevicesByName[it.deviceName] ?: it }
+                .sortedWith(
+                    compareByDescending<UsbDevice> { it.vendorId == BERXEL_VID }
+                        .thenBy { it.deviceName },
+                )
+            if (usbDevices.isEmpty()) {
+                _state.value = BerxelDeviceState.NoDevice
+                return
             }
-            Log.i(TAG, "using ${workingDev.deviceName} (fromIntent=${authDev != null}, hasPermission=${usbManager.hasPermission(workingDev)})")
+            val hasPrimaryNode = usbDevices.any { it.vendorId == BERXEL_VID }
+            val hasP100R3PrimaryNode = usbDevices.any {
+                it.vendorId == BERXEL_VID && it.productId == P100R3_PRIMARY_PID
+            }
+            val hasP100R3CompanionNode = usbDevices.any {
+                it.vendorId == P100R3_COMPANION_VID && it.productId == P100R3_COMPANION_PID
+            }
+            if (!hasPrimaryNode || (hasP100R3PrimaryNode && !hasP100R3CompanionNode)) {
+                partialNodeRetryCount++
+                Log.i(
+                    TAG,
+                    "partial iHawk USB nodes visible; wait full device " +
+                        "retry=$partialNodeRetryCount nodes=${usbDevices.joinToString { usbLabel(it) }}",
+                )
+                companionRetryJob?.cancel()
+                companionRetryJob = scope.launch {
+                    delay(COMPANION_ONLY_RETRY_DELAY_MS)
+                    if (token == startEpoch.get() && _state.value is BerxelDeviceState.Initializing) {
+                        startInternal(token, mode)
+                    }
+                }
+                return
+            }
+            val disconnectBackoffMs = PHYSICAL_DISCONNECT_RESTART_BACKOFF_MS -
+                (SystemClock.elapsedRealtime() - lastPhysicalDisconnectAtMs)
+            if (lastPhysicalDisconnectAtMs > 0L && disconnectBackoffMs > 0L) {
+                Log.i(TAG, "recent USB disconnect; wait ${disconnectBackoffMs}ms before Berxel restart")
+                companionRetryJob?.cancel()
+                companionRetryJob = scope.launch {
+                    delay(disconnectBackoffMs)
+                    if (token == startEpoch.get() && _state.value is BerxelDeviceState.Initializing) {
+                        startInternal(token, mode)
+                    }
+                }
+                return
+            }
+            if (hasPrimaryNode) {
+                companionRetryJob?.cancel()
+                companionRetryJob = null
+                partialNodeRetryCount = 0
+            }
+            val workingDev = usbDevices.first()
+            Log.i(
+                TAG,
+                "using ${usbLabel(workingDev)} nodes=${usbDevices.joinToString { usbLabel(it) }}",
+            )
 
-            // 实测开一下：openDevice 返 null 即没有有效 fd 权限。
+            // 实测逐个开一下：openDevice 返 null 即没有有效 fd 权限。
             // (HONOR Magic OS 上 hasPermission 偶现脏缓存返 false 但实际 openDevice 能过；
             // 也有反之的情况。所以不查 flag，只看真实开 fd 结果)
-            val testConn = usbManager.openDevice(workingDev)
-            if (testConn == null) {
+            val missingPermissionDevice = usbDevices.firstOrNull { !canOpenUsbDevice(usbManager, it) }
+            if (missingPermissionDevice != null) {
                 // 没权限 —— 主动调 requestPermission 弹标准 Android 系统对话框
                 // (Why: 之前只靠 manifest USB_DEVICE_ATTACHED intent，用户拒过一次后无路重试；
                 //  现在主动请求 → granted 则 receiver 把 authorized device 喂回 startInternal；
                 //  HONOR 脏缓存仍然会让 broadcast 直接 deny=false 不弹窗，那种场景由 finding_honor_usb_permission_cache_2026-05-07
                 //  指出"重启手机"是唯一根治路径)
-                ensureUsbReceiver()
-                // FLAG_IMMUTABLE：USB 权限广播 EXTRA_PERMISSION_GRANTED 是 system fill 的，不需 mutate；
-                // Android 14+ 对 implicit Intent 禁 MUTABLE，IMMUTABLE 也是 Google USB host sample 推荐用法。
-                val piFlags = PendingIntent.FLAG_UPDATE_CURRENT or
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_IMMUTABLE else 0
-                val pi = PendingIntent.getBroadcast(
-                    appContext, 0, Intent(USB_PERMISSION_ACTION).setPackage(appContext.packageName), piFlags,
-                )
-                Log.i(TAG, "openDevice fd=null → requestPermission ${workingDev.deviceName}")
-                _state.value = BerxelDeviceState.WaitingPermission
-                usbManager.requestPermission(workingDev, pi)
+                requestUsbPermission(usbManager, missingPermissionDevice, mode)
                 return  // 等 receiver 回调时再次进入 startInternal
             }
-            testConn.close()
+
+            val sdkPermissionDevices = usbManager.deviceList.values
+                .map { authorizedDevicesByName[it.deviceName] ?: it }
+                .filter { needsBerxelSdkUsbPermission(it) }
+            val missingSdkPermissionDevice = sdkPermissionDevices.firstOrNull { !canOpenUsbDevice(usbManager, it) }
+            if (missingSdkPermissionDevice != null) {
+                Log.i(TAG, "Berxel SDK preflight needs permission for ${usbLabel(missingSdkPermissionDevice)}")
+                requestUsbPermission(usbManager, missingSdkPermissionDevice, mode)
+                return
+            }
 
             // Step 3: 有权限了，初始化 SDK Context（也走 ContextWrapper 兼容 Android 14+）
             val wrappedCtx = SdkCompatContextWrapper(appContext)
@@ -270,9 +346,12 @@ class BerxelService @Inject constructor(
                 ?: run {
                     _state.value = BerxelDeviceState.Error("SDK Context 加载失败")
                     return
-                }
+            }
             hawkContext = ctx
-            ctx.addDeviceStatusCallBack(deviceStatusCallback)
+            if (!deviceStatusCallbackRegistered) {
+                ctx.addDeviceStatusCallBack(deviceStatusCallback)
+                deviceStatusCallbackRegistered = true
+            }
 
             _state.value = BerxelDeviceState.Opening
             val dev = ctx.CreateDevice() ?: run {
@@ -284,10 +363,14 @@ class BerxelService @Inject constructor(
             // openDevice 会异步打开设备 + 申请校准/参数；用回调驱动状态机
             dev.openDevice(object : BerxelHawkDevice.OpenDeviceStatusCallBack {
                 override fun onDeviceStausOpenSuccess() {
-                    scope.launch { onDeviceOpened() }
+                    scope.launch {
+                        if (token == startEpoch.get()) onDeviceOpened(token, mode)
+                    }
                 }
                 override fun onDeviceStatusOpenFailed() {
-                    _state.value = BerxelDeviceState.Error("打开 iHawk 失败 —— 检查 USB 接口或拔了再插")
+                    if (token == startEpoch.get()) {
+                        _state.value = BerxelDeviceState.Error("打开 iHawk 失败 —— 检查 USB 接口或拔了再插")
+                    }
                 }
             })
         } catch (t: Throwable) {
@@ -296,47 +379,178 @@ class BerxelService @Inject constructor(
         }
     }
 
-    private fun onDeviceOpened() {
+    private fun onDeviceOpened(token: Long, mode: StartupStreamMode) {
         val dev = device ?: return
         try {
+            if (token != startEpoch.get()) return
             _state.value = BerxelDeviceState.Opening
 
-            // 默认 MIX 流模式（COLOR + DEPTH 同时出帧）—— 跟 sample HawkColorDepth 一致
-            dev.setStreamFlagMode(BerxelHawkStreamFlagEnum.BERXEL_HAWK_MIX_STREAM_FLAG_MODE)
+            val deviceInfo = dev.currentDeviceInfo
+            if (deviceInfo?.isP100R3Usb3() == true) {
+                Log.i(TAG, "skip setDeviceTransferMode(BULK) for P100R3; SDK returned -8 on phone OTG")
+            }
 
-            // 用 SDK 默认分辨率（getCurrentFrameMode 返回 default）。后续标定 / 性能调优可在
-            // BerxelService 上加 setMode(spec) 接口；当前 smoke 阶段先吃默认。
-            val colorMode = dev.getCurrentFrameMode(BerxelHawkStreamTypeEnum.BERXEL_HAWK_COLOR_STREAM)
-            val depthMode = dev.getCurrentFrameMode(BerxelHawkStreamTypeEnum.BERXEL_HAWK_DEPTH_STREAM)
-            dev.setFrameMode(BerxelHawkStreamTypeEnum.BERXEL_HAWK_COLOR_STREAM, colorMode)
-            dev.setFrameMode(BerxelHawkStreamTypeEnum.BERXEL_HAWK_DEPTH_STREAM, depthMode)
+            val streamFlag = when (mode) {
+                StartupStreamMode.COLOR_ONLY -> BerxelHawkStreamFlagEnum.BERXEL_HAWK_SINGULAR_STREAM_FLAG_MODE
+                StartupStreamMode.DEPTH_ONLY,
+                StartupStreamMode.DUAL -> BerxelHawkStreamFlagEnum.BERXEL_HAWK_MIX_STREAM_FLAG_MODE
+            }
+            val flagRc = dev.setStreamFlagMode(streamFlag)
+            Log.i(TAG, "setStreamFlagMode($streamFlag) rc=$flagRc mode=$mode")
 
-            val flags = BerxelHawkStreamTypeEnum.BERXEL_HAWK_COLOR_STREAM.value or
-                BerxelHawkStreamTypeEnum.BERXEL_HAWK_DEPTH_STREAM.value
+            // P100R3 实测 SDK 的 current mode 可能给出 640x400@45；手机 OTG 双流先用保守 fps。
+            val colorEnabled = mode != StartupStreamMode.DEPTH_ONLY
+            val depthEnabled = mode != StartupStreamMode.COLOR_ONLY
+            val colorMode = if (colorEnabled) {
+                selectStableFrameMode(
+                    dev = dev,
+                    streamType = BerxelHawkStreamTypeEnum.BERXEL_HAWK_COLOR_STREAM,
+                    label = "color",
+                )
+            } else {
+                null
+            }
+            val depthMode = if (depthEnabled) {
+                selectStableFrameMode(
+                    dev = dev,
+                    streamType = BerxelHawkStreamTypeEnum.BERXEL_HAWK_DEPTH_STREAM,
+                    label = "depth",
+                )
+            } else {
+                null
+            }
+            if ((colorEnabled && colorMode == null) || (depthEnabled && depthMode == null)) {
+                _state.value = BerxelDeviceState.Error("无法读取 iHawk 帧模式 mode=$mode")
+                return
+            }
+            val colorSetRc = if (colorMode != null) {
+                dev.setFrameMode(BerxelHawkStreamTypeEnum.BERXEL_HAWK_COLOR_STREAM, colorMode)
+            } else {
+                0
+            }
+            val depthSetRc = if (depthMode != null) {
+                dev.setFrameMode(BerxelHawkStreamTypeEnum.BERXEL_HAWK_DEPTH_STREAM, depthMode)
+            } else {
+                0
+            }
+            if (colorMode != null) Log.i(TAG, "setFrameMode color=${frameModeLabel(colorMode)} rc=$colorSetRc")
+            if (depthMode != null) Log.i(TAG, "setFrameMode depth=${frameModeLabel(depthMode)} rc=$depthSetRc")
+            if (colorSetRc != 0 || depthSetRc != 0) {
+                _state.value = BerxelDeviceState.Error("setFrameMode 失败 color=$colorSetRc depth=$depthSetRc")
+                return
+            }
+
+            val flags = when (mode) {
+                StartupStreamMode.COLOR_ONLY -> BerxelHawkStreamTypeEnum.BERXEL_HAWK_COLOR_STREAM.value
+                StartupStreamMode.DEPTH_ONLY -> BerxelHawkStreamTypeEnum.BERXEL_HAWK_DEPTH_STREAM.value
+                StartupStreamMode.DUAL -> BerxelHawkStreamTypeEnum.BERXEL_HAWK_COLOR_STREAM.value or
+                    BerxelHawkStreamTypeEnum.BERXEL_HAWK_DEPTH_STREAM.value
+            }
+            Log.i(TAG, "startStreams flags=$flags mode=$mode")
             val rc = dev.startStreams(flags)
+            Log.i(TAG, "startStreams rc=$rc")
+            if (token != startEpoch.get()) {
+                Log.i(TAG, "startStreams returned after USB disconnect; skip stale device")
+                return
+            }
             if (rc != 0) {
                 _state.value = BerxelDeviceState.Error("startStreams 返回 $rc")
                 return
             }
+            if (deviceInfo?.isP100R3Usb3() == true && !hasFullP100R3UsbNodes()) {
+                Log.w(TAG, "startStreams returned but P100R3 USB nodes are incomplete; wait reconnect")
+                handlePhysicalDisconnect()
+                return
+            }
 
             // 读出内参（出厂值；M1.3 实测精度后决定是否需要自标定覆盖）
-            currentColorIntrinsics = readIntrinsics(dev, colorMode, "color")
-            currentDepthIntrinsics = readIntrinsics(dev, depthMode, "depth")
+            currentColorIntrinsics = colorMode?.let { readIntrinsics(dev, it, "color") }
+            currentDepthIntrinsics = depthMode?.let { readIntrinsics(dev, it, "depth") }
+            if (token != startEpoch.get()) {
+                Log.i(TAG, "intrinsics returned after USB disconnect; skip stale device")
+                return
+            }
 
-            // 把 _controls 当前快照同步到 SDK（默认值或上次 set 的值）
-            applyDefaultControls()
+            // P100R3 在手机 OTG 上开流后立即写多组控制项，会触发控制传输失败和物理重枚举。
+            // 先保持 SDK 出厂默认值，等稳定出帧后再由用户操作显式下发控制命令。
+            Log.i(TAG, "skip initial Berxel controls sync until stream is stable")
 
             val info = collectDeviceInfo(dev, colorMode, depthMode)
+            if (token != startEpoch.get()) {
+                Log.i(TAG, "device info returned after USB disconnect; skip stale device")
+                return
+            }
+            if (deviceInfo?.isP100R3Usb3() == true && !hasFullP100R3UsbNodes()) {
+                Log.w(TAG, "P100R3 USB nodes became incomplete before reader start; wait reconnect")
+                handlePhysicalDisconnect()
+                return
+            }
             _lastKnownInfo.value = info
             _state.value = BerxelDeviceState.Streaming(info)
 
             readerRunning = true
-            colorReader = Thread({ readLoop(StreamKind.COLOR) }, "berxel-color-reader").also { it.start() }
-            depthReader = Thread({ readLoop(StreamKind.DEPTH) }, "berxel-depth-reader").also { it.start() }
+            if (colorEnabled) {
+                colorReader = Thread({ readLoop(StreamKind.COLOR) }, "berxel-color-reader").also { it.start() }
+            }
+            if (depthEnabled) {
+                depthReader = Thread({ readLoop(StreamKind.DEPTH) }, "berxel-depth-reader").also { it.start() }
+            }
         } catch (t: Throwable) {
             Log.e(TAG, "onDeviceOpened 异常", t)
             _state.value = BerxelDeviceState.Error(t.message ?: t.javaClass.simpleName)
         }
+    }
+
+    private fun selectStableFrameMode(
+        dev: BerxelHawkDevice,
+        streamType: BerxelHawkStreamTypeEnum,
+        label: String,
+    ): BerxelHawkStreamFrameMode? {
+        val current = runCatching { dev.getCurrentFrameMode(streamType) }
+            .onFailure { Log.w(TAG, "$label getCurrentFrameMode 异常", it) }
+            .getOrNull()
+        if (current != null) {
+            Log.i(TAG, "$label current mode ${frameModeLabel(current)}")
+        }
+
+        val supported = runCatching { dev.getSupportFrameModes(streamType) }
+            .onFailure { Log.w(TAG, "$label getSupportFrameModes 异常", it) }
+            .getOrNull()
+            .orEmpty()
+        if (supported.isNotEmpty()) {
+            Log.i(TAG, "$label support modes=${supported.joinToString { frameModeLabel(it) }}")
+        }
+
+        val stable640x400 = supported
+            .filter { it.resolutionX == 640 && it.resolutionY == 400 && it.getmFps() in 1..P100R3_SAFE_STREAM_FPS }
+            .sortedWith(compareByDescending<BerxelHawkStreamFrameMode> { it.getmFps() })
+        val selected = stable640x400.firstOrNull()
+            ?: supported
+                .filter { it.getmFps() in 1..P100R3_SAFE_STREAM_FPS }
+                .sortedWith(
+                    compareBy<BerxelHawkStreamFrameMode> {
+                        kotlin.math.abs(it.resolutionX - 640) + kotlin.math.abs(it.resolutionY - 400)
+                    }.thenByDescending { it.getmFps() },
+                )
+                .firstOrNull()
+            ?: current?.coerceToStableFps()
+
+        if (selected != null) {
+            Log.i(TAG, "$label selected mode ${frameModeLabel(selected)}")
+        }
+        return selected
+    }
+
+    private fun BerxelHawkStreamFrameMode.coerceToStableFps(): BerxelHawkStreamFrameMode {
+        val fps = getmFps()
+        if (fps in 1..P100R3_SAFE_STREAM_FPS) return this
+        val stableFps = P100R3_SAFE_STREAM_FPS
+        Log.w(TAG, "current mode fps=$fps 超过手机 OTG 保守上限，强制降到 $stableFps: ${frameModeLabel(this)}")
+        return BerxelHawkStreamFrameMode(pixelType, resolutionX, resolutionY, stableFps)
+    }
+
+    private fun frameModeLabel(mode: BerxelHawkStreamFrameMode): String {
+        return "${mode.resolutionX}x${mode.resolutionY}@${mode.getmFps()} ${mode.pixelType?.name.orEmpty()}"
     }
 
     /**
@@ -395,6 +609,7 @@ class BerxelService @Inject constructor(
         }
     }
 
+    private enum class StartupStreamMode { DUAL, COLOR_ONLY, DEPTH_ONLY }
     private enum class StreamKind { COLOR, DEPTH }
 
     private fun readLoop(kind: StreamKind) {
@@ -557,11 +772,14 @@ class BerxelService @Inject constructor(
     )
 
     private fun stopInternal(reason: String?) {
+        companionRetryJob?.cancel()
+        companionRetryJob = null
         readerRunning = false
         runCatching { colorReader?.join(500) }
         runCatching { depthReader?.join(500) }
         colorReader = null
         depthReader = null
+        partialNodeRetryCount = 0
 
         val dev = device
         if (dev != null) {
@@ -577,11 +795,33 @@ class BerxelService @Inject constructor(
             hawkContext?.removeDeviceStatusCallBack(deviceStatusCallback)
             BerxelHawkContext.destroyBerxelContext()
         }
+        deviceStatusCallbackRegistered = false
         hawkContext = null
 
         _colorStat.value = null
         _depthStat.value = null
         if (reason != null) _state.value = BerxelDeviceState.Error(reason)
+    }
+
+    private fun handlePhysicalDisconnect() {
+        val token = startEpoch.incrementAndGet()
+        lastPhysicalDisconnectAtMs = SystemClock.elapsedRealtime()
+        Log.i(TAG, "USB physical disconnect; abandon SDK device token=$token")
+        pendingStartJob?.cancel()
+        companionRetryJob?.cancel()
+        companionRetryJob = null
+        readerRunning = false
+        runCatching { colorReader?.join(200) }
+        runCatching { depthReader?.join(200) }
+        colorReader = null
+        depthReader = null
+        partialNodeRetryCount = 0
+        device = null
+        currentColorIntrinsics = null
+        currentDepthIntrinsics = null
+        _colorStat.value = null
+        _depthStat.value = null
+        _state.value = BerxelDeviceState.NoDevice
     }
 
     private fun collectDeviceInfo(
@@ -724,10 +964,98 @@ class BerxelService @Inject constructor(
         usbReceiverRegistered = true
     }
 
+    private fun hasFullP100R3UsbNodes(): Boolean {
+        val usbManager = appContext.getSystemService(Context.USB_SERVICE) as UsbManager
+        val usbDevices = usbManager.deviceList.values.filter { isBerxelUsbDevice(it) }
+        return usbDevices.any { it.vendorId == BERXEL_VID && it.productId == P100R3_PRIMARY_PID } &&
+            usbDevices.any { it.vendorId == P100R3_COMPANION_VID && it.productId == P100R3_COMPANION_PID }
+    }
+
+    private fun canOpenUsbDevice(usbManager: UsbManager, usbDevice: UsbDevice): Boolean {
+        val conn = try {
+            usbManager.openDevice(usbDevice)
+        } catch (t: SecurityException) {
+            Log.i(TAG, "USB node permission missing ${usbLabel(usbDevice)}: ${t.message}")
+            null
+        } catch (t: Throwable) {
+            Log.w(TAG, "USB node open probe failed ${usbLabel(usbDevice)}", t)
+            null
+        }
+        conn?.close()
+        return conn != null
+    }
+
+    private fun continueAfterUsbPermissionBroadcastDenied() {
+        val usbManager = appContext.getSystemService(Context.USB_SERVICE) as UsbManager
+        val usbDevices = usbManager.deviceList.values
+            .filter { needsBerxelSdkUsbPermission(it) }
+            .map { authorizedDevicesByName[it.deviceName] ?: it }
+        if (usbDevices.isNotEmpty() && usbDevices.all { canOpenUsbDevice(usbManager, it) }) {
+            Log.i(TAG, "USB permission broadcast was false, but fd probe says SDK-visible nodes are authorized")
+            startInternal(startEpoch.incrementAndGet(), pendingUsbPermissionMode)
+        } else {
+            _state.value = BerxelDeviceState.Error("用户拒绝了 USB 权限 — 拔出重插以重试")
+        }
+    }
+
+    private fun requestUsbPermission(
+        usbManager: UsbManager,
+        usbDevice: UsbDevice,
+        mode: StartupStreamMode = StartupStreamMode.DUAL,
+    ) {
+        ensureUsbReceiver()
+        pendingUsbPermissionMode = mode
+        // FLAG_IMMUTABLE：USB 权限广播 EXTRA_PERMISSION_GRANTED 是 system fill 的，不需 mutate；
+        // Android 14+ 对 implicit Intent 禁 MUTABLE，IMMUTABLE 也是 Google USB host sample 推荐用法。
+        val piFlags = PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_IMMUTABLE else 0
+        val pi = PendingIntent.getBroadcast(
+            appContext,
+            usbDevice.deviceName.hashCode(),
+            Intent(USB_PERMISSION_ACTION).setPackage(appContext.packageName),
+            piFlags,
+        )
+        Log.i(TAG, "requestPermission ${usbLabel(usbDevice)}")
+        _state.value = BerxelDeviceState.WaitingPermission
+        usbManager.requestPermission(usbDevice, pi)
+    }
+
+    private fun isBerxelUsbDevice(usbDevice: UsbDevice): Boolean {
+        return usbDevice.vendorId == BERXEL_VID ||
+            (usbDevice.vendorId == P100R3_COMPANION_VID && usbDevice.productId == P100R3_COMPANION_PID)
+    }
+
+    private fun needsBerxelSdkUsbPermission(usbDevice: UsbDevice): Boolean {
+        return isBerxelUsbDevice(usbDevice) || isKnownDellDockUsbNode(usbDevice)
+    }
+
+    private fun isKnownDellDockUsbNode(usbDevice: UsbDevice): Boolean {
+        return usbDevice.vendorId == DELL_DOCK_VID &&
+            (usbDevice.productId == DELL_DOCK_PID_45166 || usbDevice.productId == DELL_DOCK_PID_45167)
+    }
+
+    private fun BerxelHawkDeviceInfo.isP100R3Usb3(): Boolean {
+        return (vendorId == BERXEL_VID && productId == P100R3_PRIMARY_PID) ||
+            (vendorId == P100R3_COMPANION_VID && productId == P100R3_COMPANION_PID)
+    }
+
+    private fun usbLabel(usbDevice: UsbDevice): String {
+        return "${usbDevice.deviceName} vid=0x${usbDevice.vendorId.toString(16)} pid=0x${usbDevice.productId.toString(16)}"
+    }
+
     private companion object {
         const val TAG = "BerxelService"
         const val READ_TIMEOUT_MS = 100
         const val BERXEL_VID = 1539  // 0x603 — Berxel 厂商 ID
+        const val P100R3_PRIMARY_PID = 31       // 0x001f — iHawk100RS 主节点
+        const val P100R3_COMPANION_VID = 13656  // 0x3558 — iHawk100RS 伴随 UVC 节点
+        const val P100R3_COMPANION_PID = 4114   // 0x1012
+        const val DELL_DOCK_VID = 16700
+        const val DELL_DOCK_PID_45166 = 45166
+        const val DELL_DOCK_PID_45167 = 45167
+        const val COMPANION_ONLY_RETRY_DELAY_MS = 800L
+        const val PHYSICAL_DISCONNECT_RESTART_BACKOFF_MS = 5_000L
+        const val P100R3_SAFE_STREAM_FPS = 15
         const val USB_PERMISSION_ACTION = "io.gomob.nativebridge.berxel.USB_PERMISSION"
     }
 }

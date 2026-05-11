@@ -10,6 +10,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import io.gomob.designsystem.motion.fixedDuringPageDrag
 import io.gomob.designsystem.theme.Gomob
 
@@ -35,14 +36,40 @@ fun ScreenHeader(
             .background(Gomob.colors.bg0)
             .padding(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s12),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2)) {
-            Text(text = title, style = Gomob.type.display, color = Gomob.colors.fg0)
-            if (eyebrow != null) {
-                Text(text = eyebrow, style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
-            }
-        }
+        HeaderTitleStack(
+            title = title,
+            eyebrow = eyebrow,
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = Gomob.spacing.s12),
+        )
         if (trailing != null) trailing()
+    }
+}
+
+@Composable
+internal fun HeaderTitleStack(
+    title: String,
+    eyebrow: String? = null,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2)) {
+        Text(
+            text = title,
+            style = Gomob.type.display,
+            color = Gomob.colors.fg0,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (eyebrow != null) {
+            Text(
+                text = eyebrow,
+                style = Gomob.type.eyebrow,
+                color = Gomob.colors.fg2,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }

@@ -17,6 +17,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
@@ -69,6 +70,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.Dp
@@ -91,7 +93,7 @@ const val HOME_ROUTE = "home"
  * 视觉骨架：
  *   1. 固定 ScreenHeader "AI 助手 / 大模型辅助作业 · 检测站智能体" + History 按钮
  *   2. 建议关注（竖排 AiWatchRow + VIN mono + 助手注释）
- *   3. 快速专家 2×2 网格（预定义指令 + 点按开始新会话）
+ *   3. 快捷技能 2×2 网格（预定义指令 + 点按开始新会话）
  *   4. ChatComposer 吸底；提交后进入新会话子页
  *   5. 历史会话收进右上角侧窗
  */
@@ -131,17 +133,22 @@ fun HomeRoute(
                     )
                 },
             )
-            LazyColumn(
+            BoxWithConstraints(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
-                contentPadding = PaddingValues(bottom = 84.dp),
             ) {
-                item { SectionTitle(title = "建议关注", hint = "助手主动发现 · 4") }
-                item { AiWatchCard(onOpenInspection = onOpenInspection) }
-                item { SectionTitle(title = "快速专家", hint = "点按开始新会话") }
-                item { QuickActionGrid(onSelect = onOpenNewChat) }
-                item { Spacer(Modifier.height(Gomob.spacing.s24)) }
+                val compact = maxHeight < 720.dp || maxWidth < 360.dp
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = if (compact) 104.dp else 112.dp),
+                ) {
+                    item { SectionTitle(title = "建议关注", hint = "助手主动发现 · 4", compact = compact) }
+                    item { AiWatchCard(onOpenInspection = onOpenInspection, compact = compact) }
+                    item { SectionTitle(title = "快捷技能", hint = "点按开始新会话", compact = compact) }
+                    item { QuickActionGrid(onSelect = onOpenNewChat, compact = compact) }
+                    item { Spacer(Modifier.height(if (compact) Gomob.spacing.s16 else Gomob.spacing.s24)) }
+                }
             }
         }
         InputScrim(
@@ -553,11 +560,16 @@ private fun InlineAction(label: String) {
 
 // ─── SectionTitle / 分隔线 ──────────────────────────────────────────────────
 @Composable
-private fun SectionTitle(title: String, hint: String) {
+private fun SectionTitle(title: String, hint: String, compact: Boolean = false) {
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20, top = Gomob.spacing.s20, bottom = 10.dp),
+            .padding(
+                start = Gomob.spacing.s20,
+                end = Gomob.spacing.s20,
+                top = if (compact) Gomob.spacing.s12 else Gomob.spacing.s20,
+                bottom = if (compact) Gomob.spacing.s8 else 10.dp,
+            ),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.Bottom,
     ) {
@@ -593,28 +605,30 @@ private fun InsetDivider() {
     )
 }
 
-// ─── 快速专家 2×2 网格 ──────────────────────────────────────────────────────
+// ─── 快捷技能 2×2 网格 ──────────────────────────────────────────────────────
 private data class QuickActionItem(val k: String, val title: String, val sub: String)
 
 @Composable
-private fun QuickActionGrid(onSelect: (String) -> Unit) {
+private fun QuickActionGrid(onSelect: (String) -> Unit, compact: Boolean = false) {
     val items = listOf(
         QuickActionItem("01", "分析当前预审异常", "基于实时 290 条记录"),
         QuickActionItem("02", "解释 OBD 故障码", "P/U/B/C 全协议"),
         QuickActionItem("03", "生成今日工作日报", "含 KPI · 待复核"),
         QuickActionItem("04", "复核我上一次决定", "过去 24 小时"),
     )
+    val gap = if (compact) Gomob.spacing.s6 else Gomob.spacing.s8
     Column(
         Modifier.padding(horizontal = Gomob.spacing.s20),
-        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+        verticalArrangement = Arrangement.spacedBy(gap),
     ) {
         items.chunked(2).forEach { row ->
-            Row(horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
                 row.forEach {
                     QuickActionCell(
                         item = it,
                         onClick = { onSelect(it.title) },
                         modifier = Modifier.weight(1f),
+                        compact = compact,
                     )
                 }
             }
@@ -627,14 +641,22 @@ private fun QuickActionCell(
     item: QuickActionItem,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    compact: Boolean = false,
 ) {
+    val contentPadding = if (compact) Gomob.spacing.s8 else Gomob.spacing.s12
     Box(
         modifier
+            .heightIn(min = if (compact) 78.dp else 92.dp)
             .clip(Gomob.shapes.r3)
             .background(Gomob.colors.bg1)
             .ticks()
             .clickable(onClick = onClick)
-            .padding(start = Gomob.spacing.s12, end = Gomob.spacing.s12, top = Gomob.spacing.s12, bottom = Gomob.spacing.s14),
+            .padding(
+                start = contentPadding,
+                end = contentPadding,
+                top = if (compact) Gomob.spacing.s8 else Gomob.spacing.s12,
+                bottom = if (compact) Gomob.spacing.s8 else Gomob.spacing.s14,
+            ),
     ) {
         Column {
             Text(
@@ -647,13 +669,21 @@ private fun QuickActionCell(
             Spacer(Modifier.height(Gomob.spacing.s8))
             Text(
                 item.title,
-                fontSize = 13.sp,
+                fontSize = if (compact) 12.sp else 13.sp,
                 fontWeight = FontWeight.Medium,
-                lineHeight = 18.sp,
+                lineHeight = if (compact) 16.sp else 18.sp,
                 color = Gomob.colors.fg0,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
             )
-            Spacer(Modifier.height(Gomob.spacing.s6))
-            Text(item.sub, fontSize = 10.sp, color = Gomob.colors.fg2)
+            Spacer(Modifier.height(if (compact) Gomob.spacing.s4 else Gomob.spacing.s6))
+            Text(
+                item.sub,
+                fontSize = 10.sp,
+                color = Gomob.colors.fg2,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
         Text(
             "›",
@@ -662,7 +692,7 @@ private fun QuickActionCell(
             color = Gomob.colors.accent,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(end = 10.dp, bottom = 10.dp),
+                .padding(end = if (compact) 6.dp else 10.dp, bottom = if (compact) 6.dp else 10.dp),
         )
     }
 }
@@ -671,7 +701,7 @@ private fun QuickActionCell(
 private data class AiWatchItem(val vin: String, val note: String, val ts: String)
 
 @Composable
-private fun AiWatchCard(onOpenInspection: (String) -> Unit) {
+private fun AiWatchCard(onOpenInspection: (String) -> Unit, compact: Boolean = false) {
     val watchItems = listOf(
         AiWatchItem("LSVHM133022221761", "OBD P0420 + 外廓尺寸超差，置信度 87% 建议人工复核", "11:45"),
         AiWatchItem("LSVHM41182123456", "VIN 与出厂日期不一致 · 可能为系统录入差异", "12:18"),
@@ -686,7 +716,7 @@ private fun AiWatchCard(onOpenInspection: (String) -> Unit) {
                 .background(Gomob.colors.bg1),
         ) {
             watchItems.forEachIndexed { i, item ->
-                AiWatchRow(item, onClick = { onOpenInspection(item.vin) })
+                AiWatchRow(item, onClick = { onOpenInspection(item.vin) }, compact = compact)
                 if (i != watchItems.lastIndex) InsetDivider()
             }
         }
@@ -694,13 +724,13 @@ private fun AiWatchCard(onOpenInspection: (String) -> Unit) {
 }
 
 @Composable
-private fun AiWatchRow(item: AiWatchItem, onClick: () -> Unit) {
+private fun AiWatchRow(item: AiWatchItem, onClick: () -> Unit, compact: Boolean = false) {
     Row(
         Modifier
             .fillMaxWidth()
             .height(IntrinsicSize.Min)
             .clickable(onClick = onClick)
-            .padding(horizontal = Gomob.spacing.s14, vertical = Gomob.spacing.s12),
+            .padding(horizontal = Gomob.spacing.s14, vertical = if (compact) Gomob.spacing.s8 else Gomob.spacing.s12),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Column(Modifier.weight(1f)) {
@@ -713,7 +743,11 @@ private fun AiWatchRow(item: AiWatchItem, onClick: () -> Unit) {
                     item.vin,
                     style = Gomob.type.numInline.copy(fontSize = 12.sp, letterSpacing = 0.04.em),
                     color = Gomob.colors.fg0,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
+                Spacer(Modifier.width(Gomob.spacing.s8))
                 Text(
                     item.ts,
                     style = Gomob.type.numInline.copy(fontSize = 10.sp),
@@ -735,9 +769,11 @@ private fun AiWatchRow(item: AiWatchItem, onClick: () -> Unit) {
                 )
                 Text(
                     item.note,
-                    fontSize = 11.sp,
-                    lineHeight = 16.sp,
+                    fontSize = if (compact) 10.sp else 11.sp,
+                    lineHeight = if (compact) 14.sp else 16.sp,
                     color = Gomob.colors.fg1,
+                    maxLines = if (compact) 1 else 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }

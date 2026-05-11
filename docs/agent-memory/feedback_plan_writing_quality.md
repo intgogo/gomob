@@ -53,7 +53,7 @@ type: feedback
 | **harness 触发** | 命中 CLAUDE.md "何时必须建 harness" 五条？plan 里有 harness 设计 + 收敛验证 task 吗？ |
 | **类型一致性** | Task N 用 `RgbdFrame.depth: ShortArray`，Task M 用 `IntArray` — 一致吗？跨任务的字段名是否对齐？ |
 | **第一性反模式扫描** | plan 里有没有 "先 hardcode 后面再换" / "先做简单版本" / "在 A 加 fallback 等 B 就绪" / "保留旧逻辑兜底"？见 `principle_first_principles_no_compromise.md` |
-| **UI 联动** | 触及 Compose 界面？有截图自检 task（`./dev.sh shot ...`）吗？ |
+| **UI 联动** | 触及 Compose 界面？有真实运行 + logcat / uiautomator / instrumentation / harness 验收吗？不要把截图列成默认验收，除非用户主动要求。 |
 | **JNI 联动** | 改 NativeBridge 签名？plan 里有"同步改 native/jni/jni_bridge.cpp + smoke test"task 吗？ |
 
 **有疑问立即停下问用户，不瞎猜瞎改 plan 自顾自冲。**
