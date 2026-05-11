@@ -3,6 +3,8 @@ package io.gomob.network
 import io.gomob.network.dto.ConversationListResponse
 import io.gomob.network.dto.ConversationDto
 import io.gomob.network.dto.CreateMessageRequest
+import io.gomob.network.dto.CallInviteResponse
+import io.gomob.network.dto.CreateCallInviteRequest
 import io.gomob.network.dto.HelpExpertCaseListResponse
 import io.gomob.network.dto.HelpExpertListResponse
 import io.gomob.network.dto.MarkReadRequest
@@ -10,6 +12,8 @@ import io.gomob.network.dto.MarkReadResponse
 import io.gomob.network.dto.MessageDto
 import io.gomob.network.dto.MessageListResponse
 import io.gomob.network.dto.OpenDirectConversationRequest
+import io.gomob.network.dto.TranscribeDraftVoiceRequest
+import io.gomob.network.dto.TranscribeDraftVoiceResponse
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
@@ -51,6 +55,22 @@ interface MessageApi {
         @Path("id") conversationId: String,
         @Body request: CreateMessageRequest,
     ): Envelope<MessageDto>
+
+    @POST("v1/conversations/{id}/call-invites")
+    suspend fun createCallInvite(
+        @Path("id") conversationId: String,
+        @Body request: CreateCallInviteRequest,
+    ): Envelope<CallInviteResponse>
+
+    @POST("v1/messages/{id}/transcript/retry")
+    suspend fun retryMessageTranscript(
+        @Path("id") messageId: String,
+    ): Envelope<MessageDto>
+
+    @POST("v1/messages/transcribe-draft")
+    suspend fun transcribeDraftVoice(
+        @Body request: TranscribeDraftVoiceRequest,
+    ): Envelope<TranscribeDraftVoiceResponse>
 
     @POST("v1/conversations/{id}/read")
     suspend fun markRead(

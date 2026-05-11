@@ -10,10 +10,24 @@ mkdir -p "$OUTPUT_DIR"
 RESULTS="$OUTPUT_DIR/results.jsonl"
 : > "$RESULTS"
 
-GATEWAY=http://127.0.0.1:18808
-WS_GATEWAY=ws://127.0.0.1:18808/v1/ws
-
 log() { printf "[%s] %s\n" "$(date +%H:%M:%S)" "$*"; }
+
+is_tcp_port_busy() {
+    [[ -n "$(ss -ltnH "( sport = :$1 )" 2>/dev/null || true)" ]]
+}
+
+GATEWAY_PORT="${REALTIME_MESSAGE_SYNC_GATEWAY_PORT:-18808}"
+if [[ -z "${REALTIME_MESSAGE_SYNC_GATEWAY_PORT:-}" ]]; then
+    for cand in 18808 18818 18828 18838; do
+        if ! is_tcp_port_busy "$cand"; then
+            GATEWAY_PORT="$cand"
+            break
+        fi
+    done
+fi
+GATEWAY="http://127.0.0.1:$GATEWAY_PORT"
+WS_GATEWAY="ws://127.0.0.1:$GATEWAY_PORT/v1/ws"
+log "gateway 采样端口：$GATEWAY_PORT ($GATEWAY)"
 
 log "0. 前置：清表 + 应用 migration 0006/0010"
 podman ps --format '{{.Names}}' | grep -qx gomob-pg    || { log "缺 gomob-pg";    exit 2; }
@@ -32,6 +46,13 @@ if [[ -z "$HAS_MEDIA" ]]; then
     log "  应用 migrations/0010_realtime_message_live.up.sql"
     podman exec -i gomob-pg psql -U gomob -d gomob -v ON_ERROR_STOP=1 \
         < "$SERVER_DIR/migrations/0010_realtime_message_live.up.sql" > /dev/null
+fi
+ASSET_INSPECTION_NULLABLE=$(podman exec -i gomob-pg psql -U gomob -d gomob -tAc \
+    "SELECT is_nullable FROM information_schema.columns WHERE table_name='inspection_assets' AND column_name='inspection_id'")
+if [[ "$ASSET_INSPECTION_NULLABLE" != "YES" ]]; then
+    log "  应用 migrations/0011_message_assets.up.sql"
+    podman exec -i gomob-pg psql -U gomob -d gomob -v ON_ERROR_STOP=1 \
+        < "$SERVER_DIR/migrations/0011_message_assets.up.sql" > /dev/null
 fi
 
 if ! podman exec -i gomob-pg psql -U gomob -d gomob -v ON_ERROR_STOP=1 > /dev/null <<'SQL'
@@ -83,7 +104,7 @@ GOMOB_CATALOG_TARGET= GOMOB_VINREF_TARGET= GOMOB_SHAPEREF_TARGET= \
     "$SERVER_DIR/.dev/bin/gomob-api" > "$OUTPUT_DIR/api.log" 2>&1 &
 PIDS+=($!)
 
-GOMOB_GATEWAY_ADDR=:18808 GOMOB_REDIS_ADDR=127.0.0.1:6379 GOMOB_RATE_LIMIT=10000 \
+GOMOB_GATEWAY_ADDR=":$GATEWAY_PORT" GOMOB_REDIS_ADDR=127.0.0.1:6379 GOMOB_RATE_LIMIT=10000 \
     "$SERVER_DIR/.dev/bin/gomob-gateway" > "$OUTPUT_DIR/gateway.log" 2>&1 &
 PIDS+=($!)
 

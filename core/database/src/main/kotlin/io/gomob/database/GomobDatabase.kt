@@ -17,7 +17,7 @@ import io.gomob.database.message.MessageEntity
         ConversationMemberStateEntity::class,
         LiveSessionEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class GomobDatabase : RoomDatabase() {

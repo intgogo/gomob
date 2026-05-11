@@ -65,6 +65,37 @@ class MediaSessionRepository @Inject constructor(
             providerRoom = token.providerRoom,
         )
     }
+
+    suspend fun videoCallRoomStatus(roomId: String): VideoCallRoomStatus {
+        val resp = api.room(roomId)
+        val room = resp.data ?: throw ApiException(50001, 500, "媒体房间响应缺数据")
+        return VideoCallRoomStatus(
+            roomId = room.id,
+            providerRoom = room.providerRoom,
+            status = room.status,
+            callAccepted = room.callAccepted,
+            liveKitConfigured = room.liveKitConfigured,
+            message = room.message,
+        )
+    }
+
+    suspend fun joinVideoCall(roomId: String): VideoCallJoinResult {
+        val tokenResp = api.roomToken(
+            roomId = roomId,
+            request = MediaRoomTokenRequest(role = "publisher"),
+        )
+        val token = tokenResp.data ?: throw ApiException(50001, 500, "媒体 token 响应缺数据")
+        return VideoCallJoinResult(
+            roomId = token.roomId,
+            url = token.url,
+            token = token.token,
+            providerRoom = token.providerRoom,
+        )
+    }
+
+    suspend fun endVideoCall(roomId: String) {
+        api.endRoom(roomId)
+    }
 }
 
 sealed interface LiveSessionStartResult {
@@ -80,6 +111,22 @@ sealed interface LiveSessionStartResult {
 
 data class LiveSessionJoinResult(
     val session: LiveSessionSummary,
+    val url: String,
+    val token: String,
+    val providerRoom: String,
+)
+
+data class VideoCallRoomStatus(
+    val roomId: String,
+    val providerRoom: String,
+    val status: String,
+    val callAccepted: Boolean,
+    val liveKitConfigured: Boolean,
+    val message: String?,
+)
+
+data class VideoCallJoinResult(
+    val roomId: String,
     val url: String,
     val token: String,
     val providerRoom: String,

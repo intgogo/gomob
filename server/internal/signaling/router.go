@@ -28,6 +28,7 @@ type Router struct {
 	convRepo *repo.ConversationRepo
 	msgRepo  *repo.MessageRepo
 	callRepo *repo.PendingCallRepo
+	trRepo   *repo.TranscriptRepo
 	audit    audit.Recorder
 	log      *slog.Logger
 	// 配置
@@ -44,10 +45,15 @@ func NewRouter(pool *pgxpool.Pool, hub *Hub, auditRec audit.Recorder, pendingCal
 		convRepo:       repo.NewConversationRepo(pool),
 		msgRepo:        repo.NewMessageRepo(pool),
 		callRepo:       repo.NewPendingCallRepo(pool),
+		trRepo:         repo.NewTranscriptRepo(pool, repo.TranscriptConfig{}),
 		audit:          auditRec,
 		log:            logger.New("signaling.router"),
 		pendingCallTTL: pendingCallTTL,
 	}
+}
+
+func (r *Router) SetTranscriptConfig(cfg repo.TranscriptConfig) {
+	r.trRepo = repo.NewTranscriptRepo(r.pool, cfg)
 }
 
 // Dispatch 是 Conn.readLoop 的 callback 入口。
@@ -75,10 +81,11 @@ func (r *Router) Dispatch(ctx context.Context, c *Conn, env Envelope) {
 // ============================================================================
 
 type msgSendReq struct {
-	ToUserID    int64           `json:"to_user_id"`
-	Kind        string          `json:"kind"` // text / image / voice / video_clip
-	Content     json.RawMessage `json:"content"`
-	ClientMsgID string          `json:"client_msg_id,omitempty"`
+	ConversationID int64           `json:"conversation_id,omitempty"`
+	ToUserID       int64           `json:"to_user_id"`
+	Kind           string          `json:"kind"` // text / image / voice / video_clip
+	Content        json.RawMessage `json:"content"`
+	ClientMsgID    string          `json:"client_msg_id,omitempty"`
 }
 
 type msgDeliveredPayload struct {
@@ -90,12 +97,23 @@ type msgDeliveredPayload struct {
 }
 
 type msgRecvPayload struct {
+	MessageID      int64           `json:"message_id"`
 	ConversationID int64           `json:"conversation_id"`
 	ServerSeq      int64           `json:"server_seq"`
 	SenderID       int64           `json:"sender_id"`
 	Kind           string          `json:"kind"`
 	Content        json.RawMessage `json:"content"`
+	ClientMsgID    string          `json:"client_msg_id,omitempty"`
 	CreatedAt      string          `json:"created_at"`
+}
+
+type transcriptUpdatedPayload struct {
+	MessageID      int64           `json:"message_id"`
+	ConversationID int64           `json:"conversation_id"`
+	ServerSeq      int64           `json:"server_seq"`
+	Kind           string          `json:"kind"`
+	Content        json.RawMessage `json:"content"`
+	UpdatedAt      string          `json:"updated_at"`
 }
 
 func (r *Router) handleMsgSend(ctx context.Context, c *Conn, env Envelope) {
@@ -104,35 +122,67 @@ func (r *Router) handleMsgSend(ctx context.Context, c *Conn, env Envelope) {
 		r.sendError(c, 10001, "msg.send payload 解析失败", env)
 		return
 	}
-	if req.ToUserID <= 0 || req.ToUserID == c.UserID || req.Kind == "" || len(req.Content) == 0 {
+	if req.Kind == "" || len(req.Content) == 0 {
 		r.sendError(c, 10001, "msg.send 参数缺失或非法", env)
 		return
 	}
-	// 拿/建 p2p 会话
-	conv, err := r.convRepo.GetOrCreateP2P(ctx, c.UserID, req.ToUserID)
-	if err != nil {
-		r.log.Error("p2p 会话获取失败", "err", err, "from", c.UserID, "to", req.ToUserID)
-		r.sendError(c, 50001, "服务端内部错误", env)
-		return
+	conversationID := req.ConversationID
+	recipients := make([]int64, 0, 1)
+	if conversationID > 0 {
+		ok, err := r.convRepo.IsMember(ctx, conversationID, c.UserID)
+		if err != nil {
+			r.sendError(c, 50001, "服务端内部错误", env)
+			return
+		}
+		if !ok {
+			r.sendError(c, 40103, "无权访问该会话", env)
+			return
+		}
+		recipients, err = r.convRepo.CounterpartIDs(ctx, conversationID, c.UserID)
+		if err != nil {
+			r.sendError(c, 50001, "服务端内部错误", env)
+			return
+		}
+	} else {
+		if req.ToUserID <= 0 || req.ToUserID == c.UserID {
+			r.sendError(c, 10001, "msg.send 参数缺失或非法", env)
+			return
+		}
+		// 拿/建 p2p 会话
+		conv, err := r.convRepo.GetOrCreateP2P(ctx, c.UserID, req.ToUserID)
+		if err != nil {
+			r.log.Error("p2p 会话获取失败", "err", err, "from", c.UserID, "to", req.ToUserID)
+			r.sendError(c, 50001, "服务端内部错误", env)
+			return
+		}
+		conversationID = conv.ID
+		recipients = append(recipients, req.ToUserID)
 	}
 	// 落库（next_seq 行锁分配 server_seq）
 	senderID := c.UserID
 	m := &repo.Message{
-		ConversationID: conv.ID,
+		ConversationID: conversationID,
 		SenderID:       &senderID,
 		Kind:           req.Kind,
 		Payload:        req.Content,
 	}
 	inserted, err := r.msgRepo.AppendIdempotent(ctx, m, req.ClientMsgID)
 	if err != nil {
-		r.log.Error("消息落库失败", "err", err, "conv", conv.ID)
+		r.log.Error("消息落库失败", "err", err, "conv", conversationID)
 		r.sendError(c, 50001, "服务端内部错误", env)
 		return
+	}
+	if inserted && r.trRepo != nil {
+		if _, _, err := r.trRepo.EnsureForVoiceMessage(ctx, m); err != nil {
+			r.log.Error("语音转写任务创建失败", "err", err, "message_id", m.ID)
+			r.sendError(c, 50001, "服务端内部错误", env)
+			return
+		}
 	}
 	// 发送方回执
 	delivered := msgDeliveredPayload{
 		ClientMsgID:    req.ClientMsgID,
-		ConversationID: conv.ID,
+		ConversationID: conversationID,
 		ServerSeq:      m.ServerSeq,
 		MessageID:      m.ID,
 		CreatedAt:      m.CreatedAt.UTC().Format(time.RFC3339Nano),
@@ -141,23 +191,16 @@ func (r *Router) handleMsgSend(ctx context.Context, c *Conn, env Envelope) {
 
 	// 幂等重发只回执发送方，不重复推给收件人。
 	if inserted {
-		recv := msgRecvPayload{
-			ConversationID: conv.ID,
-			ServerSeq:      m.ServerSeq,
-			SenderID:       senderID,
-			Kind:           m.Kind,
-			Content:        m.Payload,
-			CreatedAt:      m.CreatedAt.UTC().Format(time.RFC3339Nano),
-		}
-		r.hub.Push(req.ToUserID, Envelope{Type: "msg.recv", Payload: mustJSON(recv)})
+		r.pushMessageToRecipients(recipients, senderID, m)
 	}
 
 	// audit（用独立 ctx 避免 conn 关闭传递取消）
 	if r.audit != nil {
 		afterRaw, _ := audit.Encode(map[string]any{
-			"server_seq": m.ServerSeq,
-			"to_user_id": req.ToUserID,
-			"kind":       m.Kind,
+			"server_seq":      m.ServerSeq,
+			"to_user_id":      req.ToUserID,
+			"conversation_id": conversationID,
+			"kind":            m.Kind,
 		})
 		ac, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		go func() {
@@ -165,10 +208,76 @@ func (r *Router) handleMsgSend(ctx context.Context, c *Conn, env Envelope) {
 			_ = r.audit.Record(ac, audit.Entry{
 				UserID:   c.UserID,
 				Action:   "message.send",
-				Target:   "conversation:" + strconv.FormatInt(conv.ID, 10),
+				Target:   "conversation:" + strconv.FormatInt(conversationID, 10),
 				AfterRaw: afterRaw,
 			})
 		}()
+	}
+}
+
+// NotifyMessage 把 API/REST 已经落库的消息推给会话内其它在线成员。
+//
+// 只负责在线实时投递；离线补齐仍由 msg.fetch / REST 历史接口基于 messages 表完成。
+func (r *Router) NotifyMessage(ctx context.Context, senderID int64, m *repo.Message) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	if senderID <= 0 && m.SenderID != nil {
+		senderID = *m.SenderID
+	}
+	recipients, err := r.convRepo.CounterpartIDs(ctx, m.ConversationID, senderID)
+	if err != nil {
+		return 0, err
+	}
+	return r.pushMessageToRecipients(recipients, senderID, m), nil
+}
+
+func (r *Router) NotifyTranscriptUpdate(ctx context.Context, m *repo.Message) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	recipients, err := r.convRepo.CounterpartIDs(ctx, m.ConversationID, 0)
+	if err != nil {
+		return 0, err
+	}
+	payload := transcriptUpdatedPayload{
+		MessageID:      m.ID,
+		ConversationID: m.ConversationID,
+		ServerSeq:      m.ServerSeq,
+		Kind:           m.Kind,
+		Content:        m.Payload,
+		UpdatedAt:      time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	delivered := 0
+	for _, recipient := range recipients {
+		delivered += r.hub.Push(recipient, Envelope{Type: "msg.transcript.updated", Payload: mustJSON(payload)})
+	}
+	return delivered, nil
+}
+
+func (r *Router) pushMessageToRecipients(recipients []int64, senderID int64, m *repo.Message) int {
+	recv := messageToRecvPayload(m, senderID)
+	delivered := 0
+	for _, recipient := range recipients {
+		delivered += r.hub.Push(recipient, Envelope{Type: "msg.recv", Payload: mustJSON(recv)})
+	}
+	return delivered
+}
+
+func messageToRecvPayload(m *repo.Message, senderID int64) msgRecvPayload {
+	clientMsgID := ""
+	if m.ClientMsgID != nil {
+		clientMsgID = *m.ClientMsgID
+	}
+	return msgRecvPayload{
+		MessageID:      m.ID,
+		ConversationID: m.ConversationID,
+		ServerSeq:      m.ServerSeq,
+		SenderID:       senderID,
+		Kind:           m.Kind,
+		Content:        m.Payload,
+		ClientMsgID:    clientMsgID,
+		CreatedAt:      m.CreatedAt.UTC().Format(time.RFC3339Nano),
 	}
 }
 
@@ -218,12 +327,18 @@ func (r *Router) handleMsgFetch(ctx context.Context, c *Conn, env Envelope) {
 		if m.SenderID != nil {
 			sender = *m.SenderID
 		}
+		clientMsgID := ""
+		if m.ClientMsgID != nil {
+			clientMsgID = *m.ClientMsgID
+		}
 		out.Items = append(out.Items, msgRecvPayload{
+			MessageID:      m.ID,
 			ConversationID: m.ConversationID,
 			ServerSeq:      m.ServerSeq,
 			SenderID:       sender,
 			Kind:           m.Kind,
 			Content:        m.Payload,
+			ClientMsgID:    clientMsgID,
 			CreatedAt:      m.CreatedAt.UTC().Format(time.RFC3339Nano),
 		})
 		if m.ServerSeq > out.NextSinceSeq {

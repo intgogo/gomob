@@ -10,6 +10,7 @@
 #   ./dev.sh test         跑全部单元测试（:test）
 #   ./dev.sh ci           简化 CI 链路：lint + test + assemble
 #   ./dev.sh clean        清理 build / .dev/
+#   ./dev.sh reverse      给当前 adb 设备配置本机 devserver / LiveKit 端口反向代理
 #   ./dev.sh log          实时跟 logcat（仅 gomob.* / gomob_native）
 #   ./dev.sh shot <name>  截图当前屏幕到 .dev/screenshots/<name>.png
 #   ./dev.sh adb-wifi ... 转发到 scripts/adb-wifi.sh
@@ -22,13 +23,13 @@
 #   ./dev.sh avd-create   创建 gomob_test AVD（首次）
 #
 #   ./dev.sh server doctor   服务端工具链自检（Go/podman/protoc/git）
-#   ./dev.sh server up       起容器栈（gomob-pg/redis/nats/minio）
+#   ./dev.sh server up       起容器栈（gomob-pg/redis/nats/minio/livekit）
 #   ./dev.sh server down     停容器栈（保数据卷）
 #   ./dev.sh server ps       看容器栈状态
 #   ./dev.sh server logs     跟容器日志（默认 gomob-pg；可传 gomob-redis 等）
 #   ./dev.sh server build    编译所有服务二进制到 server/.dev/bin/
 #   ./dev.sh server test     跑 server/ 单元测试
-#   ./dev.sh server run      单进程跑 devserver（聚合开发模式）
+#   ./dev.sh server run      单进程跑 devserver（先跑 migrations，默认接本地 LiveKit）
 #   ./dev.sh server migrate  跑 PG migrations
 #   ./dev.sh server proto    生成 .pb.go
 #   ./dev.sh server clean    清理 server/.dev/bin/
@@ -76,12 +77,68 @@ adb_cmd() {
     adb ${ADB_DEVICE:+-s "$ADB_DEVICE"} "$@"
 }
 
-ensure_emulator_gateway_reverse() {
-    local qemu
-    qemu="$(adb_cmd shell getprop ro.kernel.qemu 2>/dev/null | tr -d '\r' || true)"
-    [[ "$qemu" == "1" ]] || return 0
-    adb_cmd reverse tcp:8808 tcp:18808 >/dev/null
-    echo "adb reverse: emulator tcp:8808 -> host tcp:18808"
+ensure_dev_reverse() {
+    if ! command -v adb >/dev/null 2>&1; then
+        echo "adb reverse: adb 不可用，跳过"
+        return 0
+    fi
+    if [[ -n "${ADB_DEVICE:-}" ]]; then
+        reverse_one_device "$ADB_DEVICE"
+        return 0
+    fi
+    local devices=()
+    mapfile -t devices < <(adb devices | awk -F '\t' '$2 == "device" { print $1 }')
+    if [[ ${#devices[@]} -eq 0 ]]; then
+        echo "adb reverse: 当前没有可用设备，跳过"
+        return 0
+    fi
+    for serial in "${devices[@]}"; do
+        reverse_one_device "$serial"
+    done
+}
+
+reverse_one_device() {
+    local serial="$1"
+    if ! adb -s "$serial" get-state >/dev/null 2>&1; then
+        echo "adb reverse: $serial 不可用，跳过"
+        return 0
+    fi
+    if adb -s "$serial" reverse tcp:8808 tcp:18808 >/dev/null 2>&1; then
+        echo "adb reverse: $serial tcp:8808 -> host tcp:18808"
+    else
+        echo "adb reverse: $serial tcp:8808 配置失败，App 需要改用局域网服务地址"
+    fi
+    if adb -s "$serial" reverse tcp:7880 tcp:7880 >/dev/null 2>&1; then
+        echo "adb reverse: $serial tcp:7880 -> host tcp:7880"
+    else
+        echo "adb reverse: $serial tcp:7880 配置失败，LiveKit 需要改用设备可访问地址"
+    fi
+    if adb -s "$serial" reverse tcp:9000 tcp:9000 >/dev/null 2>&1; then
+        echo "adb reverse: $serial tcp:9000 -> host tcp:9000"
+    else
+        echo "adb reverse: $serial tcp:9000 配置失败，媒体下载需要改用设备可访问地址"
+    fi
+}
+
+ensure_livekit_container() {
+    if ! command -v podman >/dev/null 2>&1; then
+        echo "LiveKit dev server: podman 不可用，跳过"
+        return 0
+    fi
+    if podman ps --format '{{.Names}}' | grep -qx gomob-livekit; then
+        echo "LiveKit dev server: gomob-livekit 已运行"
+        return 0
+    fi
+    if podman ps -a --format '{{.Names}}' | grep -qx gomob-livekit; then
+        podman start gomob-livekit >/dev/null
+        echo "LiveKit dev server: 已启动已有 gomob-livekit"
+        return 0
+    fi
+    podman run -d --name gomob-livekit \
+        -p 7880:7880 -p 7881:7881 -p 7882:7882/udp \
+        docker.io/livekit/livekit-server:latest \
+        --dev --bind 0.0.0.0 >/dev/null
+    echo "LiveKit dev server: 已创建并启动 gomob-livekit (--dev: devkey/secret)"
 }
 
 case "$cmd" in
@@ -95,13 +152,16 @@ case "$cmd" in
         "$GRADLEW" :app:assembleRelease "$@" 2>&1 | tee "$DEV_DIR/release.log"
         ;;
     install)
-        ensure_emulator_gateway_reverse
+        ensure_dev_reverse
         "$GRADLEW" :app:installDebug "$@" 2>&1 | tee "$DEV_DIR/install.log"
         ;;
     run)
-        ensure_emulator_gateway_reverse
+        ensure_dev_reverse
         "$GRADLEW" :app:installDebug 2>&1 | tee "$DEV_DIR/install.log"
         adb_cmd shell am start -n io.gomob.scan.debug/io.gomob.scan.MainActivity
+        ;;
+    reverse)
+        ensure_dev_reverse
         ;;
     test)
         "$GRADLEW" test "$@" 2>&1 | tee "$DEV_DIR/test.log"
@@ -150,15 +210,22 @@ case "$cmd" in
         PODMAN_CONTAINERS="gomob-pg gomob-redis gomob-nats gomob-minio"
         case "$sub" in
             doctor)  "$PROJ_DIR/server/scripts/server-doctor.sh" ;;
-            up)      podman start $PODMAN_CONTAINERS 2>&1 | tail -10 ;;
-            down)    podman stop  $PODMAN_CONTAINERS 2>&1 | tail -10 ;;
+            up)      podman start $PODMAN_CONTAINERS 2>&1 | tail -10; ensure_livekit_container ;;
+            down)    podman stop  $PODMAN_CONTAINERS gomob-livekit 2>&1 | tail -10 || true ;;
             ps)      podman ps -a --filter name=gomob- \
                          --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' ;;
             logs)    podman logs -f "${1:-gomob-pg}" ;;
             build)   (cd "$PROJ_DIR/server" && make build) ;;
             test)    (cd "$PROJ_DIR/server" && go test ./...) ;;
-            run)     (cd "$PROJ_DIR/server/cmd/devserver" && go run .) ;;
-            migrate) (cd "$PROJ_DIR/server" && ./scripts/migrate.sh "${1:-up}") ;;
+            run)     ensure_livekit_container
+                     (cd "$PROJ_DIR/server" && ./scripts/migrate.sh up)
+                     (cd "$PROJ_DIR/server/cmd/devserver" && \
+                        GOMOB_LIVEKIT_URL="${GOMOB_LIVEKIT_URL:-ws://127.0.0.1:7880}" \
+                        GOMOB_LIVEKIT_API_KEY="${GOMOB_LIVEKIT_API_KEY:-devkey}" \
+                        GOMOB_LIVEKIT_API_SECRET="${GOMOB_LIVEKIT_API_SECRET:-secret}" \
+                        go run .) ;;
+            migrate) [[ $# -gt 0 ]] || set -- up
+                     (cd "$PROJ_DIR/server" && ./scripts/migrate.sh "$@") ;;
             proto)   (cd "$PROJ_DIR/server" && ./scripts/proto-gen.sh) ;;
             clean)   (cd "$PROJ_DIR/server" && rm -rf .dev/bin && echo "→ server/.dev/bin cleaned") ;;
             *) echo "用法: $0 server {doctor|up|down|ps|logs|build|test|run|migrate|proto|clean}"; exit 2 ;;

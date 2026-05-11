@@ -16,6 +16,14 @@ class MessageViewModelsTest {
 
         assertThat(visible.map { it.id }).containsExactly(1L, 3L).inOrder()
     }
+
+    @Test
+    fun conversationStartsBlankInsteadOfLoading() {
+        val state = ConversationUiState(conversationId = 9)
+
+        assertThat(state.loading).isFalse()
+        assertThat(state.empty).isTrue()
+    }
 }
 
 private fun conversationSummary(

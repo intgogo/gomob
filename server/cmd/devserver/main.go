@@ -6,17 +6,20 @@
 //	GOMOB_DISCOVERY_ADDR   UDP 服务发现监听地址（默认 :18809；空字符串禁用）
 //	GOMOB_DISCOVERY_NAME   服务发现展示名称（默认 gomob-devserver）
 //
-// 当前装载 auth + me 路由（接 PostgreSQL）。后续 api / asset / signaling / worker
-// 各自实现成熟后再合并；保持 devserver 永远是"全部已实现路由"的并集。
+// 当前装载 auth / api / asset / signaling 路由（接 PostgreSQL）。
+// 保持 devserver 永远是"全部已实现路由"的并集，方便 App 只连一个开发网关。
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -27,9 +30,11 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"io.gomob/server/internal/api"
+	"io.gomob/server/internal/asr"
 	"io.gomob/server/internal/asset"
 	"io.gomob/server/internal/auth"
 	"io.gomob/server/internal/gateway"
+	"io.gomob/server/internal/signaling"
 	"io.gomob/server/pkg/audit"
 	"io.gomob/server/pkg/httpx"
 	"io.gomob/server/pkg/logger"
@@ -61,7 +66,15 @@ func main() {
 
 	devAutoActivate := os.Getenv("GOMOB_DEV_AUTO_ACTIVATE") != "false"
 	authH := auth.NewHandler(pool, devAutoActivate)
+	signalingHub := signaling.NewHub()
+	signalingRouter := signaling.NewRouter(pool, signalingHub, audit.NewPG(pool), parseDuration("GOMOB_PENDING_CALL_TTL", 60*time.Second))
+	signalingH := signaling.NewHandler(signalingRouter, signalingHub)
 	apiH := api.NewHandler(pool, audit.NewPG(pool), rbac.Baseline())
+	transcriptCfg := transcriptConfigFromEnv()
+	apiH.SetTranscriptConfig(transcriptCfg)
+	signalingRouter.SetTranscriptConfig(transcriptCfg)
+	apiH.SetRealtimeMessageNotifier(signalingRouter)
+	startASRWorker(ctx, pool, signalingRouter, transcriptCfg, log)
 	assetH := newDevAssetHandler(ctx, pool, log)
 	logRoot := envOr("GOMOB_LOG_UPLOAD_DIR", ".dev/server-logs")
 	logsH, err := api.NewLogsHandler(logRoot, 0)
@@ -90,6 +103,8 @@ func main() {
 	mux.HandleFunc("POST /v1/auth/register", authH.Register)
 	mux.HandleFunc("POST /v1/auth/login", authH.Login)
 	mux.HandleFunc("POST /v1/auth/refresh", authH.Refresh)
+	signalingH.Mount(mux)
+	go signalingRouter.SweepLoop(ctx, parseDuration("GOMOB_PENDING_CALL_SWEEP", 30*time.Second))
 
 	// 受保护路由（包一层 Required）
 	protected := http.NewServeMux()
@@ -113,6 +128,7 @@ func main() {
 	mux.Handle("/v1/reviews/", protectedHandler)
 	mux.Handle("/v1/conversations", protectedHandler)
 	mux.Handle("/v1/conversations/", protectedHandler)
+	mux.Handle("/v1/messages/", protectedHandler)
 	mux.Handle("/v1/assets/", protectedHandler)
 	mux.Handle("/v1/media/", protectedHandler)
 	mux.Handle("/v1/live-sessions", protectedHandler)
@@ -234,6 +250,20 @@ func (r *statusRec) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+func (r *statusRec) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("response writer 不支持 hijack")
+	}
+	return h.Hijack()
+}
+
+func (r *statusRec) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 func clientIP(r *http.Request) string {
 	if v := r.Header.Get("X-Forwarded-For"); v != "" {
 		if i := strings.IndexByte(v, ','); i > 0 {
@@ -249,6 +279,86 @@ func boolStr(b bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+func parseDuration(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return def
+}
+
+func parseInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		n, err := strconv.Atoi(v)
+		if err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func parseInt64(key string, def int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func transcriptConfigFromEnv() repo.TranscriptConfig {
+	return repo.TranscriptConfig{
+		Engine:   envOr("GOMOB_ASR_ENGINE", "fireredasr2"),
+		Model:    envOr("GOMOB_ASR_MODEL", "FireRedASR2-AED"),
+		Language: envOr("GOMOB_ASR_LANGUAGE", "zh"),
+	}
+}
+
+func startASRWorker(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	notifier asr.TranscriptNotifier,
+	trCfg repo.TranscriptConfig,
+	log interface {
+		Info(string, ...any)
+		Error(string, ...any)
+	},
+) {
+	serviceURL := strings.TrimSpace(os.Getenv("GOMOB_ASR_URL"))
+	if serviceURL == "" {
+		log.Info("语音转写 worker 未启动", "reason", "GOMOB_ASR_URL 未配置")
+		return
+	}
+	worker, err := asr.NewWorker(pool, notifier, asr.Config{
+		ServiceURL:     serviceURL,
+		Engine:         trCfg.Engine,
+		Model:          trCfg.Model,
+		Language:       trCfg.Language,
+		MinIOEndpoint:  envOr("GOMOB_MINIO_ENDPOINT", "127.0.0.1:9000"),
+		MinIOAccessKey: envOr("GOMOB_MINIO_ACCESS_KEY", "gomob"),
+		MinIOSecretKey: envOr("GOMOB_MINIO_SECRET_KEY", "gomob_dev_minio"),
+		MinIOUseSSL:    os.Getenv("GOMOB_MINIO_USE_SSL") == "true",
+		Bucket:         envOr("GOMOB_MINIO_BUCKET", "gomob-assets"),
+		PollInterval:   parseDuration("GOMOB_ASR_POLL_INTERVAL", 2*time.Second),
+		RetryAfter:     parseDuration("GOMOB_ASR_RETRY_AFTER", 30*time.Second),
+		MaxAttempts:    parseInt("GOMOB_ASR_MAX_ATTEMPTS", 3),
+		MaxAudioBytes:  parseInt64("GOMOB_ASR_MAX_AUDIO_BYTES", 50*1024*1024),
+	})
+	if err != nil {
+		log.Error("语音转写 worker 初始化失败", "err", err)
+		os.Exit(1)
+	}
+	go worker.Start(ctx)
+	log.Info("语音转写 worker 已启动",
+		"url", serviceURL,
+		"engine", trCfg.Engine,
+		"model", trCfg.Model,
+		"language", trCfg.Language,
+	)
 }
 
 const (

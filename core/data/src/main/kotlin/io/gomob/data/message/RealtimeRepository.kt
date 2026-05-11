@@ -1,5 +1,9 @@
 package io.gomob.data.message
 
+import dagger.Binds
+import dagger.Module
+import dagger.hilt.InstallIn
+import dagger.hilt.components.SingletonComponent
 import io.gomob.realtime.RealtimeConnectionState
 import io.gomob.realtime.RealtimeEnvelope
 import io.gomob.realtime.RealtimeEvent
@@ -12,19 +16,35 @@ import kotlinx.serialization.json.put
 import javax.inject.Inject
 import javax.inject.Singleton
 
+interface RealtimeMessageTransport {
+    val state: StateFlow<RealtimeConnectionState>
+    val events: SharedFlow<RealtimeEvent>
+
+    fun connect()
+
+    fun disconnect()
+
+    fun sendMessage(
+        conversationId: Long,
+        kind: String,
+        content: JsonElement,
+        clientMsgId: String,
+    ): Boolean
+}
+
 @Singleton
 class RealtimeRepository @Inject constructor(
     private val socket: RealtimeSocketClient,
-) {
-    val state: StateFlow<RealtimeConnectionState> = socket.state
-    val events: SharedFlow<RealtimeEvent> = socket.events
+) : RealtimeMessageTransport {
+    override val state: StateFlow<RealtimeConnectionState> = socket.state
+    override val events: SharedFlow<RealtimeEvent> = socket.events
 
-    fun connect() = socket.connect()
+    override fun connect() = socket.connect()
 
-    fun disconnect() = socket.disconnect()
+    override fun disconnect() = socket.disconnect()
 
-    fun sendMessage(
-        toUserId: Long,
+    override fun sendMessage(
+        conversationId: Long,
         kind: String,
         content: JsonElement,
         clientMsgId: String,
@@ -32,11 +52,18 @@ class RealtimeRepository @Inject constructor(
         RealtimeEnvelope(
             type = "msg.send",
             payload = buildJsonObject {
-                put("to_user_id", toUserId)
+                put("conversation_id", conversationId)
                 put("kind", kind)
                 put("content", content)
                 put("client_msg_id", clientMsgId)
             },
         ),
     )
+}
+
+@Module
+@InstallIn(SingletonComponent::class)
+abstract class RealtimeDataModule {
+    @Binds
+    abstract fun bindRealtimeMessageTransport(repository: RealtimeRepository): RealtimeMessageTransport
 }

@@ -9,9 +9,13 @@ import io.gomob.database.message.MessageDao
 import io.gomob.database.message.MessageEntity
 import io.gomob.model.message.MessageStatus
 import io.gomob.network.Envelope
+import io.gomob.network.ApiException
+import io.gomob.model.message.InspectionShareCard
 import io.gomob.network.MessageApi
 import io.gomob.network.dto.ConversationDto
 import io.gomob.network.dto.ConversationListResponse
+import io.gomob.network.dto.CallInviteResponse
+import io.gomob.network.dto.CreateCallInviteRequest
 import io.gomob.network.dto.CreateMessageRequest
 import io.gomob.network.dto.HelpExpertCaseDto
 import io.gomob.network.dto.HelpExpertCaseListResponse
@@ -21,7 +25,11 @@ import io.gomob.network.dto.MarkReadRequest
 import io.gomob.network.dto.MarkReadResponse
 import io.gomob.network.dto.MessageDto
 import io.gomob.network.dto.MessageListResponse
+import io.gomob.network.dto.MediaRoomResponse
 import io.gomob.network.dto.OpenDirectConversationRequest
+import io.gomob.network.dto.TranscribeDraftVoiceRequest
+import io.gomob.network.dto.TranscribeDraftVoiceResponse
+import io.gomob.realtime.RealtimeEvent
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
@@ -114,6 +122,24 @@ class MessageRepositoryTest {
     }
 
     @Test
+    fun transcribeUploadedVoiceDraftReturnsNormalizedTextWithoutSendingMessage() = runTest {
+        val api = FakeMessageApi(draftTranscriptText = "  你好世界。  ")
+        val repository = MessageRepository(
+            api = api,
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = FakeConversationDao(),
+            messageDao = FakeMessageDao(),
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        val text = repository.transcribeUploadedVoiceDraft(fakeUploadedAsset())
+
+        assertThat(text).isEqualTo("你好世界。")
+        assertThat(api.draftTranscribeRequests.single().assetId).isEqualTo("901")
+        assertThat(api.sentRequests).isEmpty()
+    }
+
+    @Test
     fun sendVideoClipUploadsAssetBeforeSendingReadyPayload() = runTest {
         val api = FakeMessageApi()
         val repository = MessageRepository(
@@ -129,6 +155,93 @@ class MessageRepositoryTest {
         val request = api.sentRequests.single()
         assertThat(request.kind).isEqualTo("video_clip")
         assertThat(request.payload.toString()).contains("\"media_state\":\"ready\"")
+    }
+
+    @Test
+    fun sendInspectionCardSendsStructuredPayload() = runTest {
+        val api = FakeMessageApi()
+        val repository = MessageRepository(
+            api = api,
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = FakeConversationDao(),
+            messageDao = FakeMessageDao(),
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        repository.sendInspectionCard(
+            conversationId = 9,
+            card = InspectionShareCard(
+                inspectionId = "LSVHM133022221761",
+                vin = "LSVHM133022221761",
+                vehicleLine = "大众系列 · 小型汽车 · 沪A12345",
+                timeLabel = "11:45",
+                status = "danger",
+                tags = listOf("OBD检验", "外廓尺寸"),
+            ),
+        )
+
+        val request = api.sentRequests.single()
+        assertThat(request.kind).isEqualTo("inspection_card")
+        assertThat(request.payload.toString()).contains("\"inspection_id\":\"LSVHM133022221761\"")
+        assertThat(request.payload.toString()).contains("\"vin\":\"LSVHM133022221761\"")
+        assertThat(request.payload.toString()).contains("\"tags\":[\"OBD检验\",\"外廓尺寸\"]")
+    }
+
+    @Test
+    fun createVideoCallInviteStoresServerMessage() = runTest {
+        val messageDao = FakeMessageDao()
+        val api = FakeMessageApi()
+        val repository = MessageRepository(
+            api = api,
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = FakeConversationDao(),
+            messageDao = messageDao,
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        val invite = repository.createVideoCallInvite(conversationId = 9, title = "和陈若愚的视频通话")
+
+        assertThat(invite.roomId).isEqualTo("701")
+        assertThat(invite.providerRoom).isEqualTo("gomob_call_test")
+        assertThat(api.callInviteRequests.single().title).isEqualTo("和陈若愚的视频通话")
+        assertThat(messageDao.items.single().kind).isEqualTo("call_invite")
+        assertThat(messageDao.items.single().payloadJson).contains("\"room_id\":\"701\"")
+    }
+
+    @Test
+    fun createVideoCallInviteRemovesStaleConversationOnForbidden() = runTest {
+        val conversationDao = FakeConversationDao(
+            initialConversations = listOf(
+                ConversationWithLastMessage(
+                    conversation = conversationEntity(9),
+                    lastMessage = null,
+                ),
+            ),
+        )
+        val messageDao = FakeMessageDao()
+        messageDao.upsertMessage(
+            pendingTextEntity(
+                conversationId = 9,
+                text = "旧消息",
+                clientMsgId = "old-1",
+                now = "2026-05-08T12:00:00Z",
+            ),
+        )
+        val repository = MessageRepository(
+            api = FakeMessageApi(callInviteError = ApiException(40103, 403, "权限不足")),
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = conversationDao,
+            messageDao = messageDao,
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        val error = runCatching {
+            repository.createVideoCallInvite(conversationId = 9, title = "视频通话")
+        }.exceptionOrNull()
+
+        assertThat(error?.message).isEqualTo("会话已失效，请返回消息中心重新打开")
+        assertThat(conversationDao.findById(9)).isNull()
+        assertThat(messageDao.items).isEmpty()
     }
 
     @Test
@@ -254,6 +367,74 @@ class MessageRepositoryTest {
     }
 
     @Test
+    fun fullRefreshMarksConversationHistoryHydrated() = runTest {
+        val repository = MessageRepository(
+            api = FakeMessageApi(
+                messages = listOf(
+                    MessageDto(
+                        id = "101",
+                        conversationId = "9",
+                        serverSeq = 5,
+                        senderId = "2",
+                        kind = "text",
+                        payload = buildJsonObject { put("text", "本地历史铺底后同步的新消息") },
+                        createdAt = "2026-05-08T12:00:00Z",
+                    ),
+                ),
+            ),
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = FakeConversationDao(),
+            messageDao = FakeMessageDao(),
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        assertThat(repository.shouldHydrateConversationHistory(9)).isTrue()
+
+        repository.refreshMessages(conversationId = 9, fullSync = true)
+
+        assertThat(repository.shouldHydrateConversationHistory(9)).isFalse()
+    }
+
+    @Test
+    fun warmConversationSnapshotCachesLocalMessagesBeforeNavigation() = runTest {
+        val messageDao = FakeMessageDao()
+        messageDao.upsertMessage(
+            MessageEntity(
+                localKey = "s:101",
+                serverId = 101,
+                conversationId = 9,
+                serverSeq = 5,
+                senderId = 2,
+                kind = "text",
+                payloadJson = "{}",
+                preview = "离线聊天记录先显示",
+                clientMsgId = null,
+                status = MessageStatus.Sent.name,
+                createdAt = "2026-05-08T12:00:00Z",
+                editedAt = null,
+            ),
+        )
+        val repository = MessageRepository(
+            api = FakeMessageApi(),
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = FakeConversationDao(
+                initialConversations = listOf(
+                    ConversationWithLastMessage(
+                        conversation = conversationEntity(id = 9),
+                        lastMessage = null,
+                    ),
+                ),
+            ),
+            messageDao = messageDao,
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        repository.warmConversationSnapshot(9)
+
+        assertThat(repository.cachedMessages(9).map { it.preview }).containsExactly("离线聊天记录先显示")
+    }
+
+    @Test
     fun helpExpertsMapServerFixedExperts() = runTest {
         val repository = MessageRepository(
             api = FakeMessageApi(
@@ -369,6 +550,154 @@ class MessageRepositoryTest {
         assertThat(conversation.subjectKind).isEqualTo("online_help")
         assertThat(conversationDao.upsertedSingle?.id).isEqualTo(77)
     }
+
+    @Test
+    fun realtimeDeliveredMarksPendingRowAndUpdatesConversationSummary() = runTest {
+        val conversationDao = FakeConversationDao(
+            initialConversations = listOf(
+                ConversationWithLastMessage(
+                    conversation = conversationEntity(id = 9),
+                    lastMessage = null,
+                ),
+            ),
+        )
+        val messageDao = FakeMessageDao()
+        messageDao.upsertMessage(
+            pendingMessageEntity(
+                conversationId = 9,
+                kind = "text",
+                payload = buildJsonObject { put("text", "实时发送") },
+                preview = "实时发送",
+                clientMsgId = "rt-1",
+                now = "2026-05-08T12:00:00Z",
+            ),
+        )
+        val repository = MessageRepository(
+            api = FakeMessageApi(),
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = conversationDao,
+            messageDao = messageDao,
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        repository.applyRealtimeEvent(
+            RealtimeEvent.MessageDelivered(
+                clientMsgId = "rt-1",
+                conversationId = 9,
+                serverSeq = 6,
+                messageId = 301,
+                createdAt = "2026-05-08T12:00:01Z",
+            ),
+        )
+
+        val saved = messageDao.items.single()
+        assertThat(saved.localKey).isEqualTo("s:301")
+        assertThat(saved.status).isEqualTo(MessageStatus.Sent.name)
+        assertThat(saved.serverSeq).isEqualTo(6)
+        assertThat(conversationDao.lastRecorded?.localKey).isEqualTo("s:301")
+        assertThat(conversationDao.lastRecorded?.incrementUnread).isFalse()
+    }
+
+    @Test
+    fun realtimeReceivedPersistsServerMessageAndIncrementsUnread() = runTest {
+        val conversationDao = FakeConversationDao(
+            initialConversations = listOf(
+                ConversationWithLastMessage(
+                    conversation = conversationEntity(id = 9),
+                    lastMessage = null,
+                ),
+            ),
+        )
+        val messageDao = FakeMessageDao()
+        val repository = MessageRepository(
+            api = FakeMessageApi(),
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = conversationDao,
+            messageDao = messageDao,
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        repository.applyRealtimeEvent(
+            RealtimeEvent.MessageReceived(
+                messageId = 302,
+                conversationId = 9,
+                serverSeq = 7,
+                senderId = 31,
+                kind = "text",
+                content = buildJsonObject { put("text", "真机收到的实时消息") },
+                clientMsgId = "peer-1",
+                createdAt = "2026-05-08T12:00:02Z",
+            ),
+        )
+
+        val saved = messageDao.items.single()
+        assertThat(saved.localKey).isEqualTo("s:302")
+        assertThat(saved.serverId).isEqualTo(302)
+        assertThat(saved.preview).isEqualTo("真机收到的实时消息")
+        assertThat(saved.payloadJson).contains("真机收到的实时消息")
+        assertThat(conversationDao.lastRecorded?.localKey).isEqualTo("s:302")
+        assertThat(conversationDao.lastRecorded?.incrementUnread).isTrue()
+    }
+
+    @Test
+    fun transcriptUpdatedRefreshesVoicePayloadPreviewAndConversationSummary() = runTest {
+        val conversationDao = FakeConversationDao(
+            initialConversations = listOf(
+                ConversationWithLastMessage(
+                    conversation = conversationEntity(id = 9),
+                    lastMessage = null,
+                ),
+            ),
+        )
+        val messageDao = FakeMessageDao()
+        messageDao.upsertMessage(
+            MessageEntity(
+                localKey = "s:401",
+                serverId = 401,
+                conversationId = 9,
+                serverSeq = 8,
+                senderId = 31,
+                kind = "voice",
+                payloadJson = """{"asset_id":"901","duration_sec":6}""",
+                preview = "[语音 0:06]",
+                clientMsgId = null,
+                status = MessageStatus.Sent.name,
+                createdAt = "2026-05-08T12:00:00Z",
+                editedAt = null,
+            ),
+        )
+        val repository = MessageRepository(
+            api = FakeMessageApi(),
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = conversationDao,
+            messageDao = messageDao,
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        repository.applyRealtimeEvent(
+            RealtimeEvent.TranscriptUpdated(
+                messageId = 401,
+                conversationId = 9,
+                serverSeq = 8,
+                kind = "voice",
+                content = buildJsonObject {
+                    put("asset_id", "901")
+                    put("duration_sec", 6)
+                    put("transcript_status", "done")
+                    put("transcript_normalized_text", "请复核第三工位")
+                },
+                updatedAt = "2026-05-08T12:00:03Z",
+            ),
+        )
+
+        val saved = messageDao.items.single()
+        assertThat(saved.payloadJson).contains("请复核第三工位")
+        assertThat(saved.preview).isEqualTo("[语音转文字] 请复核第三工位")
+        assertThat(saved.editedAt).isEqualTo("2026-05-08T12:00:03Z")
+        assertThat(repository.cachedMessages(9).single().preview).isEqualTo("[语音转文字] 请复核第三工位")
+        assertThat(conversationDao.lastRecorded?.localKey).isEqualTo("s:401")
+        assertThat(conversationDao.lastRecorded?.incrementUnread).isFalse()
+    }
 }
 
 private class FakeMediaAssetUploader : MediaAssetUploader {
@@ -397,6 +726,22 @@ private fun fakeUploadedAsset(): UploadedMediaAsset =
         sha256 = "a".repeat(64),
     )
 
+private fun conversationEntity(id: Long): ConversationEntity = ConversationEntity(
+    id = id,
+    kind = "p2p",
+    title = null,
+    peerId = 31,
+    peerName = "陈若愚",
+    peerEmployeeId = "EXP-VIN-0001",
+    subjectKind = null,
+    subjectId = null,
+    lastMessageLocalKey = null,
+    lastReadSeq = 0,
+    unreadCount = 0,
+    createdAt = "2026-05-08T11:00:00Z",
+    updatedAt = "2026-05-08T12:00:00Z",
+)
+
 private class FakeMessageApi(
     private val conversations: List<ConversationDto> = emptyList(),
     private val messages: List<MessageDto> = emptyList(),
@@ -404,9 +749,15 @@ private class FakeMessageApi(
     private val expertCases: List<HelpExpertCaseDto> = emptyList(),
     private val directConversation: ConversationDto? = null,
     private val helpRoom: ConversationDto? = null,
+    private val messagesError: ApiException? = null,
+    private val callInviteError: ApiException? = null,
+    private val draftTranscriptText: String = "你好世界。",
 ) : MessageApi {
     val messageSinceSeqRequests = mutableListOf<Long>()
     val sentRequests = mutableListOf<CreateMessageRequest>()
+    val callInviteRequests = mutableListOf<CreateCallInviteRequest>()
+    val transcriptRetryRequests = mutableListOf<String>()
+    val draftTranscribeRequests = mutableListOf<TranscribeDraftVoiceRequest>()
 
     override suspend fun conversations(cursor: String?, limit: Int): Envelope<ConversationListResponse> =
         Envelope(code = 0, data = ConversationListResponse(items = conversations))
@@ -448,6 +799,7 @@ private class FakeMessageApi(
         sinceSeq: Long,
         limit: Int,
     ): Envelope<MessageListResponse> {
+        messagesError?.let { throw it }
         messageSinceSeqRequests += sinceSeq
         return Envelope(code = 0, data = MessageListResponse(items = messages))
     }
@@ -472,6 +824,81 @@ private class FakeMessageApi(
         )
     }
 
+    override suspend fun createCallInvite(
+        conversationId: String,
+        request: CreateCallInviteRequest,
+    ): Envelope<CallInviteResponse> {
+        callInviteError?.let { throw it }
+        callInviteRequests += request
+        val payload = buildJsonObject {
+            put("room_id", "701")
+            put("provider_room", "gomob_call_test")
+            put("status", "ringing")
+            put("title", request.title ?: "视频通话")
+            put("livekit_configured", true)
+        }
+        return Envelope(
+            code = 0,
+            data = CallInviteResponse(
+                room = MediaRoomResponse(
+                    id = "701",
+                    provider = "livekit",
+                    providerRoom = "gomob_call_test",
+                    kind = "call",
+                    status = "active",
+                    liveKitConfigured = true,
+                    createdAt = "2026-05-08T12:00:00Z",
+                ),
+                message = MessageDto(
+                    id = "201",
+                    conversationId = conversationId,
+                    serverSeq = 9,
+                    senderId = "1",
+                    kind = "call_invite",
+                    payload = payload,
+                    clientMsgId = request.clientMsgId,
+                    createdAt = "2026-05-08T12:00:00Z",
+                ),
+            ),
+        )
+    }
+
+    override suspend fun retryMessageTranscript(messageId: String): Envelope<MessageDto> {
+        transcriptRetryRequests += messageId
+        return Envelope(
+            code = 0,
+            data = MessageDto(
+                id = messageId,
+                conversationId = "9",
+                serverSeq = 8,
+                senderId = "31",
+                kind = "voice",
+                payload = buildJsonObject {
+                    put("asset_id", "901")
+                    put("duration_sec", 6)
+                    put("transcript_status", "pending")
+                },
+                createdAt = "2026-05-08T12:00:00Z",
+            ),
+        )
+    }
+
+    override suspend fun transcribeDraftVoice(
+        request: TranscribeDraftVoiceRequest,
+    ): Envelope<TranscribeDraftVoiceResponse> {
+        draftTranscribeRequests += request
+        return Envelope(
+            code = 0,
+            data = TranscribeDraftVoiceResponse(
+                text = draftTranscriptText.trim(),
+                normalizedText = draftTranscriptText,
+                engine = "fireredasr2",
+                model = "FireRedASR2-AED",
+                language = "zh",
+            ),
+        )
+    }
+
     override suspend fun markRead(
         conversationId: String,
         request: MarkReadRequest,
@@ -486,25 +913,92 @@ private class FakeMessageApi(
         )
 }
 
-private class FakeConversationDao : ConversationDao {
-    private val empty = MutableStateFlow<List<ConversationWithLastMessage>>(emptyList())
+private class FakeConversationDao(
+    initialConversations: List<ConversationWithLastMessage> = emptyList(),
+) : ConversationDao {
+    private val stored = initialConversations.toMutableList()
+    private val empty = MutableStateFlow(stored.toList())
     private val current = MutableStateFlow<ConversationWithLastMessage?>(null)
     var upsertedSingle: ConversationEntity? = null
+    var lastRecorded: RecordedLastMessage? = null
 
     override fun observeConversations(): Flow<List<ConversationWithLastMessage>> = empty
 
     override fun observeConversation(conversationId: Long): Flow<ConversationWithLastMessage?> = current
 
-    override suspend fun findById(conversationId: Long): ConversationEntity? = null
+    override fun observeLatestBySubjectKind(subjectKind: String): Flow<ConversationWithLastMessage?> = current
 
-    override suspend fun upsertConversations(items: List<ConversationEntity>) = Unit
+    override suspend fun recentConversations(limit: Int): List<ConversationWithLastMessage> = stored.take(limit)
+
+    override suspend fun findById(conversationId: Long): ConversationEntity? =
+        stored.firstOrNull { it.conversation.id == conversationId }?.conversation
+            ?: upsertedSingle?.takeIf { it.id == conversationId }
+
+    override suspend fun upsertConversations(items: List<ConversationEntity>) {
+        items.forEach { item ->
+            val index = stored.indexOfFirst { it.conversation.id == item.id }
+            val next = ConversationWithLastMessage(conversation = item, lastMessage = null)
+            if (index >= 0) {
+                stored[index] = next
+            } else {
+                stored += next
+            }
+        }
+        empty.value = stored.toList()
+    }
 
     override suspend fun upsertConversation(item: ConversationEntity) {
         upsertedSingle = item
+        upsertConversations(listOf(item))
     }
 
+    override suspend fun setPinned(conversationId: Long, pinned: Boolean) = Unit
+
+    override suspend fun deleteById(conversationId: Long) {
+        stored.removeAll { it.conversation.id == conversationId }
+        if (upsertedSingle?.id == conversationId) {
+            upsertedSingle = null
+        }
+        empty.value = stored.toList()
+        if (current.value?.conversation?.id == conversationId) {
+            current.value = null
+        }
+    }
+
+    override suspend fun markCleared(conversationId: Long, clearedBeforeSeq: Long) = Unit
+
     override suspend fun markRead(conversationId: Long, lastReadSeq: Long, unreadCount: Long) = Unit
+
+    override suspend fun recordLastMessage(
+        conversationId: Long,
+        localKey: String,
+        serverSeq: Long,
+        updatedAt: String,
+        incrementUnread: Boolean,
+    ) {
+        lastRecorded = RecordedLastMessage(conversationId, localKey, serverSeq, updatedAt, incrementUnread)
+        val index = stored.indexOfFirst { it.conversation.id == conversationId }
+        if (index >= 0) {
+            val old = stored[index]
+            stored[index] = old.copy(
+                conversation = old.conversation.copy(
+                    lastMessageLocalKey = localKey,
+                    updatedAt = updatedAt,
+                    unreadCount = if (incrementUnread) old.conversation.unreadCount + 1 else old.conversation.unreadCount,
+                ),
+            )
+            empty.value = stored.toList()
+        }
+    }
 }
+
+private data class RecordedLastMessage(
+    val conversationId: Long,
+    val localKey: String,
+    val serverSeq: Long,
+    val updatedAt: String,
+    val incrementUnread: Boolean,
+)
 
 private class FakeMessageDao : MessageDao {
     val items = mutableListOf<MessageEntity>()
@@ -512,11 +1006,23 @@ private class FakeMessageDao : MessageDao {
 
     override fun observeMessages(conversationId: Long): Flow<List<MessageEntity>> = messagesFlow
 
+    override suspend fun recentMessages(conversationId: Long, limit: Int): List<MessageEntity> =
+        items
+            .filter { it.conversationId == conversationId }
+            .sortedWith(
+                compareByDescending<MessageEntity> { it.serverSeq ?: Long.MAX_VALUE }
+                    .thenByDescending { it.createdAt },
+            )
+            .take(limit)
+
     override suspend fun maxServerSeq(conversationId: Long): Long? =
         items.filter { it.conversationId == conversationId }.mapNotNull { it.serverSeq }.maxOrNull()
 
     override suspend fun findByClientMsgId(clientMsgId: String): MessageEntity? =
         items.firstOrNull { it.clientMsgId == clientMsgId }
+
+    override suspend fun findByServerId(serverId: Long): MessageEntity? =
+        items.firstOrNull { it.serverId == serverId }
 
     override suspend fun upsertServerMessages(items: List<MessageEntity>) {
         items.forEach { upsertMessage(it) }
@@ -552,6 +1058,35 @@ private class FakeMessageDao : MessageDao {
 
     override suspend fun markPending(clientMsgId: String) {
         updateStatus(clientMsgId, MessageStatus.Pending)
+    }
+
+    override suspend fun updateServerMessagePayload(
+        serverId: Long,
+        payloadJson: String,
+        preview: String?,
+        updatedAt: String,
+    ) {
+        val index = items.indexOfFirst { it.serverId == serverId }
+        if (index < 0) return
+        items[index] = items[index].copy(
+            payloadJson = payloadJson,
+            preview = preview,
+            editedAt = updatedAt,
+        )
+        messagesFlow.value = items.toList()
+    }
+
+    override suspend fun deleteClearedMessages(conversationId: Long, clearedBeforeSeq: Long) {
+        items.removeAll {
+            val serverSeq = it.serverSeq
+            it.conversationId == conversationId && (serverSeq == null || serverSeq <= clearedBeforeSeq)
+        }
+        messagesFlow.value = items.toList()
+    }
+
+    override suspend fun deleteByConversationId(conversationId: Long) {
+        items.removeAll { it.conversationId == conversationId }
+        messagesFlow.value = items.toList()
     }
 
     private fun updateStatus(clientMsgId: String, status: MessageStatus) {

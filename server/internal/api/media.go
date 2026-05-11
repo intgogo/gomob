@@ -38,13 +38,66 @@ func (c liveKitConfig) configured() bool {
 	return c.URL != "" && c.APIKey != "" && c.APISecret != ""
 }
 
+type flexibleJSONID string
+
+func (v flexibleJSONID) String() string {
+	return string(v)
+}
+
+func (v *flexibleJSONID) UnmarshalJSON(raw []byte) error {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		*v = ""
+		return nil
+	}
+	if strings.HasPrefix(s, `"`) {
+		var out string
+		if err := json.Unmarshal(raw, &out); err != nil {
+			return err
+		}
+		*v = flexibleJSONID(strings.TrimSpace(out))
+		return nil
+	}
+	if _, err := strconv.ParseInt(s, 10, 64); err != nil {
+		return err
+	}
+	*v = flexibleJSONID(s)
+	return nil
+}
+
+type flexibleJSONIDs []string
+
+func (v *flexibleJSONIDs) UnmarshalJSON(raw []byte) error {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		*v = nil
+		return nil
+	}
+	var raws []json.RawMessage
+	if err := json.Unmarshal(raw, &raws); err != nil {
+		return err
+	}
+	out := make([]string, 0, len(raws))
+	for _, item := range raws {
+		var id flexibleJSONID
+		if err := json.Unmarshal(item, &id); err != nil {
+			return err
+		}
+		if id.String() != "" {
+			out = append(out, id.String())
+		}
+	}
+	*v = out
+	return nil
+}
+
 type createMediaRoomReq struct {
-	Kind               string   `json:"kind"`
-	SubjectKind        string   `json:"subject_kind,omitempty"`
-	SubjectID          string   `json:"subject_id,omitempty"`
-	ConversationID     string   `json:"conversation_id,omitempty"`
-	Title              string   `json:"title,omitempty"`
-	ParticipantUserIDs []string `json:"participant_user_ids,omitempty"`
+	Kind               string          `json:"kind"`
+	SubjectKind        string          `json:"subject_kind,omitempty"`
+	SubjectID          flexibleJSONID  `json:"subject_id,omitempty"`
+	ConversationID     flexibleJSONID  `json:"conversation_id,omitempty"`
+	Title              string          `json:"title,omitempty"`
+	ParticipantUserIDs flexibleJSONIDs `json:"participant_user_ids,omitempty"`
 }
 
 type mediaRoomDTO struct {
@@ -58,7 +111,44 @@ type mediaRoomDTO struct {
 	LiveKitURL        string `json:"livekit_url,omitempty"`
 	LiveKitConfigured bool   `json:"livekit_configured"`
 	Message           string `json:"message,omitempty"`
+	CallAccepted      bool   `json:"call_accepted,omitempty"`
 	CreatedAt         string `json:"created_at"`
+}
+
+func (h *Handler) GetMediaRoom(w http.ResponseWriter, r *http.Request) {
+	uid := callerUserID(r)
+	if uid == 0 {
+		httpx.WriteError(w, httpx.ErrTokenInvalid)
+		return
+	}
+	roomID, err := parsePathID(r, "id")
+	if err != nil {
+		httpx.WriteError(w, httpx.ErrBadParam)
+		return
+	}
+	room, err := h.media.FindRoom(r.Context(), roomID)
+	if err != nil {
+		if err == repo.ErrNotFound {
+			httpx.WriteError(w, httpx.ErrNotFound)
+			return
+		}
+		httpx.WriteError(w, httpx.ErrInternal)
+		return
+	}
+	if !h.canAccessMediaRoom(r.Context(), room, uid, "viewer") {
+		httpx.WriteError(w, httpx.ErrPermDenied)
+		return
+	}
+	dto := toMediaRoomDTO(room, currentLiveKitConfig(), "")
+	if room.Kind == "call" {
+		accepted, err := h.media.HasJoinedCounterpart(r.Context(), room.ID, uid)
+		if err != nil {
+			httpx.WriteError(w, httpx.ErrInternal)
+			return
+		}
+		dto.CallAccepted = accepted
+	}
+	httpx.OK(w, dto)
 }
 
 func (h *Handler) CreateMediaRoom(w http.ResponseWriter, r *http.Request) {
@@ -201,6 +291,12 @@ func (h *Handler) EndMediaRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if room.CreatedBy != uid && callerRole(r) != "admin" {
+		if room.Kind != "call" || !h.canAccessMediaRoom(r.Context(), room, uid, "viewer") {
+			httpx.WriteError(w, httpx.ErrPermDenied)
+			return
+		}
+	}
+	if room.CreatedBy != uid && callerRole(r) != "admin" && room.Kind != "call" {
 		httpx.WriteError(w, httpx.ErrPermDenied)
 		return
 	}
@@ -216,8 +312,22 @@ func (h *Handler) EndMediaRoom(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, httpx.ErrInternal)
 		return
 	}
+	endedAt := time.Now()
+	if room.EndedAt != nil {
+		endedAt = *room.EndedAt
+	}
 	room.Status = "ended"
+	room.EndedAt = &endedAt
 	room.Metadata = metadata
+	if room.Kind == "call" {
+		if err := h.finalizeCallRoom(r.Context(), room, uid); err != nil {
+			if h.log != nil {
+				h.log.Error("通话结束记录写入失败", "err", err, "room_id", room.ID)
+			}
+			httpx.WriteError(w, httpx.ErrInternal)
+			return
+		}
+	}
 	httpx.OK(w, toMediaRoomDTO(room, cfg, msg))
 }
 
@@ -254,7 +364,7 @@ func (h *Handler) CreateLiveSession(w http.ResponseWriter, r *http.Request) {
 	}
 	room, msg, err := h.createMediaRoom(r.Context(), uid, createMediaRoomReq{
 		Kind:           "first_person_live",
-		ConversationID: req.ConversationID,
+		ConversationID: flexibleJSONID(req.ConversationID),
 		Title:          title,
 	})
 	if err != nil {
@@ -323,8 +433,8 @@ func (h *Handler) createMediaRoom(ctx context.Context, uid int64, req createMedi
 	var subjectKind *string
 	var subjectID *int64
 	participants := []repo.MediaParticipant{{UserID: uid, Role: "publisher"}}
-	if req.ConversationID != "" {
-		convID, err := strconv.ParseInt(req.ConversationID, 10, 64)
+	if req.ConversationID.String() != "" {
+		convID, err := strconv.ParseInt(req.ConversationID.String(), 10, 64)
 		if err != nil || convID <= 0 {
 			return nil, "", httpx.ErrBadParam
 		}
@@ -389,11 +499,22 @@ func (h *Handler) canAccessMediaRoom(ctx context.Context, room *repo.MediaRoom, 
 	if room.CreatedBy == uid {
 		return true
 	}
-	if role == "publisher" {
-		return false
-	}
 	if room.Kind == "first_person_live" && role == "viewer" {
 		return true
+	}
+	if room.Kind == "call" {
+		ok, err := h.media.IsParticipant(ctx, room.ID, uid)
+		if err == nil && ok {
+			return true
+		}
+		if room.SubjectKind != nil && *room.SubjectKind == "conversation" && room.SubjectID != nil {
+			ok, err = h.conversations.IsMember(ctx, *room.SubjectID, uid)
+			return err == nil && ok
+		}
+		return false
+	}
+	if role == "publisher" {
+		return false
 	}
 	ok, err := h.media.IsParticipant(ctx, room.ID, uid)
 	if err == nil && ok {
@@ -404,6 +525,82 @@ func (h *Handler) canAccessMediaRoom(ctx context.Context, room *repo.MediaRoom, 
 		return err == nil && ok
 	}
 	return false
+}
+
+func (h *Handler) finalizeCallRoom(ctx context.Context, room *repo.MediaRoom, endedBy int64) error {
+	if room == nil || room.Kind != "call" {
+		return nil
+	}
+	if room.SubjectKind == nil || *room.SubjectKind != "conversation" || room.SubjectID == nil {
+		return nil
+	}
+	conversationID := *room.SubjectID
+	callees, err := h.conversations.CounterpartIDs(ctx, conversationID, room.CreatedBy)
+	if err != nil {
+		return err
+	}
+	if len(callees) == 0 {
+		return nil
+	}
+	calleeID := callees[0]
+	startedAt := room.CreatedAt
+	if room.StartedAt != nil {
+		startedAt = *room.StartedAt
+	}
+	endedAt := time.Now()
+	if room.EndedAt != nil {
+		endedAt = *room.EndedAt
+	}
+	durationSec := int(endedAt.Sub(startedAt).Seconds())
+	if durationSec < 0 {
+		durationSec = 0
+	}
+	status := "missed"
+	accepted, err := h.media.HasJoinedCounterpart(ctx, room.ID, room.CreatedBy)
+	if err != nil {
+		return err
+	}
+	if accepted {
+		status = "completed"
+	}
+	roomID := room.ID
+	_, err = h.media.InsertCallLogOnce(ctx, &repo.CallLog{
+		RoomID:         &roomID,
+		ConversationID: &conversationID,
+		CallerID:       room.CreatedBy,
+		CalleeID:       calleeID,
+		StartedAt:      startedAt,
+		EndedAt:        &endedAt,
+		DurationSec:    durationSec,
+		Status:         status,
+	})
+	if err != nil {
+		return err
+	}
+	senderID := room.CreatedBy
+	clientMsgID := fmt.Sprintf("media-room-%d-video-call", room.ID)
+	message := &repo.Message{
+		ConversationID: conversationID,
+		SenderID:       &senderID,
+		Kind:           "video_call",
+		Payload: mustRawJSON(map[string]any{
+			"room_id":       strconv.FormatInt(room.ID, 10),
+			"provider_room": room.ProviderRoom,
+			"caller_id":     strconv.FormatInt(room.CreatedBy, 10),
+			"callee_id":     strconv.FormatInt(calleeID, 10),
+			"ended_by":      strconv.FormatInt(endedBy, 10),
+			"status":        status,
+			"duration_sec":  durationSec,
+			"started_at":    startedAt.UTC().Format(time.RFC3339Nano),
+			"ended_at":      endedAt.UTC().Format(time.RFC3339Nano),
+		}),
+	}
+	inserted, err := h.messages.AppendIdempotent(ctx, message, clientMsgID)
+	if err != nil {
+		return err
+	}
+	h.notifyRealtimeMessage(ctx, senderID, message, inserted)
+	return nil
 }
 
 func normalizeMediaKind(kind string) string {

@@ -1,6 +1,16 @@
 package io.gomob.scan.navigation
 
 import android.net.Uri
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,10 +26,12 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
+import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -39,6 +51,8 @@ import io.gomob.feature.message.ExpertDetailRoute
 import io.gomob.feature.message.LocalVideoPreviewRoute
 import io.gomob.feature.message.MessageEntryTab
 import io.gomob.feature.message.MessageRoute
+import io.gomob.feature.message.VideoCallMode
+import io.gomob.feature.message.VideoCallRoute
 import io.gomob.feature.profile.HistoryRoute
 import io.gomob.feature.profile.ProfileAboutRoute
 import io.gomob.feature.profile.ProfileAccountRoute
@@ -62,6 +76,10 @@ private const val ROUTE_PROFILE = "profile"
 private const val MESSAGE_TAB_REQUEST = "message_tab_request"
 private const val MESSAGE_TAB_HELP = "help"
 private const val MESSAGE_TAB_LIST = "list"
+private const val IOS_PUSH_DURATION_MS = 400
+private const val IOS_TAB_DURATION_MS = 140
+private const val IOS_UNDERLAY_PARALLAX_DIVISOR = 3
+private val IosEasing = CubicBezierEasing(0.32f, 0.72f, 0f, 1f)
 
 private val TABS = listOf(
     TabItemVector(ROUTE_HOME, "首页", Icons.Filled.AutoAwesome),
@@ -88,8 +106,22 @@ fun GomobNavHost() {
     val imeVisible = WindowInsets.ime.getBottom(density) > 0
 
     Column(modifier = Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            NavHost(navController = nav, startDestination = ROUTE_HOME) {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .iosInteractiveBackGesture(enabled = !onTabRoot),
+        ) {
+            NavHost(
+                navController = nav,
+                startDestination = ROUTE_HOME,
+                contentAlignment = Alignment.TopStart,
+                enterTransition = { gomobEnterTransition() },
+                exitTransition = { gomobExitTransition() },
+                popEnterTransition = { gomobPopEnterTransition() },
+                popExitTransition = { gomobPopExitTransition() },
+                sizeTransform = { null },
+            ) {
                 // ---- 首页 + 二级 ----
                 composable(ROUTE_HOME) {
                     HomeRoute(
@@ -141,6 +173,9 @@ fun GomobNavHost() {
                     ExpertDetailRoute(
                         onBack = { nav.popBackStack() },
                         onOpenConversation = { id -> nav.navigate("message/conv/$id") },
+                        onOpenAudioVideo = { title ->
+                            nav.navigate("message/local-video/${Uri.encode(title)}")
+                        },
                     )
                 }
                 composable("message/conv/{id}") { entry ->
@@ -150,6 +185,23 @@ fun GomobNavHost() {
                         onOpenLocalVideo = { title ->
                             nav.navigate("message/local-video/${Uri.encode(title)}")
                         },
+                        onOpenVideoCall = { roomId, title, mode ->
+                            nav.navigate(
+                                "message/video-call/${Uri.encode(roomId)}/${mode.routeValue}/${Uri.encode(title)}",
+                            )
+                        },
+                        onOpenInspection = { id ->
+                            nav.navigate("home/inspection/${Uri.encode(id)}")
+                        },
+                    )
+                }
+                composable("message/video-call/{roomId}/{mode}/{title}") { entry ->
+                    VideoCallRoute(
+                        roomId = Uri.decode(entry.arguments?.getString("roomId").orEmpty()),
+                        mode = Uri.decode(entry.arguments?.getString("mode").orEmpty())
+                            .ifBlank { VideoCallMode.Callee.routeValue },
+                        title = Uri.decode(entry.arguments?.getString("title").orEmpty()),
+                        onBack = { nav.popBackStack() },
                     )
                 }
                 composable("message/local-video/{title}") { entry ->
@@ -262,3 +314,48 @@ private fun NavController.switchTab(route: String) {
         restoreState = true
     }
 }
+
+private fun AnimatedContentTransitionScope<NavBackStackEntry>.gomobEnterTransition(): EnterTransition =
+    if (isRootTabTransition()) {
+        fadeIn(animationSpec = tween(IOS_TAB_DURATION_MS, easing = IosEasing))
+    } else {
+        slideInHorizontally(
+            animationSpec = tween(IOS_PUSH_DURATION_MS, easing = IosEasing),
+            initialOffsetX = { width -> width },
+        )
+    }
+
+private fun AnimatedContentTransitionScope<NavBackStackEntry>.gomobExitTransition(): ExitTransition =
+    if (isRootTabTransition()) {
+        fadeOut(animationSpec = tween(IOS_TAB_DURATION_MS, easing = IosEasing))
+    } else {
+        slideOutHorizontally(
+            animationSpec = tween(IOS_PUSH_DURATION_MS, easing = IosEasing),
+            targetOffsetX = { width -> -width / IOS_UNDERLAY_PARALLAX_DIVISOR },
+        )
+    }
+
+private fun AnimatedContentTransitionScope<NavBackStackEntry>.gomobPopEnterTransition(): EnterTransition =
+    if (isRootTabTransition()) {
+        fadeIn(animationSpec = tween(IOS_TAB_DURATION_MS, easing = IosEasing))
+    } else {
+        slideInHorizontally(
+            animationSpec = tween(IOS_PUSH_DURATION_MS, easing = LinearEasing),
+            initialOffsetX = { width -> -width / IOS_UNDERLAY_PARALLAX_DIVISOR },
+        )
+    }
+
+private fun AnimatedContentTransitionScope<NavBackStackEntry>.gomobPopExitTransition(): ExitTransition =
+    if (isRootTabTransition()) {
+        fadeOut(animationSpec = tween(IOS_TAB_DURATION_MS, easing = IosEasing))
+    } else {
+        slideOutHorizontally(
+            animationSpec = tween(IOS_PUSH_DURATION_MS, easing = LinearEasing),
+            targetOffsetX = { width -> width },
+        )
+    }
+
+private fun AnimatedContentTransitionScope<NavBackStackEntry>.isRootTabTransition(): Boolean =
+    initialState.destination.route.isRootTabRoute() && targetState.destination.route.isRootTabRoute()
+
+private fun String?.isRootTabRoute(): Boolean = this in TAB_ROUTES

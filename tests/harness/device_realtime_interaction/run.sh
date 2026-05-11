@@ -109,6 +109,27 @@ END $$;
 SQL
 }
 
+ensure_livekit_container() {
+    if ! command -v podman >/dev/null 2>&1; then
+        log "  podman 不可用，跳过 LiveKit 容器检查"
+        return 0
+    fi
+    if podman ps --format '{{.Names}}' | grep -qx gomob-livekit; then
+        log "  LiveKit dev server 已运行：gomob-livekit"
+        return 0
+    fi
+    if podman ps -a --format '{{.Names}}' | grep -qx gomob-livekit; then
+        podman start gomob-livekit >/dev/null
+        log "  已启动已有 LiveKit dev server：gomob-livekit"
+        return 0
+    fi
+    podman run -d --name gomob-livekit \
+        -p 7880:7880 -p 7881:7881 -p 7882:7882/udp \
+        docker.io/livekit/livekit-server:latest \
+        --dev --bind 0.0.0.0 >/dev/null
+    log "  已创建 LiveKit dev server：gomob-livekit (--dev: devkey/secret)"
+}
+
 record_device() {
     local serial="$1" kind="$2" model="$3" reverse_ok="$4" app_pkg="$5" app_started="$6" log_file="$7"
     printf '{"serial":"%s","kind":"%s","model":"%s","reverse_ok":%s,"app_package":"%s","app_started":%s,"log_file":"%s"}\n' \
@@ -160,6 +181,11 @@ else
         else
             log "  $serial($kind) reverse 失败，详情 $OUTPUT_DIR/adb-reverse-$safe.log"
         fi
+        if "$ADB" -s "$serial" reverse "tcp:7880" "tcp:7880" >> "$OUTPUT_DIR/adb-reverse-$safe.log" 2>&1; then
+            log "  $serial($kind) reverse tcp:7880 -> host tcp:7880"
+        else
+            log "  $serial($kind) LiveKit reverse 失败，详情 $OUTPUT_DIR/adb-reverse-$safe.log"
+        fi
 
         "$ADB" -s "$serial" logcat -c >/dev/null 2>&1 || true
         log_file="$OUTPUT_DIR/adb-$safe.log"
@@ -202,6 +228,20 @@ if [[ -z "$HAS_MEDIA" ]]; then
     podman exec -i gomob-pg psql -U gomob -d gomob -v ON_ERROR_STOP=1 \
         < "$SERVER_DIR/migrations/0010_realtime_message_live.up.sql" > /dev/null || exit 2
 fi
+ASSET_INSPECTION_NULLABLE=$(podman exec -i gomob-pg psql -U gomob -d gomob -tAc \
+    "SELECT is_nullable FROM information_schema.columns WHERE table_name='inspection_assets' AND column_name='inspection_id'")
+if [[ "$ASSET_INSPECTION_NULLABLE" != "YES" ]]; then
+    log "  应用 migrations/0011_message_assets.up.sql"
+    podman exec -i gomob-pg psql -U gomob -d gomob -v ON_ERROR_STOP=1 \
+        < "$SERVER_DIR/migrations/0011_message_assets.up.sql" > /dev/null || exit 2
+fi
+HAS_CALL_LOG_ROOM=$(podman exec -i gomob-pg psql -U gomob -d gomob -tAc \
+    "SELECT 1 FROM information_schema.columns WHERE table_name='call_logs' AND column_name='room_id'")
+if [[ -z "$HAS_CALL_LOG_ROOM" ]]; then
+    log "  应用 migrations/0014_call_logs_media_room.up.sql"
+    podman exec -i gomob-pg psql -U gomob -d gomob -v ON_ERROR_STOP=1 \
+        < "$SERVER_DIR/migrations/0014_call_logs_media_room.up.sql" > /dev/null || exit 2
+fi
 
 if ! podman exec -i gomob-pg psql -U gomob -d gomob -v ON_ERROR_STOP=1 > /dev/null <<'SQL'
 TRUNCATE TABLE
@@ -238,51 +278,42 @@ then
 fi
 podman exec gomob-redis redis-cli FLUSHDB > /dev/null
 
-log "2. 编译 auth / api / gateway / signaling / deviceinteractionharness"
-(cd "$SERVER_DIR" && go build -o .dev/bin/gomob-auth                     ./cmd/auth)                     || { log "auth build 失败"; exit 3; }
-(cd "$SERVER_DIR" && go build -o .dev/bin/gomob-api                      ./cmd/api)                      || { log "api build 失败"; exit 3; }
-(cd "$SERVER_DIR" && go build -o .dev/bin/gomob-gateway                  ./cmd/gateway)                  || { log "gateway build 失败"; exit 3; }
-(cd "$SERVER_DIR" && go build -o .dev/bin/gomob-signaling                ./cmd/signaling)                || { log "signaling build 失败"; exit 3; }
+log "2. 编译 devserver / deviceinteractionharness"
+(cd "$SERVER_DIR" && go build -o .dev/bin/gomob-devserver                ./cmd/devserver)                || { log "devserver build 失败"; exit 3; }
 (cd "$SERVER_DIR" && go build -o .dev/bin/gomob-deviceinteractionharness ./cmd/deviceinteractionharness) || { log "deviceinteractionharness build 失败"; exit 3; }
 
-log "3. 启动服务"
-GOMOB_AUTH_HTTP_ADDR=:18082 GOMOB_AUTH_DEV_AUTOACTIVATE=true \
-    "$SERVER_DIR/.dev/bin/gomob-auth" > "$OUTPUT_DIR/auth.log" 2>&1 &
-PIDS+=($!)
-
-GOMOB_API_HTTP_ADDR=:18080 \
+log "3. 启动 devserver 合体服务"
+ensure_livekit_container
+GOMOB_LISTEN=":$GATEWAY_PORT" \
+GOMOB_DISCOVERY_ADDR= \
+GOMOB_DEV_AUTO_ACTIVATE=true \
+GOMOB_LIVEKIT_URL="${GOMOB_LIVEKIT_URL:-ws://127.0.0.1:7880}" \
+GOMOB_LIVEKIT_API_KEY="${GOMOB_LIVEKIT_API_KEY:-devkey}" \
+GOMOB_LIVEKIT_API_SECRET="${GOMOB_LIVEKIT_API_SECRET:-secret}" \
 GOMOB_LOG_UPLOAD_DIR="$OUTPUT_DIR/uploaded-logs" \
-GOMOB_CATALOG_TARGET= GOMOB_VINREF_TARGET= GOMOB_SHAPEREF_TARGET= \
-    "$SERVER_DIR/.dev/bin/gomob-api" > "$OUTPUT_DIR/api.log" 2>&1 &
-PIDS+=($!)
-
-GOMOB_GATEWAY_ADDR=":$GATEWAY_PORT" GOMOB_DISCOVERY_ADDR= GOMOB_REDIS_ADDR=127.0.0.1:6379 GOMOB_RATE_LIMIT=10000 \
-    "$SERVER_DIR/.dev/bin/gomob-gateway" > "$OUTPUT_DIR/gateway.log" 2>&1 &
-PIDS+=($!)
-
-GOMOB_SIGNALING_HTTP_ADDR=:18084 \
 GOMOB_PENDING_CALL_TTL=3s \
 GOMOB_PENDING_CALL_SWEEP=1s \
-    "$SERVER_DIR/.dev/bin/gomob-signaling" > "$OUTPUT_DIR/signaling.log" 2>&1 &
+GOMOB_CATALOG_TARGET= GOMOB_VINREF_TARGET= GOMOB_SHAPEREF_TARGET= \
+    "$SERVER_DIR/.dev/bin/gomob-devserver" > "$OUTPUT_DIR/devserver.log" 2>&1 &
 PIDS+=($!)
 
 sleep 1
 for p in "${PIDS[@]}"; do
     kill -0 "$p" 2>/dev/null || { log "服务启动后已退出 pid=$p，检查 $OUTPUT_DIR/*.log"; exit 4; }
 done
-hc=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:18080/healthz")
-[[ "$hc" == "200" ]] || { log "api /healthz=$hc"; exit 4; }
 hc=$(curl -s -o /dev/null -w '%{http_code}' "$GATEWAY/healthz")
-[[ "$hc" == "200" ]] || { log "gateway /healthz=$hc"; exit 4; }
-hc=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:18084/healthz")
-[[ "$hc" == "200" ]] || { log "signaling /healthz=$hc"; exit 4; }
+[[ "$hc" == "200" ]] || { log "devserver /healthz=$hc"; exit 4; }
 
 if [[ "$APP_START" == "1" && -s "$START_QUEUE" ]]; then
     log "3.1 服务健康后启动已安装 App，继续只采日志不截图"
     while IFS=$'\t' read -r serial safe pkg; do
         started=false
+        "$ADB" -s "$serial" shell am force-stop "$pkg" >/dev/null 2>&1 < /dev/null || true
         if "$ADB" -s "$serial" shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 \
-            > "$OUTPUT_DIR/adb-start-$safe.log" 2>&1; then
+            > "$OUTPUT_DIR/adb-start-$safe.log" 2>&1 < /dev/null; then
+            started=true
+        elif "$ADB" -s "$serial" shell am start -n "$pkg/io.gomob.scan.MainActivity" \
+            >> "$OUTPUT_DIR/adb-start-$safe.log" 2>&1 < /dev/null; then
             started=true
         fi
         printf '{"serial":"%s","app_started":%s}\n' "$(json_escape "$serial")" "$started" >> "$START_RESULTS"

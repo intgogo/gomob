@@ -1,10 +1,8 @@
 package io.gomob.designsystem.component
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -31,8 +29,8 @@ data class SegmentedTabItem(
  * Segmented Control —— iOS 风格的分段切换器。
  *
  * 视觉契约：
- *   - 外壳 r2 圆角 + 1dp line2 描边 + 透明底
- *   - 内部等宽分 N 段，段间 1dp line2 竖分隔
+ *   - 外壳 r2 圆角 + bg1 底
+ *   - 内部等宽分 N 段，不画分隔线
  *   - 选中段 accentSoft 填充 + accent 文字；未选 fg2 文字
  *
  * 用作"页面顶部主分类切换"，多页内 tab 复用 ([MessageScreen]、[CollaborationScreen])。
@@ -49,7 +47,7 @@ fun SegmentedTabs(
             .fillMaxWidth()
             .height(36.dp)
             .clip(Gomob.shapes.r2)
-            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2),
+            .background(Gomob.colors.bg1),
     ) {
         items.forEachIndexed { i, item ->
             val active = i == selectedIndex
@@ -72,14 +70,6 @@ fun SegmentedTabs(
                         color = fg.copy(alpha = 0.7f),
                     )
                 }
-            }
-            if (i != items.lastIndex) {
-                Box(
-                    Modifier
-                        .width(Gomob.spacing.hairline)
-                        .fillMaxHeight()
-                        .background(Gomob.colors.line2),
-                )
             }
         }
     }

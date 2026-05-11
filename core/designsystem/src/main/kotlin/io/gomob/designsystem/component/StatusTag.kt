@@ -1,7 +1,6 @@
 package io.gomob.designsystem.component
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -31,13 +30,12 @@ fun StatusTag(
     showDot: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    val (fg, line, bg) = colorsFor(tone)
+    val (fg, bg) = colorsFor(tone)
     Row(
         modifier
             .height(Gomob.spacing.chipHeight)
             .clip(Gomob.shapes.r1)
             .background(bg)
-            .border(Gomob.spacing.hairline, line, Gomob.shapes.r1)
             .padding(horizontal = Gomob.spacing.s8),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
@@ -50,10 +48,10 @@ fun StatusTag(
 }
 
 @Composable
-private fun colorsFor(tone: StatusTone): Triple<Color, Color, Color> = when (tone) {
-    StatusTone.Neutral -> Triple(Gomob.colors.fg1, Gomob.colors.line2, Color.Transparent)
-    StatusTone.Accent -> Triple(Gomob.colors.accent, Gomob.colors.accentLine, Gomob.colors.accentSoft)
-    StatusTone.Warn -> Triple(Gomob.colors.warn, Gomob.colors.warnLine, Gomob.colors.warnSoft)
-    StatusTone.Danger -> Triple(Gomob.colors.danger, Gomob.colors.dangerLine, Gomob.colors.dangerSoft)
-    StatusTone.Ok -> Triple(Gomob.colors.ok, Gomob.colors.okLine, Gomob.colors.okSoft)
+private fun colorsFor(tone: StatusTone): Pair<Color, Color> = when (tone) {
+    StatusTone.Neutral -> Gomob.colors.fg1 to Gomob.colors.bg2
+    StatusTone.Accent -> Gomob.colors.accent to Gomob.colors.accentSoft
+    StatusTone.Warn -> Gomob.colors.warn to Gomob.colors.warnSoft
+    StatusTone.Danger -> Gomob.colors.danger to Gomob.colors.dangerSoft
+    StatusTone.Ok -> Gomob.colors.ok to Gomob.colors.okSoft
 }

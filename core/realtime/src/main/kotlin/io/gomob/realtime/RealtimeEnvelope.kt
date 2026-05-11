@@ -23,12 +23,22 @@ sealed interface RealtimeEvent {
         val createdAt: String,
     ) : RealtimeEvent
     data class MessageReceived(
+        val messageId: Long?,
         val conversationId: Long,
         val serverSeq: Long,
         val senderId: Long,
         val kind: String,
         val content: JsonElement?,
+        val clientMsgId: String?,
         val createdAt: String,
+    ) : RealtimeEvent
+    data class TranscriptUpdated(
+        val messageId: Long,
+        val conversationId: Long,
+        val serverSeq: Long,
+        val kind: String,
+        val content: JsonElement?,
+        val updatedAt: String,
     ) : RealtimeEvent
     data class Error(val code: Int, val message: String, val inReplyTo: String?) : RealtimeEvent
     data class Unknown(val envelope: RealtimeEnvelope) : RealtimeEvent

@@ -4,10 +4,10 @@
 
 本 harness 不做默认截图，输出集中在 `.dev/device_realtime_interaction/`：
 
-- `results.jsonl`：主机侧模拟 `emulator-sim` 与 `phone-sim` 两端登录、WebSocket 双向发消息、REST 拉历史 / 标已读、离线重连补齐，以及直播控制面能力探测。
-- `devices.jsonl` / `capabilities.json`：ADB 发现的模拟器 / 真实手机、`adb reverse tcp:8808` 状态、是否启动了已安装 App。
+- `results.jsonl`：主机侧模拟 `emulator-sim` 与 `phone-sim` 两端登录、WebSocket 双向发消息、REST 拉历史 / 标已读、离线重连补齐、HTTP fallback 实时推送、语音资产上传与消息发送、视频通话邀请 / 接听 / 挂断记录，以及直播控制面能力探测。
+- `devices.jsonl` / `capabilities.json`：ADB 发现的模拟器 / 真实手机、`adb reverse tcp:8808` / `tcp:7880` 状态、是否启动了已安装 App。
 - `adb-*.log`：设备 logcat，默认抓 `gomob` / `gomob_native` / `OkHttp` / `AndroidRuntime`。
-- `auth.log`、`api.log`、`gateway.log`、`signaling.log`：服务端日志。
+- `devserver.log`：合体开发服务日志；本 harness 用它验证 App 常连的 `:18808` 拓扑。
 
 ## 运行
 
@@ -20,6 +20,7 @@
 - `DEVICE_REALTIME_START_APP=0`：只采 ADB 设备信息，不启动已安装 App。
 - `DEVICE_REALTIME_ATTACH_APP_TO_HARNESS=1`：把 App 默认端口 `8808` 临时映射到本 harness 的 gateway；默认保持 `8808 -> 18808`，避免打断正在跑的 devserver。
 - `DEVICE_REALTIME_APP_REVERSE_PORT=18808`：指定 App 端 `8808` 反向映射到宿主机哪个端口。
+- `GOMOB_LIVEKIT_URL` / `GOMOB_LIVEKIT_API_KEY` / `GOMOB_LIVEKIT_API_SECRET`：覆盖 harness devserver 使用的 LiveKit；默认使用本地 `gomob-livekit --dev` 的 `ws://127.0.0.1:7880`、`devkey`、`secret`。
 - `ADB=/path/to/adb`：指定 adb。
 - `OUTPUT_DIR=.dev/device_realtime_interaction-xxx`：切换输出目录。
 

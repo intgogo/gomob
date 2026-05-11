@@ -1,7 +1,6 @@
 package io.gomob.designsystem.component
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.defaultMinSize
@@ -11,15 +10,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import io.gomob.designsystem.theme.Gomob
 
 /**
  * 可点击筛选片。28dp 高，可选中态。
  *
- * 选中：accentSoft 底 + accent 描边 + accent 文字
- * 未选：透明底 + line2 描边 + fg1 文字
+ * 选中：accentSoft 底 + accent 文字；未选：bg2 底 + fg1 文字。
  */
 @Composable
 fun Chip(
@@ -28,15 +25,13 @@ fun Chip(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val bg = if (selected) Gomob.colors.accentSoft else Color.Transparent
-    val border = if (selected) Gomob.colors.accentLine else Gomob.colors.line2
+    val bg = if (selected) Gomob.colors.accentSoft else Gomob.colors.bg2
     val fg = if (selected) Gomob.colors.accent else Gomob.colors.fg1
 
     Box(
         modifier
             .clip(Gomob.shapes.r2)
             .background(bg)
-            .border(Gomob.spacing.hairline, border, Gomob.shapes.r2)
             .clickable(onClick = onClick)
             .defaultMinSize(minHeight = 28.dp),
         contentAlignment = Alignment.Center,

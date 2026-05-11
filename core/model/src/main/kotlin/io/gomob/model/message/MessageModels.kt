@@ -10,6 +10,7 @@ data class ConversationSummary(
     val lastMessage: MessageRecord?,
     val lastReadSeq: Long,
     val unreadCount: Long,
+    val pinned: Boolean = false,
     val createdAt: String,
     val updatedAt: String,
 )
@@ -51,6 +52,15 @@ data class MessageRecord(
     val status: MessageStatus,
     val createdAt: String,
     val editedAt: String? = null,
+)
+
+data class InspectionShareCard(
+    val inspectionId: String,
+    val vin: String,
+    val vehicleLine: String,
+    val timeLabel: String,
+    val status: String,
+    val tags: List<String>,
 )
 
 enum class MessageStatus {

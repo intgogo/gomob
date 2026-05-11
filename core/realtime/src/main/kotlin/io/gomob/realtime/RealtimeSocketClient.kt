@@ -1,5 +1,6 @@
 package io.gomob.realtime
 
+import android.util.Log
 import io.gomob.network.ServerEndpointStore
 import io.gomob.network.TokenProvider
 import kotlinx.coroutines.CoroutineScope
@@ -28,6 +29,10 @@ class RealtimeSocketClient @Inject constructor(
     private val parser: RealtimeEnvelopeParser,
     private val reconnectPolicy: RealtimeReconnectPolicy,
 ) {
+    private companion object {
+        const val TAG = "RealtimeSocketClient"
+    }
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var socket: WebSocket? = null
     private var reconnect = false
@@ -41,6 +46,9 @@ class RealtimeSocketClient @Inject constructor(
 
     fun connect() {
         reconnect = true
+        if (socket != null && mutableState.value != RealtimeConnectionState.Disconnected) {
+            return
+        }
         openSocket()
     }
 
@@ -60,17 +68,19 @@ class RealtimeSocketClient @Inject constructor(
         val token = tokenProvider.currentAccessToken()
         if (token.isNullOrBlank()) {
             mutableState.value = RealtimeConnectionState.Disconnected
+            Log.w(TAG, "实时通道未连接：缺少 access token")
             return
         }
         val endpoint = endpointStore.current()
         val url = HttpUrl.Builder()
-            .scheme("ws")
+            .scheme("http")
             .host(endpoint.ip)
             .port(endpoint.port)
             .addPathSegments("v1/ws")
             .addQueryParameter("token", token)
             .build()
         mutableState.value = RealtimeConnectionState.Connecting
+        Log.i(TAG, "实时通道连接中 endpoint=${endpoint.display()}")
         socket = okHttp.newWebSocket(
             Request.Builder().url(url).build(),
             Listener(),
@@ -90,11 +100,13 @@ class RealtimeSocketClient @Inject constructor(
         override fun onOpen(webSocket: WebSocket, response: Response) {
             attempt = 0
             mutableState.value = RealtimeConnectionState.Connected
+            Log.i(TAG, "实时通道已连接")
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             val event = runCatching { parser.toEvent(parser.parse(text)) }
                 .getOrElse {
+                    Log.w(TAG, "实时帧解析失败: ${it.message}")
                     RealtimeEvent.Unknown(
                         RealtimeEnvelope(
                             type = "parse_error",
@@ -106,12 +118,16 @@ class RealtimeSocketClient @Inject constructor(
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            socket = null
             mutableState.value = RealtimeConnectionState.Disconnected
+            Log.i(TAG, "实时通道已断开 code=$code reason=$reason")
             scheduleReconnect()
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            socket = null
             mutableState.value = RealtimeConnectionState.Disconnected
+            Log.w(TAG, "实时通道异常: ${t.message}")
             scheduleReconnect()
         }
     }

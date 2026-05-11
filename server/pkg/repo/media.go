@@ -49,6 +49,18 @@ type LiveSession struct {
 	CreatedAt             time.Time
 }
 
+type CallLog struct {
+	ID             int64
+	RoomID         *int64
+	ConversationID *int64
+	CallerID       int64
+	CalleeID       int64
+	StartedAt      time.Time
+	EndedAt        *time.Time
+	DurationSec    int
+	Status         string
+}
+
 type MediaRepo struct {
 	pool *pgxpool.Pool
 }
@@ -160,6 +172,41 @@ func (r *MediaRepo) IsParticipant(ctx context.Context, roomID, userID int64) (bo
 		roomID, userID,
 	).Scan(&exists)
 	return exists, err
+}
+
+func (r *MediaRepo) HasJoinedCounterpart(ctx context.Context, roomID, callerUserID int64) (bool, error) {
+	var exists bool
+	err := r.pool.QueryRow(ctx,
+		`SELECT EXISTS(
+			SELECT 1
+			FROM media_participants
+			WHERE room_id=$1 AND user_id<>$2 AND joined_at IS NOT NULL
+		)`,
+		roomID, callerUserID,
+	).Scan(&exists)
+	return exists, err
+}
+
+func (r *MediaRepo) InsertCallLogOnce(ctx context.Context, log *CallLog) (bool, error) {
+	if log == nil {
+		return false, errors.New("call log is nil")
+	}
+	const q = `
+		INSERT INTO call_logs(room_id, conversation_id, caller_id, callee_id, started_at, ended_at, duration_sec, status)
+		VALUES($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (room_id) DO NOTHING
+		RETURNING id`
+	err := r.pool.QueryRow(ctx, q,
+		log.RoomID, log.ConversationID, log.CallerID, log.CalleeID,
+		log.StartedAt, log.EndedAt, log.DurationSec, log.Status,
+	).Scan(&log.ID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func (r *MediaRepo) CreateLiveSession(ctx context.Context, session *LiveSession) error {

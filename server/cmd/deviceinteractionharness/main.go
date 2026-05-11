@@ -7,6 +7,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -75,11 +77,13 @@ type deliveredPayload struct {
 }
 
 type recvPayload struct {
+	MessageID      int64           `json:"message_id"`
 	ConversationID int64           `json:"conversation_id"`
 	ServerSeq      int64           `json:"server_seq"`
 	SenderID       int64           `json:"sender_id"`
 	Kind           string          `json:"kind"`
 	Content        json.RawMessage `json:"content"`
+	ClientMsgID    string          `json:"client_msg_id"`
 	CreatedAt      string          `json:"created_at"`
 }
 
@@ -87,6 +91,15 @@ type fetchPayload struct {
 	ConversationID int64         `json:"conversation_id"`
 	Items          []recvPayload `json:"items"`
 	NextSinceSeq   int64         `json:"next_since_seq"`
+}
+
+type uploadedAsset struct {
+	AssetID     string
+	ObjectKey   string
+	DownloadURL string
+	SHA256      string
+	SizeBytes   int
+	MIME        string
 }
 
 type wsClient struct {
@@ -283,6 +296,201 @@ func main() {
 		res.ServerSeq = seq3
 		pass := seq3 == seq2+1 && len(seqs) == 1 && seqs[0] == seq3 && got.NextSinceSeq == seq3
 		return fmt.Sprintf("offline_seq=%d fetched=%v next=%d", seq3, seqs, got.NextSinceSeq), pass
+	}) {
+		exitCode = 1
+		return
+	}
+
+	if !step(rec, baseResult("D7.http_fallback_realtime_push", "message", "phone-sim", "emulator-sim"), func(res *result) (string, bool) {
+		clientMsgID := "rest-phone-emu-" + suffix
+		res.ClientMsgID = clientMsgID
+		status, body, err := httpJSON("POST", fmt.Sprintf("%s/v1/conversations/%d/messages", *gateway, convID), map[string]any{
+			"client_msg_id": clientMsgID,
+			"kind":          "text",
+			"payload":       map[string]any{"text": "HTTP fallback 实时推送消息"},
+		}, authHeader(phone.token))
+		res.HTTPCode = status
+		res.ExpectedHTTP = 200
+		if err != nil {
+			return err.Error(), false
+		}
+		if status != http.StatusOK {
+			return fmt.Sprintf("http send http=%d body=%v", status, body), false
+		}
+		data := dataMap(body)
+		httpSeq := parseFlexInt(data["server_seq"])
+		httpConvID := parseFlexInt(data["conversation_id"])
+		httpMessageID := parseFlexInt(data["id"])
+		recv, err := emulator.waitRecv(*timeout)
+		if err != nil {
+			return err.Error(), false
+		}
+		res.ConversationID = httpConvID
+		res.ServerSeq = httpSeq
+		pass := httpConvID == convID &&
+			httpSeq == seq3+1 &&
+			recv.MessageID == httpMessageID &&
+			recv.ConversationID == convID &&
+			recv.ServerSeq == httpSeq &&
+			recv.SenderID == phone.userID &&
+			recv.Kind == "text" &&
+			recv.ClientMsgID == clientMsgID
+		return fmt.Sprintf(
+			"http_seq=%d recv_seq=%d message_id=%d recv_message_id=%d sender=%d",
+			httpSeq,
+			recv.ServerSeq,
+			httpMessageID,
+			recv.MessageID,
+			recv.SenderID,
+		), pass
+	}) {
+		exitCode = 1
+		return
+	}
+
+	if !step(rec, baseResult("D8.voice_asset_upload_and_message", "message", "phone-sim", "emulator-sim"), func(res *result) (string, bool) {
+		voiceBytes := []byte("gomob voice harness sample\n")
+		asset, err := uploadMediaAsset(phone.token, "message_voice", "audio/mp4", voiceBytes)
+		if err != nil {
+			return err.Error(), false
+		}
+		clientMsgID := "voice-phone-emu-" + suffix
+		res.ClientMsgID = clientMsgID
+		status, body, err := httpJSON("POST", fmt.Sprintf("%s/v1/conversations/%d/messages", *gateway, convID), map[string]any{
+			"client_msg_id": clientMsgID,
+			"kind":          "voice",
+			"payload": map[string]any{
+				"media_state":  "ready",
+				"asset_id":     asset.AssetID,
+				"object_key":   asset.ObjectKey,
+				"mime":         asset.MIME,
+				"size_bytes":   asset.SizeBytes,
+				"sha256":       asset.SHA256,
+				"download_url": asset.DownloadURL,
+				"duration_sec": 1,
+				"source":       "harness_voice",
+			},
+		}, authHeader(phone.token))
+		res.HTTPCode = status
+		res.ExpectedHTTP = 200
+		if err != nil {
+			return err.Error(), false
+		}
+		if status != http.StatusOK {
+			return fmt.Sprintf("voice send http=%d body=%v", status, body), false
+		}
+		data := dataMap(body)
+		httpSeq := parseFlexInt(data["server_seq"])
+		recv, err := emulator.waitRecv(*timeout)
+		if err != nil {
+			return err.Error(), false
+		}
+		res.ConversationID = convID
+		res.ServerSeq = httpSeq
+		pass := asset.AssetID != "" &&
+			asset.ObjectKey != "" &&
+			httpSeq > 0 &&
+			recv.ConversationID == convID &&
+			recv.ServerSeq == httpSeq &&
+			recv.Kind == "voice" &&
+			recv.ClientMsgID == clientMsgID
+		return fmt.Sprintf("asset_id=%s object_key=%s voice_seq=%d recv_seq=%d", asset.AssetID, asset.ObjectKey, httpSeq, recv.ServerSeq), pass
+	}) {
+		exitCode = 1
+		return
+	}
+
+	if !step(rec, baseResult("D9.call_invite_accept_end_log", "message", "phone-sim", "emulator-sim"), func(res *result) (string, bool) {
+		clientMsgID := "call-phone-emu-" + suffix
+		res.ClientMsgID = clientMsgID
+		status, body, err := httpJSON("POST", fmt.Sprintf("%s/v1/conversations/%d/call-invites", *gateway, convID), map[string]any{
+			"client_msg_id": clientMsgID,
+			"title":         "harness 视频通话",
+		}, authHeader(phone.token))
+		res.HTTPCode = status
+		res.ExpectedHTTP = 200
+		if err != nil {
+			return err.Error(), false
+		}
+		if status != http.StatusOK {
+			return fmt.Sprintf("call invite http=%d body=%v", status, body), false
+		}
+		data := dataMap(body)
+		room := asMap(data["room"])
+		message := asMap(data["message"])
+		roomID := parseFlexInt(room["id"])
+		inviteSeq := parseFlexInt(message["server_seq"])
+		if roomID <= 0 || inviteSeq <= 0 || room["status"] != "active" {
+			return fmt.Sprintf("call invite 缺 active room/message room=%v message=%v", room, message), false
+		}
+		inviteRecv, err := emulator.waitRecv(*timeout)
+		if err != nil {
+			return "等待 call_invite 实时消息失败：" + err.Error(), false
+		}
+		if inviteRecv.Kind != "call_invite" || inviteRecv.ClientMsgID != clientMsgID {
+			return fmt.Sprintf("call_invite 实时消息不匹配 kind=%s client=%s", inviteRecv.Kind, inviteRecv.ClientMsgID), false
+		}
+
+		status, callerToken, err := httpJSON("POST", fmt.Sprintf("%s/v1/media/rooms/%d/token", *gateway, roomID), map[string]any{"role": "publisher"}, authHeader(phone.token))
+		if err != nil {
+			return err.Error(), false
+		}
+		if status != http.StatusOK || stringValue(asMap(callerToken["data"])["token"]) == "" {
+			return fmt.Sprintf("caller token http=%d body=%v", status, callerToken), false
+		}
+		status, calleeToken, err := httpJSON("POST", fmt.Sprintf("%s/v1/media/rooms/%d/token", *gateway, roomID), map[string]any{"role": "viewer"}, authHeader(emulator.token))
+		if err != nil {
+			return err.Error(), false
+		}
+		if status != http.StatusOK || stringValue(asMap(calleeToken["data"])["token"]) == "" {
+			return fmt.Sprintf("callee token http=%d body=%v", status, calleeToken), false
+		}
+		status, roomBody, err := httpJSON("GET", fmt.Sprintf("%s/v1/media/rooms/%d", *gateway, roomID), nil, authHeader(phone.token))
+		if err != nil {
+			return err.Error(), false
+		}
+		if status != http.StatusOK || asMap(roomBody["data"])["call_accepted"] != true {
+			return fmt.Sprintf("room accepted http=%d body=%v", status, roomBody), false
+		}
+		status, endBody, err := httpJSON("POST", fmt.Sprintf("%s/v1/media/rooms/%d/end", *gateway, roomID), map[string]any{}, authHeader(emulator.token))
+		if err != nil {
+			return err.Error(), false
+		}
+		if status != http.StatusOK || asMap(endBody["data"])["status"] != "ended" {
+			return fmt.Sprintf("end room http=%d body=%v", status, endBody), false
+		}
+		callLogRecv, err := emulator.waitRecv(*timeout)
+		if err != nil {
+			return "等待 video_call 通话记录失败：" + err.Error(), false
+		}
+		status, history, err := httpJSON("GET", fmt.Sprintf("%s/v1/conversations/%d/messages?since_seq=%d&limit=20", *gateway, convID, inviteSeq-1), nil, authHeader(phone.token))
+		if err != nil {
+			return err.Error(), false
+		}
+		if status != http.StatusOK {
+			return fmt.Sprintf("call history http=%d body=%v", status, history), false
+		}
+		hasVideoCall := false
+		for _, item := range dataItems(history) {
+			m := asMap(item)
+			if m["kind"] == "video_call" && asMap(m["payload"])["status"] == "completed" {
+				hasVideoCall = true
+				res.ServerSeq = parseFlexInt(m["server_seq"])
+				break
+			}
+		}
+		res.ConversationID = convID
+		pass := callLogRecv.Kind == "video_call" &&
+			callLogRecv.ConversationID == convID &&
+			callLogRecv.ServerSeq == res.ServerSeq &&
+			hasVideoCall
+		return fmt.Sprintf(
+			"room_id=%d invite_seq=%d video_seq=%d recv_kind=%s call_accepted=true",
+			roomID,
+			inviteSeq,
+			res.ServerSeq,
+			callLogRecv.Kind,
+		), pass
 	}) {
 		exitCode = 1
 		return
@@ -531,6 +739,66 @@ func httpJSON(method, urlStr string, body any, headers map[string]string) (int, 
 	return resp.StatusCode, out, nil
 }
 
+func uploadMediaAsset(token, kind, mime string, data []byte) (uploadedAsset, error) {
+	sum := sha256.Sum256(data)
+	sha := hex.EncodeToString(sum[:])
+	status, body, err := httpJSON("POST", *gateway+"/v1/assets/upload/init", map[string]any{
+		"kind":       kind,
+		"size_bytes": len(data),
+		"sha256":     sha,
+		"mime":       mime,
+	}, authHeader(token))
+	if err != nil {
+		return uploadedAsset{}, err
+	}
+	if status != http.StatusOK {
+		return uploadedAsset{}, fmt.Errorf("asset init http=%d body=%v", status, body)
+	}
+	init := dataMap(body)
+	uploadID, _ := init["upload_id"].(string)
+	if uploadID == "" {
+		return uploadedAsset{}, fmt.Errorf("asset init 缺 upload_id body=%v", body)
+	}
+	chunkURL := fmt.Sprintf("%s/v1/assets/upload/%s/chunk/1", *gateway, uploadID)
+	req, err := http.NewRequest(http.MethodPut, chunkURL, bytes.NewReader(data))
+	if err != nil {
+		return uploadedAsset{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", mime)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return uploadedAsset{}, err
+	}
+	chunkBody, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return uploadedAsset{}, fmt.Errorf("asset chunk http=%d body=%s", resp.StatusCode, strings.TrimSpace(string(chunkBody)))
+	}
+	status, body, err = httpJSON("POST", fmt.Sprintf("%s/v1/assets/upload/%s/complete", *gateway, uploadID), map[string]any{
+		"total_chunks": 1,
+	}, authHeader(token))
+	if err != nil {
+		return uploadedAsset{}, err
+	}
+	if status != http.StatusOK {
+		return uploadedAsset{}, fmt.Errorf("asset complete http=%d body=%v", status, body)
+	}
+	complete := dataMap(body)
+	asset := uploadedAsset{
+		AssetID:     fmt.Sprint(complete["asset_id"]),
+		ObjectKey:   fmt.Sprint(complete["object_key"]),
+		DownloadURL: fmt.Sprint(complete["download_url"]),
+		SHA256:      sha,
+		SizeBytes:   len(data),
+		MIME:        mime,
+	}
+	if asset.AssetID == "" || asset.AssetID == "<nil>" || asset.ObjectKey == "" || asset.ObjectKey == "<nil>" {
+		return uploadedAsset{}, fmt.Errorf("asset complete 缺资产字段 body=%v", body)
+	}
+	return asset, nil
+}
+
 func registerAndLogin(suffix, role string) (userID int64, token string, err error) {
 	username := fmt.Sprintf("di_%s_%s", role, suffix)
 	emp := fmt.Sprintf("DI%s%s", role, suffix)
@@ -608,12 +876,29 @@ func messageSeqs(body map[string]any) []int64 {
 }
 
 func dataItems(body map[string]any) []any {
+	items, _ := dataMap(body)["items"].([]any)
+	return items
+}
+
+func dataMap(body map[string]any) map[string]any {
 	data, _ := body["data"].(map[string]any)
 	if data == nil {
-		return nil
+		return map[string]any{}
 	}
-	items, _ := data["items"].([]any)
-	return items
+	return data
+}
+
+func asMap(v any) map[string]any {
+	m, _ := v.(map[string]any)
+	if m == nil {
+		return map[string]any{}
+	}
+	return m
+}
+
+func stringValue(v any) string {
+	s, _ := v.(string)
+	return s
 }
 
 func parseFlexInt(v any) int64 {

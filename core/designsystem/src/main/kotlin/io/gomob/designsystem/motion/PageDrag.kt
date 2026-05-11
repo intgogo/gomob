@@ -11,7 +11,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -35,7 +35,12 @@ import kotlin.math.sign
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
-private val LocalPageDragOffsetPx = compositionLocalOf { 0f }
+private val LocalPageDragState = androidx.compose.runtime.staticCompositionLocalOf<PageDragState?> { null }
+
+@Stable
+private class PageDragState {
+    var offsetPx by mutableFloatStateOf(0f)
+}
 
 /**
  * 全局页面弹性拖动容器。
@@ -49,15 +54,15 @@ fun DefaultPageDragBox(
 ) {
     val scope = rememberCoroutineScope()
     val maxOffsetPx = with(LocalDensity.current) { 56.dp.toPx() }
+    val dragState = remember { PageDragState() }
     val releaseAnimation = remember { Animatable(0f) }
-    var offsetPx by remember { mutableFloatStateOf(0f) }
     var releaseJob by remember { mutableStateOf<Job?>(null) }
 
     fun applyDrag(delta: Float) {
         if (delta == 0f) return
         releaseJob?.cancel()
 
-        val current = offsetPx
+        val current = dragState.offsetPx
         val sameDirection = current == 0f || current.sign == delta.sign
         val next = if (sameDirection) {
             val progress = (abs(current) / maxOffsetPx).coerceIn(0f, 0.92f)
@@ -66,16 +71,16 @@ fun DefaultPageDragBox(
         } else {
             current + delta * 0.55f
         }
-        offsetPx = next.coerceIn(-maxOffsetPx, maxOffsetPx)
+        dragState.offsetPx = next.coerceIn(-maxOffsetPx, maxOffsetPx)
     }
 
     fun release() {
-        if (abs(offsetPx) < 0.5f) {
-            offsetPx = 0f
+        if (abs(dragState.offsetPx) < 0.5f) {
+            dragState.offsetPx = 0f
             return
         }
         releaseJob?.cancel()
-        val start = offsetPx
+        val start = dragState.offsetPx
         releaseJob = scope.launch {
             releaseAnimation.snapTo(start)
             releaseAnimation.animateTo(
@@ -85,9 +90,9 @@ fun DefaultPageDragBox(
                     stiffness = Spring.StiffnessMediumLow,
                 ),
             ) {
-                offsetPx = value
+                dragState.offsetPx = value
             }
-            offsetPx = 0f
+            dragState.offsetPx = 0f
         }
     }
 
@@ -120,10 +125,10 @@ fun DefaultPageDragBox(
         onDispose { releaseJob?.cancel() }
     }
 
-    CompositionLocalProvider(LocalPageDragOffsetPx provides offsetPx) {
+    CompositionLocalProvider(LocalPageDragState provides dragState) {
         Box(
             modifier
-                .graphicsLayer { translationY = offsetPx }
+                .graphicsLayer { translationY = dragState.offsetPx }
                 .nestedScroll(nestedScrollConnection)
                 .scrollable(
                     state = state,
@@ -148,8 +153,8 @@ fun DefaultPageDragBox(
  */
 @Composable
 fun Modifier.fixedDuringPageDrag(): Modifier {
-    val pageOffset = LocalPageDragOffsetPx.current
+    val dragState = LocalPageDragState.current
     return this
-        .graphicsLayer { translationY = -pageOffset }
+        .graphicsLayer { translationY = -(dragState?.offsetPx ?: 0f) }
         .zIndex(1f)
 }

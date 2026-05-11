@@ -4,7 +4,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -39,7 +38,7 @@ data class TabItemVector(
 )
 
 /**
- * 底部 tab 条。56dp 高，顶部 1dp hairline。选中色 = accent，未选中 = fg2。
+ * 底部 tab 条。56dp 高。选中色 = accent，未选中 = fg2。
  *
  * 不画"指示器条" — 选中态完全靠图标 + 文字颜色变化。
  */
@@ -51,12 +50,6 @@ fun TabBar(
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fixedDuringPageDrag().fillMaxWidth().background(Gomob.colors.bg0)) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(Gomob.spacing.hairline)
-                .background(Gomob.colors.line1),
-        )
         Row(
             Modifier.fillMaxWidth().height(Gomob.spacing.tabBarHeight),
             verticalAlignment = Alignment.CenterVertically,
@@ -96,12 +89,6 @@ fun TabBarVector(
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fixedDuringPageDrag().fillMaxWidth().background(Gomob.colors.bg0)) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(Gomob.spacing.hairline)
-                .background(Gomob.colors.line1),
-        )
         Row(
             Modifier.fillMaxWidth().height(Gomob.spacing.tabBarHeight),
             verticalAlignment = Alignment.CenterVertically,

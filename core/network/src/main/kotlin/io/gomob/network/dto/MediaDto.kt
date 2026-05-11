@@ -24,6 +24,7 @@ data class MediaRoomResponse(
     val status: String,
     @SerialName("livekit_url") val liveKitUrl: String? = null,
     @SerialName("livekit_configured") val liveKitConfigured: Boolean = false,
+    @SerialName("call_accepted") val callAccepted: Boolean = false,
     val message: String? = null,
     @SerialName("created_at") val createdAt: String,
 )

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -166,7 +167,8 @@ func (h *Handler) CreateConversationMessage(w http.ResponseWriter, r *http.Reque
 		Kind:           req.Kind,
 		Payload:        req.Payload,
 	}
-	if _, err := h.messages.AppendIdempotent(r.Context(), msg, req.ClientMsgID); err != nil {
+	inserted, err := h.messages.AppendIdempotent(r.Context(), msg, req.ClientMsgID)
+	if err != nil {
 		if errors.Is(err, repo.ErrNotFound) {
 			httpx.WriteError(w, httpx.ErrNotFound)
 			return
@@ -174,12 +176,153 @@ func (h *Handler) CreateConversationMessage(w http.ResponseWriter, r *http.Reque
 		httpx.WriteError(w, httpx.ErrInternal)
 		return
 	}
+	if inserted {
+		if _, _, err := h.transcripts.EnsureForVoiceMessage(r.Context(), msg); err != nil {
+			if h.log != nil {
+				h.log.Error("语音转写任务创建失败", "err", err, "message_id", msg.ID)
+			}
+			httpx.WriteError(w, httpx.ErrInternal)
+			return
+		}
+	}
+	h.notifyRealtimeMessage(r.Context(), uid, msg, inserted)
 	h.recordAudit(r, "message.send", "conversation:"+strconv.FormatInt(id, 10), nil, map[string]any{
 		"message_id":    msg.ID,
 		"server_seq":    msg.ServerSeq,
 		"client_msg_id": req.ClientMsgID,
 	})
 	httpx.OK(w, toMessageDTO(msg))
+}
+
+type createConversationCallInviteReq struct {
+	ClientMsgID string `json:"client_msg_id"`
+	Title       string `json:"title,omitempty"`
+}
+
+type conversationCallInviteDTO struct {
+	Room    mediaRoomDTO `json:"room"`
+	Message messageDTO   `json:"message"`
+}
+
+func (h *Handler) CreateConversationCallInvite(w http.ResponseWriter, r *http.Request) {
+	uid := callerUserID(r)
+	if uid == 0 {
+		httpx.WriteError(w, httpx.ErrTokenInvalid)
+		return
+	}
+	if !h.enforcer.Allow(callerRole(r), "message", "send") {
+		httpx.WriteError(w, httpx.ErrPermDenied)
+		return
+	}
+	id, err := parsePathID(r, "id")
+	if err != nil {
+		httpx.WriteError(w, httpx.ErrBadParam)
+		return
+	}
+	var req createConversationCallInviteReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpx.WriteError(w, httpx.ErrBadParam)
+		return
+	}
+	clientMsgID := strings.TrimSpace(req.ClientMsgID)
+	if clientMsgID == "" {
+		httpx.WriteError(w, httpx.ErrBadParam)
+		return
+	}
+	ok, err := h.conversations.IsMember(r.Context(), id, uid)
+	if err != nil {
+		httpx.WriteError(w, httpx.ErrInternal)
+		return
+	}
+	if !ok {
+		httpx.WriteError(w, httpx.ErrPermDenied)
+		return
+	}
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		title = "视频通话"
+	}
+	room, msg, err := h.createMediaRoom(r.Context(), uid, createMediaRoomReq{
+		Kind:           "video_call",
+		ConversationID: flexibleJSONID(strconv.FormatInt(id, 10)),
+		Title:          title,
+	})
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	if room.Status != "active" {
+		if msg == "" {
+			msg = "视频通话媒体房间未就绪"
+		}
+		httpx.WriteError(w, httpx.NewError(40501, http.StatusServiceUnavailable, msg))
+		return
+	}
+	cfg := currentLiveKitConfig()
+	payload := mustRawJSON(map[string]any{
+		"call_id":            strconv.FormatInt(room.ID, 10),
+		"room_id":            strconv.FormatInt(room.ID, 10),
+		"provider":           room.Provider,
+		"provider_room":      room.ProviderRoom,
+		"status":             "ringing",
+		"title":              title,
+		"started_by":         strconv.FormatInt(uid, 10),
+		"livekit_url":        cfg.URL,
+		"livekit_configured": cfg.configured(),
+	})
+	senderID := uid
+	message := &repo.Message{
+		ConversationID: id,
+		SenderID:       &senderID,
+		Kind:           "call_invite",
+		Payload:        payload,
+	}
+	inserted, err := h.messages.AppendIdempotent(r.Context(), message, clientMsgID)
+	if err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			httpx.WriteError(w, httpx.ErrNotFound)
+			return
+		}
+		httpx.WriteError(w, httpx.ErrInternal)
+		return
+	}
+	h.notifyRealtimeMessage(r.Context(), uid, message, inserted)
+	h.recordAudit(r, "message.call_invite", "conversation:"+strconv.FormatInt(id, 10), nil, map[string]any{
+		"message_id":    message.ID,
+		"server_seq":    message.ServerSeq,
+		"client_msg_id": clientMsgID,
+		"room_id":       room.ID,
+	})
+	httpx.OK(w, conversationCallInviteDTO{
+		Room:    toMediaRoomDTO(room, cfg, msg),
+		Message: toMessageDTO(message),
+	})
+}
+
+func (h *Handler) notifyRealtimeMessage(ctx context.Context, senderID int64, message *repo.Message, inserted bool) {
+	if !inserted || h.realtime == nil || message == nil {
+		return
+	}
+	delivered, err := h.realtime.NotifyMessage(ctx, senderID, message)
+	if err != nil {
+		if h.log != nil {
+			h.log.Warn("REST 消息实时推送失败",
+				"err", err,
+				"conversation_id", message.ConversationID,
+				"message_id", message.ID,
+				"server_seq", message.ServerSeq,
+			)
+		}
+		return
+	}
+	if h.log != nil {
+		h.log.Debug("REST 消息已实时推送",
+			"conversation_id", message.ConversationID,
+			"message_id", message.ID,
+			"server_seq", message.ServerSeq,
+			"delivered_connections", delivered,
+		)
+	}
 }
 
 type markConversationReadReq struct {
@@ -294,7 +437,7 @@ func toMessageDTO(m *repo.Message) messageDTO {
 
 func validClientMessageKind(kind string) bool {
 	switch kind {
-	case "text", "image", "voice", "video_clip":
+	case "text", "image", "voice", "video_clip", "inspection_card":
 		return true
 	default:
 		return false
@@ -319,10 +462,27 @@ func messagePreview(kind string, payload json.RawMessage) string {
 		return "[图片]"
 	case "voice":
 		var p struct {
-			MediaState  string `json:"media_state"`
-			DurationSec int    `json:"duration_sec"`
+			MediaState       string `json:"media_state"`
+			DurationSec      int    `json:"duration_sec"`
+			TranscriptStatus string `json:"transcript_status"`
+			TranscriptText   string `json:"transcript_normalized_text"`
+			TranscriptRaw    string `json:"transcript_text"`
 		}
 		if err := json.Unmarshal(payload, &p); err == nil {
+			if p.TranscriptStatus == "done" {
+				if p.TranscriptText != "" {
+					return "[语音转文字] " + trimPreview(p.TranscriptText, 42)
+				}
+				if p.TranscriptRaw != "" {
+					return "[语音转文字] " + trimPreview(p.TranscriptRaw, 42)
+				}
+			}
+			if p.TranscriptStatus == "processing" || p.TranscriptStatus == "pending" {
+				return "[语音转写中]"
+			}
+			if p.TranscriptStatus == "failed" {
+				return "[语音转写失败]"
+			}
 			if p.MediaState == "awaiting_asset_upload" {
 				return "[语音待上传]"
 			}
@@ -347,6 +507,22 @@ func messagePreview(kind string, payload json.RawMessage) string {
 			return "[视频待上传]"
 		}
 		return "[视频消息]"
+	case "inspection_card":
+		var p struct {
+			VIN string `json:"vin"`
+		}
+		if err := json.Unmarshal(payload, &p); err == nil && p.VIN != "" {
+			return "[流水] " + trimPreview(p.VIN, 32)
+		}
+		return "[业务流水]"
+	case "call_invite":
+		var p struct {
+			Title string `json:"title"`
+		}
+		if err := json.Unmarshal(payload, &p); err == nil && p.Title != "" {
+			return "[视频通话] " + trimPreview(p.Title, 32)
+		}
+		return "[视频通话邀请]"
 	case "system":
 		return "[系统消息]"
 	default:
@@ -382,4 +558,9 @@ func formatTime(t time.Time) string {
 		return ""
 	}
 	return t.UTC().Format(time.RFC3339Nano)
+}
+
+func mustRawJSON(v any) json.RawMessage {
+	raw, _ := json.Marshal(v)
+	return raw
 }

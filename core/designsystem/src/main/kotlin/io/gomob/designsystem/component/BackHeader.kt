@@ -21,7 +21,7 @@ import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 
 /**
- * 二级页顶栏:返回箭头 + 标题(可选 eyebrow)+ trailing 槽位 + 底部 hairline。
+ * 二级页顶栏:返回箭头 + 标题(可选 eyebrow)+ trailing 槽位。
  *
  * 与 [ScreenHeader] 区分:
  * - ScreenHeader 是 root tab 的大字号 display 标题(无返回)
@@ -70,11 +70,5 @@ fun BackHeader(
             }
             if (trailing != null) trailing()
         }
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(Gomob.spacing.hairline)
-                .background(Gomob.colors.line1),
-        )
     }
 }

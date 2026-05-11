@@ -81,6 +81,19 @@ func (r *AssetRepo) FindAssetByID(ctx context.Context, id int64) (*InspectionAss
 	return a, nil
 }
 
+func (r *AssetRepo) IsAssetOwnedByUser(ctx context.Context, assetID, userID int64) (bool, error) {
+	var exists bool
+	err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM upload_sessions
+			WHERE completed_asset_id=$1 AND user_id=$2
+		)`,
+		assetID, userID,
+	).Scan(&exists)
+	return exists, err
+}
+
 func (r *AssetRepo) ListByInspection(ctx context.Context, inspectionID int64) ([]InspectionAsset, error) {
 	const q = `
 		SELECT id, inspection_id, kind, object_key, sha256, size_bytes, mime, metadata, created_at

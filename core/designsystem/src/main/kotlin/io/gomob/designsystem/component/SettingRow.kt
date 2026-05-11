@@ -1,7 +1,7 @@
 package io.gomob.designsystem.component
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,7 +19,7 @@ import io.gomob.designsystem.theme.Gomob
 /**
  * 设置/列表行。56dp（无副标题）/ 64dp（带副标题），左标题 + 可选副标题，右尾元素。
  *
- * 多行 [SettingRow] 直接堆 [HairlineCard] 里 — 分割用 [SettingRowDivider]。
+ * 多行 [SettingRow] 直接堆 [HairlineCard] 里，行间用内缩细分割线。
  */
 @Composable
 fun SettingRow(
@@ -51,14 +51,14 @@ fun SettingRow(
     }
 }
 
-/** 行间分割线。两端 16dp 内缩，颜色用最浅的 line1。 */
+/** 设置列表 row 之间的内缩分割线。 */
 @Composable
 fun SettingRowDivider() {
     Box(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = Gomob.spacing.s16)
+            .padding(start = Gomob.spacing.s16)
             .height(Gomob.spacing.hairline)
-            .background(Gomob.colors.line1),
+            .background(Gomob.colors.line1.copy(alpha = 0.03f)),
     )
 }

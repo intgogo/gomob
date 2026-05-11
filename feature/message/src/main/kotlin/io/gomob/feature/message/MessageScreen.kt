@@ -6,9 +6,14 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +30,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
@@ -40,6 +46,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -51,6 +58,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -70,6 +78,24 @@ private enum class MsgTab { List, Help }
 enum class AvatarKind { System, Call, Video, Image, Voice, Neutral }
 enum class WatchTone { Accent, Warn, Danger, Ok, Neutral }
 
+private data class ContactSectionUi(
+    val id: String,
+    val title: String,
+    val countLabel: String,
+    val tone: WatchTone,
+    val contacts: List<ContactRowUi>,
+)
+
+private data class ContactRowUi(
+    val id: String,
+    val name: String,
+    val initials: String,
+    val role: String,
+    val employeeId: String,
+    val online: Boolean,
+    val peerUserId: Long?,
+)
+
 @Composable
 fun MessageRoute(
     onOpenConversation: (String) -> Unit = {},
@@ -82,9 +108,17 @@ fun MessageRoute(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val helpState by viewModel.helpUiState.collectAsStateWithLifecycle()
     val helpRoomState by viewModel.helpRoomUiState.collectAsStateWithLifecycle()
+    val contactActionError by viewModel.contactActionError.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
         onResult = { uri -> uri?.let(viewModel::sendHelpRoomImage) },
+    )
+    val photoCapture = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicturePreview(),
+        onResult = { bitmap ->
+            bitmap?.let { viewModel.sendHelpRoomImage(it.writeMessageCapture(context)) }
+        },
     )
     val videoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
@@ -92,7 +126,16 @@ fun MessageRoute(
     )
     val focusManager = LocalFocusManager.current
     var tab by rememberSaveable { mutableStateOf((requestedTab ?: MessageEntryTab.List).toMsgTab()) }
+    var contactsOpen by rememberSaveable { mutableStateOf(false) }
+    var helpInspectionPickerOpen by rememberSaveable { mutableStateOf(false) }
     val count = (state as? MessageListUiState.Content)?.conversations?.size ?: 0
+    val pageErrorText = messageRouteErrorText(
+        tab = tab,
+        messageState = state,
+        helpState = helpState,
+        helpRoomState = helpRoomState,
+        contactActionError = contactActionError.takeUnless { contactsOpen },
+    )
 
     LaunchedEffect(requestedTab) {
         requestedTab?.let {
@@ -101,50 +144,108 @@ fun MessageRoute(
         }
     }
 
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        ScreenHeader(
-            title = "消息中心",
-            eyebrow = "实时协同 · 监管督查 · 专家会审",
-            modifier = Modifier.clearInputFocusOnPointerDown(focusManager),
-            trailing = { ComposeIconButton() },
-        )
-        SegmentedTabs(
-            tab = tab,
-            messageCount = count,
-            onChange = {
-                focusManager.clearFocus()
-                tab = it
+    LaunchedEffect(Unit) {
+        viewModel.openConversationEvents.collect { conversationId ->
+            contactsOpen = false
+            onOpenConversation(conversationId.toString())
+        }
+    }
+
+    Box(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
+        Column(Modifier.fillMaxSize()) {
+            ScreenHeader(
+                title = "消息中心",
+                eyebrow = "实时协同 · 监管督查 · 专家会审",
+                modifier = Modifier.clearInputFocusOnPointerDown(focusManager),
+                trailing = {
+                    ContactsIconButton(
+                        onClick = {
+                            focusManager.clearFocus()
+                            viewModel.clearContactActionError()
+                            contactsOpen = true
+                        },
+                    )
+                },
+            )
+            SegmentedTabs(
+                tab = tab,
+                messageCount = count,
+                onChange = {
+                    focusManager.clearFocus()
+                    tab = it
+                },
+            )
+            when (tab) {
+                MsgTab.List -> ListPane(
+                    state = state,
+                    onRefresh = viewModel::refresh,
+                    onOpenConversation = { viewModel.openConversation(it.id) },
+                    modifier = Modifier.weight(1f),
+                )
+                MsgTab.Help -> HelpPane(
+                    state = helpState,
+                    roomState = helpRoomState,
+                    onRefresh = {
+                        viewModel.refreshHelpExperts()
+                        viewModel.refreshHelpRoom()
+                    },
+                    onOpenExpertDetail = { expert -> onOpenExpertDetail(expert.userId.toString()) },
+                    onSendHelpMessage = viewModel::sendHelpRoomMessage,
+                    onPickHelpImage = {
+                        imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    },
+                    onTakeHelpPhoto = { photoCapture.launch(null) },
+                    onSendHelpVoice = viewModel::sendHelpRoomVoice,
+                    onTranscribeHelpVoice = viewModel::transcribeHelpRoomVoice,
+                    onSendHelpVideoClip = {
+                        videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
+                    },
+                    onShareHelpInspection = {
+                        focusManager.clearFocus()
+                        helpInspectionPickerOpen = true
+                    },
+                    onRetry = viewModel::retryHelpRoomMessage,
+                    onRetryTranscript = viewModel::retryHelpRoomVoiceTranscript,
+                    onError = viewModel::showHelpRoomError,
+                    onOpenLocalVideo = { onOpenLocalVideo("专家连线 · 第一视角") },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+        InspectionSharePicker(
+            visible = helpInspectionPickerOpen,
+            onDismiss = { helpInspectionPickerOpen = false },
+            onSelect = { card ->
+                helpInspectionPickerOpen = false
+                viewModel.sendHelpRoomInspectionCard(card)
             },
         )
-        when (tab) {
-            MsgTab.List -> ListPane(
-                state = state,
-                onRefresh = viewModel::refresh,
-                onOpenConversation = { onOpenConversation(it.id.toString()) },
-                modifier = Modifier.weight(1f),
-            )
-            MsgTab.Help -> HelpPane(
-                state = helpState,
-                roomState = helpRoomState,
-                onRefresh = {
-                    viewModel.refreshHelpExperts()
-                    viewModel.refreshHelpRoom()
-                },
-                onOpenExpertDetail = { expert -> onOpenExpertDetail(expert.userId.toString()) },
-                onSendHelpMessage = viewModel::sendHelpRoomMessage,
-                onPickHelpImage = {
-                    imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                },
-                onSendHelpVoice = viewModel::sendHelpRoomVoice,
-                onSendHelpVideoClip = {
-                    videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
-                },
-                onRetry = viewModel::retryHelpRoomMessage,
-                onError = viewModel::showHelpRoomError,
-                onOpenLocalVideo = { onOpenLocalVideo("在线求助 · 第一视角") },
-                modifier = Modifier.weight(1f),
-            )
-        }
+        ContactsDrawer(
+            visible = contactsOpen,
+            state = helpState,
+            errorText = contactActionError,
+            onClose = {
+                contactsOpen = false
+                viewModel.clearContactActionError()
+            },
+            onSendMessage = { contact -> viewModel.openDirectConversation(contact.peerUserId) },
+            onOpenAudioVideo = { contact -> onOpenLocalVideo("${contact.name} · 音视频通话") },
+        )
+        FloatingMessageError(
+            text = pageErrorText,
+            onClick = {
+                when (tab) {
+                    MsgTab.List -> viewModel.refresh()
+                    MsgTab.Help -> {
+                        viewModel.refreshHelpExperts()
+                        viewModel.refreshHelpRoom()
+                    }
+                }
+            },
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = if (tab == MsgTab.Help) 92.dp else 22.dp),
+        )
     }
 }
 
@@ -153,19 +254,587 @@ private fun MessageEntryTab.toMsgTab(): MsgTab = when (this) {
     MessageEntryTab.Help -> MsgTab.Help
 }
 
+private fun messageRouteErrorText(
+    tab: MsgTab,
+    messageState: MessageListUiState,
+    helpState: HelpExpertsUiState,
+    helpRoomState: HelpRoomUiState,
+    contactActionError: String?,
+): String? = contactActionError ?: when (tab) {
+    MsgTab.List -> messageState.floatingErrorText()
+    MsgTab.Help -> helpRoomState.floatingErrorText() ?: helpState.floatingErrorText()
+}
+
+private fun MessageListUiState.floatingErrorText(): String? = when (this) {
+    is MessageListUiState.Error -> message
+    is MessageListUiState.Content -> if (offlineCached) errorMessage ?: "未连接实时通道" else null
+    else -> null
+}
+
+private fun HelpExpertsUiState.floatingErrorText(): String? = when (this) {
+    is HelpExpertsUiState.Error -> message
+    is HelpExpertsUiState.Content -> if (offlineCached) errorMessage ?: "专家列表使用本地缓存" else null
+    else -> null
+}
+
+private fun HelpRoomUiState.floatingErrorText(): String? = when (this) {
+    is HelpRoomUiState.Error -> message
+    is HelpRoomUiState.Content -> errorMessage
+    else -> null
+}
+
 @Composable
-private fun ComposeIconButton() {
+private fun ContactsIconButton(onClick: () -> Unit) {
     Box(
-        Modifier.size(Gomob.spacing.touchMin).clickable {},
+        Modifier.size(Gomob.spacing.touchMin).clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
-            GomobIcons.Compose,
-            contentDescription = "新消息",
+            GomobIcons.Contacts,
+            contentDescription = "联系人",
             tint = Gomob.colors.fg2,
             modifier = Modifier.size(Gomob.spacing.icon20),
         )
     }
+}
+
+@Composable
+private fun ContactsDrawer(
+    visible: Boolean,
+    state: HelpExpertsUiState,
+    errorText: String?,
+    onClose: () -> Unit,
+    onSendMessage: (ContactRowUi) -> Unit,
+    onOpenAudioVideo: (ContactRowUi) -> Unit,
+) {
+    BackHandler(enabled = visible, onBack = onClose)
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(),
+        exit = fadeOut(),
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.62f))
+                .clickable(onClick = onClose),
+        )
+    }
+    AnimatedVisibility(
+        visible = visible,
+        enter = slideInHorizontally(initialOffsetX = { it }),
+        exit = slideOutHorizontally(targetOffsetX = { it }),
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.CenterEnd) {
+            ContactsDrawerContent(
+                state = state,
+                errorText = errorText,
+                onSendMessage = onSendMessage,
+                onOpenAudioVideo = onOpenAudioVideo,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ContactsDrawerContent(
+    state: HelpExpertsUiState,
+    errorText: String?,
+    onSendMessage: (ContactRowUi) -> Unit,
+    onOpenAudioVideo: (ContactRowUi) -> Unit,
+) {
+    var query by rememberSaveable { mutableStateOf("") }
+    val sections = remember(state) { buildContactSections(state) }
+    var expandedSectionIds by rememberSaveable { mutableStateOf(listOf("recent")) }
+    var selectedId by rememberSaveable { mutableStateOf(sections.firstContact()?.id.orEmpty()) }
+    val visibleSections = remember(sections, query) { sections.filterContacts(query) }
+    val selected = sections.contacts().firstOrNull { it.id == selectedId } ?: sections.firstContact()
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val drawerClickSource = remember { MutableInteractionSource() }
+    fun dismissSearchInput() {
+        focusManager.clearFocus()
+        keyboardController?.hide()
+    }
+
+    Box(
+        Modifier
+            .fillMaxWidth(0.82f)
+            .fillMaxHeight(),
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .fillMaxHeight()
+                .background(Gomob.colors.bg1)
+                .clickable(
+                    interactionSource = drawerClickSource,
+                    indication = null,
+                    onClick = { dismissSearchInput() },
+                ),
+        ) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 14.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Column {
+                    Text(
+                        "CONTACTS",
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        letterSpacing = 0.14.em,
+                        color = Gomob.colors.fg3,
+                    )
+                    Spacer(Modifier.height(Gomob.spacing.s2))
+                    Text("选择联系人", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = Gomob.colors.fg0)
+                }
+            }
+            ContactSearchBar(query = query, onQueryChange = { query = it })
+            LazyColumn(
+                Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                visibleSections.forEach { section ->
+                    val expanded = query.isNotBlank() || section.id in expandedSectionIds
+                    item(key = "section-${section.id}") {
+                        ContactSectionHeader(
+                            section = section,
+                            expanded = expanded,
+                            onClick = {
+                                expandedSectionIds = if (section.id in expandedSectionIds) {
+                                    expandedSectionIds - section.id
+                                } else {
+                                    expandedSectionIds + section.id
+                                }
+                            },
+                        )
+                    }
+                    if (expanded) {
+                        itemsIndexed(section.contacts, key = { _, contact -> contact.id }) { index, contact ->
+                            Column {
+                                ContactRow(
+                                    contact = contact,
+                                    selected = contact.id == selected?.id,
+                                    onClick = { selectedId = contact.id },
+                                )
+                                if (index != section.contacts.lastIndex) {
+                                    ContactListDivider()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            ContactDrawerBottomBar(
+                selected = selected,
+                onSendMessage = onSendMessage,
+                onOpenAudioVideo = onOpenAudioVideo,
+            )
+        }
+        FloatingMessageError(
+            text = errorText,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 94.dp),
+        )
+    }
+}
+
+@Composable
+private fun ContactSearchBar(query: String, onQueryChange: (String) -> Unit) {
+    Row(
+        Modifier
+            .padding(horizontal = 18.dp)
+            .fillMaxWidth()
+            .height(38.dp)
+            .clip(Gomob.shapes.r2)
+            .background(Gomob.colors.bg2)
+            .padding(horizontal = Gomob.spacing.s12),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+    ) {
+        Icon(
+            GomobIcons.Search,
+            contentDescription = null,
+            tint = Gomob.colors.fg3,
+            modifier = Modifier.size(14.dp),
+        )
+        BasicTextField(
+            value = query,
+            onValueChange = onQueryChange,
+            modifier = Modifier.weight(1f),
+            singleLine = true,
+            textStyle = TextStyle(fontSize = 12.sp, lineHeight = 18.sp, color = Gomob.colors.fg0),
+            cursorBrush = SolidColor(Gomob.colors.accent),
+            decorationBox = { innerTextField ->
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+                    if (query.isEmpty()) {
+                        Text("搜索 姓名 / 工号 / 职责", fontSize = 12.sp, color = Gomob.colors.fg3)
+                    }
+                    innerTextField()
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun ContactSectionHeader(
+    section: ContactSectionUi,
+    expanded: Boolean,
+    onClick: () -> Unit,
+) {
+    val tone = section.tone.toContactTone()
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(Gomob.shapes.r1)
+            .clickable(onClick = onClick)
+            .padding(horizontal = Gomob.spacing.s6, vertical = Gomob.spacing.s4),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+    ) {
+        Text(if (expanded) "⌄" else "›", fontSize = 11.sp, color = Gomob.colors.fg3)
+        Icon(
+            GomobIcons.Folder,
+            contentDescription = null,
+            tint = tone,
+            modifier = Modifier.size(13.dp),
+        )
+        Text(
+            section.title,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            color = Gomob.colors.fg1,
+            modifier = Modifier.weight(1f),
+        )
+        Text(section.countLabel, style = Gomob.type.numInline, color = Gomob.colors.fg3)
+    }
+}
+
+@Composable
+private fun ContactRow(
+    contact: ContactRowUi,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(46.dp)
+            .clip(Gomob.shapes.r2)
+            .background(if (selected) Gomob.colors.accentSoft else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        ContactAvatar(contact)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            Text(
+                contact.name,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                color = Gomob.colors.fg0,
+                maxLines = 1,
+            )
+            Text(
+                "${contact.role} · ${contact.employeeId}",
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+                color = Gomob.colors.fg3,
+                maxLines = 1,
+            )
+        }
+        Icon(
+            GomobIcons.ChevronRight,
+            contentDescription = null,
+            tint = if (selected) Gomob.colors.accent else Gomob.colors.fg3,
+            modifier = Modifier.size(13.dp),
+        )
+    }
+}
+
+@Composable
+private fun ContactListDivider() {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 52.dp, end = 10.dp)
+            .height(Gomob.spacing.hairline)
+            .background(Gomob.colors.line1.copy(alpha = 0.03f)),
+    )
+}
+
+@Composable
+private fun ContactAvatar(contact: ContactRowUi) {
+    MessageAvatarImage(
+        seed = "contact-${contact.id}-${contact.name}",
+        size = 32.dp,
+        shape = Gomob.shapes.r1,
+        online = contact.online,
+    )
+}
+
+@Composable
+private fun ContactDrawerBottomBar(
+    selected: ContactRowUi?,
+    onSendMessage: (ContactRowUi) -> Unit,
+    onOpenAudioVideo: (ContactRowUi) -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Gomob.colors.bg1)
+            .padding(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+    ) {
+        selected?.let { contact ->
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+            ) {
+                ContactAvatar(contact)
+                Text(contact.name, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Gomob.colors.fg0)
+                Text(
+                    if (contact.online) "在线" else "忙碌",
+                    fontSize = 10.sp,
+                    color = if (contact.online) Gomob.colors.ok else Gomob.colors.warn,
+                    modifier = Modifier
+                        .clip(Gomob.shapes.r1)
+                        .background(if (contact.online) Gomob.colors.ok.copy(alpha = 0.12f) else Gomob.colors.warn.copy(alpha = 0.12f))
+                        .padding(horizontal = Gomob.spacing.s6, vertical = 2.dp),
+                )
+            }
+        }
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(
+                Modifier
+                    .weight(1f)
+                    .height(42.dp)
+                    .clip(Gomob.shapes.r2)
+                    .background(Gomob.colors.accentSoft)
+                    .clickable(enabled = selected != null) { selected?.let(onSendMessage) },
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    GomobIcons.Send,
+                    contentDescription = null,
+                    tint = Gomob.colors.accent,
+                    modifier = Modifier.size(14.dp),
+                )
+                Spacer(Modifier.width(Gomob.spacing.s8))
+                Text("发消息", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = Gomob.colors.accent)
+            }
+            ContactActionIcon(GomobIcons.Phone, "语音通话") {
+                selected?.let(onOpenAudioVideo)
+            }
+            ContactActionIcon(GomobIcons.Video, "视频通话") {
+                selected?.let(onOpenAudioVideo)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ContactActionIcon(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    description: String,
+    onClick: () -> Unit,
+) {
+    Box(
+        Modifier
+            .size(42.dp)
+            .clip(Gomob.shapes.r2)
+            .background(Gomob.colors.bg0)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = description, tint = Gomob.colors.fg2, modifier = Modifier.size(15.dp))
+    }
+}
+
+private fun buildContactSections(state: HelpExpertsUiState): List<ContactSectionUi> {
+    val station = listOf(
+        ContactRowUi("station-zhou", "周科", "周", "OBD 主审", "ZAA01", online = true, peerUserId = null),
+        ContactRowUi("station-wu", "吴风", "吴", "外观件专家", "ZAA02", online = true, peerUserId = null),
+        ContactRowUi("station-liu", "刘冶", "刘", "VIN 拓印", "ZAA03", online = false, peerUserId = null),
+        ContactRowUi("station-jiang", "江庆宇", "江", "查验员", "ZAA04", online = false, peerUserId = null),
+        ContactRowUi("station-shen", "沈海明", "沈", "查验员", "ZAA0120230001", online = true, peerUserId = null),
+    )
+    val supervision = listOf(
+        ContactRowUi("supervision-review", "省所复核", "省", "监管复核", "REG01", online = true, peerUserId = null),
+        ContactRowUi("supervision-duty", "值班督导", "督", "异常督办", "REG02", online = false, peerUserId = null),
+    )
+    val experts = when (state) {
+        is HelpExpertsUiState.Content -> state.experts.map { expert ->
+            ContactRowUi(
+                id = "expert-${expert.userId}",
+                name = expert.name,
+                initials = expert.initials,
+                role = expert.roleTitle,
+                employeeId = expert.employeeId,
+                online = expert.availabilityText == "可发消息",
+                peerUserId = expert.userId,
+            )
+        }
+        else -> emptyList()
+    }
+    val recent = experts.take(3).mapIndexed { index, contact ->
+        contact.copy(
+            id = "recent-${contact.id}",
+            role = when (index) {
+                0 -> "今日 12:31"
+                1 -> "今日 12:37"
+                else -> "昨日 18:02"
+            },
+        )
+    }.ifEmpty {
+        station.take(3).mapIndexed { index, contact ->
+            contact.copy(
+                id = "recent-${contact.id}",
+                role = when (index) {
+                    0 -> "今日 12:31"
+                    1 -> "今日 12:37"
+                    else -> "昨日 18:02"
+                },
+            )
+        }
+    }
+
+    return listOf(
+        ContactSectionUi("recent", "近期联系人", recent.size.toString(), WatchTone.Neutral, recent),
+        ContactSectionUi("station", "本站 · 杭州西湖检测站", station.size.toString(), WatchTone.Accent, station),
+        ContactSectionUi("supervision", "监管中心 · 浙江省车管所", supervision.size.toString(), WatchTone.Warn, supervision),
+        ContactSectionUi("experts", "外部专家 · 协作池", experts.size.toString(), WatchTone.Danger, experts),
+    ).filter { it.contacts.isNotEmpty() }
+}
+
+private fun List<ContactSectionUi>.filterContacts(query: String): List<ContactSectionUi> {
+    val keyword = query.trim()
+    if (keyword.isEmpty()) return this
+    val normalizedKeyword = keyword.normalizedContactSearchToken()
+    return mapNotNull { section ->
+        val filtered = section.contacts.filter { contact -> contact.matchesContactKeyword(keyword, normalizedKeyword) }
+        if (filtered.isEmpty()) null else section.copy(countLabel = filtered.size.toString(), contacts = filtered)
+    }
+}
+
+private fun ContactRowUi.matchesContactKeyword(keyword: String, normalizedKeyword: String): Boolean {
+    if (name.contains(keyword, ignoreCase = true) ||
+        role.contains(keyword, ignoreCase = true) ||
+        employeeId.contains(keyword, ignoreCase = true)
+    ) {
+        return true
+    }
+    if (normalizedKeyword.isEmpty()) return false
+    return listOf(name, role, employeeId, initials)
+        .flatMap { it.contactSearchTokens() }
+        .any { it.contains(normalizedKeyword) }
+}
+
+private fun String.contactSearchTokens(): List<String> {
+    val normalized = normalizedContactSearchToken()
+    val syllables = mapNotNull { char ->
+        when {
+            char.isAsciiLetterOrDigit() -> char.lowercaseChar().toString()
+            else -> contactPinyinMap[char]
+        }
+    }
+    val fullPinyin = syllables.joinToString("")
+    val initials = syllables.mapNotNull { it.firstOrNull()?.toString() }.joinToString("")
+    return listOf(normalized, fullPinyin, initials).filter { it.isNotEmpty() }.distinct()
+}
+
+private fun String.normalizedContactSearchToken(): String =
+    lowercase().filter { it.isAsciiLetterOrDigit() }
+
+private fun Char.isAsciiLetterOrDigit(): Boolean =
+    this in 'a'..'z' || this in 'A'..'Z' || this in '0'..'9'
+
+private val contactPinyinMap = mapOf(
+    '周' to "zhou",
+    '科' to "ke",
+    '吴' to "wu",
+    '风' to "feng",
+    '刘' to "liu",
+    '冶' to "ye",
+    '江' to "jiang",
+    '庆' to "qing",
+    '宇' to "yu",
+    '沈' to "shen",
+    '海' to "hai",
+    '明' to "ming",
+    '省' to "sheng",
+    '所' to "suo",
+    '复' to "fu",
+    '核' to "he",
+    '值' to "zhi",
+    '班' to "ban",
+    '督' to "du",
+    '导' to "dao",
+    '陈' to "chen",
+    '若' to "ruo",
+    '愚' to "yu",
+    '林' to "lin",
+    '知' to "zhi",
+    '远' to "yuan",
+    '一' to "yi",
+    '苇' to "wei",
+    '许' to "xu",
+    '庭' to "ting",
+    '主' to "zhu",
+    '审' to "shen",
+    '外' to "wai",
+    '观' to "guan",
+    '件' to "jian",
+    '专' to "zhuan",
+    '家' to "jia",
+    '拓' to "ta",
+    '印' to "yin",
+    '查' to "cha",
+    '验' to "yan",
+    '员' to "yuan",
+    '监' to "jian",
+    '管' to "guan",
+    '异' to "yi",
+    '常' to "chang",
+    '办' to "ban",
+    '车' to "che",
+    '身' to "shen",
+    '维' to "wei",
+    '修' to "xiu",
+    '扫' to "sao",
+    '描' to "miao",
+    '重' to "zhong",
+    '建' to "jian",
+    '法' to "fa",
+    '规' to "gui",
+    '登' to "deng",
+    '记' to "ji",
+)
+
+private fun List<ContactSectionUi>.contacts(): List<ContactRowUi> = flatMap { it.contacts }
+
+private fun List<ContactSectionUi>.firstContact(): ContactRowUi? = contacts().firstOrNull()
+
+@Composable
+private fun WatchTone.toContactTone(): Color = when (this) {
+    WatchTone.Accent -> Gomob.colors.accent
+    WatchTone.Warn -> Gomob.colors.warn
+    WatchTone.Danger -> Gomob.colors.danger
+    WatchTone.Ok -> Gomob.colors.ok
+    WatchTone.Neutral -> Gomob.colors.fg3
 }
 
 @Composable
@@ -176,10 +845,10 @@ private fun SegmentedTabs(
 ) {
     Row(
         Modifier
-            .padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20, bottom = 14.dp)
+            .padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20, bottom = 8.dp)
             .fillMaxWidth()
             .clip(Gomob.shapes.r2)
-            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2),
+            .background(Gomob.colors.bg1),
     ) {
         SegItem(
             modifier = Modifier.weight(1f),
@@ -211,7 +880,7 @@ private fun SegmentedTabs(
             onClick = { onChange(MsgTab.Help) },
         ) {
             Text(
-                "在线求助",
+                "专家连线",
                 fontSize = 12.sp,
                 color = if (tab == MsgTab.Help) Gomob.colors.accent else Gomob.colors.fg2,
             )
@@ -266,23 +935,10 @@ private fun ListPane(
                 MessageListUiState.Loading -> item {
                     StateBlock(text = "正在加载会话", tone = StatusTone.Neutral)
                 }
-                MessageListUiState.Empty -> item {
-                    StateBlock(text = "暂无会话", tone = StatusTone.Neutral)
-                }
-                is MessageListUiState.Error -> item {
-                    StateBlock(text = state.message, tone = StatusTone.Danger, onClick = onRefresh)
-                }
+                MessageListUiState.Empty -> Unit
+                is MessageListUiState.Error -> Unit
                 is MessageListUiState.Content -> {
-                    if (state.offlineCached) {
-                        item {
-                            StatusStrip(
-                                text = state.errorMessage ?: "未连接实时通道",
-                                tone = StatusTone.Warn,
-                                onClick = onRefresh,
-                            )
-                        }
-                    }
-                    items(state.conversations, key = { it.id }) { item ->
+                    items(state.conversations, key = { item -> item.id }) { item ->
                         Box(
                             Modifier
                                 .padding(horizontal = Gomob.spacing.s20)
@@ -306,7 +962,7 @@ private fun ListPane(
 private fun SearchContainer(onActiveChange: (Boolean) -> Unit) {
     Box(
         Modifier
-            .padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20, bottom = 14.dp)
+            .padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20, bottom = 8.dp)
             .fillMaxWidth(),
     ) {
         SearchBar(onActiveChange = onActiveChange)
@@ -321,8 +977,7 @@ private fun SearchBar(onActiveChange: (Boolean) -> Unit) {
             .fillMaxWidth()
             .height(36.dp)
             .clip(Gomob.shapes.r2)
-            .background(Gomob.colors.bg2)
-            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r2)
+            .background(Gomob.colors.bg1)
             .padding(horizontal = Gomob.spacing.s12),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
@@ -355,7 +1010,7 @@ private fun SearchBar(onActiveChange: (Boolean) -> Unit) {
                     ) {
                         if (draft.isEmpty()) {
                             Text(
-                                "搜索消息 / 联系人 / VIN",
+                                "搜索消息 / 联系人",
                                 fontSize = 12.sp,
                                 lineHeight = 18.sp,
                                 color = Gomob.colors.fg3,
@@ -391,13 +1046,12 @@ private fun MsgRow(item: ConversationRowUi, onClick: () -> Unit) {
             .fillMaxWidth()
             .clip(Gomob.shapes.r3)
             .background(Gomob.colors.bg1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
             .clickable(onClick = onClick)
             .padding(horizontal = Gomob.spacing.s14, vertical = Gomob.spacing.s12),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
     ) {
-        MsgAvatar(initials = item.initials, kind = item.avatarKind)
+        MsgAvatar(seed = "conversation-${item.id}-${item.title}", kind = item.avatarKind)
         Column(Modifier.weight(1f)) {
             Row(
                 Modifier.fillMaxWidth(),
@@ -425,13 +1079,21 @@ private fun MsgRow(item: ConversationRowUi, onClick: () -> Unit) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    item.preview,
-                    fontSize = 12.sp,
-                    color = Gomob.colors.fg2,
-                    maxLines = 1,
-                    modifier = Modifier.weight(1f),
-                )
+                if (item.preview.isNotBlank()) {
+                    Text(
+                        item.preview,
+                        fontSize = 12.sp,
+                        color = Gomob.colors.fg2,
+                        maxLines = 1,
+                        modifier = Modifier.weight(1f),
+                    )
+                } else {
+                    Spacer(
+                        Modifier
+                            .weight(1f)
+                            .height(18.dp),
+                    )
+                }
                 if (item.unreadCount > 0) {
                     UnreadBadge(item.unreadCount, item.unreadTone)
                 }
@@ -441,31 +1103,12 @@ private fun MsgRow(item: ConversationRowUi, onClick: () -> Unit) {
 }
 
 @Composable
-private fun MsgAvatar(initials: String, kind: AvatarKind) {
-    val tone = when (kind) {
-        AvatarKind.System -> Gomob.colors.accent
-        AvatarKind.Call -> Gomob.colors.ok
-        AvatarKind.Video -> Gomob.colors.warn
-        AvatarKind.Image -> Gomob.colors.danger
-        AvatarKind.Voice -> Gomob.colors.accent
-        AvatarKind.Neutral -> Gomob.colors.fg1
-    }
-    val borderTone = if (kind == AvatarKind.Neutral) Gomob.colors.line2 else tone
-    Box(
-        Modifier
-            .size(38.dp)
-            .clip(Gomob.shapes.r2)
-            .background(Gomob.colors.bg3)
-            .border(Gomob.spacing.hairline, borderTone, Gomob.shapes.r2),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            initials,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Medium,
-            color = tone,
-        )
-    }
+private fun MsgAvatar(seed: String, kind: AvatarKind) {
+    MessageAvatarImage(
+        seed = "$kind-$seed",
+        size = 38.dp,
+        shape = Gomob.shapes.r2,
+    )
 }
 
 @Composable
@@ -507,9 +1150,13 @@ private fun HelpPane(
     onOpenExpertDetail: (HelpExpertRowUi) -> Unit,
     onSendHelpMessage: (String) -> Unit,
     onPickHelpImage: () -> Unit,
+    onTakeHelpPhoto: () -> Unit,
     onSendHelpVoice: (android.net.Uri, Int) -> Unit,
+    onTranscribeHelpVoice: (android.net.Uri, Int) -> Unit,
     onSendHelpVideoClip: () -> Unit,
+    onShareHelpInspection: () -> Unit,
     onRetry: (String?) -> Unit,
+    onRetryTranscript: (Long?) -> Unit,
     onError: (String) -> Unit,
     onOpenLocalVideo: () -> Unit,
     modifier: Modifier = Modifier,
@@ -532,13 +1179,9 @@ private fun HelpPane(
             onError("未授予录音权限")
         }
     }
-    val toggleVoiceRecording: () -> Unit = {
-        if (voiceRecording) {
-            runCatching { voiceRecorder.stop() }
-                .onSuccess { result -> onSendHelpVoice(result.uri, result.durationSec) }
-                .onFailure { onError(it.message ?: "录音失败") }
-            voiceRecording = false
-        } else if (
+    val startVoiceRecording: () -> Unit = startVoice@{
+        if (voiceRecording) return@startVoice
+        if (
             ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
         ) {
@@ -549,6 +1192,25 @@ private fun HelpPane(
         } else {
             voicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
+    }
+    val sendVoiceRecording: () -> Unit = sendVoice@{
+        if (!voiceRecording) return@sendVoice
+        runCatching { voiceRecorder.stop() }
+            .onSuccess { result -> onSendHelpVoice(result.uri, result.durationSec) }
+            .onFailure { onError(it.message ?: "录音失败") }
+        voiceRecording = false
+    }
+    val cancelVoiceRecording: () -> Unit = cancelVoice@{
+        if (!voiceRecording) return@cancelVoice
+        voiceRecorder.cancel()
+        voiceRecording = false
+    }
+    val transcribeVoiceRecording: () -> Unit = transcribeVoice@{
+        if (!voiceRecording) return@transcribeVoice
+        runCatching { voiceRecorder.stop() }
+            .onSuccess { result -> onTranscribeHelpVoice(result.uri, result.durationSec) }
+            .onFailure { onError(it.message ?: "录音失败") }
+        voiceRecording = false
     }
 
     Column(modifier.fillMaxSize()) {
@@ -571,7 +1233,6 @@ private fun HelpPane(
                         onRefresh = onRefresh,
                     )
                 }
-                item { HelpInlineStatus(text = "正在打开在线求助群", tone = StatusTone.Neutral, onClick = null) }
             }
             is HelpRoomUiState.Error -> LazyColumn(
                 Modifier
@@ -591,7 +1252,6 @@ private fun HelpPane(
                         onRefresh = onRefresh,
                     )
                 }
-                item { HelpInlineStatus(text = roomState.message, tone = StatusTone.Danger, onClick = onRefresh) }
             }
             is HelpRoomUiState.Content -> HelpRoomMessageList(
                 state = roomState,
@@ -599,6 +1259,7 @@ private fun HelpPane(
                 onRefresh = onRefresh,
                 onOpenExpertDetail = onOpenExpertDetail,
                 onRetry = onRetry,
+                onRetryTranscript = onRetryTranscript,
                 inputFocused = inputFocused,
                 modifier = Modifier.weight(1f),
             )
@@ -607,9 +1268,13 @@ private fun HelpPane(
             draft = draft,
             enabled = roomState is HelpRoomUiState.Content,
             onDraftChange = { draft = it },
+            onShareInspection = onShareHelpInspection,
             onPickImage = onPickHelpImage,
-            onTakePhoto = onPickHelpImage,
-            onSendVoice = toggleVoiceRecording,
+            onTakePhoto = onTakeHelpPhoto,
+            onStartVoice = startVoiceRecording,
+            onSendVoice = sendVoiceRecording,
+            onCancelVoice = cancelVoiceRecording,
+            onTranscribeVoice = transcribeVoiceRecording,
             onSendVideoClip = onSendHelpVideoClip,
             onOpenLocalVideo = onOpenLocalVideo,
             voiceRecording = voiceRecording,
@@ -643,23 +1308,15 @@ private fun HelpParticipantCompactHeader(
             onClick = onRefresh,
         )
         is HelpExpertsUiState.Error -> HelpInlineStatus(
-            text = state.message,
-            tone = StatusTone.Danger,
+            text = "固定专家待刷新",
+            tone = StatusTone.Neutral,
             onClick = onRefresh,
         )
         is HelpExpertsUiState.Content -> {
             Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8)) {
-                if (state.offlineCached) {
-                    HelpInlineStatus(
-                        text = state.errorMessage ?: "专家列表使用本地缓存",
-                        tone = StatusTone.Warn,
-                        onClick = onRefresh,
-                    )
-                }
                 ExpertParticipantCompactBar(
                     experts = state.experts,
                     onOpenExpertDetail = onOpenExpertDetail,
-                    onRefresh = onRefresh,
                 )
             }
         }
@@ -673,6 +1330,7 @@ private fun HelpRoomMessageList(
     onRefresh: () -> Unit,
     onOpenExpertDetail: (HelpExpertRowUi) -> Unit,
     onRetry: (String?) -> Unit,
+    onRetryTranscript: (Long?) -> Unit,
     inputFocused: Boolean,
     modifier: Modifier = Modifier,
 ) {
@@ -685,105 +1343,75 @@ private fun HelpRoomMessageList(
         }
     }
 
-    LazyColumn(
+    Box(
         modifier
             .fillMaxWidth()
+            .clipToBounds()
             .clearInputFocusOnPointerDown(focusManager),
-        state = listState,
-        contentPadding = PaddingValues(
-            horizontal = Gomob.spacing.s20,
-            vertical = Gomob.spacing.s8,
-        ),
-        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
     ) {
-        item {
-            HelpParticipantCompactHeader(
-                state = expertState,
-                onOpenExpertDetail = onOpenExpertDetail,
-                onRefresh = onRefresh,
-            )
-        }
-        if (state.offlineCached) {
+        StarfieldBackground(Modifier.matchParentSize())
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            state = listState,
+            contentPadding = PaddingValues(
+                horizontal = Gomob.spacing.s20,
+                vertical = Gomob.spacing.s8,
+            ),
+            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+        ) {
             item {
-                HelpInlineStatus(
-                    text = state.errorMessage ?: "在线求助群使用本地缓存",
-                    tone = StatusTone.Warn,
-                    onClick = onRefresh,
+                HelpParticipantCompactHeader(
+                    state = expertState,
+                    onOpenExpertDetail = onOpenExpertDetail,
+                    onRefresh = onRefresh,
                 )
             }
-        }
-        when {
-            state.loading -> item {
-                HelpInlineStatus(text = "正在加载在线求助消息", tone = StatusTone.Neutral, onClick = null)
-            }
-            state.errorMessage != null && state.messages.isEmpty() -> item {
-                HelpInlineStatus(text = state.errorMessage, tone = StatusTone.Danger, onClick = onRefresh)
-            }
-            state.empty -> item {
-                HelpInlineStatus(text = "暂无消息", tone = StatusTone.Neutral, onClick = null)
-            }
-            else -> items(state.messages, key = { it.localKey }) { bubble ->
-                ChatMessageRow(
-                    bubble = bubble,
-                    onRetry = { onRetry(bubble.clientMsgId) },
-                )
+            when {
+                state.errorMessage != null && state.messages.isEmpty() -> Unit
+                state.empty -> Unit
+                else -> items(state.messages, key = { it.localKey }) { bubble ->
+                    ChatMessageRow(
+                        bubble = bubble,
+                        onRetry = { onRetry(bubble.clientMsgId) },
+                        onRetryTranscript = { onRetryTranscript(bubble.serverId) },
+                    )
+                }
             }
         }
     }
 }
 
 private fun helpRoomListItemCount(state: HelpRoomUiState.Content): Int {
-    val statusCount = if (state.offlineCached) 1 else 0
     val bodyCount = when {
-        state.loading -> 1
-        state.errorMessage != null && state.messages.isEmpty() -> 1
-        state.empty -> 1
+        state.errorMessage != null && state.messages.isEmpty() -> 0
+        state.empty -> 0
         else -> state.messages.size
     }
-    return 1 + statusCount + bodyCount
+    return 1 + bodyCount
 }
 
 @Composable
 private fun ExpertParticipantCompactBar(
     experts: List<HelpExpertRowUi>,
     onOpenExpertDetail: (HelpExpertRowUi) -> Unit,
-    onRefresh: () -> Unit,
 ) {
     Row(
         Modifier
             .fillMaxWidth()
-            .height(52.dp)
-            .clip(Gomob.shapes.r2)
-            .background(Gomob.colors.bg1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r2)
-            .padding(horizontal = 10.dp),
+            .height(48.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2)) {
-            Text("在线求助", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = Gomob.colors.fg0)
-            Text("${experts.size} 位固定专家", style = Gomob.type.numInline, color = Gomob.colors.fg3)
+        experts.take(6).forEach { expert ->
+            ExpertCompactAvatar(
+                expert = expert,
+                onAvatarClick = { onOpenExpertDetail(expert) },
+            )
         }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
-        ) {
-            experts.take(4).forEach { expert ->
-                ExpertCompactAvatar(
-                    expert = expert,
-                    onAvatarClick = { onOpenExpertDetail(expert) },
-                )
-            }
-            if (experts.size > 4) {
-                Text(
-                    "+${experts.size - 4}",
-                    style = Gomob.type.numInline,
-                    color = Gomob.colors.fg3,
-                    modifier = Modifier.padding(horizontal = Gomob.spacing.s2),
-                )
-            }
-            RefreshExpertsBox(onClick = onRefresh)
+        if (experts.size > 6) {
+            ExpertOverflowAvatar(count = experts.size - 6)
         }
+        Spacer(Modifier.weight(1f))
     }
 }
 
@@ -792,57 +1420,36 @@ private fun ExpertCompactAvatar(
     expert: HelpExpertRowUi,
     onAvatarClick: () -> Unit,
 ) {
+    val available = expert.availabilityText == "可发消息"
     Box(
         Modifier
-            .size(32.dp)
+            .size(40.dp)
             .clickable(onClick = onAvatarClick),
         contentAlignment = Alignment.BottomEnd,
     ) {
-        Box(
-            Modifier
-                .size(30.dp)
-                .align(Alignment.Center)
-                .clip(Gomob.shapes.r2)
-                .background(Gomob.colors.accentSoft)
-                .border(
-                    Gomob.spacing.hairline,
-                    Gomob.colors.accentLine,
-                    Gomob.shapes.r2,
-                ),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                expert.initials,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Medium,
-                color = Gomob.colors.accentStrong,
-            )
-        }
-        Box(
-            Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(if (expert.availabilityText == "可发消息") Gomob.colors.ok else Gomob.colors.fg3)
-                .border(1.dp, Gomob.colors.bg1, CircleShape),
+        MessageAvatarImage(
+            seed = "expert-${expert.userId}-${expert.name}",
+            size = 36.dp,
+            shape = CircleShape,
+            online = available,
+            modifier = Modifier.align(Alignment.Center),
         )
     }
 }
 
 @Composable
-private fun RefreshExpertsBox(onClick: () -> Unit) {
+private fun ExpertOverflowAvatar(count: Int) {
     Box(
         Modifier
-            .size(32.dp)
-            .clip(Gomob.shapes.r2)
-            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
-            .clickable(onClick = onClick),
+            .size(36.dp)
+            .clip(CircleShape)
+            .background(Gomob.colors.bg2),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            GomobIcons.Refresh,
-            contentDescription = "刷新专家",
-            tint = Gomob.colors.fg3,
-            modifier = Modifier.size(14.dp),
+        Text(
+            "+$count",
+            style = Gomob.type.numInline,
+            color = Gomob.colors.fg3,
         )
     }
 }
@@ -859,7 +1466,6 @@ private fun StateBlock(
             .fillMaxWidth()
             .clip(Gomob.shapes.r3)
             .background(Gomob.colors.bg1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
             .let { if (onClick != null) it.clickable(onClick = onClick) else it }
             .padding(Gomob.spacing.s16),
     ) {
@@ -878,27 +1484,9 @@ private fun HelpInlineStatus(
             .fillMaxWidth()
             .clip(Gomob.shapes.r3)
             .background(Gomob.colors.bg1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
             .let { if (onClick != null) it.clickable(onClick = onClick) else it }
             .padding(Gomob.spacing.s16),
     ) {
         StatusTag(text = text, tone = tone, showDot = tone != StatusTone.Neutral)
-    }
-}
-
-@Composable
-private fun StatusStrip(
-    text: String,
-    tone: StatusTone,
-    onClick: () -> Unit,
-) {
-    Box(
-        Modifier
-            .padding(horizontal = Gomob.spacing.s20)
-            .padding(bottom = Gomob.spacing.s8)
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
-    ) {
-        StatusTag(text = text, tone = tone, showDot = true)
     }
 }

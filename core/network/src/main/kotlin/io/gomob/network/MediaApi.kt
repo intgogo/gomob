@@ -14,6 +14,11 @@ import retrofit2.http.Path
 import retrofit2.http.Query
 
 interface MediaApi {
+    @GET("v1/media/rooms/{id}")
+    suspend fun room(
+        @Path("id") roomId: String,
+    ): Envelope<MediaRoomResponse>
+
     @POST("v1/media/rooms")
     suspend fun createRoom(
         @Body request: CreateMediaRoomRequest,

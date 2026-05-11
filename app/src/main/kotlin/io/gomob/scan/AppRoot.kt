@@ -50,7 +50,13 @@ fun AppRoot(vm: AuthGateViewModel = hiltViewModel()) {
                 onSessionNoticeShown = vm::clearSessionNotice,
             )
         }
-        true -> GomobNavHost()
+        true -> {
+            val warmup: AppWarmupViewModel = hiltViewModel()
+            LaunchedEffect(Unit) {
+                warmup.warmAfterLogin()
+            }
+            GomobNavHost()
+        }
     }
 }
 

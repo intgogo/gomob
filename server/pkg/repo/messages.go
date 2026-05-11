@@ -627,6 +627,31 @@ func (r *MessageRepo) FindByClientMsgID(ctx context.Context, senderID int64, cli
 	return &m, nil
 }
 
+// FindByID 返回单条未删除消息。
+func (r *MessageRepo) FindByID(ctx context.Context, messageID int64) (*Message, error) {
+	const q = `
+		SELECT id, conversation_id, sender_id, server_seq, kind, payload, client_msg_id,
+		       created_at, edited_at, deleted_at
+		FROM messages
+		WHERE id=$1 AND deleted_at IS NULL`
+	var m Message
+	var client sql.NullString
+	var editedAt, deletedAt sql.NullTime
+	if err := r.pool.QueryRow(ctx, q, messageID).Scan(
+		&m.ID, &m.ConversationID, &m.SenderID, &m.ServerSeq, &m.Kind, &m.Payload, &client,
+		&m.CreatedAt, &editedAt, &deletedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	m.ClientMsgID = nullStringPtr(client)
+	m.EditedAt = nullTimePtr(editedAt)
+	m.DeletedAt = nullTimePtr(deletedAt)
+	return &m, nil
+}
+
 // MaxSeq 返回当前 conversation 已经分配出去的最大 server_seq（即 next_seq - 1）。
 func (r *MessageRepo) MaxSeq(ctx context.Context, convID int64) (int64, error) {
 	var seq int64

@@ -35,12 +35,24 @@ class RealtimeEnvelopeParser @Inject constructor(
         } ?: RealtimeEvent.Unknown(envelope)
         "msg.recv" -> envelope.payload?.decode<RecvPayload>()?.let {
             RealtimeEvent.MessageReceived(
+                messageId = it.messageId,
                 conversationId = it.conversationId,
                 serverSeq = it.serverSeq,
                 senderId = it.senderId,
                 kind = it.kind,
                 content = it.content,
+                clientMsgId = it.clientMsgId,
                 createdAt = it.createdAt,
+            )
+        } ?: RealtimeEvent.Unknown(envelope)
+        "msg.transcript.updated" -> envelope.payload?.decode<TranscriptUpdatedPayload>()?.let {
+            RealtimeEvent.TranscriptUpdated(
+                messageId = it.messageId,
+                conversationId = it.conversationId,
+                serverSeq = it.serverSeq,
+                kind = it.kind,
+                content = it.content,
+                updatedAt = it.updatedAt,
             )
         } ?: RealtimeEvent.Unknown(envelope)
         "error" -> RealtimeEvent.Error(
@@ -72,12 +84,24 @@ private data class DeliveredPayload(
 
 @Serializable
 private data class RecvPayload(
+    @SerialName("message_id") val messageId: Long? = null,
     @SerialName("conversation_id") val conversationId: Long,
     @SerialName("server_seq") val serverSeq: Long,
     @SerialName("sender_id") val senderId: Long,
     val kind: String,
     val content: JsonElement? = null,
+    @SerialName("client_msg_id") val clientMsgId: String? = null,
     @SerialName("created_at") val createdAt: String,
+)
+
+@Serializable
+private data class TranscriptUpdatedPayload(
+    @SerialName("message_id") val messageId: Long,
+    @SerialName("conversation_id") val conversationId: Long,
+    @SerialName("server_seq") val serverSeq: Long,
+    val kind: String,
+    val content: JsonElement? = null,
+    @SerialName("updated_at") val updatedAt: String,
 )
 
 @Serializable

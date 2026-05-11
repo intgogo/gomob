@@ -4,8 +4,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,9 +17,18 @@ import (
 
 	"io.gomob/server/pkg/audit"
 	"io.gomob/server/pkg/httpx"
+	"io.gomob/server/pkg/logger"
 	"io.gomob/server/pkg/rbac"
 	"io.gomob/server/pkg/repo"
 )
+
+type RealtimeMessageNotifier interface {
+	NotifyMessage(ctx context.Context, senderID int64, message *repo.Message) (int, error)
+}
+
+type RealtimeTranscriptNotifier interface {
+	NotifyTranscriptUpdate(ctx context.Context, message *repo.Message) (int, error)
+}
 
 type Handler struct {
 	pool          *pgxpool.Pool
@@ -29,8 +40,11 @@ type Handler struct {
 	conversations *repo.ConversationRepo
 	messages      *repo.MessageRepo
 	media         *repo.MediaRepo
+	transcripts   *repo.TranscriptRepo
 	audit         audit.Recorder
 	enforcer      rbac.Enforcer
+	realtime      RealtimeMessageNotifier
+	log           *slog.Logger
 }
 
 func NewHandler(pool *pgxpool.Pool, audit audit.Recorder, enforcer rbac.Enforcer) *Handler {
@@ -44,9 +58,19 @@ func NewHandler(pool *pgxpool.Pool, audit audit.Recorder, enforcer rbac.Enforcer
 		conversations: repo.NewConversationRepo(pool),
 		messages:      repo.NewMessageRepo(pool),
 		media:         repo.NewMediaRepo(pool),
+		transcripts:   repo.NewTranscriptRepo(pool, defaultTranscriptConfig()),
 		audit:         audit,
 		enforcer:      enforcer,
+		log:           logger.New("api.handler"),
 	}
+}
+
+func (h *Handler) SetRealtimeMessageNotifier(notifier RealtimeMessageNotifier) {
+	h.realtime = notifier
+}
+
+func (h *Handler) SetTranscriptConfig(cfg repo.TranscriptConfig) {
+	h.transcripts = repo.NewTranscriptRepo(h.pool, cfg)
 }
 
 // Mount 把所有路由挂到 mux；调用方为受保护路径在外层套 Required（gateway 模式下 gateway 已校验）。
@@ -74,9 +98,13 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/conversations/p2p", h.OpenP2PConversation)
 	mux.HandleFunc("GET /v1/conversations/{id}/messages", h.ListConversationMessages)
 	mux.HandleFunc("POST /v1/conversations/{id}/messages", h.CreateConversationMessage)
+	mux.HandleFunc("POST /v1/conversations/{id}/call-invites", h.CreateConversationCallInvite)
 	mux.HandleFunc("POST /v1/conversations/{id}/read", h.MarkConversationRead)
+	mux.HandleFunc("POST /v1/messages/transcribe-draft", h.TranscribeDraftVoice)
+	mux.HandleFunc("POST /v1/messages/{id}/transcript/retry", h.RetryMessageTranscript)
 
 	// 媒体控制面
+	mux.HandleFunc("GET /v1/media/rooms/{id}", h.GetMediaRoom)
 	mux.HandleFunc("POST /v1/media/rooms", h.CreateMediaRoom)
 	mux.HandleFunc("POST /v1/media/rooms/{id}/token", h.CreateMediaRoomToken)
 	mux.HandleFunc("POST /v1/media/rooms/{id}/end", h.EndMediaRoom)

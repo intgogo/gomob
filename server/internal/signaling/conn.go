@@ -41,9 +41,9 @@ const (
 //	ping/pong              心跳（gorilla 内置 ping/pong frame；这里的 type 是应用层心跳预留）
 //	error                  错误（S→C，含 code/message）
 //
-//	msg.send               单聊发送 (C→S)；payload: {to_user_id, kind, content}
-//	msg.delivered          server 落库回执 (S→C)；payload: {client_msg_id, conversation_id, server_seq}
-//	msg.recv               推送给收件人 (S→C)；payload: {conversation_id, server_seq, sender_id, kind, content}
+//	msg.send               会话发送 (C→S)；payload: {conversation_id 或 to_user_id, kind, content}
+//	msg.delivered          server 落库回执 (S→C)；payload: {client_msg_id, conversation_id, server_seq, message_id}
+//	msg.recv               推送给收件人 (S→C)；payload: {message_id, conversation_id, server_seq, sender_id, kind, content}
 //	msg.fetch              拉取离线 (C→S)；payload: {conversation_id, since_seq}
 //	msg.fetch_result       离线补齐 (S→C)；payload: {conversation_id, items: [...]}
 //
@@ -65,14 +65,14 @@ type Envelope struct {
 }
 
 type Conn struct {
-	UserID   int64
-	Role     string
-	ws       *websocket.Conn
-	send     chan Envelope
-	closed   chan struct{}
+	UserID    int64
+	Role      string
+	ws        *websocket.Conn
+	send      chan Envelope
+	closed    chan struct{}
 	closeOnce sync.Once
-	frameSeq int64
-	log      *slog.Logger
+	frameSeq  int64
+	log       *slog.Logger
 }
 
 func newConn(ws *websocket.Conn, userID int64, role string, log *slog.Logger) *Conn {

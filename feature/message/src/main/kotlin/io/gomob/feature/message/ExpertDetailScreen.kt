@@ -1,7 +1,6 @@
 package io.gomob.feature.message
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,10 +11,13 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.VideoCall
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -40,6 +42,7 @@ import io.gomob.designsystem.theme.Gomob
 fun ExpertDetailRoute(
     onBack: () -> Unit,
     onOpenConversation: (String) -> Unit,
+    onOpenAudioVideo: (String) -> Unit,
     viewModel: ExpertDetailViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -55,32 +58,38 @@ fun ExpertDetailRoute(
         BackHeader(
             title = content?.expert?.name ?: "专家详情",
             onBack = onBack,
-            eyebrow = "在线求助 · 固定专家",
-            trailing = {
-                ExpertMessageButton(
-                    enabled = content != null && !content.openingMessage,
-                    loading = content?.openingMessage == true,
-                    onClick = viewModel::openDirectConversation,
-                )
-            },
+            eyebrow = "专家连线 · 固定专家",
         )
 
-        when (state) {
-            ExpertDetailUiState.Loading -> ExpertDetailStateBlock("正在加载专家", StatusTone.Neutral, null)
-            is ExpertDetailUiState.Error -> ExpertDetailStateBlock(
-                text = (state as ExpertDetailUiState.Error).message,
-                tone = StatusTone.Danger,
-                onClick = viewModel::refresh,
-            )
-            is ExpertDetailUiState.Content -> ExpertDetailContent(state as ExpertDetailUiState.Content)
+        Box(Modifier.weight(1f)) {
+            when (state) {
+                ExpertDetailUiState.Loading -> ExpertDetailStateBlock("正在加载专家", StatusTone.Neutral, null)
+                is ExpertDetailUiState.Error -> ExpertDetailStateBlock(
+                    text = (state as ExpertDetailUiState.Error).message,
+                    tone = StatusTone.Danger,
+                    onClick = viewModel::refresh,
+                )
+                is ExpertDetailUiState.Content -> ExpertDetailContent(state as ExpertDetailUiState.Content)
+            }
         }
+        ExpertBottomActions(
+            enabled = content != null && !content.openingMessage,
+            onMessage = viewModel::openDirectConversation,
+            onAudioVideo = {
+                content?.expert?.name
+                    ?.let { onOpenAudioVideo("$it · 音视频通话") }
+            },
+        )
     }
 }
 
 @Composable
-private fun ExpertDetailContent(state: ExpertDetailUiState.Content) {
+private fun ExpertDetailContent(
+    state: ExpertDetailUiState.Content,
+    modifier: Modifier = Modifier,
+) {
     LazyColumn(
-        Modifier.fillMaxSize(),
+        modifier.fillMaxWidth(),
         contentPadding = PaddingValues(
             horizontal = Gomob.spacing.s20,
             vertical = Gomob.spacing.s12,
@@ -111,28 +120,18 @@ private fun ExpertDetailCard(expert: HelpExpertRowUi) {
             .fillMaxWidth()
             .clip(Gomob.shapes.r3)
             .background(Gomob.colors.bg1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
             .padding(Gomob.spacing.s16),
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
-            Box(
-                Modifier
-                    .size(54.dp)
-                    .clip(Gomob.shapes.r2)
-                    .background(Gomob.colors.accentSoft)
-                    .border(Gomob.spacing.hairline, Gomob.colors.accentLine, Gomob.shapes.r2),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    expert.initials,
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Gomob.colors.accentStrong,
-                )
-            }
+            MessageAvatarImage(
+                seed = "expert-${expert.userId}-${expert.name}",
+                size = 54.dp,
+                shape = Gomob.shapes.r2,
+                online = expert.availabilityText == "可发消息",
+            )
             Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4)) {
                 Text(expert.name, style = Gomob.type.metricMd, color = Gomob.colors.fg0)
                 Text(expert.roleTitle, style = Gomob.type.bodySm, color = Gomob.colors.accent)
@@ -158,7 +157,6 @@ private fun ExpertCaseCard(item: ExpertCaseRowUi) {
             .fillMaxWidth()
             .clip(Gomob.shapes.r3)
             .background(Gomob.colors.bg1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
             .padding(Gomob.spacing.s14),
         verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
     ) {
@@ -197,38 +195,94 @@ private fun DetailLine(label: String, value: String) {
 }
 
 @Composable
-private fun ExpertMessageButton(
+private fun ExpertBottomActions(
     enabled: Boolean,
-    loading: Boolean,
-    onClick: () -> Unit,
+    onMessage: () -> Unit,
+    onAudioVideo: () -> Unit,
 ) {
+    Column(Modifier.fillMaxWidth().background(Gomob.colors.bg1).navigationBarsPadding()) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Gomob.spacing.s20, vertical = Gomob.spacing.s12),
+            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+        ) {
+            ExpertActionButton(
+                label = "发消息",
+                enabled = enabled,
+                primary = true,
+                icon = { tint ->
+                    Icon(
+                        GomobIcons.Compose,
+                        contentDescription = null,
+                        tint = tint,
+                        modifier = Modifier.size(Gomob.spacing.icon20),
+                    )
+                },
+                onClick = onMessage,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            ExpertActionButton(
+                label = "音视频通话",
+                enabled = enabled,
+                primary = false,
+                icon = { tint ->
+                    Icon(
+                        Icons.Filled.VideoCall,
+                        contentDescription = null,
+                        tint = tint,
+                        modifier = Modifier.size(Gomob.spacing.icon20),
+                    )
+                },
+                onClick = onAudioVideo,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ExpertActionButton(
+    label: String,
+    enabled: Boolean,
+    primary: Boolean,
+    icon: @Composable (androidx.compose.ui.graphics.Color) -> Unit,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val bg = when {
+        !enabled -> Gomob.colors.bg3
+        primary -> Gomob.colors.accentSoft
+        else -> Gomob.colors.bg2
+    }
+    val fg = when {
+        !enabled -> Gomob.colors.fg3.copy(alpha = 0.5f)
+        primary -> Gomob.colors.accent
+        else -> Gomob.colors.fg1
+    }
     Row(
         Modifier
-            .height(32.dp)
+            .then(modifier)
+            .height(Gomob.spacing.touchMin)
             .clip(Gomob.shapes.r2)
-            .background(if (enabled) Gomob.colors.accentSoft else Gomob.colors.bg2)
-            .border(
-                Gomob.spacing.hairline,
-                if (enabled) Gomob.colors.accentLine else Gomob.colors.line1,
-                Gomob.shapes.r2,
-            )
+            .background(bg)
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = Gomob.spacing.s12),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+        horizontalArrangement = Arrangement.Center,
     ) {
-        Icon(
-            GomobIcons.Compose,
-            contentDescription = "发消息",
-            tint = if (enabled) Gomob.colors.accent else Gomob.colors.fg3,
-            modifier = Modifier.size(14.dp),
-        )
-        Text(
-            if (loading) "打开中" else "发消息",
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Medium,
-            color = if (enabled) Gomob.colors.accent else Gomob.colors.fg3,
-        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+        ) {
+            icon(fg)
+            Text(
+                label,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                color = fg,
+            )
+        }
     }
 }
 
@@ -239,7 +293,6 @@ private fun ExpertInlineStatus(text: String, tone: StatusTone) {
             .fillMaxWidth()
             .clip(Gomob.shapes.r3)
             .background(Gomob.colors.bg1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
             .padding(Gomob.spacing.s14),
     ) {
         StatusTag(text = text, tone = tone, showDot = tone != StatusTone.Neutral)
@@ -258,7 +311,6 @@ private fun ExpertDetailStateBlock(
             .fillMaxWidth()
             .clip(Gomob.shapes.r3)
             .background(Gomob.colors.bg1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
             .let { if (onClick != null) it.clickable(onClick = onClick) else it }
             .padding(Gomob.spacing.s16),
     ) {

@@ -10,7 +10,6 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -246,7 +245,7 @@ sealed interface LocalLiveState {
 }
 
 @Composable
-private fun CameraPreview(
+internal fun CameraPreview(
     lensFacing: Int,
     onError: (String) -> Unit,
     modifier: Modifier = Modifier,
@@ -269,9 +268,8 @@ private fun CameraPreview(
         runCatching {
             val provider = context.awaitCameraProvider()
             cameraProvider.value = provider
-            val selector = CameraSelector.Builder()
-                .requireLensFacing(lensFacing)
-                .build()
+            val selector = provider.availableSelectorOrNull(lensFacing)
+                ?: error("没有可用摄像头")
             val preview = Preview.Builder().build().also {
                 it.setSurfaceProvider(previewView.surfaceProvider)
             }
@@ -297,7 +295,6 @@ private fun PermissionBlock(
         Modifier
             .clip(Gomob.shapes.r3)
             .background(Gomob.colors.bg1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
             .clickable(onClick = onClick)
             .padding(Gomob.spacing.s16),
     ) {
@@ -333,11 +330,6 @@ private fun VideoControlIcon(
             .size(Gomob.spacing.touchMin)
             .clip(Gomob.shapes.r2)
             .background(if (active) Gomob.colors.accentSoft else Gomob.colors.bg2)
-            .border(
-                Gomob.spacing.hairline,
-                if (active) Gomob.colors.accentLine else Gomob.colors.line2,
-                Gomob.shapes.r2,
-            )
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -349,6 +341,25 @@ private fun VideoControlIcon(
         )
     }
 }
+
+private fun ProcessCameraProvider.availableSelectorOrNull(preferredLensFacing: Int): CameraSelector? {
+    val preferred = CameraSelector.Builder()
+        .requireLensFacing(preferredLensFacing)
+        .build()
+    if (hasCameraSafely(preferred)) return preferred
+    val fallbackLensFacing = if (preferredLensFacing == CameraSelector.LENS_FACING_FRONT) {
+        CameraSelector.LENS_FACING_BACK
+    } else {
+        CameraSelector.LENS_FACING_FRONT
+    }
+    val fallback = CameraSelector.Builder()
+        .requireLensFacing(fallbackLensFacing)
+        .build()
+    return fallback.takeIf(::hasCameraSafely)
+}
+
+private fun ProcessCameraProvider.hasCameraSafely(selector: CameraSelector): Boolean =
+    runCatching { hasCamera(selector) }.getOrDefault(false)
 
 private suspend fun Context.awaitCameraProvider(): ProcessCameraProvider =
     suspendCancellableCoroutine { continuation ->

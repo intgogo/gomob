@@ -1,18 +1,25 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"testing"
+
+	"io.gomob/server/pkg/repo"
 )
 
 func TestValidClientMessageKindIncludesVoice(t *testing.T) {
-	for _, kind := range []string{"text", "image", "voice", "video_clip"} {
+	for _, kind := range []string{"text", "image", "voice", "video_clip", "inspection_card"} {
 		if !validClientMessageKind(kind) {
 			t.Fatalf("validClientMessageKind(%q)=false, want true", kind)
 		}
 	}
 	if validClientMessageKind("video_call") {
 		t.Fatalf("client 不应直接创建 video_call 消息")
+	}
+	if validClientMessageKind("call_invite") {
+		t.Fatalf("client 不应绕过控制面直接创建 call_invite 消息")
 	}
 }
 
@@ -28,4 +35,64 @@ func TestMessagePreviewVideoClipAwaitingUpload(t *testing.T) {
 	if got, want := messagePreview("video_clip", payload), "[视频待上传]"; got != want {
 		t.Fatalf("video preview=%q want %q", got, want)
 	}
+}
+
+func TestMessagePreviewInspectionCard(t *testing.T) {
+	payload := json.RawMessage(`{"vin":"LSVHM133022221761"}`)
+	if got, want := messagePreview("inspection_card", payload), "[流水] LSVHM133022221761"; got != want {
+		t.Fatalf("inspection card preview=%q want %q", got, want)
+	}
+}
+
+func TestMessagePreviewCallInvite(t *testing.T) {
+	payload := json.RawMessage(`{"title":"和陈若愚的视频通话"}`)
+	if got, want := messagePreview("call_invite", payload), "[视频通话] 和陈若愚的视频通话"; got != want {
+		t.Fatalf("call invite preview=%q want %q", got, want)
+	}
+}
+
+func TestNotifyRealtimeMessageOnlyForInsertedMessages(t *testing.T) {
+	notifier := &fakeRealtimeNotifier{}
+	h := &Handler{realtime: notifier}
+	msg := &repo.Message{ID: 7, ConversationID: 9, ServerSeq: 3}
+
+	h.notifyRealtimeMessage(context.Background(), 1, msg, false)
+	if notifier.calls != 0 {
+		t.Fatalf("idempotent replay 不应重复实时推送，calls=%d", notifier.calls)
+	}
+
+	h.notifyRealtimeMessage(context.Background(), 1, msg, true)
+	if notifier.calls != 1 {
+		t.Fatalf("新消息应触发一次实时推送，calls=%d", notifier.calls)
+	}
+	if notifier.senderID != 1 || notifier.message != msg {
+		t.Fatalf("推送参数不正确 sender=%d message=%p", notifier.senderID, notifier.message)
+	}
+}
+
+func TestNotifyRealtimeMessageIgnoresNotifierError(t *testing.T) {
+	notifier := &fakeRealtimeNotifier{err: errors.New("push failed")}
+	h := &Handler{realtime: notifier}
+
+	h.notifyRealtimeMessage(context.Background(), 1, &repo.Message{ID: 7, ConversationID: 9, ServerSeq: 3}, true)
+	if notifier.calls != 1 {
+		t.Fatalf("应尝试实时推送，calls=%d", notifier.calls)
+	}
+}
+
+type fakeRealtimeNotifier struct {
+	calls    int
+	senderID int64
+	message  *repo.Message
+	err      error
+}
+
+func (f *fakeRealtimeNotifier) NotifyMessage(_ context.Context, senderID int64, message *repo.Message) (int, error) {
+	f.calls++
+	f.senderID = senderID
+	f.message = message
+	if f.err != nil {
+		return 0, f.err
+	}
+	return 1, nil
 }

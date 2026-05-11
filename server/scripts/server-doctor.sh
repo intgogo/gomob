@@ -49,7 +49,7 @@ check_podman() {
     green "✓ $(podman --version)"
     ((ok++))
 
-    # 校验 4 个 dev 容器是否已 ready（可缺，会引导用户起）
+    # 校验 dev 容器是否已 ready（可缺，会引导用户起）
     local containers="gomob-pg gomob-redis gomob-nats gomob-minio"
     local missing=()
     for c in $containers; do
@@ -62,11 +62,19 @@ check_podman() {
         echo "      podman run -d --name gomob-redis -p 6379:6379 -v gomob-redis-data:/data redis:7-alpine"
         echo "      podman run -d --name gomob-nats  -p 4222:4222 -p 8222:8222 nats:2-alpine"
         echo "      podman run -d --name gomob-minio -p 9000:9000 -p 9001:9001 -v gomob-minio-data:/data minio/minio server /data --console-address :9001"
+        echo "      ./dev.sh server up 会自动创建 / 启动 gomob-livekit（视频通话媒体面）"
         ((warn++))
     else
         local up=$(podman ps --format '{{.Names}}' | grep -cE '^gomob-(pg|redis|nats|minio)$')
         green "✓ dev 栈容器齐 (running=$up/4)；./dev.sh server up 可一键启动"
         ((ok++))
+    fi
+    if podman ps --format '{{.Names}}' | grep -qx gomob-livekit; then
+        green "✓ LiveKit dev server 已运行 (:7880, devkey/secret)"
+        ((ok++))
+    else
+        yellow "· LiveKit dev server 未运行；视频通话需先跑 ./dev.sh server up 或 ./dev.sh server run"
+        ((warn++))
     fi
 }
 

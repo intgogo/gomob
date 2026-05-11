@@ -2,13 +2,17 @@ package io.gomob.database.message
 
 import androidx.room.Entity
 import androidx.room.Index
+import androidx.room.ColumnInfo
 import androidx.room.PrimaryKey
 import io.gomob.model.message.ConversationPeer
 import io.gomob.model.message.ConversationSummary
 
 @Entity(
     tableName = "conversations",
-    indices = [Index(value = ["updatedAt"])],
+    indices = [
+        Index(value = ["updatedAt"]),
+        Index(value = ["pinned", "updatedAt"]),
+    ],
 )
 data class ConversationEntity(
     @PrimaryKey val id: Long,
@@ -22,6 +26,8 @@ data class ConversationEntity(
     val lastMessageLocalKey: String?,
     val lastReadSeq: Long,
     val unreadCount: Long,
+    @ColumnInfo(defaultValue = "0") val pinned: Boolean = false,
+    @ColumnInfo(defaultValue = "0") val clearedBeforeSeq: Long = 0,
     val createdAt: String,
     val updatedAt: String,
 ) {
@@ -41,6 +47,7 @@ data class ConversationEntity(
         lastMessage = lastMessage?.toDomain(),
         lastReadSeq = lastReadSeq,
         unreadCount = unreadCount,
+        pinned = pinned,
         createdAt = createdAt,
         updatedAt = updatedAt,
     )

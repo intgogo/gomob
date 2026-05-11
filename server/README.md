@@ -24,6 +24,12 @@ make build               # 编译所有二进制 → .dev/bin/
 make run-devserver       # 启动开发模式合体进程
 ```
 
+仓库根目录的 `./dev.sh server run` 是 App 联调推荐入口：它会先启动本地
+LiveKit dev server（`ws://127.0.0.1:7880`, `devkey/secret`）、应用 PG
+migrations，再启动 `gomob-devserver`。真机 / 模拟器测试消息中心时执行
+`./dev.sh reverse`，会把设备侧 `127.0.0.1:8808` 和 `127.0.0.1:7880`
+分别反向代理到宿主机 devserver 与 LiveKit。
+
 详细架构见 `../docs/architecture/server/`：
 - `00-server-overview.md` — 总览（部署形态 / 服务划分 / 协议）
 - `01-go-project-layout.md` — Go 工程布局

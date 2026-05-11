@@ -48,6 +48,20 @@ object GomobIcons {
         reflectiveCurveToRelative(5.6f, 1.5f, 7f, 4.5f)
     }
 
+    val Contacts: ImageVector = stroked("Contacts") {
+        roundRect(4f, 4f, 14f, 16f, 2f)
+        moveTo(18f, 8f)
+        horizontalLineTo(20f)
+        moveTo(18f, 12f)
+        horizontalLineTo(20f)
+        moveTo(18f, 16f)
+        horizontalLineTo(20f)
+        circle(11f, 10f, 2.2f)
+        moveTo(7.5f, 16f)
+        curveToRelative(0.8f, -1.7f, 2f, -2.5f, 3.5f, -2.5f)
+        reflectiveCurveToRelative(2.7f, 0.8f, 3.5f, 2.5f)
+    }
+
     val Lock: ImageVector = stroked("Lock") {
         roundRect(5f, 10.5f, 14f, 9f, 1.5f)
         // 锁梁
@@ -124,6 +138,16 @@ object GomobIcons {
         verticalLineTo(21f)
     }
 
+    val VoiceCircle: ImageVector = stroked("VoiceCircle") {
+        circle(12f, 12f, 9f)
+        moveTo(8.6f, 9.2f)
+        curveToRelative(-0.8f, 1.45f, -0.8f, 4.15f, 0f, 5.6f)
+        moveTo(12f, 7.5f)
+        curveToRelative(-1.15f, 2.15f, -1.15f, 6.85f, 0f, 9f)
+        moveTo(15.4f, 9.2f)
+        curveToRelative(0.8f, 1.45f, 0.8f, 4.15f, 0f, 5.6f)
+    }
+
     val Send: ImageVector = stroked("Send") {
         // jsx Send 是 paper plane 形：M4 20 l16 -8 L4 4 l3 8 -3 8z + M7 12h13
         moveTo(4f, 20f)
@@ -140,6 +164,71 @@ object GomobIcons {
         circle(11f, 11f, 6.5f)
         moveTo(16f, 16f)
         lineTo(20f, 20f)
+    }
+
+    val Pin: ImageVector = stroked("Pin") {
+        moveTo(8f, 3.5f)
+        horizontalLineTo(16f)
+        moveTo(10f, 3.5f)
+        verticalLineTo(8f)
+        lineTo(7f, 12.5f)
+        horizontalLineTo(17f)
+        lineTo(14f, 8f)
+        verticalLineTo(3.5f)
+        moveTo(12f, 12.5f)
+        verticalLineTo(20.5f)
+    }
+
+    val Trash: ImageVector = stroked("Trash") {
+        moveTo(4.5f, 6.5f)
+        horizontalLineTo(19.5f)
+        moveTo(9f, 6.5f)
+        verticalLineTo(4.5f)
+        horizontalLineTo(15f)
+        verticalLineTo(6.5f)
+        moveTo(7f, 9f)
+        lineTo(7.7f, 19f)
+        curveToRelative(0.1f, 0.8f, 0.7f, 1.3f, 1.5f, 1.3f)
+        horizontalLineTo(14.8f)
+        curveToRelative(0.8f, 0f, 1.4f, -0.5f, 1.5f, -1.3f)
+        lineTo(17f, 9f)
+        moveTo(10.5f, 10.5f)
+        verticalLineTo(17f)
+        moveTo(13.5f, 10.5f)
+        verticalLineTo(17f)
+    }
+
+    val Folder: ImageVector = stroked("Folder") {
+        moveTo(3.5f, 7f)
+        horizontalLineTo(9f)
+        lineTo(10.7f, 9f)
+        horizontalLineTo(20.5f)
+        verticalLineTo(18f)
+        curveToRelative(0f, 0.8f, -0.7f, 1.5f, -1.5f, 1.5f)
+        horizontalLineTo(5f)
+        curveToRelative(-0.8f, 0f, -1.5f, -0.7f, -1.5f, -1.5f)
+        close()
+    }
+
+    val Phone: ImageVector = stroked("Phone") {
+        moveTo(7f, 4.5f)
+        lineTo(9.8f, 7.3f)
+        lineTo(8.5f, 10f)
+        curveToRelative(1.1f, 2.3f, 3.2f, 4.4f, 5.5f, 5.5f)
+        lineTo(16.7f, 14.2f)
+        lineTo(19.5f, 17f)
+        curveToRelative(-0.5f, 1.6f, -1.7f, 3f, -3.3f, 3.2f)
+        curveToRelative(-6.3f, -0.8f, -11.6f, -6.1f, -12.4f, -12.4f)
+        curveToRelative(0.2f, -1.6f, 1.6f, -2.8f, 3.2f, -3.3f)
+        close()
+    }
+
+    val Video: ImageVector = stroked("Video") {
+        roundRect(4f, 7f, 11f, 10f, 1.5f)
+        moveTo(15f, 10f)
+        lineTo(20f, 7.5f)
+        verticalLineTo(16.5f)
+        lineTo(15f, 14f)
     }
 
     val Compose: ImageVector = stroked("Compose") {
@@ -301,6 +390,12 @@ object GomobIcons {
         moveTo(12f, 8f); arcToRelative(0.1f, 0.1f, 0f, false, true, 0.01f, 0f)
     }
 
+    val AlertCircle: ImageVector = stroked("AlertCircle") {
+        circle(12f, 12f, 8.5f)
+        moveTo(12f, 7.5f); verticalLineTo(13f)
+        moveTo(12f, 16.5f); arcToRelative(0.1f, 0.1f, 0f, false, true, 0.01f, 0f)
+    }
+
     val Moon: ImageVector = stroked("Moon") {
         // 弯月 — Lucide moon path。外圆 r=9 + 内圆 r=7 切除右半边，得到月牙轮廓。
         moveTo(21f, 12.79f)
@@ -314,6 +409,23 @@ object GomobIcons {
         lineToRelative(-3f, -3f)
         moveTo(21f, 16f); horizontalLineTo(7f)
         lineToRelative(3f, 3f)
+    }
+
+    val LinkShare: ImageVector = stroked("LinkShare") {
+        roundRect(4f, 5f, 11f, 8f, 1.6f)
+        moveTo(7f, 9f)
+        horizontalLineTo(12f)
+        moveTo(10f, 13f)
+        verticalLineTo(16f)
+        curveToRelative(0f, 1.1f, 0.9f, 2f, 2f, 2f)
+        horizontalLineTo(17f)
+        moveTo(14f, 15f)
+        lineTo(17f, 18f)
+        lineTo(14f, 21f)
+        moveTo(16f, 9f)
+        horizontalLineTo(19f)
+        curveToRelative(0.6f, 0f, 1f, 0.4f, 1f, 1f)
+        verticalLineTo(15f)
     }
 
     val Filter: ImageVector = stroked("Filter") {

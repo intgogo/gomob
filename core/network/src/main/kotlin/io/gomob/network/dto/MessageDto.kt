@@ -91,6 +91,35 @@ data class CreateMessageRequest(
 )
 
 @Serializable
+data class TranscribeDraftVoiceRequest(
+    @SerialName("asset_id") val assetId: String,
+    val language: String = "zh",
+)
+
+@Serializable
+data class TranscribeDraftVoiceResponse(
+    val text: String,
+    @SerialName("normalized_text") val normalizedText: String = "",
+    val segments: JsonElement? = null,
+    val confidence: Float? = null,
+    val engine: String = "",
+    val model: String = "",
+    val language: String = "",
+)
+
+@Serializable
+data class CreateCallInviteRequest(
+    @SerialName("client_msg_id") val clientMsgId: String,
+    val title: String? = null,
+)
+
+@Serializable
+data class CallInviteResponse(
+    val room: MediaRoomResponse,
+    val message: MessageDto,
+)
+
+@Serializable
 data class OpenDirectConversationRequest(
     @SerialName("peer_user_id") val peerUserId: String,
 )

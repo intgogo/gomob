@@ -18,6 +18,9 @@ MESSAGE_SCENARIOS = [
     "D4.phone_to_emulator_message",
     "D5.rest_history_and_read",
     "D6.offline_reconnect_fetch",
+    "D7.http_fallback_realtime_push",
+    "D8.voice_asset_upload_and_message",
+    "D9.call_invite_accept_end_log",
 ]
 
 LIVE_SCENARIOS = [
@@ -173,7 +176,7 @@ def main(out_dir: str) -> int:
 
     server_logs = [
         os.path.join(out_dir, name)
-        for name in ("auth.log", "api.log", "gateway.log", "signaling.log", "deviceinteractionharness.log")
+        for name in ("devserver.log", "auth.log", "api.log", "gateway.log", "signaling.log", "deviceinteractionharness.log")
     ]
     server_fatal_count, server_hits = scan_logs(server_logs, SERVER_FATAL_PATTERNS)
     if server_fatal_count:
