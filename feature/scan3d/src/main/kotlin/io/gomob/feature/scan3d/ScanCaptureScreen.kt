@@ -103,9 +103,6 @@ fun ScanCaptureRoute(
         }
 
         // 底部控制栏
-        Box(
-            Modifier.fillMaxWidth().height(Gomob.spacing.hairline).background(Gomob.colors.line1),
-        )
         Row(
             Modifier
                 .fillMaxWidth()
@@ -119,7 +116,6 @@ fun ScanCaptureRoute(
                 Modifier
                     .clip(Gomob.shapes.r2)
                     .background(Gomob.colors.bg2)
-                    .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
                     .clickable {}
                     .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
             ) {
@@ -143,7 +139,6 @@ fun ScanCaptureRoute(
                     .size(Gomob.spacing.btnCircle72)
                     .clip(CircleShape)
                     .background(Gomob.colors.accentSoft)
-                    .border(Gomob.spacing.hairline * 2, Gomob.colors.accentLine, CircleShape)
                     .clickable {},
                 contentAlignment = Alignment.Center,
             ) {
@@ -160,7 +155,6 @@ fun ScanCaptureRoute(
                 Modifier
                     .clip(Gomob.shapes.r2)
                     .background(Gomob.colors.bg2)
-                    .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
                     .clickable {}
                     .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
             ) {

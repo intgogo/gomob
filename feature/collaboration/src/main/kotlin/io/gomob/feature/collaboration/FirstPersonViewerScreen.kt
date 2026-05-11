@@ -1,7 +1,6 @@
 package io.gomob.feature.collaboration
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -152,8 +151,7 @@ fun FirstPersonViewerRoute(
                             Modifier
                                 .size(Gomob.spacing.avatar28)
                                 .clip(CircleShape)
-                                .background(Gomob.colors.accentSoft)
-                                .border(Gomob.spacing.hairline, Gomob.colors.accentLine, CircleShape),
+                                .background(Gomob.colors.accentSoft),
                             contentAlignment = Alignment.Center,
                         ) {
                             Text(
@@ -167,12 +165,7 @@ fun FirstPersonViewerRoute(
                             Text(s.employeeId, style = Gomob.type.caption, color = Gomob.colors.fg3)
                         }
                     }
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(Gomob.spacing.hairline)
-                            .background(Gomob.colors.line1),
-                    )
+                    Spacer(Modifier.height(Gomob.spacing.s4))
                     Text("检测站", style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
                     Text(s.station, style = Gomob.type.bodySm, color = Gomob.colors.fg1)
                     Text("当前工单", style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
@@ -236,13 +229,6 @@ fun FirstPersonViewerRoute(
             }
         }
 
-        // 底部 hairline + action bar
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(Gomob.spacing.hairline)
-                .background(Gomob.colors.line1),
-        )
         Row(
             Modifier
                 .fillMaxWidth()
@@ -326,7 +312,7 @@ private fun SignalBars(level: Int) {
                 Modifier
                     .width(SIGNAL_BAR_W)
                     .height(SIGNAL_BAR_H_BASE + SIGNAL_BAR_H_STEP * i)
-                    .background(if (active) Gomob.colors.ok else Gomob.colors.line2),
+                    .background(if (active) Gomob.colors.ok else Gomob.colors.bg3),
             )
         }
         Spacer(Modifier.width(Gomob.spacing.s4))
@@ -346,10 +332,10 @@ private fun ActionButton(
     label: String,
     tone: ActionTone,
 ) {
-    val (iconColor, lineColor, fillColor) = when (tone) {
-        ActionTone.Accent -> Triple(Gomob.colors.accent, Gomob.colors.accentLine, Gomob.colors.accentSoft)
-        ActionTone.Danger -> Triple(Gomob.colors.danger, Gomob.colors.dangerLine, Gomob.colors.dangerSoft)
-        ActionTone.Neutral -> Triple(Gomob.colors.fg1, Gomob.colors.line2, Gomob.colors.bg2)
+    val (iconColor, fillColor) = when (tone) {
+        ActionTone.Accent -> Gomob.colors.accent to Gomob.colors.accentSoft
+        ActionTone.Danger -> Gomob.colors.danger to Gomob.colors.dangerSoft
+        ActionTone.Neutral -> Gomob.colors.fg1 to Gomob.colors.bg2
     }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -360,8 +346,7 @@ private fun ActionButton(
             Modifier
                 .size(Gomob.spacing.avatar48)
                 .clip(CircleShape)
-                .background(fillColor)
-                .border(Gomob.spacing.hairline, lineColor, CircleShape),
+                .background(fillColor),
             contentAlignment = Alignment.Center,
         ) {
             Icon(

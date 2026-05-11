@@ -8,6 +8,8 @@ Android 端 3D 扫描应用 — 把外接 Berxel iHawk 深度相机与手机主�
 ```bash
 ./scripts/ensure-android-sdk.sh   # 检查并补装 SDK / NDK / CMake
 ./dev.sh doctor                   # 自检环境
+./dev.sh server run               # 启动后端 devserver + migrations + LiveKit dev server
+./dev.sh reverse                  # 当前真机 / 模拟器配置 8808 与 7880 反向代理
 ./dev.sh build                    # 编译 debug APK
 ./dev.sh install                  # 安装到当前已连接设备
 ```

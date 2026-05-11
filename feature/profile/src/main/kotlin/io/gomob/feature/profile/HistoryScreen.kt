@@ -1,7 +1,6 @@
 package io.gomob.feature.profile
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -125,12 +124,11 @@ private fun TopHistoryHeader(onBack: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // 返回按钮 30dp r-1 + line-2 边
         Box(
             Modifier
                 .size(30.dp)
                 .clip(Gomob.shapes.r1)
-                .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r1)
+                .background(Gomob.colors.bg1)
                 .clickable(onClick = onBack),
             contentAlignment = Alignment.Center,
         ) {
@@ -163,7 +161,6 @@ private fun MonthSwitcher() {
                 .fillMaxWidth()
                 .clip(Gomob.shapes.r3)
                 .background(Gomob.colors.bg1)
-                .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
                 .padding(horizontal = Gomob.spacing.s12, vertical = 10.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
@@ -195,7 +192,7 @@ private fun HdrBtnSquare(symbol: String) {
         Modifier
             .size(30.dp)
             .clip(Gomob.shapes.r1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r1)
+            .background(Gomob.colors.bg2)
             .clickable {},
         contentAlignment = Alignment.Center,
     ) {
@@ -219,7 +216,6 @@ private fun MonthCalendar(selected: Int, onSelect: (Int) -> Unit) {
                 .fillMaxWidth()
                 .clip(Gomob.shapes.r3)
                 .background(Gomob.colors.bg1)
-                .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
                 .ticks()
                 .padding(horizontal = 10.dp, vertical = Gomob.spacing.s12),
         ) {
@@ -243,12 +239,6 @@ private fun MonthCalendar(selected: Int, onSelect: (Int) -> Unit) {
                     }
                 }
             }
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(Gomob.spacing.hairline)
-                    .background(Gomob.colors.line1),
-            )
             Spacer(Modifier.height(Gomob.spacing.s6))
             // 31 格 (按 7 列分行)
             cells.chunked(7).forEach { rowCells ->
@@ -275,12 +265,6 @@ private fun MonthCalendar(selected: Int, onSelect: (Int) -> Unit) {
             }
             // 图例
             Spacer(Modifier.height(Gomob.spacing.s8))
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(Gomob.spacing.hairline)
-                    .background(Gomob.colors.line1),
-            )
             Spacer(Modifier.height(10.dp))
             Row(
                 Modifier.fillMaxWidth(),
@@ -329,11 +313,6 @@ private fun HxDayCell(
             .aspectRatio(1f)
             .clip(Gomob.shapes.r1)
             .background(if (selected) Gomob.colors.accentSoft else Color.Transparent)
-            .border(
-                Gomob.spacing.hairline,
-                if (selected) Gomob.colors.accentLine else Color.Transparent,
-                Gomob.shapes.r1,
-            )
             .clickable(enabled = !isInactive, onClick = onClick)
             .padding(4.dp),
     ) {
@@ -400,7 +379,6 @@ private fun SelectedDayCard(year: Int, month: Int, day: Int, sel: DayData?) {
                 .fillMaxWidth()
                 .clip(Gomob.shapes.r3)
                 .background(Gomob.colors.bg1)
-                .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
                 .padding(horizontal = 16.dp, vertical = Gomob.spacing.s14),
         ) {
             Row(
@@ -427,7 +405,7 @@ private fun SelectedDayCard(year: Int, month: Int, day: Int, sel: DayData?) {
                 Row(
                     Modifier
                         .clip(Gomob.shapes.r1)
-                        .border(Gomob.spacing.hairline, Gomob.colors.accentLine, Gomob.shapes.r1)
+                        .background(Gomob.colors.accentSoft)
                         .clickable {}
                         .padding(horizontal = 10.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -496,24 +474,15 @@ private fun SelectedDayCard(year: Int, month: Int, day: Int, sel: DayData?) {
 
 @Composable
 private fun HxStat(n: Int, label: String, tone: Color, modifier: Modifier = Modifier) {
-    Row(
+    Column(
         modifier,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2),
     ) {
-        Box(
-            Modifier
-                .width(Gomob.spacing.hairline)
-                .height(40.dp)
-                .background(Gomob.colors.line1),
+        Text(
+            n.toString(),
+            style = Gomob.type.numInline.copy(fontSize = 18.sp, fontWeight = FontWeight.Normal),
+            color = tone,
         )
-        Column {
-            Text(
-                n.toString(),
-                style = Gomob.type.numInline.copy(fontSize = 18.sp, fontWeight = FontWeight.Normal),
-                color = tone,
-            )
-            Spacer(Modifier.height(Gomob.spacing.s2))
-            Text(label, fontSize = 10.sp, color = Gomob.colors.fg2)
-        }
+        Text(label, fontSize = 10.sp, color = Gomob.colors.fg2)
     }
 }

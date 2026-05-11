@@ -1,7 +1,6 @@
 package io.gomob.feature.home
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -59,8 +58,7 @@ fun InspectionDetailRoute(inspectionId: String, onBack: () -> Unit) {
                     .fillMaxWidth()
                     .aspectRatio(16f / 9f)
                     .clip(Gomob.shapes.r3)
-                    .background(Gomob.colors.bg2)
-                    .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r3),
+                    .background(Gomob.colors.bg2),
                 contentAlignment = Alignment.Center,
             ) {
                 Text("车架号扫描图", style = Gomob.type.bodySm, color = Gomob.colors.fg3)

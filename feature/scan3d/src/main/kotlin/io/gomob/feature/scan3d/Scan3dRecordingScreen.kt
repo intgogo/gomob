@@ -4,7 +4,6 @@ import android.graphics.Bitmap
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -123,8 +122,7 @@ private fun StreamCell(label: String, bitmap: Bitmap?, modifier: Modifier = Modi
         modifier
             .aspectRatio(16f / 10f)
             .clip(Gomob.shapes.r2)
-            .background(Gomob.colors.bg2)
-            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r2),
+            .background(Gomob.colors.bg2),
     ) {
         if (bitmap != null) {
             Image(
@@ -167,8 +165,7 @@ private fun PointCloudPreview(
             Modifier
                 .fillMaxSize()
                 .clip(Gomob.shapes.r3)
-                .background(Gomob.colors.bg2)
-                .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3),
+                .background(Gomob.colors.bg2),
         ) {
             // Filament 3D 预览（手势 orbit/zoom）：
             //   - Recording 全程挂载（即使点云空也保持挂载）→ 避免 peek 偶发返空时
@@ -410,7 +407,6 @@ private fun BigCircleButton(
             .size(64.dp)
             .clip(CircleShape)
             .background(color.copy(alpha = if (enabled) 0.18f else 0.10f))
-            .border(Gomob.spacing.hairline * 2, color, CircleShape)
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {

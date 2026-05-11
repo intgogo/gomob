@@ -7,8 +7,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,6 +41,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -217,7 +219,6 @@ private fun IdentityCard(state: ProfileUiState) {
                 .fillMaxWidth()
                 .clip(Gomob.shapes.r3)
                 .background(Gomob.colors.bg1)
-                .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
                 .ticks()
                 .padding(16.dp),
         ) {
@@ -225,13 +226,11 @@ private fun IdentityCard(state: ProfileUiState) {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                // 56dp 头像方框 (acc-soft 底 + acc-line 边)
                 Box(
                     Modifier
                         .size(56.dp)
                         .clip(Gomob.shapes.r2)
-                        .background(Gomob.colors.accentSoft)
-                        .border(Gomob.spacing.hairline, Gomob.colors.accentLine, Gomob.shapes.r2),
+                        .background(Gomob.colors.accentSoft),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
@@ -274,7 +273,6 @@ private fun AccTag(text: String) {
             .height(Gomob.spacing.chipHeight)
             .clip(Gomob.shapes.r1)
             .background(Gomob.colors.accentSoft)
-            .border(Gomob.spacing.hairline, Gomob.colors.accentLine, Gomob.shapes.r1)
             .padding(horizontal = Gomob.spacing.s8),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -338,12 +336,7 @@ private fun FlowFilterChip(c: FilterCount) {
         Modifier
             .height(26.dp)
             .clip(Gomob.shapes.r1)
-            .background(if (c.active) Gomob.colors.accentSoft else Color.Transparent)
-            .border(
-                Gomob.spacing.hairline,
-                if (c.active) Gomob.colors.accentLine else Gomob.colors.line2,
-                Gomob.shapes.r1,
-            )
+            .background(if (c.active) Gomob.colors.accentSoft else Gomob.colors.bg2)
             .padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
@@ -403,15 +396,12 @@ private fun FlowRow(r: FlowRowData) {
             .fillMaxWidth()
             .clip(Gomob.shapes.r3)
             .background(Gomob.colors.bg1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
             .clickable {}
             .padding(horizontal = Gomob.spacing.s14, vertical = Gomob.spacing.s12),
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
     ) {
-        // 左侧时间列 + 状态点 + 右分隔线
         Column(
             Modifier
-                .padding(end = Gomob.spacing.s12)
                 .width(40.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -428,16 +418,8 @@ private fun FlowRow(r: FlowRowData) {
                     .background(statusColor),
             )
         }
-        // 中间内容（与左侧分隔线共享高度）
-        Box(
-            Modifier
-                .width(Gomob.spacing.hairline)
-                .fillMaxHeight()
-                .background(Gomob.colors.line1),
-        )
         Column(
             Modifier
-                .padding(start = Gomob.spacing.s12)
                 .weight(1f),
         ) {
             Text(
@@ -469,17 +451,16 @@ private fun FlowRow(r: FlowRowData) {
 
 @Composable
 private fun FlowTagPill(t: FlowTag) {
-    val (fg, line, bg) = when (t.tone) {
-        FlowStatus.Ok -> Triple(Gomob.colors.ok, Gomob.colors.okLine, Gomob.colors.okSoft)
-        FlowStatus.Warn -> Triple(Gomob.colors.warn, Gomob.colors.warnLine, Gomob.colors.warnSoft)
-        FlowStatus.Danger -> Triple(Gomob.colors.danger, Gomob.colors.dangerLine, Gomob.colors.dangerSoft)
+    val (fg, bg) = when (t.tone) {
+        FlowStatus.Ok -> Gomob.colors.ok to Gomob.colors.okSoft
+        FlowStatus.Warn -> Gomob.colors.warn to Gomob.colors.warnSoft
+        FlowStatus.Danger -> Gomob.colors.danger to Gomob.colors.dangerSoft
     }
     Row(
         Modifier
             .height(Gomob.spacing.chipHeight)
             .clip(Gomob.shapes.r1)
             .background(bg)
-            .border(Gomob.spacing.hairline, line, Gomob.shapes.r1)
             .padding(horizontal = Gomob.spacing.s8),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -540,7 +521,6 @@ private fun SettingsDrawer(
             contentAlignment = Alignment.CenterEnd,
         ) {
             DrawerContent(
-                onClose = onClose,
                 onLogout = onLogout,
                 onOpenPersonal = onOpenPersonal,
                 onOpenAccount = onOpenAccount,
@@ -557,7 +537,6 @@ private fun SettingsDrawer(
 
 @Composable
 private fun DrawerContent(
-    onClose: () -> Unit,
     onLogout: () -> Unit,
     onOpenPersonal: () -> Unit,
     onOpenAccount: () -> Unit,
@@ -568,6 +547,13 @@ private fun DrawerContent(
     cacheText: String,
     onClearCache: () -> Unit,
 ) {
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val drawerClickSource = remember { MutableInteractionSource() }
+    fun dismissInput() {
+        focusManager.clearFocus()
+        keyboardController?.hide()
+    }
     val items = listOf(
         SettingItem(GomobIcons.ID, "个人信息", onClick = onOpenPersonal),
         SettingItem(GomobIcons.Lock, "账号与安全", onClick = onOpenAccount),
@@ -581,14 +567,17 @@ private fun DrawerContent(
             .fillMaxWidth(0.82f)
             .fillMaxHeight()
             .background(Gomob.colors.bg1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r3),
+            .clickable(
+                interactionSource = drawerClickSource,
+                indication = null,
+                onClick = { dismissInput() },
+            ),
     ) {
         // 抽屉顶
         Row(
             Modifier
                 .fillMaxWidth()
                 .padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column {
@@ -602,28 +591,8 @@ private fun DrawerContent(
                 Spacer(Modifier.height(Gomob.spacing.s2))
                 Text("设置", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = Gomob.colors.fg0)
             }
-            Box(
-                Modifier
-                    .size(Gomob.spacing.avatar28)
-                    .clip(Gomob.shapes.r1)
-                    .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r1)
-                    .clickable(onClick = onClose),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "✕",
-                    fontSize = 14.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = Gomob.colors.fg1,
-                )
-            }
         }
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(Gomob.spacing.hairline)
-                .background(Gomob.colors.line1),
-        )
+        Spacer(Modifier.height(Gomob.spacing.s2))
         // 列表
         Column(
             Modifier
@@ -633,18 +602,12 @@ private fun DrawerContent(
             Column(
                 Modifier
                     .clip(Gomob.shapes.r3)
-                    .background(Gomob.colors.bg2)
-                    .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3),
+                    .background(Gomob.colors.bg2),
             ) {
                 items.forEachIndexed { i, item ->
                     SettingDrawerRow(item)
                     if (i != items.lastIndex) {
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .height(Gomob.spacing.hairline)
-                                .background(Gomob.colors.line1),
-                        )
+                        DrawerRowDivider()
                     }
                 }
             }
@@ -655,8 +618,7 @@ private fun DrawerContent(
                     .fillMaxWidth()
                     .height(44.dp)
                     .clip(Gomob.shapes.r2)
-                    .background(Gomob.colors.bg1)
-                    .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
+                    .background(Gomob.colors.bg2)
                     .clickable(onClick = onLogout),
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
@@ -675,6 +637,17 @@ private fun DrawerContent(
 }
 
 @Composable
+private fun DrawerRowDivider() {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 56.dp, end = Gomob.spacing.s14)
+            .height(Gomob.spacing.hairline)
+            .background(Gomob.colors.line1.copy(alpha = 0.03f)),
+    )
+}
+
+@Composable
 private fun SettingDrawerRow(item: SettingItem) {
     Row(
         Modifier
@@ -688,8 +661,7 @@ private fun SettingDrawerRow(item: SettingItem) {
             Modifier
                 .size(Gomob.spacing.avatar28)
                 .clip(Gomob.shapes.r1)
-                .background(Gomob.colors.bg3)
-                .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r1),
+                .background(Gomob.colors.bg3),
             contentAlignment = Alignment.Center,
         ) {
             Icon(

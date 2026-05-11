@@ -2,7 +2,6 @@ package io.gomob.feature.scan3d
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -99,7 +98,6 @@ private fun DeviceCard(state: Scan3dDeviceUiState, onClick: () -> Unit) {
                 .fillMaxWidth()
                 .clip(Gomob.shapes.r3)
                 .background(Gomob.colors.bg1)
-                .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
                 .ticks()
                 .clickable(onClick = onClick)
                 .padding(Gomob.spacing.s14),
@@ -109,8 +107,7 @@ private fun DeviceCard(state: Scan3dDeviceUiState, onClick: () -> Unit) {
                     Modifier
                         .size(44.dp)
                         .clip(Gomob.shapes.r2)
-                        .background(Gomob.colors.bg3)
-                        .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2),
+                        .background(Gomob.colors.bg3),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
@@ -255,18 +252,17 @@ private fun Scan3dDeviceUiState.toView(): DeviceCardView {
 
 @Composable
 private fun StatusTagPill(text: String, tone: StatusTone) {
-    val (bg, line, fg, dot) = when (tone) {
-        StatusTone.Ok -> Quad(Gomob.colors.okSoft, Gomob.colors.okLine, Gomob.colors.ok, Gomob.colors.ok)
-        StatusTone.Warn -> Quad(Gomob.colors.accentSoft, Gomob.colors.accentLine, Gomob.colors.accent, Gomob.colors.accent)
-        StatusTone.Bad -> Quad(Gomob.colors.dangerSoft, Gomob.colors.dangerLine, Gomob.colors.danger, Gomob.colors.danger)
-        StatusTone.Neutral -> Quad(Gomob.colors.bg2, Gomob.colors.line2, Gomob.colors.fg2, Gomob.colors.fg3)
+    val (bg, fg, dot) = when (tone) {
+        StatusTone.Ok -> Triple(Gomob.colors.okSoft, Gomob.colors.ok, Gomob.colors.ok)
+        StatusTone.Warn -> Triple(Gomob.colors.accentSoft, Gomob.colors.accent, Gomob.colors.accent)
+        StatusTone.Bad -> Triple(Gomob.colors.dangerSoft, Gomob.colors.danger, Gomob.colors.danger)
+        StatusTone.Neutral -> Triple(Gomob.colors.bg2, Gomob.colors.fg2, Gomob.colors.fg3)
     }
     Row(
         Modifier
             .height(Gomob.spacing.chipHeight)
             .clip(Gomob.shapes.r1)
             .background(bg)
-            .border(Gomob.spacing.hairline, line, Gomob.shapes.r1)
             .padding(horizontal = Gomob.spacing.s8),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
@@ -286,8 +282,6 @@ private fun StatusTagPill(text: String, tone: StatusTone) {
         )
     }
 }
-
-private data class Quad<A, B, C, D>(val a: A, val b: B, val c: C, val d: D)
 
 // ─── 双 ActionTile ──────────────────────────────────────────────────────────
 @Composable
@@ -330,18 +324,15 @@ private fun ActionTile(
     primary: Boolean,
     onClick: () -> Unit,
 ) {
-    val borderColor = if (primary) Gomob.colors.accentLine else Gomob.colors.line1
     val bgColor = if (primary) Gomob.colors.accentSoft else Gomob.colors.bg1
     val titleColor = if (primary) Gomob.colors.accentStrong else Gomob.colors.fg0
     val descColor = if (primary) Gomob.colors.accent else Gomob.colors.fg2
-    val iconBoxBorder = if (primary) Gomob.colors.accentLine else Gomob.colors.line2
     val iconBoxBg = if (primary) Color.Black.copy(alpha = 0.2f) else Gomob.colors.bg3
     val iconColor = if (primary) Gomob.colors.accentStrong else Gomob.colors.fg1
     Column(
         modifier
             .clip(Gomob.shapes.r3)
             .background(bgColor)
-            .border(Gomob.spacing.hairline, borderColor, Gomob.shapes.r3)
             .clickable(onClick = onClick)
             .padding(Gomob.spacing.s14),
     ) {
@@ -354,8 +345,7 @@ private fun ActionTile(
                 Modifier
                     .size(32.dp)
                     .clip(Gomob.shapes.r1)
-                    .background(iconBoxBg)
-                    .border(Gomob.spacing.hairline, iconBoxBorder, Gomob.shapes.r1),
+                    .background(iconBoxBg),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
@@ -382,12 +372,6 @@ private fun ActionTile(
         Spacer(Modifier.height(Gomob.spacing.s4))
         Text(desc, fontSize = 11.sp, color = descColor)
         Spacer(Modifier.height(Gomob.spacing.s12))
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(Gomob.spacing.hairline)
-                .background(Gomob.colors.line1),
-        )
         Spacer(Modifier.height(Gomob.spacing.s8))
         Text(
             detail,
@@ -451,7 +435,6 @@ private fun AssetCell(name: String, pts: String, modifier: Modifier = Modifier) 
             .aspectRatio(1f)
             .clip(Gomob.shapes.r1)
             .background(Gomob.colors.bg1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r1)
             .clickable {}
             .padding(10.dp),
     ) {
@@ -477,7 +460,6 @@ private fun AssetCell(name: String, pts: String, modifier: Modifier = Modifier) 
                 .height(Gomob.spacing.chipHeight)
                 .clip(Gomob.shapes.r1)
                 .background(Gomob.colors.accentSoft)
-                .border(Gomob.spacing.hairline, Gomob.colors.accentLine, Gomob.shapes.r1)
                 .padding(horizontal = Gomob.spacing.s6),
             verticalAlignment = Alignment.CenterVertically,
         ) {

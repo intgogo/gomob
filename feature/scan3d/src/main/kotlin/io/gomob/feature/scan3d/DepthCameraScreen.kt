@@ -3,7 +3,6 @@ package io.gomob.feature.scan3d
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -99,8 +98,7 @@ private fun LargePreview(label: String, bitmap: Bitmap?) {
             .padding(horizontal = Gomob.spacing.s16)
             .aspectRatio(16f / 10f)  // 640×400 = 1.6 ≈ 16:10
             .clip(Gomob.shapes.r3)
-            .background(Gomob.colors.bg2)
-            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r3),
+            .background(Gomob.colors.bg2),
     ) {
         if (bitmap != null) {
             Image(

@@ -1,7 +1,6 @@
 package io.gomob.feature.profile
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -120,7 +119,6 @@ fun ProfileAccountRoute(onBack: () -> Unit) {
                     .height(Gomob.spacing.touchMin)
                     .clip(Gomob.shapes.r2)
                     .background(Gomob.colors.accentSoft)
-                    .border(Gomob.spacing.hairline, Gomob.colors.accentLine, Gomob.shapes.r2)
                     .clickable {},
                 contentAlignment = Alignment.Center,
             ) {
@@ -161,7 +159,6 @@ private fun PasswordInput(
                 .height(Gomob.spacing.touchMin)
                 .clip(Gomob.shapes.r2)
                 .background(Gomob.colors.bg2)
-                .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
                 .padding(horizontal = Gomob.spacing.s12),
             contentAlignment = Alignment.CenterStart,
         ) {
@@ -228,19 +225,13 @@ private fun ToggleRow(
             Text(title, style = Gomob.type.body, color = Gomob.colors.fg0)
             Text(subtitle, style = Gomob.type.caption, color = Gomob.colors.fg3)
         }
-        // 开关 — 极简 hairline 样式
         Box(
             Modifier
                 .padding(start = Gomob.spacing.s12)
                 .width(Gomob.spacing.switchW)
                 .height(Gomob.spacing.switchH)
                 .clip(Gomob.shapes.pill)
-                .background(if (value) Gomob.colors.accentSoft else Gomob.colors.bg2)
-                .border(
-                    Gomob.spacing.hairline,
-                    if (value) Gomob.colors.accentLine else Gomob.colors.line2,
-                    Gomob.shapes.pill,
-                ),
+                .background(if (value) Gomob.colors.accentSoft else Gomob.colors.bg2),
             contentAlignment = if (value) Alignment.CenterEnd else Alignment.CenterStart,
         ) {
             Box(

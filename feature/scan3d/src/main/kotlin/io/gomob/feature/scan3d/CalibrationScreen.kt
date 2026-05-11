@@ -50,8 +50,7 @@ fun CalibrationRoute(onBack: () -> Unit) {
                     .fillMaxWidth()
                     .aspectRatio(4f / 3f)
                     .clip(Gomob.shapes.r3)
-                    .background(Gomob.colors.bg2)
-                    .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r3),
+                    .background(Gomob.colors.bg2),
             ) {
                 // 取景框
                 Box(
@@ -116,9 +115,6 @@ fun CalibrationRoute(onBack: () -> Unit) {
         }
 
         // 底部 CTA
-        Box(
-            Modifier.fillMaxWidth().height(Gomob.spacing.hairline).background(Gomob.colors.line1),
-        )
         Row(
             Modifier.fillMaxWidth().background(Gomob.colors.bg0).padding(Gomob.spacing.s16),
             horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
@@ -127,14 +123,12 @@ fun CalibrationRoute(onBack: () -> Unit) {
                 modifier = Modifier.weight(1f),
                 text = "重新采集",
                 fill = Gomob.colors.bg2,
-                line = Gomob.colors.line2,
                 fg = Gomob.colors.fg1,
             )
             CalibButton(
                 modifier = Modifier.weight(2f),
                 text = "求解并保存 (4 帧后)",
                 fill = Gomob.colors.accentSoft,
-                line = Gomob.colors.accentLine,
                 fg = Gomob.colors.accent,
             )
         }
@@ -146,7 +140,6 @@ private fun CalibButton(
     modifier: Modifier = Modifier,
     text: String,
     fill: androidx.compose.ui.graphics.Color,
-    line: androidx.compose.ui.graphics.Color,
     fg: androidx.compose.ui.graphics.Color,
 ) {
     Box(
@@ -154,7 +147,6 @@ private fun CalibButton(
             .height(Gomob.spacing.touchMin)
             .clip(Gomob.shapes.r2)
             .background(fill)
-            .border(Gomob.spacing.hairline, line, Gomob.shapes.r2)
             .clickable {},
         contentAlignment = Alignment.Center,
     ) {

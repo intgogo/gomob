@@ -25,6 +25,8 @@ M5.6 第一视角直播发布 / 观看 / 介入
 M5.7 录制回放 + 资产归档
   ↓
 M5.8 harness 与观测闭环
+  ↓
+M5.9 语音消息转文字
 ```
 
 ## 2. M5.1 服务端消息控制面
@@ -122,6 +124,8 @@ Down migration 必须按 FK 反向删除。
 4. WebSocket 不在线时走 HTTP；HTTP 也失败则保留 pending。
 5. 收到 delivered 后按 `client_msg_id` 更新服务端 id / seq。
 
+服务端 HTTP 写入不是降级成“只等刷新”：在 devserver 合体拓扑中，API 写库后通过 `RealtimeMessageNotifier` 复用 signaling 的 `msg.recv` 推送；只对幂等新插入消息推送，`client_msg_id` 重试不重复通知。拆分部署需要在 M5.8 前补 NATS/跨进程桥接保持同语义。
+
 ### 3.4 验收
 
 - `./dev.sh test` 通过。
@@ -160,8 +164,9 @@ UI 状态：
 - 会话列表实时更新 last_message / unread_count。
 - 单聊进入时加载历史并自动 `markRead(lastVisibleSeq)`。
 - 发送文本后立刻出现 pending 气泡；失败显示重试状态。
-- 图片 / 拍摄按钮在 M5.3 只接 asset picker 入口，不上传假图片。
-- 语音 / 视频消息按钮先发送结构化 `voice` / `video_clip` 控制消息，payload 标记 `media_state=awaiting_asset_upload`；真实录音、视频文件可播放前必须接通 asset 上传和下载 URL，不在 UI 里伪装已上传媒体。
+- 图片 / 拍摄按钮接 asset 上传，不上传假图片。
+- 语音 / 视频消息发送结构化 `voice` / `video_clip` 控制消息，payload 标记 `media_state=ready` 后才落正式消息；真实录音、视频文件可播放前必须接通 asset 上传和下载 URL，不在 UI 里伪装已上传媒体。
+- 语音消息 payload 可携带 `transcript_status / transcript_normalized_text / transcript_error`；气泡展示转写中、结果、失败状态，会话列表 last_message 使用服务端转写摘要。
 - 视频通话按钮在 M5.5 前 disabled，显示真实不可用状态，不写 stub。
 
 ### 4.3 UI 验收
@@ -335,3 +340,52 @@ interface MediaRoomClient {
 - `first_frame_ms`
 
 所有 harness 产物写 `.dev/<harness-name>/`，并由 `analyze.py` 输出“正常 / 警告 / 异常 + 原因”。
+
+## 10. M5.9 语音消息转文字
+
+### 10.1 算法与服务
+
+准确优先默认采用自托管 `FireRedASR2-AED + FireRedVAD + FireRedLID + FireRedPunc`。选择理由：
+
+- FireRedASR2-AED 支持词级时间戳和置信度，便于低置信片段提示人工确认。
+- 普通话公开集平均 CER 约 3.05%，方言/口音公开集平均 CER 约 11.67%；LLM 分支更低但算力更重，作为后续 A/B 对照。
+- 原始语音仍是事实源；转写是派生内容，可失败、可重试，不覆盖原消息。
+
+服务入口：
+
+- `server/asr_service/app.py`：FastAPI 封装 FireRedASR2S 官方 Python API，模型缺失时启动失败，不返回假文本。
+- `POST /v1/asr/transcribe`：multipart 上传音频，服务内用 ffmpeg 转 16kHz 16-bit mono PCM wav。
+- `server/cmd/asrworker` 或 devserver 内置 worker：从 `message_transcripts` 领取任务，拉 MinIO 音频，调用 ASR 服务，完成后写回消息 payload 并推 `msg.transcript.updated`。
+
+### 10.2 数据模型
+
+新增 `message_transcripts`：
+
+- `message_id` 唯一，避免同一语音重复生成多个正式转写。
+- `status = pending / processing / done / failed`。
+- 记录 `engine / model / language / confidence / segments / error_message / attempt_count`，用于质量追溯和重试。
+
+语音消息 payload 同步冗余展示字段：
+
+- `transcript_status`
+- `transcript_engine`
+- `transcript_model`
+- `transcript_language`
+- `transcript_text`
+- `transcript_normalized_text`
+- `transcript_segments`
+- `transcript_confidence`
+- `transcript_error`
+
+### 10.3 Android
+
+- `core:realtime` 解析 `msg.transcript.updated`。
+- `core:data` 更新本地 Room 消息 payload、preview 和会话摘要。
+- `feature:message` 在语音气泡内展示转写状态和文本。
+- `core:network` 暴露 `POST /v1/messages/{id}/transcript/retry` 供失败重试。
+
+### 10.4 验收
+
+- 无模型环境：发送语音消息后服务端返回 payload 含 `transcript_status=pending`，重试接口返回 200。
+- 有模型环境：30 秒内单条语音不超过 2 秒返回；普通短语音平均 CER <= 5%，业务关键词召回率 >= 98%。
+- 低置信 VIN / 车牌 / 型号字段不得自动定稿，必须在 UI 上保留人工确认空间。

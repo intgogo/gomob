@@ -1,7 +1,6 @@
 package io.gomob.ui.component
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -70,12 +69,7 @@ private fun OctetField(
         modifier
             .height(Gomob.spacing.touchMin)
             .clip(Gomob.shapes.r2)
-            .background(Gomob.colors.bg2)
-            .border(
-                Gomob.spacing.hairline,
-                if (isError) Gomob.colors.dangerLine else Gomob.colors.line2,
-                Gomob.shapes.r2,
-            )
+            .background(if (isError) Gomob.colors.dangerSoft else Gomob.colors.bg2)
             .padding(horizontal = Gomob.spacing.s8),
         contentAlignment = Alignment.Center,
     ) {

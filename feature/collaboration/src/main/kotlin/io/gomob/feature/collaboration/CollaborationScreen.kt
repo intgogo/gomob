@@ -1,7 +1,6 @@
 package io.gomob.feature.collaboration
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -240,13 +239,7 @@ private fun FirstPersonBoard(
                 RECORDINGS.forEachIndexed { i, r ->
                     RecordingRow(r)
                     if (i != RECORDINGS.lastIndex) {
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = Gomob.spacing.s16)
-                                .height(Gomob.spacing.hairline)
-                                .background(Gomob.colors.line1),
-                        )
+                        ListRowDivider(start = 112.dp)
                     }
                 }
             }
@@ -266,7 +259,6 @@ private fun LiveStreamTile(
         modifier
             .clip(Gomob.shapes.r2)
             .background(Gomob.colors.bg1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
             .clickable(onClick = onClick),
     ) {
         // 视频缩略图 16:9 占位
@@ -319,6 +311,17 @@ private fun LiveStreamTile(
 }
 
 @Composable
+private fun ListRowDivider(start: androidx.compose.ui.unit.Dp) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = start, end = Gomob.spacing.s16)
+            .height(Gomob.spacing.hairline)
+            .background(Gomob.colors.line1.copy(alpha = 0.03f)),
+    )
+}
+
+@Composable
 private fun RecordingRow(r: Recording) {
     Row(
         Modifier
@@ -333,8 +336,7 @@ private fun RecordingRow(r: Recording) {
             Modifier
                 .size(width = 88.dp, height = 56.dp)
                 .clip(Gomob.shapes.r1)
-                .background(Gomob.colors.bg2)
-                .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r1),
+                .background(Gomob.colors.bg2),
             contentAlignment = Alignment.Center,
         ) {
             Text(r.duration, style = Gomob.type.numInline, color = Gomob.colors.fg2)
@@ -388,7 +390,6 @@ private fun ReviewBoard(onOpenReview: (String) -> Unit) {
                 .fillMaxWidth()
                 .clip(Gomob.shapes.r3)
                 .background(Gomob.colors.bg1)
-                .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
                 .padding(start = 16.dp, end = 16.dp, top = Gomob.spacing.s14, bottom = Gomob.spacing.s12),
         ) {
             Row(
@@ -413,7 +414,6 @@ private fun ReviewBoard(onOpenReview: (String) -> Unit) {
                 .height(44.dp)
                 .clip(Gomob.shapes.r2)
                 .background(Gomob.colors.accentSoft)
-                .border(Gomob.spacing.hairline, Gomob.colors.accentLine, Gomob.shapes.r2)
                 .clickable { onOpenReview("CLCY2025052089757") },
             contentAlignment = Alignment.Center,
         ) {
@@ -465,18 +465,9 @@ private fun KpiTile(
         modifier
             .clip(Gomob.shapes.r3)
             .background(Gomob.colors.bg1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3),
     ) {
-        // 左侧 2dp 色条 (从顶 12dp 到底 12dp)
-        Box(
-            Modifier
-                .fillMaxHeightHack()
-                .padding(vertical = Gomob.spacing.s12)
-                .width(2.dp)
-                .background(color),
-        )
         Column(
-            Modifier.padding(start = 14.dp, end = 14.dp, top = Gomob.spacing.s12, bottom = Gomob.spacing.s12),
+            Modifier.padding(horizontal = 14.dp, vertical = Gomob.spacing.s12),
         ) {
             Text(label, fontSize = 11.sp, color = Gomob.colors.fg2)
             Spacer(Modifier.height(Gomob.spacing.s4))
@@ -494,8 +485,6 @@ private fun KpiTile(
         }
     }
 }
-
-private fun Modifier.fillMaxHeightHack(): Modifier = this.then(Modifier.height(96.dp))
 
 @Composable
 private fun BarChart(values: List<Int>, days: List<String>) {
@@ -528,23 +517,12 @@ private fun BarChart(values: List<Int>, days: List<String>) {
                                 androidx.compose.ui.graphics.Brush.verticalGradient(
                                     listOf(Gomob.colors.accent, Gomob.colors.accentSoft),
                                 ),
-                            )
-                            .border(
-                                width = 1.dp,
-                                brush = androidx.compose.ui.graphics.SolidColor(Gomob.colors.accentStrong),
-                                shape = RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp),
                             ),
                     )
                 }
             }
         }
         Spacer(Modifier.height(Gomob.spacing.s8))
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(Gomob.spacing.hairline)
-                .background(Gomob.colors.line1),
-        )
         Spacer(Modifier.height(Gomob.spacing.s6))
         Row(
             Modifier.fillMaxWidth(),
@@ -566,7 +544,6 @@ private fun LiveAlertCard() {
             .fillMaxWidth()
             .clip(Gomob.shapes.r3)
             .background(Gomob.colors.bg1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
             .padding(horizontal = Gomob.spacing.s14, vertical = Gomob.spacing.s12),
     ) {
         Row(
@@ -673,13 +650,7 @@ private fun CaseLibBoard() {
                 CASES.forEachIndexed { i, c ->
                     CaseRow(c)
                     if (i != CASES.lastIndex) {
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = Gomob.spacing.s16)
-                                .height(Gomob.spacing.hairline)
-                                .background(Gomob.colors.line1),
-                        )
+                        ListRowDivider(start = Gomob.spacing.s16)
                     }
                 }
             }

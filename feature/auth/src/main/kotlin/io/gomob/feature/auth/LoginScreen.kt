@@ -2,7 +2,6 @@ package io.gomob.feature.auth
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -174,13 +173,11 @@ private fun BrandRow(onDevBypass: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            // Logo 容器 28dp：accentSoft 底 + accentLine 边 + 内嵌 Cube SVG
             Box(
                 Modifier
                     .size(Gomob.spacing.avatar28)
                     .clip(Gomob.shapes.r2)
-                    .background(Gomob.colors.accentSoft)
-                    .border(Gomob.spacing.hairline, Gomob.colors.accentLine, Gomob.shapes.r2),
+                    .background(Gomob.colors.accentSoft),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
@@ -208,7 +205,6 @@ private fun BrandRow(onDevBypass: () -> Unit) {
                 )
             }
         }
-        // DEV tag — mono 11sp + line2 边 + 透明底
         DevTag(onDevBypass = onDevBypass)
     }
 }
@@ -219,7 +215,7 @@ private fun DevTag(onDevBypass: () -> Unit) {
         Modifier
             .height(Gomob.spacing.chipHeight)
             .clip(Gomob.shapes.r1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r1)
+            .background(Gomob.colors.bg2)
             // 长按 DEV badge —— 写假 token 跳过登录鉴权，给硬件功能调试用。
             // 普通点击不响应，避免误触；只在 dev 调试场景的 long-press 才生效。
             .combinedClickableForDev(onLongPress = onDevBypass)
@@ -343,7 +339,6 @@ private fun InlineField(
             .fillMaxWidth()
             .clip(Gomob.shapes.r2)
             .background(Gomob.colors.bg1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
             .padding(horizontal = Gomob.spacing.s14, vertical = Gomob.spacing.s8),
     ) {
         Column {
@@ -407,17 +402,11 @@ private fun RememberCheckbox(checked: Boolean, onToggle: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
     ) {
-        // 14×14 勾选框 — accentSoft 底 + accentLine 边 + 选中显 Check
         Box(
             Modifier
                 .size(14.dp)
                 .clip(Gomob.shapes.r1)
-                .background(if (checked) Gomob.colors.accentSoft else Gomob.colors.bg2)
-                .border(
-                    Gomob.spacing.hairline,
-                    if (checked) Gomob.colors.accentLine else Gomob.colors.line2,
-                    Gomob.shapes.r1,
-                ),
+                .background(if (checked) Gomob.colors.accentSoft else Gomob.colors.bg2),
             contentAlignment = Alignment.Center,
         ) {
             if (checked) {
@@ -447,7 +436,6 @@ private fun ErrorBanner(message: String) {
             .fillMaxWidth()
             .clip(Gomob.shapes.r2)
             .background(Gomob.colors.dangerSoft)
-            .border(Gomob.spacing.hairline, Gomob.colors.dangerLine, Gomob.shapes.r2)
             .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
@@ -477,7 +465,6 @@ private fun PrimaryButton(loading: Boolean, onClick: () -> Unit) {
             .height(Gomob.spacing.avatar48)
             .clip(Gomob.shapes.r2)
             .background(Gomob.colors.accentSoft)
-            .border(Gomob.spacing.hairline, Gomob.colors.accentLine, Gomob.shapes.r2)
             .clickable(enabled = !loading, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -527,7 +514,7 @@ private fun DiagnosticStrip(
             .padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20, bottom = Gomob.spacing.s24)
             .fillMaxWidth()
             .clip(Gomob.shapes.r2)
-            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r2)
+            .background(Gomob.colors.bg1)
             .clickable(onClick = onClick)
             .padding(horizontal = Gomob.spacing.s12, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -699,8 +686,7 @@ private fun CurrentEndpointRow(
             .fillMaxWidth()
             .height(Gomob.spacing.rowSetting)
             .clip(Gomob.shapes.r2)
-            .background(Gomob.colors.bg0)
-            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
+            .background(Gomob.colors.bg2)
             .padding(horizontal = Gomob.spacing.s12),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
@@ -805,12 +791,7 @@ private fun DiscoveredGatewayRow(
             .fillMaxWidth()
             .height(Gomob.spacing.rowSetting)
             .clip(Gomob.shapes.r2)
-            .background(if (selected) Gomob.colors.accentSoft else Gomob.colors.bg0)
-            .border(
-                Gomob.spacing.hairline,
-                if (selected) Gomob.colors.accentLine else Gomob.colors.line2,
-                Gomob.shapes.r2,
-            )
+            .background(if (selected) Gomob.colors.accentSoft else Gomob.colors.bg2)
             .clickable(enabled = enabled && !selected, onClick = onUse)
             .padding(horizontal = Gomob.spacing.s12),
         verticalAlignment = Alignment.CenterVertically,
@@ -869,8 +850,7 @@ private fun SmallIconButton(
         Modifier
             .size(Gomob.spacing.s32)
             .clip(Gomob.shapes.r2)
-            .background(Gomob.colors.bg0)
-            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
+            .background(Gomob.colors.bg2)
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -904,11 +884,6 @@ private fun SheetButton(
             .height(Gomob.spacing.avatar48)
             .clip(Gomob.shapes.r2)
             .background(if (primary) Gomob.colors.accentSoft else Gomob.colors.bg2)
-            .border(
-                Gomob.spacing.hairline,
-                if (primary) Gomob.colors.accentLine else Gomob.colors.line2,
-                Gomob.shapes.r2,
-            )
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {

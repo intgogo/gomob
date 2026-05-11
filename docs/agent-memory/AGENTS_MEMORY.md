@@ -15,7 +15,7 @@
 - [开发闭环：自驱动验证](feedback_dev_loop.md) — 写完功能必须自己跑通采样 → 分析闭环，不等用户报。
 - [设计决策风格偏好](feedback_design_style.md) — 激进决策、长期主义、严格反馈、设计/实施文档分层。
 - [Git Push 策略](feedback_git_push_policy.md) — 本地可 commit；只在用户明确要求时 push。
-- [UI 改动必须真实运行并截图自查](feedback_ui_visual_verification.md) — UI 更新默认同时安装真机和模拟器；必要时截图复核。
+- [UI 改动真实运行；日志优先必要时截图](feedback_ui_visual_verification.md) — 优先日志/harness/uiautomator，视觉风险再截图。
 - [用户全程 VNC 远程](feedback_vnc_remote_dev.md) — emulator / 任何 GUI 必须走 DISPLAY=:1（TigerVNC 5901 端口），不能起 Xvfb headless 否则用户看不到。
 - [重要不确定模块必须建 harness](feedback_harness_mandatory.md) — 五条触发标准命中时先建 harness 再写业务代码。
 
@@ -29,5 +29,6 @@
 
 - [**重建主线 2026-05-07 重大方向变更**](finding_multiview_rgbd_pivot_2026-05-07.md) — 实时 SLAM → 多视角 RGBD 配准 + 端云融合；权威设计在 04b；既有 native 沉淀阶段 3 复用。**新工作不要扩 04 路线**。
 - [模拟器在本机的稳定配置 2026-05-08](finding_emulator_setup_2026-05-04.md) — emulator 36.x 必须 `DISPLAY=:1 -gpu host`，并禁 netsim/虚拟 WiFi。
+- [Android 实时 WS 与 devserver 注意点](finding_android_realtime_ws_devserver_2026-05-09.md) — App WS 用 http scheme；devserver 包装器需透传 Hijacker。
 - [KSP2 + Hilt 2.53.x 不兼容](finding_ksp1_required_for_hilt_2_53.md) — `ksp.useKSP2=false` 是当前唯一解。
 - [mob3d 设计最新交付核对 2026-05-05](finding_mob3d_handoff_realign_2026-05-05.md) — 现仓本就是 handoff 业务化升级版；本次只补 token + 微观对齐 + FirstPersonViewer 重写 + 删 PlaceholderScreen。

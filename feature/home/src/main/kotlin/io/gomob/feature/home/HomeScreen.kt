@@ -12,7 +12,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -231,11 +230,6 @@ private fun HistoryIconButton(active: Boolean, onClick: () -> Unit) {
             .size(Gomob.spacing.touchMin)
             .clip(Gomob.shapes.r1)
             .background(if (active) Gomob.colors.accentSoft else Color.Transparent)
-            .border(
-                Gomob.spacing.hairline,
-                if (active) Gomob.colors.accentLine else Color.Transparent,
-                Gomob.shapes.r1,
-            )
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -273,25 +267,36 @@ private fun HistoryPanel(visible: Boolean, onDismiss: () -> Unit) {
             Modifier.fillMaxSize(),
             contentAlignment = Alignment.CenterEnd,
         ) {
-            HistoryPanelContent(onClose = onDismiss)
+            HistoryPanelContent()
         }
     }
 }
 
 @Composable
-private fun HistoryPanelContent(onClose: () -> Unit) {
+private fun HistoryPanelContent() {
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val drawerClickSource = remember { MutableInteractionSource() }
+    fun dismissInput() {
+        focusManager.clearFocus()
+        keyboardController?.hide()
+    }
+
     Column(
         Modifier
             .fillMaxWidth(0.82f)
             .fillMaxHeight()
             .background(Gomob.colors.bg1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r3),
+            .clickable(
+                interactionSource = drawerClickSource,
+                indication = null,
+                onClick = { dismissInput() },
+            ),
     ) {
         Row(
             Modifier
                 .fillMaxWidth()
                 .padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column {
@@ -308,21 +313,6 @@ private fun HistoryPanelContent(onClose: () -> Unit) {
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Medium,
                     color = Gomob.colors.fg0,
-                )
-            }
-            Box(
-                Modifier
-                    .size(Gomob.spacing.avatar28)
-                    .clip(Gomob.shapes.r1)
-                    .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r1)
-                    .clickable(onClick = onClose),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "✕",
-                    fontSize = 14.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = Gomob.colors.fg1,
                 )
             }
         }
@@ -349,8 +339,7 @@ private fun HistoryPanelContent(onClose: () -> Unit) {
             Column(
                 Modifier
                     .clip(Gomob.shapes.r3)
-                    .background(Gomob.colors.bg2)
-                    .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3),
+                    .background(Gomob.colors.bg2),
             ) {
                 HISTORY_ITEMS.forEachIndexed { i, item ->
                     HistoryRow(item)
@@ -397,7 +386,6 @@ private fun UserMessageBubble(prompt: String, turnNumber: Int) {
                 .fillMaxWidth(0.86f)
                 .clip(Gomob.shapes.r3)
                 .background(Gomob.colors.accentSoft)
-                .border(Gomob.spacing.hairline, Gomob.colors.accentLine, Gomob.shapes.r3)
                 .padding(horizontal = Gomob.spacing.s14, vertical = Gomob.spacing.s12),
         ) {
             Text(prompt, fontSize = 13.sp, lineHeight = 20.sp, color = Gomob.colors.fg0)
@@ -416,17 +404,8 @@ private fun AssistantMessageCard(
                 .fillMaxWidth()
                 .clip(Gomob.shapes.r3)
                 .background(Gomob.colors.bg1)
-                .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
                 .ticks(),
         ) {
-            // 顶部 1dp 内高光
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(Gomob.spacing.hairline)
-                    .background(Gomob.colors.hlTop)
-                    .align(Alignment.TopCenter),
-            )
             Column {
                 AssistantBubble(prompt = prompt, streaming = streaming)
             }
@@ -540,7 +519,6 @@ private fun RefChip(label: String) {
             .height(16.dp)
             .clip(Gomob.shapes.r1)
             .background(Gomob.colors.accentSoft)
-            .border(Gomob.spacing.hairline, Gomob.colors.accentLine, Gomob.shapes.r1)
             .clickable {}
             .padding(horizontal = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -562,7 +540,7 @@ private fun InlineAction(label: String) {
         Modifier
             .height(26.dp)
             .clip(Gomob.shapes.r1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r1)
+            .background(Gomob.colors.bg2)
             .clickable {}
             .padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -600,7 +578,7 @@ private fun FullDivider() {
         Modifier
             .fillMaxWidth()
             .height(Gomob.spacing.hairline)
-            .background(Gomob.colors.line1),
+            .background(Gomob.colors.line1.copy(alpha = 0.03f)),
     )
 }
 
@@ -609,9 +587,9 @@ private fun InsetDivider() {
     Box(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = Gomob.spacing.s14)
+            .padding(start = Gomob.spacing.s14)
             .height(Gomob.spacing.hairline)
-            .background(Gomob.colors.line1),
+            .background(Gomob.colors.line1.copy(alpha = 0.03f)),
     )
 }
 
@@ -654,7 +632,6 @@ private fun QuickActionCell(
         modifier
             .clip(Gomob.shapes.r3)
             .background(Gomob.colors.bg1)
-            .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
             .ticks()
             .clickable(onClick = onClick)
             .padding(start = Gomob.spacing.s12, end = Gomob.spacing.s12, top = Gomob.spacing.s12, bottom = Gomob.spacing.s14),
@@ -706,8 +683,7 @@ private fun AiWatchCard(onOpenInspection: (String) -> Unit) {
             Modifier
                 .fillMaxWidth()
                 .clip(Gomob.shapes.r3)
-                .background(Gomob.colors.bg1)
-                .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3),
+                .background(Gomob.colors.bg1),
         ) {
             watchItems.forEachIndexed { i, item ->
                 AiWatchRow(item, onClick = { onOpenInspection(item.vin) })
@@ -790,8 +766,7 @@ private fun HistoryRow(item: HistoryItem) {
             Modifier
                 .size(24.dp)
                 .clip(Gomob.shapes.r1)
-                .background(Gomob.colors.bg2)
-                .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r1),
+                .background(Gomob.colors.bg2),
             contentAlignment = Alignment.Center,
         ) {
             Text(
@@ -927,7 +902,6 @@ private fun ChatComposer(
                     .fillMaxWidth()
                     .clip(Gomob.shapes.r3)
                     .background(Gomob.colors.bg1)
-                    .border(Gomob.spacing.hairline, Gomob.colors.accentLine, Gomob.shapes.r3),
             ) {
                 Box(
                     Modifier
@@ -970,12 +944,7 @@ private fun ChatComposer(
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
                     )
                 }
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(Gomob.spacing.hairline)
-                        .background(Gomob.colors.line1),
-                )
+                Spacer(Modifier.height(Gomob.spacing.s2))
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -1001,7 +970,6 @@ private fun ChatComposer(
                         icon = GomobIcons.Send,
                         tint = Gomob.colors.accent,
                         bg = Gomob.colors.accentSoft,
-                        border = Gomob.colors.accentLine,
                         size = 32.dp,
                         iconSize = 16.dp,
                         onClick = { submitDraft() },
@@ -1014,7 +982,6 @@ private fun ChatComposer(
                     .fillMaxWidth()
                     .clip(Gomob.shapes.r3)
                     .background(Gomob.colors.bg2)
-                    .border(Gomob.spacing.hairline, Gomob.colors.line1, Gomob.shapes.r3)
                     .padding(horizontal = 10.dp, vertical = Gomob.spacing.s8),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
@@ -1043,7 +1010,6 @@ private fun ChatComposer(
                     icon = GomobIcons.Send,
                     tint = Gomob.colors.accent,
                     bg = Gomob.colors.accentSoft,
-                    border = Gomob.colors.accentLine,
                     onClick = { submitDraft() },
                 )
             }
@@ -1123,7 +1089,6 @@ private fun ComposerIconButton(
     icon: ImageVector,
     tint: Color,
     bg: Color = Color.Transparent,
-    border: Color = Gomob.colors.line2,
     size: Dp = Gomob.spacing.avatar28,
     iconSize: Dp = 14.dp,
     onClick: () -> Unit = {},
@@ -1133,7 +1098,6 @@ private fun ComposerIconButton(
             .size(size)
             .clip(Gomob.shapes.r1)
             .background(bg)
-            .border(Gomob.spacing.hairline, border, Gomob.shapes.r1)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {

@@ -1,7 +1,6 @@
 package io.gomob.feature.collaboration
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -73,12 +72,7 @@ fun ReviewDetailRoute(reviewId: String, onBack: () -> Unit) {
                                     .weight(1f)
                                     .height(Gomob.spacing.cellH28)
                                     .clip(Gomob.shapes.r1)
-                                    .background(if (w == 28) Gomob.colors.accentSoft else Gomob.colors.bg2)
-                                    .border(
-                                        Gomob.spacing.hairline,
-                                        if (w == 28) Gomob.colors.accentLine else Gomob.colors.line2,
-                                        Gomob.shapes.r1,
-                                    ),
+                                    .background(if (w == 28) Gomob.colors.accentSoft else Gomob.colors.bg2),
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Text(
@@ -140,8 +134,7 @@ fun ReviewDetailRoute(reviewId: String, onBack: () -> Unit) {
                     .fillMaxWidth()
                     .aspectRatio(16f / 9f)
                     .clip(Gomob.shapes.r3)
-                    .background(Gomob.colors.bg2)
-                    .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r3),
+                    .background(Gomob.colors.bg2),
                 contentAlignment = Alignment.Center,
             ) {
                 Text("车架号图 · 多张辅助图", style = Gomob.type.bodySm, color = Gomob.colors.fg3)
@@ -149,12 +142,6 @@ fun ReviewDetailRoute(reviewId: String, onBack: () -> Unit) {
         }
 
         // 三按钮 — 结果正确 / 结果错误 / 跳过
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(Gomob.spacing.hairline)
-                .background(Gomob.colors.line1),
-        )
         Row(
             Modifier
                 .fillMaxWidth()
@@ -166,21 +153,18 @@ fun ReviewDetailRoute(reviewId: String, onBack: () -> Unit) {
                 modifier = Modifier.weight(1f),
                 text = "结果正确",
                 fill = Gomob.colors.okSoft,
-                line = Gomob.colors.ok,
                 fg = Gomob.colors.ok,
             )
             DecisionButton(
                 modifier = Modifier.weight(1f),
                 text = "结果错误",
                 fill = Gomob.colors.dangerSoft,
-                line = Gomob.colors.danger,
                 fg = Gomob.colors.danger,
             )
             DecisionButton(
                 modifier = Modifier.weight(1f),
                 text = "跳过",
                 fill = Gomob.colors.bg2,
-                line = Gomob.colors.line2,
                 fg = Gomob.colors.fg2,
             )
         }
@@ -204,7 +188,6 @@ private fun DecisionButton(
     modifier: Modifier = Modifier,
     text: String,
     fill: Color,
-    line: Color,
     fg: Color,
 ) {
     Box(
@@ -212,7 +195,6 @@ private fun DecisionButton(
             .height(Gomob.spacing.touchMin)
             .clip(Gomob.shapes.r2)
             .background(fill)
-            .border(Gomob.spacing.hairline, line, Gomob.shapes.r2)
             .clickable {},
         contentAlignment = Alignment.Center,
     ) {
