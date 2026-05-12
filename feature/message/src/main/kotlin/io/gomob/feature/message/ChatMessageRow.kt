@@ -665,7 +665,7 @@ private fun CallResultUi.callResultDetail(): String =
     if (succeeded) {
         durationText?.let { "通话时长 $it" } ?: "通话已结束"
     } else {
-        failureReason?.takeIf { it.isNotBlank() }?.let { "失败原因：$it" } ?: statusText
+        failureReason?.takeIf { it.isNotBlank() } ?: statusText
     }
 
 @Composable
@@ -751,7 +751,7 @@ private fun CallInviteUi.inviteDetailText(mine: Boolean): String =
     when {
         ringing -> if (mine) "已发起，等待对方接受" else "邀请你视频通话"
         succeeded -> durationText?.let { "通话时长 $it" } ?: "通话已结束"
-        !failureReason.isNullOrBlank() -> "失败原因：$failureReason"
+        !failureReason.isNullOrBlank() -> failureReason
         else -> statusText
     }
 
