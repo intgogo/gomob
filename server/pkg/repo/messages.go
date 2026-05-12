@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -688,6 +689,62 @@ func (r *MessageRepo) FindByID(ctx context.Context, messageID int64) (*Message, 
 	m.ClientMsgID = nullStringPtr(client)
 	m.EditedAt = nullTimePtr(editedAt)
 	m.DeletedAt = nullTimePtr(deletedAt)
+	return &m, nil
+}
+
+// UpdateCallInvitePayload 按媒体房间更新原通话邀请消息，避免通话结束另写一条结果消息。
+func (r *MessageRepo) UpdateCallInvitePayload(ctx context.Context, conversationID, roomID int64, patch json.RawMessage) (*Message, error) {
+	if len(patch) == 0 {
+		patch = json.RawMessage(`{}`)
+	}
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	const q = `
+		WITH target AS (
+			SELECT id
+			FROM messages
+			WHERE conversation_id=$1
+			  AND kind='call_invite'
+			  AND deleted_at IS NULL
+			  AND (payload->>'room_id'=$2 OR payload->>'call_id'=$2)
+			ORDER BY server_seq DESC
+			LIMIT 1
+		)
+		UPDATE messages m
+		SET payload=m.payload || $3::jsonb,
+		    edited_at=now()
+		FROM target
+		WHERE m.id=target.id
+		RETURNING m.id, m.conversation_id, m.sender_id, m.server_seq, m.kind, m.payload, m.client_msg_id,
+		          m.created_at, m.edited_at, m.deleted_at`
+	var m Message
+	var senderID sql.NullInt64
+	var clientMsgID sql.NullString
+	var editedAt, deletedAt sql.NullTime
+	roomIDText := strconv.FormatInt(roomID, 10)
+	if err := tx.QueryRow(ctx, q, conversationID, roomIDText, patch).Scan(
+		&m.ID, &m.ConversationID, &senderID, &m.ServerSeq, &m.Kind, &m.Payload, &clientMsgID,
+		&m.CreatedAt, &editedAt, &deletedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	m.SenderID = nullInt64Ptr(senderID)
+	m.ClientMsgID = nullStringPtr(clientMsgID)
+	m.EditedAt = nullTimePtr(editedAt)
+	m.DeletedAt = nullTimePtr(deletedAt)
+	if _, err := tx.Exec(ctx, `UPDATE conversations SET updated_at=now() WHERE id=$1`, conversationID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
 	return &m, nil
 }
 

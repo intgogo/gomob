@@ -133,7 +133,8 @@ class MessageListViewModel @Inject constructor(
                 conversationId = conversationId ?: 0L,
                 title = conversation?.displayTitle() ?: "专家连线",
                 experts = experts,
-                messages = messages.map { it.toBubbleUi(json, experts, currentUserId.value) },
+                messages = messages.mergeCallResultMessages(json)
+                    .map { it.toBubbleUi(json, experts, currentUserId.value) },
                 unreadCount = conversation?.unreadCount ?: 0L,
                 loading = false,
                 offlineCached = messages.isNotEmpty() && refresh is RefreshState.Error,
@@ -266,6 +267,11 @@ class MessageListViewModel @Inject constructor(
                 helpRoomRefreshState.value = RefreshState.Error("语音转文字失败，未发送消息：${error.readableMessage()}")
             }
         }
+    }
+
+    suspend fun transcribeHelpRoomVoiceDraft(uri: Uri, durationSec: Int): String {
+        if (durationSec <= 0) throw IllegalArgumentException("未识别到文字")
+        return repository.transcribeVoiceDraft(uri).ifBlank { throw IllegalArgumentException("未识别到文字") }
     }
 
     fun sendHelpRoomVideoClip(uri: Uri) {
@@ -444,6 +450,98 @@ class ExpertDetailViewModel @Inject constructor(
 }
 
 @HiltViewModel
+class ContactDetailViewModel @Inject constructor(
+    savedStateHandle: SavedStateHandle,
+    private val repository: MessageRepository,
+) : ViewModel() {
+    private val contactId = savedStateHandle.get<String>("id").orEmpty()
+    private val _state = MutableStateFlow<ContactDetailUiState>(ContactDetailUiState.Loading)
+    val state: StateFlow<ContactDetailUiState> = _state.asStateFlow()
+    private val _openConversationEvents = MutableSharedFlow<Long>()
+    val openConversationEvents = _openConversationEvents.asSharedFlow()
+
+    init {
+        refresh()
+    }
+
+    fun refresh() {
+        viewModelScope.launch {
+            _state.value = ContactDetailUiState.Loading
+            _state.value = runCatching {
+                val local = localContactProfiles().firstOrNull { it.id == contactId }
+                if (local != null) {
+                    ContactDetailUiState.Content(contact = local, cases = emptyList())
+                } else {
+                    val expertUserId = contactId.contactUserId()
+                        ?: throw IllegalArgumentException("联系人不存在")
+                    val expert = repository.helpExperts()
+                        .map { it.toRowUi() }
+                        .firstOrNull { it.userId == expertUserId }
+                    if (expert == null) {
+                        ContactDetailUiState.Content(contact = fallbackContactProfile(expertUserId), cases = emptyList())
+                    } else {
+                        ContactDetailUiState.Content(
+                            contact = expert.toContactProfileUi(),
+                            cases = repository.helpExpertCases(expertUserId).map { it.toRowUi() },
+                        )
+                    }
+                }
+            }.getOrElse { ContactDetailUiState.Error(it.readableMessage()) }
+        }
+    }
+
+    fun openDirectConversation() {
+        val content = _state.value as? ContactDetailUiState.Content ?: return
+        if (content.openingMessage) return
+        val peerUserId = content.contact.peerUserId
+        if (peerUserId == null || peerUserId <= 0) {
+            _state.value = content.copy(messageError = "该联系人暂未同步到服务端")
+            return
+        }
+        viewModelScope.launch {
+            _state.value = content.copy(openingMessage = true, messageError = null)
+            val conversation = runCatching { repository.openDirectConversation(peerUserId) }
+                .getOrElse { error ->
+                    _state.value = (_state.value as? ContactDetailUiState.Content)
+                        ?.copy(openingMessage = false, messageError = error.readableMessage())
+                        ?: ContactDetailUiState.Error(error.readableMessage())
+                    return@launch
+                }
+            runCatching {
+                repository.prewarmConversationHistory(
+                    conversationId = conversation.id,
+                    messageLimit = INITIAL_MESSAGE_PAGE_LIMIT,
+                )
+            }.onFailure {
+                runCatching { repository.warmConversationSnapshot(conversation.id, INITIAL_MESSAGE_PAGE_LIMIT) }
+            }
+            _state.value = (_state.value as? ContactDetailUiState.Content)
+                ?.copy(openingMessage = false)
+                ?: _state.value
+            _openConversationEvents.emit(conversation.id)
+        }
+    }
+}
+
+private fun String.contactUserId(): Long? =
+    removePrefix("expert-")
+        .removePrefix("user-")
+        .toLongOrNull()
+
+private fun fallbackContactProfile(userId: Long): ContactProfileUi = ContactProfileUi(
+    id = "user-$userId",
+    name = "用户 #$userId",
+    initials = "#",
+    roleTitle = "消息联系人",
+    specialty = "聊天成员",
+    employeeId = "#$userId",
+    availabilityText = "可联系",
+    organization = "消息中心",
+    online = false,
+    peerUserId = userId,
+)
+
+@HiltViewModel
 class ConversationViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val repository: MessageRepository,
@@ -594,6 +692,11 @@ class ConversationViewModel @Inject constructor(
                 refreshState.value = RefreshState.Error("语音转文字失败，未发送消息：${error.readableMessage()}")
             }
         }
+    }
+
+    suspend fun transcribeVoiceDraftText(uri: Uri, durationSec: Int): String {
+        if (conversationId <= 0 || durationSec <= 0) throw IllegalArgumentException("未识别到文字")
+        return repository.transcribeVoiceDraft(uri).ifBlank { throw IllegalArgumentException("未识别到文字") }
     }
 
     fun sendVideoClip(uri: Uri) {
@@ -781,6 +884,17 @@ sealed interface ExpertDetailUiState {
     ) : ExpertDetailUiState
 }
 
+sealed interface ContactDetailUiState {
+    data object Loading : ContactDetailUiState
+    data class Error(val message: String) : ContactDetailUiState
+    data class Content(
+        val contact: ContactProfileUi,
+        val cases: List<ExpertCaseRowUi>,
+        val openingMessage: Boolean = false,
+        val messageError: String? = null,
+    ) : ContactDetailUiState
+}
+
 data class HelpExpertRowUi(
     val userId: Long,
     val name: String,
@@ -823,7 +937,7 @@ private fun conversationUiState(
     conversationId = conversationId,
     title = conversation?.displayTitle() ?: if (conversationId > 0) "会话 #$conversationId" else "会话",
     eyebrow = if (conversationId > 0) "会话 · #$conversationId" else "会话",
-    messages = messages.map { it.toBubbleUi(json, currentUserId) },
+    messages = messages.mergeCallResultMessages(json).map { it.toBubbleUi(json, currentUserId) },
     loading = false,
     offlineCached = messages.isNotEmpty() && refresh is RefreshState.Error,
     errorMessage = (refresh as? RefreshState.Error)?.message,
@@ -836,6 +950,7 @@ data class MessageBubbleUi(
     val kind: String,
     val text: String,
     val mine: Boolean,
+    val senderUserId: Long?,
     val senderLabel: String?,
     val avatarKey: String,
     val time: String,
@@ -1040,6 +1155,7 @@ private fun MessageRecord.toBubbleUi(json: Json, currentUserId: Long?): MessageB
         kind = kind,
         text = card?.searchText ?: call?.searchText ?: callResult?.searchText ?: if (kind == "voice") voiceBaseText(json) else previewText(json),
         mine = mine,
+        senderUserId = senderId ?: if (mine) currentUserId else null,
         senderLabel = null,
         avatarKey = if (mine) "me" else "peer-${senderId ?: localKey}",
         time = createdAt.formatMessageTime(),
@@ -1054,6 +1170,48 @@ private fun MessageRecord.toBubbleUi(json: Json, currentUserId: Long?): MessageB
         voiceTranscript = transcript,
         quote = quote,
     )
+}
+
+internal fun List<MessageRecord>.mergeCallResultMessages(json: Json): List<MessageRecord> {
+    val inviteRooms = filter { it.kind == "call_invite" }
+        .mapNotNull { it.callRoomKey(json) }
+        .toSet()
+    if (inviteRooms.isEmpty()) return this
+    val resultsByRoom = filter { it.kind.isCallResultKind() }
+        .mapNotNull { result ->
+            result.callRoomKey(json)
+                ?.takeIf { it in inviteRooms }
+                ?.let { roomKey -> roomKey to result }
+        }
+        .toMap()
+    if (resultsByRoom.isEmpty()) return this
+    return mapNotNull { record ->
+        val roomKey = record.callRoomKey(json)
+        when {
+            record.kind.isCallResultKind() && roomKey in inviteRooms -> null
+            record.kind == "call_invite" && roomKey != null && resultsByRoom[roomKey] != null ->
+                record.mergeCallResult(resultsByRoom.getValue(roomKey), json)
+            else -> record
+        }
+    }
+}
+
+private fun MessageRecord.mergeCallResult(result: MessageRecord, json: Json): MessageRecord {
+    val base = runCatching { json.parseToJsonElement(payloadJson).jsonObject }.getOrNull() ?: return this
+    val patch = runCatching { json.parseToJsonElement(result.payloadJson).jsonObject }.getOrNull() ?: return this
+    val mergedPayload = JsonObject(base + patch)
+    return copy(
+        payloadJson = mergedPayload.toString(),
+        preview = result.callResultPayload(json)?.previewText ?: result.previewText(json),
+        editedAt = result.editedAt ?: result.createdAt,
+    )
+}
+
+private fun MessageRecord.callRoomKey(json: Json): String? {
+    if (kind != "call_invite" && !kind.isCallResultKind()) return null
+    val obj = runCatching { json.parseToJsonElement(payloadJson).jsonObject }.getOrNull() ?: return null
+    return obj["room_id"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotBlank() }
+        ?: obj["call_id"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotBlank() }
 }
 
 private fun MessageRecord.toBubbleUi(
@@ -1074,6 +1232,7 @@ private fun MessageRecord.toBubbleUi(
         kind = kind,
         text = card?.searchText ?: call?.searchText ?: callResult?.searchText ?: if (kind == "voice") voiceBaseText(json) else previewText(json),
         mine = mine,
+        senderUserId = senderId ?: if (mine) currentUserId else null,
         senderLabel = if (mine) null else expert?.name ?: "成员 #$senderId",
         avatarKey = if (mine) {
             "me"

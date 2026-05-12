@@ -36,6 +36,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -64,6 +65,7 @@ import io.gomob.designsystem.component.StatusTone
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.motion.fixedDuringPageDrag
 import io.gomob.designsystem.theme.Gomob
+import kotlinx.coroutines.launch
 
 @Composable
 fun ConversationRoute(
@@ -74,6 +76,7 @@ fun ConversationRoute(
     onOpenLocalVideo: (String) -> Unit = {},
     onOpenVideoCall: (roomId: String, title: String, mode: VideoCallMode) -> Unit = { _, _, _ -> },
     onOpenInspection: (String) -> Unit = {},
+    onOpenUserDetail: (String) -> Unit = {},
     viewModel: ConversationViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -88,9 +91,11 @@ fun ConversationRoute(
     var multiSelectMode by rememberSaveable { mutableStateOf(false) }
     var selectedMessageKeys by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var forwardingMessages by remember { mutableStateOf<List<MessageBubbleUi>>(emptyList()) }
+    var voiceTranscriptionDraft by remember { mutableStateOf<VoiceTranscriptionDraft?>(null) }
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val focusManager = LocalFocusManager.current
+    val coroutineScope = rememberCoroutineScope()
     val voiceRecorder = rememberVoiceRecorder()
     val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
@@ -175,7 +180,24 @@ fun ConversationRoute(
     val transcribeVoiceRecording: () -> Unit = transcribeVoice@{
         if (!voiceRecording) return@transcribeVoice
         runCatching { voiceRecorder.stop() }
-            .onSuccess { result -> viewModel.transcribeVoiceToText(result.uri, result.durationSec) }
+            .onSuccess { result ->
+                voiceTranscriptionDraft = VoiceTranscriptionDraft(
+                    uri = result.uri,
+                    durationSec = result.durationSec,
+                )
+                coroutineScope.launch {
+                    val text = runCatching {
+                        viewModel.transcribeVoiceDraftText(result.uri, result.durationSec)
+                    }.getOrDefault("")
+                    voiceTranscriptionDraft = voiceTranscriptionDraft
+                        ?.takeIf { it.uri == result.uri }
+                        ?.copy(
+                            text = text,
+                            loading = false,
+                            failed = text.isBlank(),
+                        )
+                }
+            }
             .onFailure { viewModel.showError(it.message ?: "录音失败") }
         voiceRecording = false
     }
@@ -298,6 +320,7 @@ fun ConversationRoute(
                 onRetry = viewModel::retry,
                 onRetryTranscript = viewModel::retryVoiceTranscript,
                 onOpenInspection = onOpenInspection,
+                onOpenUserDetail = onOpenUserDetail,
                 onAcceptCall = viewModel::acceptVideoCall,
                 inputFocused = inputFocused,
                 favoriteMessageKeys = favoriteMessageKeys,
@@ -359,6 +382,22 @@ fun ConversationRoute(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 96.dp),
+        )
+        VoiceTranscriptionOverlay(
+            draft = voiceTranscriptionDraft,
+            onCancel = { voiceTranscriptionDraft = null },
+            onSendVoice = { draft ->
+                voiceTranscriptionDraft = null
+                viewModel.sendVoice(draft.uri, draft.durationSec)
+            },
+            onSendText = { draft ->
+                val text = draft.text.trim()
+                if (text.isNotEmpty()) {
+                    voiceTranscriptionDraft = null
+                    viewModel.send(text, quoteDraft?.quote)
+                    quoteDraft = null
+                }
+            },
         )
     }
 }
@@ -544,6 +583,7 @@ private fun ConversationBody(
     onRetry: (String?) -> Unit,
     onRetryTranscript: (Long?) -> Unit,
     onOpenInspection: (String) -> Unit,
+    onOpenUserDetail: (String) -> Unit,
     onAcceptCall: (CallInviteUi) -> Unit,
     inputFocused: Boolean,
     favoriteMessageKeys: List<String>,
@@ -656,6 +696,7 @@ private fun ConversationBody(
                                     onToggleSelected = { onToggleSelected(bubble.localKey) },
                                     onQuickAction = onQuickAction,
                                     onOpenInspection = onOpenInspection,
+                                    onOpenUserDetail = onOpenUserDetail,
                                     onAcceptCall = {
                                     focusManager.clearFocus()
                                     onAcceptCall(it)

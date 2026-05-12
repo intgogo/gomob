@@ -604,7 +604,7 @@ class MessageRepository @Inject constructor(
             }
             is RealtimeEvent.MessageDelivered -> applyRealtimeDelivered(event)
             is RealtimeEvent.MessageReceived -> applyRealtimeReceived(event)
-            is RealtimeEvent.TranscriptUpdated -> applyTranscriptUpdated(event)
+            is RealtimeEvent.TranscriptUpdated -> applyMessageUpdated(event)
             is RealtimeEvent.Error -> logWarn(
                 "实时通道业务错误 code=${event.code} message=${event.message}",
             )
@@ -658,8 +658,7 @@ class MessageRepository @Inject constructor(
         }
     }
 
-    private suspend fun applyTranscriptUpdated(event: RealtimeEvent.TranscriptUpdated) {
-        if (event.kind != "voice") return
+    private suspend fun applyMessageUpdated(event: RealtimeEvent.TranscriptUpdated) {
         val payloadJson = event.content?.let { json.encodeToString(JsonElement.serializer(), it) } ?: "{}"
         val preview = realtimePreview(event.kind, event.content)
         messageDao.updateServerMessagePayload(
@@ -669,7 +668,11 @@ class MessageRepository @Inject constructor(
             updatedAt = event.updatedAt,
         )
         val updated = messageDao.findByServerId(event.messageId)
-        updated?.toDomain()?.let { rememberMessage(event.conversationId, it) }
+        if (updated == null) {
+            refreshMessages(conversationId = event.conversationId)
+            return
+        }
+        updated.toDomain().let { rememberMessage(event.conversationId, it) }
         if ((messageDao.maxServerSeq(event.conversationId) ?: 0L) == event.serverSeq) {
             conversationDao.recordLastMessage(
                 conversationId = event.conversationId,
@@ -680,7 +683,7 @@ class MessageRepository @Inject constructor(
             )
         }
         logInfo(
-            "语音转写实时更新已落库 conversation_id=${event.conversationId} server_seq=${event.serverSeq} message_id=${event.messageId}",
+            "消息实时更新已落库 conversation_id=${event.conversationId} server_seq=${event.serverSeq} message_id=${event.messageId}",
         )
     }
 
@@ -944,7 +947,7 @@ private fun realtimePreview(kind: String, payload: JsonElement?): String? = when
     "voice" -> payload.voiceTranscriptPreview() ?: "[语音消息]"
     "video_clip" -> "[视频消息]"
     "inspection_card" -> payload.jsonField("vin")?.let { "[流水] $it" } ?: "[业务流水]"
-    "call_invite" -> payload.jsonField("title")?.let { "[视频通话] $it" } ?: "[视频通话邀请]"
+    "call_invite" -> payload.callInvitePreview() ?: "[视频通话邀请]"
     "video_call", "audio_call" -> payload.callResultPreview(kind)
     "system" -> payload.textContent().takeIf { it.isNotBlank() } ?: "[系统消息]"
     else -> null
@@ -967,14 +970,36 @@ private fun JsonElement?.jsonField(name: String): String? =
 private fun JsonElement?.voiceTranscriptPreview(): String? {
     val obj = this as? JsonObject ?: return null
     return when (obj["transcript_status"]?.let { (it as? JsonPrimitive)?.contentOrNull }) {
-        "done" -> obj["transcript_normalized_text"].asPrimitiveString()
-            ?.ifBlank { obj["transcript_text"].asPrimitiveString().orEmpty() }
-            ?.takeIf { it.isNotBlank() }
-            ?.let { "[语音转文字] $it" }
+        "done" -> "[语音转文字] " + obj["transcript_normalized_text"].asPrimitiveString()
+            .orEmpty()
+            .ifBlank { obj["transcript_text"].asPrimitiveString().orEmpty() }
+            .ifBlank { "未识别到文字" }
         "pending", "processing" -> "[语音转写中]"
-        "failed" -> "[语音转写失败]"
+        "failed" -> if (obj["transcript_error"].asPrimitiveString().isUnrecognizedVoiceError()) {
+            "[语音转文字] 未识别到文字"
+        } else {
+            "[语音转写失败]"
+        }
         else -> null
     }
+}
+
+private fun JsonElement?.callInvitePreview(): String? {
+    val obj = this as? JsonObject ?: return null
+    val title = obj["title"].asPrimitiveString()?.takeIf { it.isNotBlank() } ?: "视频通话"
+    val status = obj["status"].asPrimitiveString().orEmpty()
+    if (status.isBlank() || status == "ringing") {
+        return "[视频通话] $title"
+    }
+    val durationSec = obj["duration_sec"].asPrimitiveString()?.toIntOrNull()
+        ?: obj["duration_ms"].asPrimitiveString()?.toLongOrNull()?.let { (it / 1000).toInt() }
+    if (status.isSuccessfulCallStatus()) {
+        return durationSec?.takeIf { it > 0 }?.let { "[$title ${formatDuration(it)}]" } ?: "[$title]"
+    }
+    val reason = listOf("reason", "failure_reason", "error", "end_error", "message")
+        .firstNotNullOfOrNull { key -> obj[key].asPrimitiveString()?.trim()?.takeIf(String::isNotBlank) }
+        ?: status.defaultCallFailureReason()
+    return if (reason.isNullOrBlank()) "[$title${status.callStatusText()}]" else "[$title${status.callStatusText()}] $reason"
 }
 
 private fun JsonElement?.callResultPreview(kind: String): String {
@@ -1022,3 +1047,8 @@ private fun String.defaultCallFailureReason(): String? = when (this) {
 
 private fun JsonElement?.asPrimitiveString(): String? =
     (this as? JsonPrimitive)?.contentOrNull
+
+private fun String?.isUnrecognizedVoiceError(): Boolean {
+    val value = this?.trim().orEmpty()
+    return value.isBlank() || value.contains("未识别") || value.contains("有效文本")
+}

@@ -60,6 +60,7 @@ internal fun ChatMessageRow(
     onRetry: () -> Unit,
     onRetryTranscript: () -> Unit = {},
     onOpenInspection: (String) -> Unit = {},
+    onOpenUserDetail: (String) -> Unit = {},
     onAcceptCall: (CallInviteUi) -> Unit = {},
     favorite: Boolean = false,
     selected: Boolean = false,
@@ -107,6 +108,7 @@ internal fun ChatMessageRow(
                 ChatAvatar(
                     seed = bubble.avatarKey,
                     mine = false,
+                    onClick = bubble.senderUserId?.let { id -> { onOpenUserDetail("user-$id") } },
                     modifier = Modifier.padding(top = avatarTopPadding),
                 )
                 Spacer(Modifier.width(avatarGap))
@@ -188,6 +190,7 @@ internal fun ChatMessageRow(
                 ChatAvatar(
                     seed = bubble.avatarKey,
                     mine = true,
+                    onClick = bubble.senderUserId?.let { id -> { onOpenUserDetail("user-$id") } },
                 )
             } else {
                 Spacer(Modifier.weight(1f))
@@ -567,7 +570,7 @@ private fun VoiceMessageBubble(
                         .background(textColor.copy(alpha = 0.10f)),
                 )
                 Text(
-                    transcript.displayText(bubble.serverId),
+                    transcript.voiceTranscriptDisplayText(bubble.serverId),
                     style = Gomob.type.caption,
                     color = when (transcript.status) {
                         "failed" -> Gomob.colors.danger
@@ -584,12 +587,17 @@ private val MessageBubbleTailWidth = 5.dp
 private val MessageBubbleTailHeight = 11.dp
 private val MessageBubbleTailTop = 8.dp
 
-private fun VoiceTranscriptUi?.displayText(messageId: Long?): String = when (this?.status) {
-    "done" -> text.orEmpty().ifBlank { "转写结果为空" }
-    "failed" -> error?.takeIf { it.isNotBlank() }?.let { "转写失败：$it" } ?: "转写失败，可重试"
+internal fun VoiceTranscriptUi?.voiceTranscriptDisplayText(messageId: Long?): String = when (this?.status) {
+    "done" -> text.orEmpty().ifBlank { "未识别到文字" }
+    "failed" -> if (error.isUnrecognizedVoiceError()) "未识别到文字" else "转写失败：$error"
     "processing" -> "转写中"
     "pending" -> "等待转写"
     else -> if (messageId == null || messageId <= 0) "等待上传完成" else "可转成文字"
+}
+
+private fun String?.isUnrecognizedVoiceError(): Boolean {
+    val value = this?.trim().orEmpty()
+    return value.isBlank() || value.contains("未识别") || value.contains("有效文本")
 }
 
 @Composable
@@ -871,12 +879,13 @@ private val WechatMineBubble = Color(0xFF95EC69)
 private fun ChatAvatar(
     seed: String,
     mine: Boolean,
+    onClick: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     MessageAvatarImage(
         seed = if (mine) "current-user-$seed" else seed,
         size = 36.dp,
         shape = Gomob.shapes.r2,
-        modifier = modifier,
+        modifier = modifier.let { if (onClick != null) it.clickable(onClick = onClick) else it },
     )
 }

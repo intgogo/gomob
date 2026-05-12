@@ -512,10 +512,16 @@ func messagePreview(kind string, payload json.RawMessage) string {
 		return "[业务流水]"
 	case "call_invite":
 		var p struct {
-			Title string `json:"title"`
+			Title  string `json:"title"`
+			Status string `json:"status"`
 		}
-		if err := json.Unmarshal(payload, &p); err == nil && p.Title != "" {
-			return "[视频通话] " + trimPreview(p.Title, 32)
+		if err := json.Unmarshal(payload, &p); err == nil {
+			if strings.TrimSpace(p.Status) != "" && p.Status != "ringing" {
+				return callPayloadPreview(firstNonBlank(p.Title, "视频通话"), payload)
+			}
+			if p.Title != "" {
+				return "[视频通话] " + trimPreview(p.Title, 32)
+			}
 		}
 		return "[视频通话邀请]"
 	case "system":
@@ -529,6 +535,14 @@ func callMessagePreview(kind string, payload json.RawMessage) string {
 	title := "视频通话"
 	if kind == "audio_call" {
 		title = "语音通话"
+	}
+	return callPayloadPreview(title, payload)
+}
+
+func callPayloadPreview(title string, payload json.RawMessage) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = "视频通话"
 	}
 	var p struct {
 		Status        string `json:"status"`

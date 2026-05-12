@@ -50,6 +50,7 @@ import io.gomob.feature.home.HomeRoute
 import io.gomob.feature.home.InspectionDetailRoute
 import io.gomob.feature.message.ConversationRoute
 import io.gomob.feature.message.ChatSearchRoute
+import io.gomob.feature.message.ContactDetailRoute
 import io.gomob.feature.message.ExpertDetailRoute
 import io.gomob.feature.message.LocalVideoPreviewRoute
 import io.gomob.feature.message.MessageEntryTab
@@ -175,8 +176,20 @@ fun GomobNavHost() {
                             entry.savedStateHandle[MESSAGE_TAB_REQUEST] = MESSAGE_TAB_HELP
                             nav.navigate("message/expert/$id")
                         },
+                        onOpenContactDetail = { id ->
+                            nav.navigate("message/contact/${Uri.encode(id)}")
+                        },
                     )
                 }
+            }
+            composable("message/contact/{id}") {
+                ContactDetailRoute(
+                    onBack = { nav.popBackStack() },
+                    onOpenConversation = { id -> nav.navigate("message/conv/$id") },
+                    onOpenAudioVideo = { title ->
+                        nav.navigate("message/local-video/${Uri.encode(title)}")
+                    },
+                )
             }
             composable("message/expert/{id}") {
                 ExpertDetailRoute(
@@ -194,6 +207,9 @@ fun GomobNavHost() {
                     onBack = { nav.popBackStack() },
                     onOpenSearch = { id ->
                         nav.navigate("message/conv/${Uri.encode(id)}/search")
+                    },
+                    onOpenUserDetail = { id ->
+                        nav.navigate("message/contact/${Uri.encode(id)}")
                     },
                     onOpenLocalVideo = { title ->
                         nav.navigate("message/local-video/${Uri.encode(title)}")
@@ -215,6 +231,9 @@ fun GomobNavHost() {
                     onBack = { nav.popBackStack() },
                     onOpenSearch = { id ->
                         nav.navigate("message/conv/${Uri.encode(id)}/search")
+                    },
+                    onOpenUserDetail = { id ->
+                        nav.navigate("message/contact/${Uri.encode(id)}")
                     },
                     onOpenLocalVideo = { title ->
                         nav.navigate("message/local-video/${Uri.encode(title)}")

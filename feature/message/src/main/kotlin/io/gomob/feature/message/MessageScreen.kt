@@ -29,15 +29,12 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -46,6 +43,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,7 +61,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
@@ -76,6 +73,7 @@ import io.gomob.designsystem.component.StatusTone
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.model.message.MessageQuote
+import kotlinx.coroutines.launch
 
 const val MESSAGE_ROUTE = "message"
 
@@ -102,6 +100,7 @@ private data class ContactRowUi(
     val employeeId: String,
     val online: Boolean,
     val peerUserId: Long?,
+    val detailId: String = id,
 )
 
 @Composable
@@ -109,6 +108,7 @@ fun MessageRoute(
     onOpenConversation: (String) -> Unit = {},
     onOpenLocalVideo: (String) -> Unit = {},
     onOpenExpertDetail: (String) -> Unit = {},
+    onOpenContactDetail: (String) -> Unit = {},
     requestedTab: MessageEntryTab? = null,
     onRequestedTabConsumed: () -> Unit = {},
     viewModel: MessageListViewModel = hiltViewModel(),
@@ -215,7 +215,7 @@ fun MessageRoute(
                     },
                     onTakeHelpPhoto = { photoCapture.launch(null) },
                     onSendHelpVoice = viewModel::sendHelpRoomVoice,
-                    onTranscribeHelpVoice = viewModel::transcribeHelpRoomVoice,
+                    onTranscribeHelpVoice = viewModel::transcribeHelpRoomVoiceDraft,
                     onSendHelpVideoClip = {
                         videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
                     },
@@ -249,8 +249,10 @@ fun MessageRoute(
                 contactsOpen = false
                 viewModel.clearContactActionError()
             },
-            onSendMessage = { contact -> viewModel.openDirectConversation(contact.peerUserId) },
-            onOpenAudioVideo = { contact -> onOpenLocalVideo("${contact.name} · 音视频通话") },
+            onOpenContactDetail = { contact ->
+                contactsOpen = false
+                onOpenContactDetail(contact.detailId)
+            },
         )
         FloatingMessageError(
             text = pageErrorText,
@@ -325,8 +327,7 @@ private fun ContactsDrawer(
     state: HelpExpertsUiState,
     errorText: String?,
     onClose: () -> Unit,
-    onSendMessage: (ContactRowUi) -> Unit,
-    onOpenAudioVideo: (ContactRowUi) -> Unit,
+    onOpenContactDetail: (ContactRowUi) -> Unit,
 ) {
     BackHandler(enabled = visible, onBack = onClose)
     AnimatedVisibility(
@@ -351,8 +352,7 @@ private fun ContactsDrawer(
             ContactsDrawerContent(
                 state = state,
                 errorText = errorText,
-                onSendMessage = onSendMessage,
-                onOpenAudioVideo = onOpenAudioVideo,
+                onOpenContactDetail = onOpenContactDetail,
             )
         }
     }
@@ -362,15 +362,12 @@ private fun ContactsDrawer(
 private fun ContactsDrawerContent(
     state: HelpExpertsUiState,
     errorText: String?,
-    onSendMessage: (ContactRowUi) -> Unit,
-    onOpenAudioVideo: (ContactRowUi) -> Unit,
+    onOpenContactDetail: (ContactRowUi) -> Unit,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     val sections = remember(state) { buildContactSections(state) }
     var expandedSectionIds by rememberSaveable { mutableStateOf(listOf("recent")) }
-    var selectedId by rememberSaveable { mutableStateOf(sections.firstContact()?.id.orEmpty()) }
     val visibleSections = remember(sections, query) { sections.filterContacts(query) }
-    val selected = sections.contacts().firstOrNull { it.id == selectedId } ?: sections.firstContact()
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val drawerClickSource = remember { MutableInteractionSource() }
@@ -439,8 +436,7 @@ private fun ContactsDrawerContent(
                             Column {
                                 ContactRow(
                                     contact = contact,
-                                    selected = contact.id == selected?.id,
-                                    onClick = { selectedId = contact.id },
+                                    onClick = { onOpenContactDetail(contact) },
                                 )
                                 if (index != section.contacts.lastIndex) {
                                     ContactListDivider()
@@ -450,17 +446,12 @@ private fun ContactsDrawerContent(
                     }
                 }
             }
-            ContactDrawerBottomBar(
-                selected = selected,
-                onSendMessage = onSendMessage,
-                onOpenAudioVideo = onOpenAudioVideo,
-            )
         }
         FloatingMessageError(
             text = errorText,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 94.dp),
+                .padding(bottom = 22.dp),
         )
     }
 }
@@ -540,7 +531,6 @@ private fun ContactSectionHeader(
 @Composable
 private fun ContactRow(
     contact: ContactRowUi,
-    selected: Boolean,
     onClick: () -> Unit,
 ) {
     Row(
@@ -548,7 +538,7 @@ private fun ContactRow(
             .fillMaxWidth()
             .height(46.dp)
             .clip(Gomob.shapes.r2)
-            .background(if (selected) Gomob.colors.accentSoft else Color.Transparent)
+            .background(Color.Transparent)
             .clickable(onClick = onClick)
             .padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -574,7 +564,7 @@ private fun ContactRow(
         Icon(
             GomobIcons.ChevronRight,
             contentDescription = null,
-            tint = if (selected) Gomob.colors.accent else Gomob.colors.fg3,
+            tint = Gomob.colors.fg3,
             modifier = Modifier.size(13.dp),
         )
     }
@@ -601,115 +591,16 @@ private fun ContactAvatar(contact: ContactRowUi) {
     )
 }
 
-@Composable
-private fun ContactDrawerBottomBar(
-    selected: ContactRowUi?,
-    onSendMessage: (ContactRowUi) -> Unit,
-    onOpenAudioVideo: (ContactRowUi) -> Unit,
-) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .background(Gomob.colors.bg1)
-            .padding(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-    ) {
-        selected?.let { contact ->
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-            ) {
-                ContactAvatar(contact)
-                Text(contact.name, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Gomob.colors.fg0)
-                Text(
-                    if (contact.online) "在线" else "忙碌",
-                    fontSize = 10.sp,
-                    color = if (contact.online) Gomob.colors.ok else Gomob.colors.warn,
-                    modifier = Modifier
-                        .clip(Gomob.shapes.r1)
-                        .background(if (contact.online) Gomob.colors.ok.copy(alpha = 0.12f) else Gomob.colors.warn.copy(alpha = 0.12f))
-                        .padding(horizontal = Gomob.spacing.s6, vertical = 2.dp),
-                )
-            }
-        }
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Row(
-                Modifier
-                    .weight(1f)
-                    .height(42.dp)
-                    .clip(Gomob.shapes.r2)
-                    .background(Gomob.colors.accentSoft)
-                    .clickable(enabled = selected != null) { selected?.let(onSendMessage) },
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    GomobIcons.Send,
-                    contentDescription = null,
-                    tint = Gomob.colors.accent,
-                    modifier = Modifier.size(14.dp),
-                )
-                Spacer(Modifier.width(Gomob.spacing.s8))
-                Text("发消息", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = Gomob.colors.accent)
-            }
-            ContactActionIcon(GomobIcons.Phone, "语音通话") {
-                selected?.let(onOpenAudioVideo)
-            }
-            ContactActionIcon(Icons.Filled.Videocam, "视频通话", iconSize = 18.dp) {
-                selected?.let(onOpenAudioVideo)
-            }
-        }
-    }
-}
-
-@Composable
-private fun ContactActionIcon(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    description: String,
-    iconSize: Dp = 15.dp,
-    onClick: () -> Unit,
-) {
-    Box(
-        Modifier
-            .size(42.dp)
-            .clip(Gomob.shapes.r2)
-            .background(Gomob.colors.bg0)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(icon, contentDescription = description, tint = Gomob.colors.fg2, modifier = Modifier.size(iconSize))
-    }
-}
-
 private fun buildContactSections(state: HelpExpertsUiState): List<ContactSectionUi> {
-    val station = listOf(
-        ContactRowUi("station-zhou", "周科", "周", "OBD 主审", "ZAA01", online = true, peerUserId = null),
-        ContactRowUi("station-wu", "吴风", "吴", "外观件专家", "ZAA02", online = true, peerUserId = null),
-        ContactRowUi("station-liu", "刘冶", "刘", "VIN 拓印", "ZAA03", online = false, peerUserId = null),
-        ContactRowUi("station-jiang", "江庆宇", "江", "查验员", "ZAA04", online = false, peerUserId = null),
-        ContactRowUi("station-shen", "沈海明", "沈", "查验员", "ZAA0120230001", online = true, peerUserId = null),
-    )
-    val supervision = listOf(
-        ContactRowUi("supervision-review", "省所复核", "省", "监管复核", "REG01", online = true, peerUserId = null),
-        ContactRowUi("supervision-duty", "值班督导", "督", "异常督办", "REG02", online = false, peerUserId = null),
-    )
+    val localContacts = localContactProfiles()
+    val station = localContacts
+        .filter { it.id.startsWith("station-") }
+        .map { it.toContactRowUi() }
+    val supervision = localContacts
+        .filter { it.id.startsWith("supervision-") }
+        .map { it.toContactRowUi() }
     val experts = when (state) {
-        is HelpExpertsUiState.Content -> state.experts.map { expert ->
-            ContactRowUi(
-                id = "expert-${expert.userId}",
-                name = expert.name,
-                initials = expert.initials,
-                role = expert.roleTitle,
-                employeeId = expert.employeeId,
-                online = expert.availabilityText == "可发消息",
-                peerUserId = expert.userId,
-            )
-        }
+        is HelpExpertsUiState.Content -> state.experts.map { it.toContactProfileUi().toContactRowUi() }
         else -> emptyList()
     }
     val recent = experts.take(3).mapIndexed { index, contact ->
@@ -741,6 +632,20 @@ private fun buildContactSections(state: HelpExpertsUiState): List<ContactSection
         ContactSectionUi("experts", "外部专家 · 协作池", experts.size.toString(), WatchTone.Danger, experts),
     ).filter { it.contacts.isNotEmpty() }
 }
+
+private fun ContactProfileUi.toContactRowUi(
+    rowId: String = id,
+    roleOverride: String? = null,
+): ContactRowUi = ContactRowUi(
+    id = rowId,
+    name = name,
+    initials = initials,
+    role = roleOverride ?: roleTitle,
+    employeeId = employeeId,
+    online = online,
+    peerUserId = peerUserId,
+    detailId = id,
+)
 
 private fun List<ContactSectionUi>.filterContacts(query: String): List<ContactSectionUi> {
     val keyword = query.trim()
@@ -845,10 +750,6 @@ private val contactPinyinMap = mapOf(
     '登' to "deng",
     '记' to "ji",
 )
-
-private fun List<ContactSectionUi>.contacts(): List<ContactRowUi> = flatMap { it.contacts }
-
-private fun List<ContactSectionUi>.firstContact(): ContactRowUi? = contacts().firstOrNull()
 
 @Composable
 private fun WatchTone.toContactTone(): Color = when (this) {
@@ -1163,7 +1064,7 @@ private fun HelpPane(
     onPickHelpImage: () -> Unit,
     onTakeHelpPhoto: () -> Unit,
     onSendHelpVoice: (android.net.Uri, Int) -> Unit,
-    onTranscribeHelpVoice: (android.net.Uri, Int) -> Unit,
+    onTranscribeHelpVoice: suspend (android.net.Uri, Int) -> String,
     onSendHelpVideoClip: () -> Unit,
     onShareHelpInspection: () -> Unit,
     onRetry: (String?) -> Unit,
@@ -1182,9 +1083,11 @@ private fun HelpPane(
     var multiSelectMode by rememberSaveable { mutableStateOf(false) }
     var selectedMessageKeys by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var forwardingMessages by remember { mutableStateOf<List<MessageBubbleUi>>(emptyList()) }
+    var voiceTranscriptionDraft by remember { mutableStateOf<VoiceTranscriptionDraft?>(null) }
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val focusManager = LocalFocusManager.current
+    val coroutineScope = rememberCoroutineScope()
     val voiceRecorder = rememberVoiceRecorder()
     val voicePermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -1227,7 +1130,24 @@ private fun HelpPane(
     val transcribeVoiceRecording: () -> Unit = transcribeVoice@{
         if (!voiceRecording) return@transcribeVoice
         runCatching { voiceRecorder.stop() }
-            .onSuccess { result -> onTranscribeHelpVoice(result.uri, result.durationSec) }
+            .onSuccess { result ->
+                voiceTranscriptionDraft = VoiceTranscriptionDraft(
+                    uri = result.uri,
+                    durationSec = result.durationSec,
+                )
+                coroutineScope.launch {
+                    val text = runCatching {
+                        onTranscribeHelpVoice(result.uri, result.durationSec)
+                    }.getOrDefault("")
+                    voiceTranscriptionDraft = voiceTranscriptionDraft
+                        ?.takeIf { it.uri == result.uri }
+                        ?.copy(
+                            text = text,
+                            loading = false,
+                            failed = text.isBlank(),
+                        )
+                }
+            }
             .onFailure { onError(it.message ?: "录音失败") }
         voiceRecording = false
     }
@@ -1286,102 +1206,120 @@ private fun HelpPane(
         },
     )
 
-    Column(modifier.fillMaxSize().imePadding()) {
-        when (roomState) {
-            HelpRoomUiState.Loading -> LazyColumn(
-                Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .clearInputFocusOnPointerDown(focusManager),
-                contentPadding = PaddingValues(
-                    horizontal = Gomob.spacing.s20,
-                    vertical = Gomob.spacing.s8,
-                ),
-                verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-            ) {
-                item {
-                    HelpParticipantCompactHeader(
-                        state = state,
-                        onOpenExpertDetail = onOpenExpertDetail,
-                        onRefresh = onRefresh,
-                    )
-                }
-            }
-            is HelpRoomUiState.Error -> LazyColumn(
-                Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .clearInputFocusOnPointerDown(focusManager),
-                contentPadding = PaddingValues(
-                    horizontal = Gomob.spacing.s20,
-                    vertical = Gomob.spacing.s8,
-                ),
-                verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-            ) {
-                item {
-                    HelpParticipantCompactHeader(
-                        state = state,
-                        onOpenExpertDetail = onOpenExpertDetail,
-                        onRefresh = onRefresh,
-                    )
-                }
-            }
-            is HelpRoomUiState.Content -> HelpRoomMessageList(
-                state = roomState,
-                expertState = state,
-                onRefresh = onRefresh,
-                onOpenExpertDetail = onOpenExpertDetail,
-                onRetry = onRetry,
-                onRetryTranscript = onRetryTranscript,
-                inputFocused = inputFocused,
-                favoriteMessageKeys = favoriteMessageKeys,
-                selectedMessageKeys = selectedMessageKeys,
-                multiSelectMode = multiSelectMode,
-                onToggleSelected = ::toggleMessageSelection,
-                onQuickAction = ::handleMessageAction,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        if (multiSelectMode) {
-            MessageMultiSelectBar(
-                selectedCount = selectedMessageKeys.size,
-                onCancel = ::exitMultiSelect,
-                onCopy = {
-                    copyMessages(selectedMessages())
-                    exitMultiSelect()
-                },
-                onForward = {
-                    forwardingMessages = selectedMessages()
-                },
-            )
-        } else {
-            MessageComposerBar(
-                draft = draft,
-                enabled = roomState is HelpRoomUiState.Content,
-                onDraftChange = { draft = it },
-                onShareInspection = onShareHelpInspection,
-                onPickImage = onPickHelpImage,
-                onTakePhoto = onTakeHelpPhoto,
-                onStartVoice = startVoiceRecording,
-                onSendVoice = sendVoiceRecording,
-                onCancelVoice = cancelVoiceRecording,
-                onTranscribeVoice = transcribeVoiceRecording,
-                onSendVideoClip = onSendHelpVideoClip,
-                onOpenLocalVideo = onOpenLocalVideo,
-                voiceRecording = voiceRecording,
-                quoteDraft = quoteDraft,
-                onClearQuote = { quoteDraft = null },
-                onInputFocusChanged = { inputFocused = it },
-                onSendText = {
-                    val text = draft.trim()
-                    if (text.isNotEmpty()) {
-                        onSendHelpMessage(text, quoteDraft?.quote)
-                        draft = ""
-                        quoteDraft = null
+    Box(modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().imePadding()) {
+            when (roomState) {
+                HelpRoomUiState.Loading -> LazyColumn(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .clearInputFocusOnPointerDown(focusManager),
+                    contentPadding = PaddingValues(
+                        horizontal = Gomob.spacing.s20,
+                        vertical = Gomob.spacing.s8,
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+                ) {
+                    item {
+                        HelpParticipantCompactHeader(
+                            state = state,
+                            onOpenExpertDetail = onOpenExpertDetail,
+                            onRefresh = onRefresh,
+                        )
                     }
-                },
-            )
+                }
+                is HelpRoomUiState.Error -> LazyColumn(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .clearInputFocusOnPointerDown(focusManager),
+                    contentPadding = PaddingValues(
+                        horizontal = Gomob.spacing.s20,
+                        vertical = Gomob.spacing.s8,
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+                ) {
+                    item {
+                        HelpParticipantCompactHeader(
+                            state = state,
+                            onOpenExpertDetail = onOpenExpertDetail,
+                            onRefresh = onRefresh,
+                        )
+                    }
+                }
+                is HelpRoomUiState.Content -> HelpRoomMessageList(
+                    state = roomState,
+                    expertState = state,
+                    onRefresh = onRefresh,
+                    onOpenExpertDetail = onOpenExpertDetail,
+                    onRetry = onRetry,
+                    onRetryTranscript = onRetryTranscript,
+                    inputFocused = inputFocused,
+                    favoriteMessageKeys = favoriteMessageKeys,
+                    selectedMessageKeys = selectedMessageKeys,
+                    multiSelectMode = multiSelectMode,
+                    onToggleSelected = ::toggleMessageSelection,
+                    onQuickAction = ::handleMessageAction,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            if (multiSelectMode) {
+                MessageMultiSelectBar(
+                    selectedCount = selectedMessageKeys.size,
+                    onCancel = ::exitMultiSelect,
+                    onCopy = {
+                        copyMessages(selectedMessages())
+                        exitMultiSelect()
+                    },
+                    onForward = {
+                        forwardingMessages = selectedMessages()
+                    },
+                )
+            } else {
+                MessageComposerBar(
+                    draft = draft,
+                    enabled = roomState is HelpRoomUiState.Content,
+                    onDraftChange = { draft = it },
+                    onShareInspection = onShareHelpInspection,
+                    onPickImage = onPickHelpImage,
+                    onTakePhoto = onTakeHelpPhoto,
+                    onStartVoice = startVoiceRecording,
+                    onSendVoice = sendVoiceRecording,
+                    onCancelVoice = cancelVoiceRecording,
+                    onTranscribeVoice = transcribeVoiceRecording,
+                    onSendVideoClip = onSendHelpVideoClip,
+                    onOpenLocalVideo = onOpenLocalVideo,
+                    voiceRecording = voiceRecording,
+                    quoteDraft = quoteDraft,
+                    onClearQuote = { quoteDraft = null },
+                    onInputFocusChanged = { inputFocused = it },
+                    onSendText = {
+                        val text = draft.trim()
+                        if (text.isNotEmpty()) {
+                            onSendHelpMessage(text, quoteDraft?.quote)
+                            draft = ""
+                            quoteDraft = null
+                        }
+                    },
+                )
+            }
         }
+        VoiceTranscriptionOverlay(
+            draft = voiceTranscriptionDraft,
+            onCancel = { voiceTranscriptionDraft = null },
+            onSendVoice = { draft ->
+                voiceTranscriptionDraft = null
+                onSendHelpVoice(draft.uri, draft.durationSec)
+            },
+            onSendText = { draft ->
+                val text = draft.text.trim()
+                if (text.isNotEmpty()) {
+                    voiceTranscriptionDraft = null
+                    onSendHelpMessage(text, quoteDraft?.quote)
+                    quoteDraft = null
+                }
+            },
+        )
     }
 }
 

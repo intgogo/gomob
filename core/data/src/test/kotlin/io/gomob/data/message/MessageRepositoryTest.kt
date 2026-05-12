@@ -873,6 +873,96 @@ class MessageRepositoryTest {
         assertThat(conversationDao.lastRecorded?.localKey).isEqualTo("s:401")
         assertThat(conversationDao.lastRecorded?.incrementUnread).isFalse()
     }
+
+    @Test
+    fun transcriptUpdatedShowsUnrecognizedWhenTextIsBlank() = runTest {
+        val messageDao = FakeMessageDao()
+        messageDao.upsertMessage(
+            MessageEntity(
+                localKey = "s:401",
+                serverId = 401,
+                conversationId = 9,
+                serverSeq = 8,
+                senderId = 31,
+                kind = "voice",
+                payloadJson = """{"asset_id":"901","duration_sec":6}""",
+                preview = "[语音 0:06]",
+                clientMsgId = null,
+                status = MessageStatus.Sent.name,
+                createdAt = "2026-05-08T12:00:00Z",
+                editedAt = null,
+            ),
+        )
+        val repository = MessageRepository(
+            api = FakeMessageApi(),
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = FakeConversationDao(
+                initialConversations = listOf(
+                    ConversationWithLastMessage(
+                        conversation = conversationEntity(id = 9),
+                        lastMessage = null,
+                    ),
+                ),
+            ),
+            messageDao = messageDao,
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        repository.applyRealtimeEvent(
+            RealtimeEvent.TranscriptUpdated(
+                messageId = 401,
+                conversationId = 9,
+                serverSeq = 8,
+                kind = "voice",
+                content = buildJsonObject {
+                    put("asset_id", "901")
+                    put("duration_sec", 6)
+                    put("transcript_status", "done")
+                    put("transcript_normalized_text", "")
+                },
+                updatedAt = "2026-05-08T12:00:03Z",
+            ),
+        )
+
+        assertThat(messageDao.items.single().preview).isEqualTo("[语音转文字] 未识别到文字")
+    }
+
+    @Test
+    fun retryVoiceTranscriptUpdatesOriginalMessageWithoutSendingNewMessage() = runTest {
+        val api = FakeMessageApi()
+        val messageDao = FakeMessageDao()
+        messageDao.upsertMessage(
+            MessageEntity(
+                localKey = "s:401",
+                serverId = 401,
+                conversationId = 9,
+                serverSeq = 8,
+                senderId = 31,
+                kind = "voice",
+                payloadJson = """{"asset_id":"901","duration_sec":6,"transcript_status":"failed"}""",
+                preview = "[语音转写失败]",
+                clientMsgId = null,
+                status = MessageStatus.Sent.name,
+                createdAt = "2026-05-08T12:00:00Z",
+                editedAt = null,
+            ),
+        )
+        val repository = MessageRepository(
+            api = api,
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = FakeConversationDao(),
+            messageDao = messageDao,
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        repository.retryVoiceTranscript(401)
+
+        assertThat(api.transcriptRetryRequests).containsExactly("401")
+        assertThat(api.sentRequests).isEmpty()
+        assertThat(messageDao.items).hasSize(1)
+        assertThat(messageDao.items.single().localKey).isEqualTo("s:401")
+        assertThat(messageDao.items.single().payloadJson).contains("\"transcript_status\":\"pending\"")
+    }
 }
 
 private class FakeMediaAssetUploader : MediaAssetUploader {

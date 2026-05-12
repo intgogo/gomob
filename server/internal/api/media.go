@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -568,7 +569,7 @@ func (h *Handler) finalizeCallRoom(ctx context.Context, room *repo.MediaRoom, en
 		reason = firstNonBlank(mediaMetadataString(room.Metadata, "end_error"), defaultCallFailureReason(status))
 	}
 	roomID := room.ID
-	_, err = h.media.InsertCallLogOnce(ctx, &repo.CallLog{
+	if _, err = h.media.InsertCallLogOnce(ctx, &repo.CallLog{
 		RoomID:         &roomID,
 		ConversationID: &conversationID,
 		CallerID:       room.CreatedBy,
@@ -577,12 +578,9 @@ func (h *Handler) finalizeCallRoom(ctx context.Context, room *repo.MediaRoom, en
 		EndedAt:        &endedAt,
 		DurationSec:    durationSec,
 		Status:         status,
-	})
-	if err != nil {
+	}); err != nil {
 		return err
 	}
-	senderID := room.CreatedBy
-	clientMsgID := fmt.Sprintf("media-room-%d-video-call", room.ID)
 	payload := map[string]any{
 		"room_id":       strconv.FormatInt(room.ID, 10),
 		"provider_room": room.ProviderRoom,
@@ -597,17 +595,20 @@ func (h *Handler) finalizeCallRoom(ctx context.Context, room *repo.MediaRoom, en
 	if reason != "" {
 		payload["reason"] = reason
 	}
-	message := &repo.Message{
-		ConversationID: conversationID,
-		SenderID:       &senderID,
-		Kind:           "video_call",
-		Payload:        mustRawJSON(payload),
-	}
-	inserted, err := h.messages.AppendIdempotent(ctx, message, clientMsgID)
+	msg, err := h.messages.UpdateCallInvitePayload(ctx, conversationID, room.ID, mustRawJSON(payload))
 	if err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			if h.log != nil {
+				h.log.Warn("通话邀请消息不存在，已只写入 call_logs",
+					"conversation_id", conversationID,
+					"room_id", room.ID,
+				)
+			}
+			return nil
+		}
 		return err
 	}
-	h.notifyRealtimeMessage(ctx, senderID, message, inserted)
+	h.notifyTranscriptUpdate(ctx, msg)
 	return nil
 }
 

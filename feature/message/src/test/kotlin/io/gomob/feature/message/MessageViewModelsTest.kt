@@ -54,6 +54,40 @@ class MessageViewModelsTest {
         assertThat(result?.succeeded).isFalse()
         assertThat(result?.failureReason).isEqualTo("LiveKit token 过期")
     }
+
+    @Test
+    fun voiceTranscriptDisplayShowsUnrecognizedForEmptyText() {
+        assertThat(
+            VoiceTranscriptUi(status = "done", text = null, error = null)
+                .voiceTranscriptDisplayText(messageId = 401),
+        ).isEqualTo("未识别到文字")
+        assertThat(
+            VoiceTranscriptUi(status = "failed", text = null, error = "ASR 未识别出有效文本")
+                .voiceTranscriptDisplayText(messageId = 401),
+        ).isEqualTo("未识别到文字")
+    }
+
+    @Test
+    fun callResultMessageMergesIntoOriginalInvite() {
+        val invite = messageRecord(
+            kind = "call_invite",
+            payloadJson = """{"room_id":"701","title":"和陈若愚的视频通话","status":"ringing"}""",
+            preview = "[视频通话] 和陈若愚的视频通话",
+        ).copy(localKey = "s:201", serverId = 201, serverSeq = 9)
+        val result = messageRecord(
+            kind = "video_call",
+            payloadJson = """{"room_id":"701","status":"completed","duration_sec":75}""",
+            preview = "[视频通话]",
+        ).copy(localKey = "s:202", serverId = 202, serverSeq = 10)
+
+        val merged = listOf(invite, result).mergeCallResultMessages(testJson)
+
+        assertThat(merged).hasSize(1)
+        assertThat(merged.single().kind).isEqualTo("call_invite")
+        assertThat(merged.single().payloadJson).contains("\"status\":\"completed\"")
+        assertThat(merged.single().payloadJson).contains("\"duration_sec\":75")
+        assertThat(merged.single().previewText(testJson)).isEqualTo("[视频通话 1:15]")
+    }
 }
 
 private val testJson = Json { ignoreUnknownKeys = true }

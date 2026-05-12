@@ -195,7 +195,7 @@ func (h *Handler) notifyTranscriptUpdate(ctx context.Context, msg *repo.Message)
 	delivered, err := notifier.NotifyTranscriptUpdate(ctx, msg)
 	if err != nil {
 		if h.log != nil {
-			h.log.Warn("语音转写实时推送失败",
+			h.log.Warn("消息更新实时推送失败",
 				"err", err,
 				"conversation_id", msg.ConversationID,
 				"message_id", msg.ID,
@@ -204,7 +204,7 @@ func (h *Handler) notifyTranscriptUpdate(ctx context.Context, msg *repo.Message)
 		return
 	}
 	if h.log != nil {
-		h.log.Debug("语音转写已实时推送",
+		h.log.Debug("消息更新已实时推送",
 			"conversation_id", msg.ConversationID,
 			"message_id", msg.ID,
 			"delivered_connections", delivered,
