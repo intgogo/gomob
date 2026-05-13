@@ -130,7 +130,7 @@ CREATE TABLE conversation_member_states (
 );
 ```
 
-`unread_count` 默认从 `messages.server_seq > last_read_seq` 推导；高并发后再加 Redis 缓存，不先把缓存当真理源。
+`unread_count` 默认从 `last_read_seq` 之后的他人/系统消息推导；自己发出的消息不制造未读，高并发后再加 Redis 缓存，不先把缓存当真理源。
 
 ### 5.2 媒体房间
 
@@ -212,6 +212,7 @@ CREATE TABLE live_recordings (
 | `GET` | `/v1/conversations/{id}/messages?since_seq=&limit=&latest=` | 历史消息，升序返回；`latest=true` 返回最新窗口 |
 | `POST` | `/v1/conversations/{id}/messages` | HTTP 发送消息，和 WebSocket `msg.send` 共用幂等逻辑 |
 | `POST` | `/v1/conversations/{id}/read` | 更新 `last_read_seq` |
+| `POST` | `/v1/conversations/{id}/leave` | 当前用户退出群聊，移除成员关系和本地状态 |
 | `POST` | `/v1/media/rooms` | 创建 call / first_person_live room |
 | `POST` | `/v1/media/rooms/{id}/token` | 为当前用户签发 LiveKit token |
 | `POST` | `/v1/media/rooms/{id}/end` | 结束房间 |

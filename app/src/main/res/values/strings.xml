@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">gomob</string>
+    <string name="app_name">方寸观车</string>
+    <string name="splash_slogan">方寸之间，精准查验</string>
+    <string name="splash_capabilities">车辆查验 · 影像取证 · 协同审核</string>
+    <string name="splash_loading">正在初始化查验工作台</string>
 </resources>

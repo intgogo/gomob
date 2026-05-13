@@ -7,7 +7,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -163,56 +162,30 @@ private fun ActionTilePair(
     onOpenContourScan: () -> Unit,
     onOpenVinRectify: () -> Unit,
 ) {
-    BoxWithConstraints(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        val stacked = maxWidth < 340.dp
-        val compact = maxWidth < 430.dp
-        if (stacked) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                ActionTile(
-                    modifier = Modifier.fillMaxWidth(),
-                    title = "车辆外廓扫描",
-                    desc = "手持即扫·免架设快部署",
-                    detail = "主从合一 · 实时点云预览",
-                    compact = false,
-                    onClick = onOpenContourScan,
-                    illustration = { VehicleScanIllustration() },
-                )
-                ActionTile(
-                    modifier = Modifier.fillMaxWidth(),
-                    title = "VIN 数码拓印",
-                    desc = "无墨拓印·一拍即录入档",
-                    detail = "自动识别 17 位 · 入档归档",
-                    compact = false,
-                    onClick = onOpenVinRectify,
-                    illustration = { VinStampIllustration() },
-                )
-            }
-        } else {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                ActionTile(
-                    modifier = Modifier.weight(1f),
-                    title = "车辆外廓扫描",
-                    desc = "手持即扫·免架设快部署",
-                    detail = "主从合一 · 实时点云预览",
-                    compact = compact,
-                    onClick = onOpenContourScan,
-                    illustration = { VehicleScanIllustration() },
-                )
-                ActionTile(
-                    modifier = Modifier.weight(1f),
-                    title = "VIN 数码拓印",
-                    desc = "无墨拓印·一拍即录入档",
-                    detail = "自动识别 17 位 · 入档归档",
-                    compact = compact,
-                    onClick = onOpenVinRectify,
-                    illustration = { VinStampIllustration() },
-                )
-            }
-        }
+        ActionTile(
+            modifier = Modifier.fillMaxWidth(),
+            title = "VIN 数码拓印",
+            desc = "无墨拓印·一拍即录入档",
+            detail = "自动识别 17 位 · 入档归档",
+            compact = false,
+            onClick = onOpenVinRectify,
+            illustration = { VinStampIllustration() },
+        )
+        ActionTile(
+            modifier = Modifier.fillMaxWidth(),
+            title = "车辆外廓扫描",
+            desc = "手持即扫·免架设快部署",
+            detail = "主从合一 · 实时点云预览",
+            compact = false,
+            onClick = onOpenContourScan,
+            illustration = { VehicleScanIllustration() },
+        )
     }
 }
 
@@ -298,51 +271,55 @@ private fun VehicleScanIllustration() {
     Canvas(Modifier.fillMaxSize()) {
         val w = size.width
         val h = size.height
-        val stroke = 1.dp.toPx()
+        val stroke = 1.2.dp.toPx()
+        val guideLeft = w * 0.04f
+        val guideRight = w * 0.96f
+        val scanLineLeft = w * 0.13f
+        val scanLineRight = w * 0.87f
 
         for (i in 0..3) {
             val y = h * (0.22f + i * 0.19f)
-            drawLine(acc.copy(alpha = 0.18f), Offset(0f, y), Offset(w, y), strokeWidth = 0.5.dp.toPx())
+            drawLine(acc.copy(alpha = 0.18f), Offset(scanLineLeft, y), Offset(scanLineRight, y), strokeWidth = 0.5.dp.toPx())
         }
-        drawLine(accStrong.copy(alpha = 0.75f), Offset(0f, h * 0.22f), Offset(w, h * 0.22f), strokeWidth = 0.8.dp.toPx())
+        drawLine(accStrong.copy(alpha = 0.75f), Offset(scanLineLeft, h * 0.22f), Offset(scanLineRight, h * 0.22f), strokeWidth = 0.8.dp.toPx())
 
         val car = Path().apply {
-            moveTo(w * 0.10f, h * 0.78f)
-            lineTo(w * 0.16f, h * 0.78f)
-            cubicTo(w * 0.18f, h * 0.70f, w * 0.23f, h * 0.63f, w * 0.30f, h * 0.63f)
-            lineTo(w * 0.40f, h * 0.63f)
-            lineTo(w * 0.48f, h * 0.44f)
-            lineTo(w * 0.68f, h * 0.44f)
-            lineTo(w * 0.76f, h * 0.63f)
-            lineTo(w * 0.88f, h * 0.63f)
-            cubicTo(w * 0.95f, h * 0.63f, w * 0.97f, h * 0.72f, w * 0.97f, h * 0.78f)
-            lineTo(w * 0.92f, h * 0.78f)
+            moveTo(w * 0.16f, h * 0.82f)
+            lineTo(w * 0.22f, h * 0.82f)
+            cubicTo(w * 0.24f, h * 0.71f, w * 0.29f, h * 0.63f, w * 0.36f, h * 0.63f)
+            lineTo(w * 0.46f, h * 0.63f)
+            lineTo(w * 0.53f, h * 0.34f)
+            lineTo(w * 0.66f, h * 0.34f)
+            lineTo(w * 0.75f, h * 0.63f)
+            lineTo(w * 0.84f, h * 0.63f)
+            cubicTo(w * 0.89f, h * 0.63f, w * 0.90f, h * 0.74f, w * 0.90f, h * 0.82f)
+            lineTo(w * 0.86f, h * 0.82f)
         }
-        drawPath(car, fg0.copy(alpha = 0.92f), style = Stroke(width = 1.3.dp.toPx()))
+        drawPath(car, fg0.copy(alpha = 0.92f), style = Stroke(width = 1.6.dp.toPx()))
         drawPath(
             Path().apply {
-                moveTo(w * 0.50f, h * 0.63f)
-                lineTo(w * 0.54f, h * 0.48f)
-                lineTo(w * 0.66f, h * 0.48f)
-                lineTo(w * 0.72f, h * 0.63f)
+                moveTo(w * 0.54f, h * 0.63f)
+                lineTo(w * 0.57f, h * 0.41f)
+                lineTo(w * 0.65f, h * 0.40f)
+                lineTo(w * 0.71f, h * 0.63f)
                 close()
             },
             fg0.copy(alpha = 0.46f),
             style = Stroke(width = stroke),
         )
-        listOf(w * 0.36f to h * 0.78f, w * 0.84f to h * 0.78f).forEach { (x, y) ->
-            drawCircle(tileBg, radius = 6.dp.toPx(), center = Offset(x, y))
-            drawCircle(fg0.copy(alpha = 0.9f), radius = 6.dp.toPx(), center = Offset(x, y), style = Stroke(width = 1.1.dp.toPx()))
-            drawCircle(acc.copy(alpha = 0.8f), radius = 1.4.dp.toPx(), center = Offset(x, y))
+        listOf(w * 0.33f to h * 0.82f, w * 0.78f to h * 0.82f).forEach { (x, y) ->
+            drawCircle(tileBg, radius = 7.5.dp.toPx(), center = Offset(x, y))
+            drawCircle(fg0.copy(alpha = 0.9f), radius = 7.5.dp.toPx(), center = Offset(x, y), style = Stroke(width = 1.3.dp.toPx()))
+            drawCircle(acc.copy(alpha = 0.8f), radius = 1.7.dp.toPx(), center = Offset(x, y))
         }
 
         val tick = 7.dp.toPx()
         val m = 2.dp.toPx()
         listOf(
-            Offset(m, m) to Pair(1f, 1f),
-            Offset(w - m, m) to Pair(-1f, 1f),
-            Offset(m, h - m) to Pair(1f, -1f),
-            Offset(w - m, h - m) to Pair(-1f, -1f),
+            Offset(guideLeft, m) to Pair(1f, 1f),
+            Offset(guideRight, m) to Pair(-1f, 1f),
+            Offset(guideLeft, h - m) to Pair(1f, -1f),
+            Offset(guideRight, h - m) to Pair(-1f, -1f),
         ).forEach { (p, dir) ->
             drawLine(acc.copy(alpha = 0.7f), p, Offset(p.x + tick * dir.first, p.y), strokeWidth = 0.7.dp.toPx())
             drawLine(acc.copy(alpha = 0.7f), p, Offset(p.x, p.y + tick * dir.second), strokeWidth = 0.7.dp.toPx())

@@ -279,7 +279,7 @@ func (r *ConversationRepo) FindForUser(ctx context.Context, userID, convID int64
 		       c.next_seq, c.created_at, c.updated_at,
 		       COALESCE(cms.last_read_seq, 0) AS last_read_seq,
 		       peer.id, peer.real_name, peer.employee_id,
-		       GREATEST(c.next_seq - 1 - COALESCE(cms.last_read_seq, 0), 0) AS unread_count
+		       COALESCE(unread.unread_count, 0) AS unread_count
 		FROM conversations c
 		JOIN conversation_members cm
 		  ON cm.conversation_id = c.id AND cm.user_id = $1
@@ -293,6 +293,14 @@ func (r *ConversationRepo) FindForUser(ctx context.Context, userID, convID int64
 			ORDER BY u.id
 			LIMIT 1
 		) peer ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::BIGINT AS unread_count
+			FROM messages um
+			WHERE um.conversation_id = c.id
+			  AND um.deleted_at IS NULL
+			  AND um.server_seq > COALESCE(cms.last_read_seq, 0)
+			  AND (um.sender_id IS NULL OR um.sender_id <> $1)
+		) unread ON true
 		WHERE c.id = $2`
 	var s ConversationSummary
 	var title, p2pKey, subjectKind sql.NullString
@@ -350,7 +358,7 @@ func (r *ConversationRepo) ListForUser(ctx context.Context, userID int64, limit 
 		       lm.id, lm.sender_id, lm.server_seq, lm.kind, lm.payload, lm.client_msg_id,
 		       lm.created_at, lm.edited_at, lm.deleted_at,
 		       peer.id, peer.real_name, peer.employee_id,
-		       GREATEST(mc.next_seq - 1 - mc.last_read_seq, 0) AS unread_count
+		       COALESCE(unread.unread_count, 0) AS unread_count
 		FROM member_convs mc
 		LEFT JOIN LATERAL (
 			SELECT id, sender_id, server_seq, kind, payload, client_msg_id, created_at, edited_at, deleted_at
@@ -367,6 +375,14 @@ func (r *ConversationRepo) ListForUser(ctx context.Context, userID int64, limit 
 			ORDER BY u.id
 			LIMIT 1
 		) peer ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::BIGINT AS unread_count
+			FROM messages um
+			WHERE um.conversation_id = mc.id
+			  AND um.deleted_at IS NULL
+			  AND um.server_seq > mc.last_read_seq
+			  AND (um.sender_id IS NULL OR um.sender_id <> $1)
+		) unread ON true
 		ORDER BY mc.updated_at DESC, mc.id DESC`
 	rows, err := r.pool.Query(ctx, q, userID, cursor, limit+1)
 	if err != nil {
@@ -469,9 +485,59 @@ func (r *ConversationRepo) MarkRead(ctx context.Context, convID, userID, lastRea
 	return r.UnreadCount(ctx, convID, userID)
 }
 
+// LeaveGroup 移除当前用户的群成员关系；单聊不能通过该接口退出。
+func (r *ConversationRepo) LeaveGroup(ctx context.Context, convID, userID int64) error {
+	if convID <= 0 || userID <= 0 {
+		return errors.New("退出群聊参数无效")
+	}
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var kind string
+	if err := tx.QueryRow(ctx, `
+		SELECT c.kind
+		FROM conversations c
+		JOIN conversation_members cm ON cm.conversation_id = c.id AND cm.user_id = $2
+		WHERE c.id = $1
+	`, convID, userID).Scan(&kind); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if kind != "group" {
+		return errors.New("只有群聊支持退出")
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM conversation_member_states WHERE conversation_id=$1 AND user_id=$2`,
+		convID,
+		userID,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM conversation_members WHERE conversation_id=$1 AND user_id=$2`,
+		convID,
+		userID,
+	); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func (r *ConversationRepo) UnreadCount(ctx context.Context, convID, userID int64) (int64, error) {
 	const q = `
-		SELECT GREATEST(c.next_seq - 1 - COALESCE(cms.last_read_seq, 0), 0)
+		SELECT (
+			SELECT COUNT(*)::BIGINT
+			FROM messages m
+			WHERE m.conversation_id = c.id
+			  AND m.deleted_at IS NULL
+			  AND m.server_seq > COALESCE(cms.last_read_seq, 0)
+			  AND (m.sender_id IS NULL OR m.sender_id <> $2)
+		)
 		FROM conversations c
 		JOIN conversation_members cm ON cm.conversation_id = c.id AND cm.user_id = $2
 		LEFT JOIN conversation_member_states cms ON cms.conversation_id = c.id AND cms.user_id = $2

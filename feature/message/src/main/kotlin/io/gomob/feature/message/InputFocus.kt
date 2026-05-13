@@ -6,10 +6,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.input.pointer.pointerInput
 
-internal fun Modifier.clearInputFocusOnPointerDown(focusManager: FocusManager): Modifier =
-    pointerInput(focusManager) {
+internal fun Modifier.clearInputFocusOnPointerDown(
+    focusManager: FocusManager,
+    onCleared: () -> Unit = {},
+): Modifier =
+    pointerInput(focusManager, onCleared) {
         awaitEachGesture {
             awaitFirstDown(requireUnconsumed = false)
             focusManager.clearFocus()
+            onCleared()
         }
     }

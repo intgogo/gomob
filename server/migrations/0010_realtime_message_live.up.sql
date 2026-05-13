@@ -5,7 +5,7 @@
 --      已读水位与会话更新时间。
 --   2. 媒体数据面由 LiveKit 承担；本库只保存 room / participant / live session /
 --      annotation / recording 的业务元数据与审计锚点。
---   3. unread_count 默认由 messages.server_seq > last_read_seq 推导，Redis 只能做缓存。
+--   3. unread_count 默认由 last_read_seq 后的他人/系统消息推导，Redis 只能做缓存。
 
 BEGIN;
 

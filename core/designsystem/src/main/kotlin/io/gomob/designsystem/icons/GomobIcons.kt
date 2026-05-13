@@ -127,6 +127,11 @@ object GomobIcons {
         horizontalLineTo(19f)
     }
 
+    val Minus: ImageVector = stroked("Minus") {
+        moveTo(5f, 12f)
+        horizontalLineTo(19f)
+    }
+
     val Mic: ImageVector = stroked("Mic") {
         // 麦头矩形圆角
         roundRect(9f, 3f, 6f, 11f, 3f)
@@ -426,6 +431,19 @@ object GomobIcons {
         horizontalLineTo(19f)
         curveToRelative(0.6f, 0f, 1f, 0.4f, 1f, 1f)
         verticalLineTo(15f)
+    }
+
+    val Edit: ImageVector = stroked("Edit") {
+        roundRect(4f, 5f, 12f, 15f, 1.5f)
+        moveTo(9f, 15.5f)
+        lineTo(9.6f, 12.2f)
+        lineTo(17.2f, 4.6f)
+        curveToRelative(0.6f, -0.6f, 1.5f, -0.6f, 2.1f, 0f)
+        curveToRelative(0.6f, 0.6f, 0.6f, 1.5f, 0f, 2.1f)
+        lineTo(11.7f, 14.4f)
+        lineTo(8.5f, 15f)
+        moveTo(15.8f, 6f)
+        lineTo(18f, 8.2f)
     }
 
     val Filter: ImageVector = stroked("Filter") {

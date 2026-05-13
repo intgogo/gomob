@@ -7,6 +7,7 @@ import io.gomob.network.dto.CallInviteResponse
 import io.gomob.network.dto.CreateCallInviteRequest
 import io.gomob.network.dto.HelpExpertCaseListResponse
 import io.gomob.network.dto.HelpExpertListResponse
+import io.gomob.network.dto.LeaveConversationResponse
 import io.gomob.network.dto.MarkReadRequest
 import io.gomob.network.dto.MarkReadResponse
 import io.gomob.network.dto.MessageDto
@@ -78,4 +79,9 @@ interface MessageApi {
         @Path("id") conversationId: String,
         @Body request: MarkReadRequest,
     ): Envelope<MarkReadResponse>
+
+    @POST("v1/conversations/{id}/leave")
+    suspend fun leaveConversation(
+        @Path("id") conversationId: String,
+    ): Envelope<LeaveConversationResponse>
 }

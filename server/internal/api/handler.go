@@ -100,6 +100,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/conversations/{id}/messages", h.CreateConversationMessage)
 	mux.HandleFunc("POST /v1/conversations/{id}/call-invites", h.CreateConversationCallInvite)
 	mux.HandleFunc("POST /v1/conversations/{id}/read", h.MarkConversationRead)
+	mux.HandleFunc("POST /v1/conversations/{id}/leave", h.LeaveConversation)
 	mux.HandleFunc("POST /v1/messages/transcribe-draft", h.TranscribeDraftVoice)
 	mux.HandleFunc("POST /v1/messages/{id}/transcript/retry", h.RetryMessageTranscript)
 

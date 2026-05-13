@@ -49,6 +49,7 @@ import io.gomob.feature.home.HomeAiChatRoute
 import io.gomob.feature.home.HomeRoute
 import io.gomob.feature.home.InspectionDetailRoute
 import io.gomob.feature.message.ConversationRoute
+import io.gomob.feature.message.ConversationInfoRoute
 import io.gomob.feature.message.ChatSearchRoute
 import io.gomob.feature.message.ContactDetailRoute
 import io.gomob.feature.message.ExpertDetailRoute
@@ -169,6 +170,12 @@ fun GomobNavHost() {
                             entry.savedStateHandle[MESSAGE_TAB_REQUEST] = ""
                         },
                         onOpenConversation = { id -> nav.navigate("message/conv/$id") },
+                        onOpenConversationTarget = { id, localKey ->
+                            nav.navigate("message/conv/${Uri.encode(id)}/target/${Uri.encode(localKey)}")
+                        },
+                        onOpenHelpSearch = { id ->
+                            nav.navigate("message/conv/${Uri.encode(id)}/search")
+                        },
                         onOpenLocalVideo = { title ->
                             nav.navigate("message/local-video/${Uri.encode(title)}")
                         },
@@ -208,6 +215,9 @@ fun GomobNavHost() {
                     onOpenSearch = { id ->
                         nav.navigate("message/conv/${Uri.encode(id)}/search")
                     },
+                    onOpenInfo = { id ->
+                        nav.navigate("message/conv/${Uri.encode(id)}/info")
+                    },
                     onOpenUserDetail = { id ->
                         nav.navigate("message/contact/${Uri.encode(id)}")
                     },
@@ -232,6 +242,9 @@ fun GomobNavHost() {
                     onOpenSearch = { id ->
                         nav.navigate("message/conv/${Uri.encode(id)}/search")
                     },
+                    onOpenInfo = { id ->
+                        nav.navigate("message/conv/${Uri.encode(id)}/info")
+                    },
                     onOpenUserDetail = { id ->
                         nav.navigate("message/contact/${Uri.encode(id)}")
                     },
@@ -245,6 +258,24 @@ fun GomobNavHost() {
                     },
                     onOpenInspection = { id ->
                         nav.navigate("home/inspection/${Uri.encode(id)}")
+                    },
+                )
+            }
+            composable("message/conv/{id}/info") {
+                ConversationInfoRoute(
+                    onBack = { nav.popBackStack() },
+                    onOpenSearch = { id ->
+                        nav.navigate("message/conv/${Uri.encode(id)}/search")
+                    },
+                    onOpenUserDetail = { id ->
+                        nav.navigate("message/contact/${Uri.encode(id)}")
+                    },
+                    onLeaveCompleted = {
+                        if (!nav.popBackStack(ROUTE_MESSAGE, inclusive = false)) {
+                            nav.navigate(ROUTE_MESSAGE) {
+                                launchSingleTop = true
+                            }
+                        }
                     },
                 )
             }
@@ -346,7 +377,8 @@ fun GomobNavHost() {
             composable(ROUTE_PROFILE) {
                 RootTabPage(bottomPadding = rootBottomPadding) {
                     ProfileRoute(
-                        onOpenPersonal = { nav.navigate("profile/personal") },
+                        onOpenPersonal = { nav.navigate("profile/personal/0") },
+                        onOpenCases = { nav.navigate("profile/personal/1") },
                         onOpenAccount = { nav.navigate("profile/account") },
                         onOpenNotification = { nav.navigate("profile/notification") },
                         onOpenAbout = { nav.navigate("profile/about") },
@@ -358,7 +390,13 @@ fun GomobNavHost() {
                 HistoryRoute(onBack = { nav.popBackStack() })
             }
             composable("profile/personal") {
-                ProfilePersonalRoute(onBack = { nav.popBackStack() })
+                ProfilePersonalRoute(onBack = { nav.popBackStack() }, initialTab = 0)
+            }
+            composable("profile/personal/{tab}") { entry ->
+                ProfilePersonalRoute(
+                    onBack = { nav.popBackStack() },
+                    initialTab = entry.arguments?.getString("tab")?.toIntOrNull() ?: 0,
+                )
             }
             composable("profile/account") {
                 ProfileAccountRoute(onBack = { nav.popBackStack() })

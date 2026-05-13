@@ -9,15 +9,28 @@ import org.junit.Test
 
 class MessageViewModelsTest {
     @Test
-    fun visibleMessageConversationsFiltersOnlineHelpRoom() {
-        val p2p = conversationSummary(id = 1, subjectKind = null, title = null)
+    fun visibleMessageConversationsFiltersGroupRoomsFromMessageList() {
+        val p2p = conversationSummary(id = 1, kind = "p2p", subjectKind = null, title = null)
+        val help = conversationSummary(id = 2, subjectKind = "online_help", title = "在线求助")
+        val review = conversationSummary(id = 3, subjectKind = "review", title = "复核会话")
+        val legacyHelp = conversationSummary(id = 4, subjectKind = null, title = "在线求助")
+        val directReview = conversationSummary(id = 5, kind = "p2p", subjectKind = "review", title = "复核专员")
+
+        val visible = visibleMessageConversations(listOf(p2p, help, review, legacyHelp, directReview))
+
+        assertThat(visible.map { it.id }).containsExactly(1L, 5L).inOrder()
+    }
+
+    @Test
+    fun multiLineConversationsKeepsExpertLineFirstThenGroupRooms() {
+        val p2p = conversationSummary(id = 1, kind = "p2p", subjectKind = null, title = null)
         val help = conversationSummary(id = 2, subjectKind = "online_help", title = "在线求助")
         val review = conversationSummary(id = 3, subjectKind = "review", title = "复核会话")
         val legacyHelp = conversationSummary(id = 4, subjectKind = null, title = "在线求助")
 
-        val visible = visibleMessageConversations(listOf(p2p, help, review, legacyHelp))
+        val rooms = multiLineConversations(listOf(p2p, review, legacyHelp, help))
 
-        assertThat(visible.map { it.id }).containsExactly(1L, 3L).inOrder()
+        assertThat(rooms.map { it.id }).containsExactly(2L, 3L).inOrder()
     }
 
     @Test
@@ -68,6 +81,50 @@ class MessageViewModelsTest {
     }
 
     @Test
+    fun messageListSearchTextIncludesNestedPayloadFields() {
+        val message = messageRecord(
+            kind = "inspection_card",
+            payloadJson = """
+                {
+                  "inspection_id":"INSP-42",
+                  "vin":"LSVNV2182N0123456",
+                  "vehicle_line":"重卡牵引车",
+                  "tags":["VIN 复核","外观异常"]
+                }
+            """.trimIndent(),
+            preview = "[流水] LSVNV2182N0123456",
+        )
+
+        val text = message.messageListSearchText(testJson)
+
+        assertThat(text).contains("LSVNV2182N0123456")
+        assertThat(text).contains("重卡牵引车")
+        assertThat(text).contains("外观异常")
+    }
+
+    @Test
+    fun imageMediaAttachmentPrefersLocalUriForDisplay() {
+        val message = messageRecord(
+            kind = "image",
+            payloadJson = """
+                {
+                  "media_state":"ready",
+                  "local_uri":"content://local/capture.jpg",
+                  "download_url":"https://example.test/asset.jpg",
+                  "mime":"image/jpeg"
+                }
+            """.trimIndent(),
+            preview = "[图片]",
+        )
+
+        val media = message.mediaAttachmentPayload(testJson)
+
+        assertThat(media?.imageSource).isEqualTo("content://local/capture.jpg")
+        assertThat(media?.downloadUrl).isEqualTo("https://example.test/asset.jpg")
+        assertThat(media?.mime).isEqualTo("image/jpeg")
+    }
+
+    @Test
     fun callResultMessageMergesIntoOriginalInvite() {
         val invite = messageRecord(
             kind = "call_invite",
@@ -88,17 +145,79 @@ class MessageViewModelsTest {
         assertThat(merged.single().payloadJson).contains("\"duration_sec\":75")
         assertThat(merged.single().previewText(testJson)).isEqualTo("[视频通话 1:15]")
     }
+
+    @Test
+    fun completedVideoCallInviteCanRedial() {
+        val bubble = messageBubble(
+            callInvite = CallInviteUi(
+                roomId = "701",
+                providerRoom = "gomob_call_701",
+                title = "和陈若愚的视频通话",
+                status = "completed",
+                liveKitConfigured = true,
+                message = null,
+                durationSec = 75,
+            ),
+        )
+
+        assertThat(bubble.canRedialVideoCall()).isTrue()
+        assertThat(bubble.videoCallRedialTitle()).isEqualTo("和陈若愚的视频通话")
+    }
+
+    @Test
+    fun ringingVideoCallInviteDoesNotRedial() {
+        val bubble = messageBubble(
+            callInvite = CallInviteUi(
+                roomId = "701",
+                providerRoom = "gomob_call_701",
+                title = "和陈若愚的视频通话",
+                status = "ringing",
+                liveKitConfigured = true,
+                message = null,
+            ),
+        )
+
+        assertThat(bubble.canRedialVideoCall()).isFalse()
+    }
+
+    @Test
+    fun videoCallResultCanRedialButAudioResultCannot() {
+        val video = messageBubble(
+            callResult = CallResultUi(
+                kind = "video_call",
+                title = "视频通话",
+                status = "missed",
+                statusText = "未接通",
+                durationSec = null,
+                failureReason = "对方未接听",
+            ),
+        )
+        val audio = messageBubble(
+            callResult = CallResultUi(
+                kind = "audio_call",
+                title = "语音通话",
+                status = "missed",
+                statusText = "未接通",
+                durationSec = null,
+                failureReason = "对方未接听",
+            ),
+        )
+
+        assertThat(video.canRedialVideoCall()).isTrue()
+        assertThat(audio.canRedialVideoCall()).isFalse()
+    }
 }
 
 private val testJson = Json { ignoreUnknownKeys = true }
 
 private fun conversationSummary(
     id: Long,
+    kind: String = "group",
     subjectKind: String?,
     title: String?,
 ): ConversationSummary = ConversationSummary(
     id = id,
-    kind = "group",
+    kind = kind,
     title = title,
     peer = null,
     subjectKind = subjectKind,
@@ -127,4 +246,25 @@ private fun messageRecord(
     status = MessageStatus.Sent,
     createdAt = "2026-05-08T12:00:00Z",
     editedAt = null,
+)
+
+private fun messageBubble(
+    callInvite: CallInviteUi? = null,
+    callResult: CallResultUi? = null,
+): MessageBubbleUi = MessageBubbleUi(
+    localKey = "s:101",
+    serverId = 101,
+    kind = callInvite?.let { "call_invite" } ?: callResult?.kind ?: "text",
+    text = "消息",
+    mine = false,
+    senderUserId = 31,
+    senderLabel = null,
+    avatarKey = "peer-31",
+    time = "12:00",
+    timeDividerLabel = "12:00",
+    createdAtEpochMillis = 1_746_704_000_000,
+    status = MessageStatus.Sent,
+    clientMsgId = null,
+    callInvite = callInvite,
+    callResult = callResult,
 )

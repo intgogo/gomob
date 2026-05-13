@@ -562,6 +562,16 @@ func main() {
 		LatencyMS: msSince(t0),
 		Note:      fmt.Sprintf("last_seq=%d unread=%d", lastSeq, listUnread)})
 
+	// S18b 发送方会话列表：自己发出的消息不能制造未读。
+	t0 = time.Now()
+	statusCode, body, err = httpJSON("GET", *gateway+"/v1/conversations?limit=20", nil, authHeader(tokenA))
+	conv = findConversation(body, convID)
+	senderUnread := parseFlexInt(conv["unread_count"])
+	s18bok := err == nil && statusCode == 200 && senderUnread == 0
+	rec.write(result{Scenario: "S18b.sender_own_messages_not_unread", OK: s18bok, HTTPCode: statusCode, ExpectedHTTP: 200,
+		LatencyMS: msSince(t0),
+		Note:      fmt.Sprintf("sender_unread=%d", senderUnread)})
+
 	// S9 离线 invite：B 断开 → A 发 call.invite → A 应收 invite_ack online=false
 	t0 = time.Now()
 	wsB.close()

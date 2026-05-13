@@ -45,6 +45,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
@@ -67,8 +68,8 @@ const val PROFILE_ROUTE = "profile"
  *
  * 视觉骨架:
  *   1. ScreenHeader "我的 / 工号 ZAA0120230001" + 右上 Settings 按钮 → 抽屉
- *   2. 身份卡: 56dp acc 头像方框 "沈" + 沈海明 17sp medium + 查验员 acc tag +
- *      工号 mono + 检测站
+ *   2. 身份卡: 点击进入个人信息；56dp acc 头像方框 "沈" + 沈海明 17sp medium +
+ *      查验员 acc tag + 工号 mono + 检测站
  *   3. 预审流水: 标题 "预审流水" + "历史数据 ›" 链接 → 跳到 07 历史日历
  *      4 FilterChip (全部 170 / 异常 78 / 预警 48 / 正常 44)
  *      6 FlowRow (左侧时间 + 状态点 + 分隔线 + VIN num + 车型 + tags 数组 + ›)
@@ -82,6 +83,7 @@ const val PROFILE_ROUTE = "profile"
 @Composable
 fun ProfileRoute(
     onOpenPersonal: () -> Unit = {},
+    onOpenCases: () -> Unit = onOpenPersonal,
     onOpenAccount: () -> Unit = {},
     onOpenNotification: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
@@ -122,7 +124,13 @@ fun ProfileRoute(
                 Modifier.weight(1f).fillMaxWidth(),
                 contentPadding = PaddingValues(bottom = 28.dp),
             ) {
-                item { IdentityCard(state) }
+                item {
+                    IdentityCard(
+                        state = state,
+                        onOpenEdit = onOpenPersonal,
+                        onOpenCases = onOpenCases,
+                    )
+                }
                 item { Spacer(Modifier.height(Gomob.spacing.s12)) }
                 item { FlowSectionHeader(onOpenHistory = onOpenHistory) }
                 item { FilterChipRow() }
@@ -145,7 +153,6 @@ fun ProfileRoute(
                 vm.logout()
                 settingsOpen = false
             },
-            onOpenPersonal = onOpenPersonal,
             onOpenAccount = onOpenAccount,
             onOpenNotification = onOpenNotification,
             onOpenAbout = onOpenAbout,
@@ -208,7 +215,11 @@ private fun SettingsIconButton(onClick: () -> Unit) {
 
 // ─── 身份卡 ─────────────────────────────────────────────────────────────────
 @Composable
-private fun IdentityCard(state: ProfileUiState) {
+private fun IdentityCard(
+    state: ProfileUiState,
+    onOpenEdit: () -> Unit,
+    onOpenCases: () -> Unit,
+) {
     val name = state.profile?.realName ?: "沈海明"
     val role = state.profile?.roleLabel ?: "查验员"
     val empId = state.profile?.employeeId ?: "ZAA0120230001"
@@ -219,6 +230,7 @@ private fun IdentityCard(state: ProfileUiState) {
                 .fillMaxWidth()
                 .clip(Gomob.shapes.r3)
                 .background(Gomob.colors.bg1)
+                .clickable(onClick = onOpenEdit)
                 .ticks()
                 .padding(16.dp),
         ) {
@@ -234,7 +246,7 @@ private fun IdentityCard(state: ProfileUiState) {
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        name.take(1),
+                        state.profile?.avatarInitial ?: name.take(1),
                         fontSize = 24.sp,
                         fontWeight = FontWeight.Medium,
                         letterSpacing = 0.04.em,
@@ -259,7 +271,43 @@ private fun IdentityCard(state: ProfileUiState) {
                         )
                     }
                     Spacer(Modifier.height(Gomob.spacing.s4))
-                    Text(station, fontSize = 11.sp, color = Gomob.colors.fg2)
+                    Text(
+                        station,
+                        fontSize = 11.sp,
+                        color = Gomob.colors.fg2,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+                ) {
+                    Row(
+                        Modifier.clickable(onClick = onOpenEdit),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
+                    ) {
+                        Text("编辑资料", fontSize = 11.sp, color = Gomob.colors.accent)
+                        Icon(
+                            imageVector = GomobIcons.ChevronRight,
+                            contentDescription = null,
+                            tint = Gomob.colors.accent,
+                            modifier = Modifier.size(12.dp),
+                        )
+                    }
+                    Row(
+                        Modifier.clickable(onClick = onOpenCases),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+                    ) {
+                        Text("我的案例", fontSize = 10.sp, color = Gomob.colors.fg3)
+                        Text(
+                            "06",
+                            style = Gomob.type.numInline.copy(fontSize = 11.sp),
+                            color = Gomob.colors.fg1,
+                        )
+                    }
                 }
             }
         }
@@ -297,7 +345,14 @@ private fun FlowSectionHeader(onOpenHistory: () -> Unit) {
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text("预审流水", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Gomob.colors.fg0)
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("今日流水", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Gomob.colors.fg0)
+            Text(
+                "170 条 · 异常 78 · 预警 48",
+                style = Gomob.type.numInline.copy(fontSize = 10.sp, letterSpacing = 0.03.em),
+                color = Gomob.colors.fg3,
+            )
+        }
         Row(
             Modifier.clickable(onClick = onOpenHistory),
             verticalAlignment = Alignment.CenterVertically,
@@ -326,20 +381,20 @@ private fun FilterChipRow() {
             .padding(horizontal = Gomob.spacing.s20),
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
     ) {
-        FILTER_COUNTS.forEach { FlowFilterChip(it) }
+        FILTER_COUNTS.forEach { FlowFilterChip(it, Modifier.weight(1f)) }
     }
 }
 
 @Composable
-private fun FlowFilterChip(c: FilterCount) {
+private fun FlowFilterChip(c: FilterCount, modifier: Modifier = Modifier) {
     Row(
-        Modifier
+        modifier
             .height(26.dp)
             .clip(Gomob.shapes.r1)
             .background(if (c.active) Gomob.colors.accentSoft else Gomob.colors.bg2)
             .padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
+        horizontalArrangement = Arrangement.Center,
     ) {
         Text(
             c.label,
@@ -391,61 +446,69 @@ private fun FlowRow(r: FlowRowData) {
         FlowStatus.Warn -> Gomob.colors.warn
         FlowStatus.Danger -> Gomob.colors.danger
     }
-    Row(
+    Column(
         Modifier
             .fillMaxWidth()
             .clip(Gomob.shapes.r3)
             .background(Gomob.colors.bg1)
             .clickable {}
             .padding(horizontal = Gomob.spacing.s14, vertical = Gomob.spacing.s12),
-        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
+        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
     ) {
-        Column(
-            Modifier
-                .width(40.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
         ) {
-            Text(
-                r.ts,
-                style = Gomob.type.numInline.copy(fontSize = 13.sp, letterSpacing = 0.02.em),
-                color = Gomob.colors.fg1,
-            )
-            Spacer(Modifier.height(Gomob.spacing.s6))
             Box(
                 Modifier
                     .size(Gomob.spacing.dot6)
                     .clip(CircleShape)
                     .background(statusColor),
             )
-        }
-        Column(
-            Modifier
-                .weight(1f),
-        ) {
             Text(
                 r.vin,
+                modifier = Modifier.weight(1f),
                 style = Gomob.type.numInline.copy(fontSize = 13.sp, letterSpacing = 0.04.em),
                 color = Gomob.colors.fg0,
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
-            Spacer(Modifier.height(Gomob.spacing.s4))
             Text(
-                r.model,
-                fontSize = 11.sp,
-                color = Gomob.colors.fg2,
+                r.ts,
+                style = Gomob.type.numInline.copy(fontSize = 12.sp, letterSpacing = 0.02.em),
+                color = Gomob.colors.fg3,
                 maxLines = 1,
             )
-            Spacer(Modifier.height(Gomob.spacing.s8))
-            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        }
+        Text(
+            r.model,
+            modifier = Modifier.padding(start = 14.dp),
+            fontSize = 11.sp,
+            color = Gomob.colors.fg2,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+        ) {
+            Row(
+                Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
                 r.tags.forEach { FlowTagPill(it) }
             }
+            Icon(
+                GomobIcons.ChevronRight,
+                contentDescription = null,
+                tint = Gomob.colors.fg3,
+                modifier = Modifier.size(14.dp),
+            )
         }
-        Icon(
-            GomobIcons.ChevronRight,
-            contentDescription = null,
-            tint = Gomob.colors.fg3,
-            modifier = Modifier.size(14.dp).align(Alignment.CenterVertically),
-        )
     }
 }
 
@@ -488,7 +551,6 @@ private fun SettingsDrawer(
     visible: Boolean,
     onClose: () -> Unit,
     onLogout: () -> Unit,
-    onOpenPersonal: () -> Unit,
     onOpenAccount: () -> Unit,
     onOpenNotification: () -> Unit,
     onOpenAbout: () -> Unit,
@@ -522,7 +584,6 @@ private fun SettingsDrawer(
         ) {
             DrawerContent(
                 onLogout = onLogout,
-                onOpenPersonal = onOpenPersonal,
                 onOpenAccount = onOpenAccount,
                 onOpenNotification = onOpenNotification,
                 onOpenAbout = onOpenAbout,
@@ -538,7 +599,6 @@ private fun SettingsDrawer(
 @Composable
 private fun DrawerContent(
     onLogout: () -> Unit,
-    onOpenPersonal: () -> Unit,
     onOpenAccount: () -> Unit,
     onOpenNotification: () -> Unit,
     onOpenAbout: () -> Unit,
@@ -555,7 +615,6 @@ private fun DrawerContent(
         keyboardController?.hide()
     }
     val items = listOf(
-        SettingItem(GomobIcons.ID, "个人信息", onClick = onOpenPersonal),
         SettingItem(GomobIcons.Lock, "账号与安全", onClick = onOpenAccount),
         SettingItem(GomobIcons.Moon, "切换主题", value = themeLabel, onClick = onCycleTheme),
         SettingItem(GomobIcons.Cache, "清理缓存", value = cacheText, onClick = onClearCache),

@@ -32,6 +32,20 @@ interface MessageDao {
     )
     suspend fun recentMessages(conversationId: Long, limit: Int): List<MessageEntity>
 
+    @Query(
+        """
+        SELECT m.* FROM messages m
+        JOIN conversations c ON c.id = m.conversationId
+        WHERE (m.serverSeq IS NULL OR m.serverSeq > c.clearedBeforeSeq)
+          AND c.kind != 'group'
+          AND (c.subjectKind IS NULL OR c.subjectKind != 'online_help')
+          AND NOT (c.kind = 'group' AND c.title = '在线求助')
+        ORDER BY m.createdAt DESC, COALESCE(m.serverSeq, 9223372036854775807) DESC
+        LIMIT :limit
+        """,
+    )
+    fun observeRecentSearchMessages(limit: Int): Flow<List<MessageEntity>>
+
     @Query("SELECT max(COALESCE(serverSeq, 0)) FROM messages WHERE conversationId = :conversationId")
     suspend fun maxServerSeq(conversationId: Long): Long?
 

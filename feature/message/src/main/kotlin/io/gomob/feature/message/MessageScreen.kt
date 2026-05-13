@@ -1,11 +1,6 @@
 package io.gomob.feature.message
 
-import android.Manifest
-import android.content.pm.PackageManager
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -20,19 +15,16 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Icon
@@ -43,28 +35,23 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.designsystem.component.ScreenHeader
@@ -72,8 +59,6 @@ import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
-import io.gomob.model.message.MessageQuote
-import kotlinx.coroutines.launch
 
 const val MESSAGE_ROUTE = "message"
 
@@ -106,6 +91,8 @@ private data class ContactRowUi(
 @Composable
 fun MessageRoute(
     onOpenConversation: (String) -> Unit = {},
+    onOpenConversationTarget: (String, String) -> Unit = { id, _ -> onOpenConversation(id) },
+    onOpenHelpSearch: (String) -> Unit = {},
     onOpenLocalVideo: (String) -> Unit = {},
     onOpenExpertDetail: (String) -> Unit = {},
     onOpenContactDetail: (String) -> Unit = {},
@@ -114,38 +101,24 @@ fun MessageRoute(
     viewModel: MessageListViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val searchState by viewModel.searchUiState.collectAsStateWithLifecycle()
+    val multiLineRoomsState by viewModel.multiLineRoomsUiState.collectAsStateWithLifecycle()
     val helpState by viewModel.helpUiState.collectAsStateWithLifecycle()
-    val helpRoomState by viewModel.helpRoomUiState.collectAsStateWithLifecycle()
-    val forwardTargets by viewModel.forwardTargets.collectAsStateWithLifecycle()
     val contactActionError by viewModel.contactActionError.collectAsStateWithLifecycle()
-    val context = LocalContext.current
-    val imagePicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia(),
-        onResult = { uri -> uri?.let(viewModel::sendHelpRoomImage) },
-    )
-    val photoCapture = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicturePreview(),
-        onResult = { bitmap ->
-            bitmap?.let { viewModel.sendHelpRoomImage(it.writeMessageCapture(context)) }
-        },
-    )
-    val videoPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia(),
-        onResult = { uri -> uri?.let(viewModel::sendHelpRoomVideoClip) },
-    )
     val focusManager = LocalFocusManager.current
     var tab by rememberSaveable { mutableStateOf((requestedTab ?: MessageEntryTab.List).toMsgTab()) }
     var contactsOpen by rememberSaveable { mutableStateOf(false) }
-    var helpInspectionPickerOpen by rememberSaveable { mutableStateOf(false) }
     val hasMessageUnread = (state as? MessageListUiState.Content)
         ?.conversations
         ?.any { it.unreadCount > 0 } == true
-    val hasHelpUnread = (helpRoomState as? HelpRoomUiState.Content)?.unreadCount?.let { it > 0 } == true
-    val pageErrorText = messageRouteErrorText(
+    val hasHelpUnread = (multiLineRoomsState as? MultiLineRoomsUiState.Content)
+        ?.rooms
+        ?.any { it.unreadCount > 0 } == true
+    val pageNotice = messageRouteNotice(
         tab = tab,
         messageState = state,
+        multiLineRoomsState = multiLineRoomsState,
         helpState = helpState,
-        helpRoomState = helpRoomState,
         contactActionError = contactActionError.takeUnless { contactsOpen },
     )
 
@@ -164,8 +137,9 @@ fun MessageRoute(
     }
 
     LaunchedEffect(Unit) {
-        viewModel.forwardResultEvents.collect { message ->
-            context.showMessageActionToast(message)
+        viewModel.openSearchMessageEvents.collect { event ->
+            contactsOpen = false
+            onOpenConversationTarget(event.conversationId.toString(), event.localKey)
         }
     }
 
@@ -173,7 +147,7 @@ fun MessageRoute(
         Column(Modifier.fillMaxSize()) {
             ScreenHeader(
                 title = "消息中心",
-                eyebrow = "实时协同 · 监管督查 · 专家会审",
+                eyebrow = "实时协同 · 监管督查 · 多人会审",
                 modifier = Modifier.clearInputFocusOnPointerDown(focusManager),
                 trailing = {
                     ContactsIconButton(
@@ -197,50 +171,24 @@ fun MessageRoute(
             when (tab) {
                 MsgTab.List -> ListPane(
                     state = state,
-                    onRefresh = viewModel::refresh,
+                    searchState = searchState,
+                    helpState = helpState,
                     onOpenConversation = { viewModel.openConversation(it.id) },
+                    onOpenMessage = viewModel::openSearchMessage,
+                    onOpenContactDetail = { onOpenContactDetail(it.detailId) },
                     modifier = Modifier.weight(1f),
                 )
-                MsgTab.Help -> HelpPane(
-                    state = helpState,
-                    roomState = helpRoomState,
+                MsgTab.Help -> MultiLinePane(
+                    roomsState = multiLineRoomsState,
                     onRefresh = {
                         viewModel.refreshHelpExperts()
                         viewModel.refreshHelpRoom()
                     },
-                    onOpenExpertDetail = { expert -> onOpenExpertDetail(expert.userId.toString()) },
-                    onSendHelpMessage = viewModel::sendHelpRoomMessage,
-                    onPickHelpImage = {
-                        imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                    },
-                    onTakeHelpPhoto = { photoCapture.launch(null) },
-                    onSendHelpVoice = viewModel::sendHelpRoomVoice,
-                    onTranscribeHelpVoice = viewModel::transcribeHelpRoomVoiceDraft,
-                    onSendHelpVideoClip = {
-                        videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
-                    },
-                    onShareHelpInspection = {
-                        focusManager.clearFocus()
-                        helpInspectionPickerOpen = true
-                    },
-                    onRetry = viewModel::retryHelpRoomMessage,
-                    onRetryTranscript = viewModel::retryHelpRoomVoiceTranscript,
-                    onError = viewModel::showHelpRoomError,
-                    onOpenLocalVideo = { onOpenLocalVideo("专家连线 · 第一视角") },
-                    forwardTargets = forwardTargets,
-                    onForwardHelpMessages = viewModel::forwardHelpRoomMessages,
+                    onOpenRoom = { room -> viewModel.openConversation(room.id) },
                     modifier = Modifier.weight(1f),
                 )
             }
         }
-        InspectionSharePicker(
-            visible = helpInspectionPickerOpen,
-            onDismiss = { helpInspectionPickerOpen = false },
-            onSelect = { card ->
-                helpInspectionPickerOpen = false
-                viewModel.sendHelpRoomInspectionCard(card)
-            },
-        )
         ContactsDrawer(
             visible = contactsOpen,
             state = helpState,
@@ -255,7 +203,8 @@ fun MessageRoute(
             },
         )
         FloatingMessageError(
-            text = pageErrorText,
+            text = pageNotice?.text,
+            tone = pageNotice?.tone ?: FloatingMessageTone.Danger,
             onClick = {
                 when (tab) {
                     MsgTab.List -> viewModel.refresh()
@@ -267,7 +216,7 @@ fun MessageRoute(
             },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = if (tab == MsgTab.Help) 92.dp else 22.dp),
+                .padding(bottom = 22.dp),
         )
     }
 }
@@ -277,32 +226,52 @@ private fun MessageEntryTab.toMsgTab(): MsgTab = when (this) {
     MessageEntryTab.Help -> MsgTab.Help
 }
 
-private fun messageRouteErrorText(
+private data class MessageRouteNotice(
+    val text: String,
+    val tone: FloatingMessageTone,
+)
+
+private fun messageRouteNotice(
     tab: MsgTab,
     messageState: MessageListUiState,
+    multiLineRoomsState: MultiLineRoomsUiState,
     helpState: HelpExpertsUiState,
-    helpRoomState: HelpRoomUiState,
     contactActionError: String?,
-): String? = contactActionError ?: when (tab) {
-    MsgTab.List -> messageState.floatingErrorText()
-    MsgTab.Help -> helpRoomState.floatingErrorText() ?: helpState.floatingErrorText()
+): MessageRouteNotice? = contactActionError?.let {
+    MessageRouteNotice(it, FloatingMessageTone.Danger)
+} ?: when (tab) {
+    MsgTab.List -> messageState.floatingNotice()
+    MsgTab.Help -> multiLineRoomsState.floatingNotice()
+        ?: helpState.floatingNotice()
 }
 
-private fun MessageListUiState.floatingErrorText(): String? = when (this) {
-    is MessageListUiState.Error -> message
-    is MessageListUiState.Content -> if (offlineCached) errorMessage ?: "未连接实时通道" else null
+private fun MessageListUiState.floatingNotice(): MessageRouteNotice? = when (this) {
+    is MessageListUiState.Error -> MessageRouteNotice(message, FloatingMessageTone.Danger)
+    is MessageListUiState.Content -> if (offlineCached) {
+        MessageRouteNotice("消息服务异常，当前显示本地缓存", FloatingMessageTone.Info)
+    } else {
+        null
+    }
     else -> null
 }
 
-private fun HelpExpertsUiState.floatingErrorText(): String? = when (this) {
-    is HelpExpertsUiState.Error -> message
-    is HelpExpertsUiState.Content -> if (offlineCached) errorMessage ?: "专家列表使用本地缓存" else null
+private fun HelpExpertsUiState.floatingNotice(): MessageRouteNotice? = when (this) {
+    is HelpExpertsUiState.Error -> MessageRouteNotice(message, FloatingMessageTone.Danger)
+    is HelpExpertsUiState.Content -> if (offlineCached) {
+        MessageRouteNotice("消息服务异常，当前显示本地缓存", FloatingMessageTone.Info)
+    } else {
+        null
+    }
     else -> null
 }
 
-private fun HelpRoomUiState.floatingErrorText(): String? = when (this) {
-    is HelpRoomUiState.Error -> message
-    is HelpRoomUiState.Content -> errorMessage
+private fun MultiLineRoomsUiState.floatingNotice(): MessageRouteNotice? = when (this) {
+    is MultiLineRoomsUiState.Error -> MessageRouteNotice(message, FloatingMessageTone.Danger)
+    is MultiLineRoomsUiState.Content -> if (offlineCached) {
+        MessageRouteNotice("消息服务异常，当前显示本地缓存", FloatingMessageTone.Info)
+    } else {
+        null
+    }
     else -> null
 }
 
@@ -689,7 +658,7 @@ private fun String.normalizedContactSearchToken(): String =
 private fun Char.isAsciiLetterOrDigit(): Boolean =
     this in 'a'..'z' || this in 'A'..'Z' || this in '0'..'9'
 
-private val contactPinyinMap = mapOf(
+internal val contactPinyinMap = mapOf(
     '周' to "zhou",
     '科' to "ke",
     '吴' to "wu",
@@ -801,7 +770,7 @@ private fun SegmentedTabs(
                 horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
             ) {
                 Text(
-                    "专家连线",
+                    "多人连线",
                     fontSize = 12.sp,
                     color = if (tab == MsgTab.Help) Gomob.colors.accent else Gomob.colors.fg2,
                 )
@@ -831,14 +800,27 @@ private fun SegItem(
 @Composable
 private fun ListPane(
     state: MessageListUiState,
-    onRefresh: () -> Unit,
+    searchState: MessageListSearchUiState,
+    helpState: HelpExpertsUiState,
     onOpenConversation: (ConversationRowUi) -> Unit,
+    onOpenMessage: (MessageListSearchMessageUi) -> Unit,
+    onOpenContactDetail: (ContactRowUi) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var searchActive by remember { mutableStateOf(false) }
+    var query by rememberSaveable { mutableStateOf("") }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val exitSearch = remember(focusManager, keyboardController) {
+        {
+            searchActive = false
+            query = ""
+            focusManager.clearFocus()
+            keyboardController?.hide()
+            Unit
+        }
+    }
+    val dismissSearchFocus = remember(focusManager, keyboardController) {
         {
             searchActive = false
             focusManager.clearFocus()
@@ -846,55 +828,92 @@ private fun ListPane(
             Unit
         }
     }
-    BackHandler(enabled = searchActive, onBack = exitSearch)
+    BackHandler(enabled = searchActive || query.isNotBlank(), onBack = exitSearch)
+    val normalizedQuery = query.trim()
+    val searching = normalizedQuery.isNotBlank()
 
-    Box(modifier.fillMaxSize()) {
+    Column(modifier.fillMaxSize()) {
+        SearchContainer(
+            query = query,
+            onQueryChange = { query = it },
+            onActiveChange = { searchActive = it },
+        )
         LazyColumn(
-            Modifier.fillMaxSize(),
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .clearInputFocusOnPointerDown(focusManager) {
+                    keyboardController?.hide()
+                },
             contentPadding = PaddingValues(bottom = Gomob.spacing.s24),
         ) {
-            item { SearchContainer(onActiveChange = { searchActive = it }) }
-            when (state) {
-                MessageListUiState.Loading -> item {
-                    StateBlock(text = "正在加载会话", tone = StatusTone.Neutral)
+            if (searching) {
+                item {
+                    MessageListSearchPanel(
+                        query = normalizedQuery,
+                        messageState = state,
+                        searchState = searchState,
+                        helpState = helpState,
+                        onOpenConversation = {
+                            dismissSearchFocus()
+                            onOpenConversation(it)
+                        },
+                        onOpenMessage = {
+                            dismissSearchFocus()
+                            onOpenMessage(it)
+                        },
+                        onOpenContactDetail = {
+                            dismissSearchFocus()
+                            onOpenContactDetail(it)
+                        },
+                    )
                 }
-                MessageListUiState.Empty -> Unit
-                is MessageListUiState.Error -> Unit
-                is MessageListUiState.Content -> {
-                    items(state.conversations, key = { item -> item.id }) { item ->
-                        Box(
-                            Modifier
-                                .padding(horizontal = Gomob.spacing.s20)
-                                .padding(bottom = Gomob.spacing.s8),
-                        ) {
-                            MsgRow(item, onClick = { onOpenConversation(item) })
+            } else {
+                when (state) {
+                    MessageListUiState.Loading -> item {
+                        StateBlock(text = "正在加载会话", tone = StatusTone.Neutral)
+                    }
+                    MessageListUiState.Empty -> Unit
+                    is MessageListUiState.Error -> Unit
+                    is MessageListUiState.Content -> {
+                        items(state.conversations, key = { item -> item.id }) { item ->
+                            MsgRow(
+                                item,
+                                onClick = {
+                                    dismissSearchFocus()
+                                    onOpenConversation(item)
+                                },
+                            )
                         }
                     }
                 }
             }
         }
-        SearchInputScrim(
-            visible = searchActive,
-            onDismiss = exitSearch,
-            modifier = Modifier.padding(top = 50.dp),
-        )
     }
 }
 
 @Composable
-private fun SearchContainer(onActiveChange: (Boolean) -> Unit) {
+private fun SearchContainer(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    onActiveChange: (Boolean) -> Unit,
+) {
     Box(
         Modifier
             .padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20, bottom = 8.dp)
             .fillMaxWidth(),
     ) {
-        SearchBar(onActiveChange = onActiveChange)
+        SearchBar(query = query, onQueryChange = onQueryChange, onActiveChange = onActiveChange)
     }
 }
 
 @Composable
-private fun SearchBar(onActiveChange: (Boolean) -> Unit) {
-    var draft by remember { mutableStateOf("") }
+private fun SearchBar(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    onActiveChange: (Boolean) -> Unit,
+    placeholder: String = "搜索消息 / 联系人",
+) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -918,8 +937,8 @@ private fun SearchBar(onActiveChange: (Boolean) -> Unit) {
             contentAlignment = Alignment.CenterStart,
         ) {
             BasicTextField(
-                value = draft,
-                onValueChange = { draft = it },
+                value = query,
+                onValueChange = onQueryChange,
                 modifier = Modifier
                     .fillMaxWidth()
                     .onFocusChanged { onActiveChange(it.isFocused) },
@@ -931,9 +950,9 @@ private fun SearchBar(onActiveChange: (Boolean) -> Unit) {
                         Modifier.fillMaxWidth(),
                         contentAlignment = Alignment.CenterStart,
                     ) {
-                        if (draft.isEmpty()) {
+                        if (query.isEmpty()) {
                             Text(
-                                "搜索消息 / 联系人",
+                                placeholder,
                                 fontSize = 12.sp,
                                 lineHeight = 18.sp,
                                 color = Gomob.colors.fg3,
@@ -948,77 +967,49 @@ private fun SearchBar(onActiveChange: (Boolean) -> Unit) {
 }
 
 @Composable
-private fun SearchInputScrim(
-    visible: Boolean,
-    onDismiss: () -> Unit,
-    modifier: Modifier = Modifier,
+private fun MessageListSearchPanel(
+    query: String,
+    messageState: MessageListUiState,
+    searchState: MessageListSearchUiState,
+    helpState: HelpExpertsUiState,
+    onOpenConversation: (ConversationRowUi) -> Unit,
+    onOpenMessage: (MessageListSearchMessageUi) -> Unit,
+    onOpenContactDetail: (ContactRowUi) -> Unit,
 ) {
-    if (!visible) return
-    Box(
-        modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.1f))
-            .clickable(onClick = onDismiss),
-    )
-}
-
-@Composable
-private fun MsgRow(item: ConversationRowUi, onClick: () -> Unit) {
-    Row(
+    val focusManager = LocalFocusManager.current
+    val results = remember(query, messageState, searchState, helpState) {
+        buildMessageListSearchResults(
+            query = query,
+            messageState = messageState,
+            searchState = searchState,
+            helpState = helpState,
+        )
+    }
+    Column(
         Modifier
             .fillMaxWidth()
-            .clip(Gomob.shapes.r3)
-            .background(Gomob.colors.bg1)
-            .clickable(onClick = onClick)
-            .padding(horizontal = Gomob.spacing.s14, vertical = Gomob.spacing.s12),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
+            .clearInputFocusOnPointerDown(focusManager)
+            .padding(horizontal = Gomob.spacing.s20, vertical = Gomob.spacing.s8),
+        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
     ) {
-        MsgAvatar(seed = "conversation-${item.id}-${item.title}", kind = item.avatarKind)
-        Column(Modifier.weight(1f)) {
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    item.title,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Gomob.colors.fg0,
-                    maxLines = 1,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    item.time,
-                    style = Gomob.type.numInline.copy(fontSize = 10.sp),
-                    color = Gomob.colors.fg3,
-                    modifier = Modifier.padding(start = Gomob.spacing.s8),
-                )
-            }
-            Spacer(Modifier.height(Gomob.spacing.s4))
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (item.preview.isNotBlank()) {
-                    Text(
-                        item.preview,
-                        fontSize = 12.sp,
-                        color = Gomob.colors.fg2,
-                        maxLines = 1,
-                        modifier = Modifier.weight(1f),
-                    )
-                } else {
-                    Spacer(
-                        Modifier
-                            .weight(1f)
-                            .height(18.dp),
-                    )
+        when {
+            query.isBlank() -> SearchHintBlock("输入关键词搜索消息、联系人或会话")
+            results.empty -> SearchHintBlock("没有找到相关消息或联系人")
+            else -> {
+                SearchResultSection(title = "联系人", count = results.contacts.size) {
+                    results.contacts.forEach { contact ->
+                        SearchContactRow(contact = contact, onClick = { onOpenContactDetail(contact) })
+                    }
                 }
-                if (item.unreadCount > 0) {
-                    UnreadStatusDot(item.unreadTone, modifier = Modifier.padding(start = Gomob.spacing.s8))
+                SearchResultSection(title = "聊天记录", count = results.messages.size) {
+                    results.messages.forEach { message ->
+                        SearchMessageRow(message = message, onClick = { onOpenMessage(message) })
+                    }
+                }
+                SearchResultSection(title = "会话", count = results.conversations.size) {
+                    results.conversations.forEach { conversation ->
+                        SearchConversationRow(conversation = conversation, onClick = { onOpenConversation(conversation) })
+                    }
                 }
             }
         }
@@ -1026,13 +1017,512 @@ private fun MsgRow(item: ConversationRowUi, onClick: () -> Unit) {
 }
 
 @Composable
+private fun SearchHintBlock(text: String) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(Gomob.shapes.r3)
+            .background(Gomob.colors.bg1)
+            .padding(Gomob.spacing.s16),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Text(text, style = Gomob.type.bodySm, color = Gomob.colors.fg2)
+    }
+}
+
+@Composable
+private fun SearchResultSection(
+    title: String,
+    count: Int,
+    content: @Composable () -> Unit,
+) {
+    if (count <= 0) return
+    Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6)) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Gomob.spacing.s4),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(title, style = Gomob.type.caption, color = Gomob.colors.fg2, modifier = Modifier.weight(1f))
+            Text(count.toString(), style = Gomob.type.numInline, color = Gomob.colors.fg3)
+        }
+        content()
+    }
+}
+
+@Composable
+private fun SearchContactRow(contact: ContactRowUi, onClick: () -> Unit) {
+    SearchResultRow(
+        icon = GomobIcons.Contacts,
+        title = contact.name,
+        subtitle = "${contact.role} · ${contact.employeeId}",
+        meta = if (contact.online) "在线" else "离线",
+        avatarSeed = "contact-${contact.detailId}-${contact.name}",
+        onClick = onClick,
+    )
+}
+
+@Composable
+private fun SearchMessageRow(message: MessageListSearchMessageUi, onClick: () -> Unit) {
+    SearchResultRow(
+        icon = message.kind.searchResultIcon(),
+        title = message.conversationTitle,
+        subtitle = "${message.senderLabel} · ${message.preview}",
+        meta = message.time,
+        avatarSeed = "message-${message.conversationId}-${message.localKey}",
+        onClick = onClick,
+    )
+}
+
+@Composable
+private fun SearchConversationRow(conversation: ConversationRowUi, onClick: () -> Unit) {
+    SearchResultRow(
+        icon = GomobIcons.Search,
+        title = conversation.title,
+        subtitle = conversation.preview.ifBlank { "会话 #${conversation.id}" },
+        meta = conversation.time,
+        avatarSeed = "conversation-${conversation.id}-${conversation.title}",
+        onClick = onClick,
+    )
+}
+
+@Composable
+private fun SearchResultRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    meta: String,
+    avatarSeed: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(Gomob.shapes.r3)
+            .background(Gomob.colors.bg1)
+            .clickable(onClick = onClick)
+            .padding(horizontal = Gomob.spacing.s12, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(Modifier.size(34.dp), contentAlignment = Alignment.Center) {
+            MessageAvatarImage(
+                seed = avatarSeed,
+                size = 34.dp,
+                shape = Gomob.shapes.r2,
+            )
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = Gomob.colors.fg3,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .size(13.dp)
+                    .clip(CircleShape)
+                    .background(Gomob.colors.bg2)
+                    .padding(2.dp),
+            )
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    title,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Gomob.colors.fg0,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (meta.isNotBlank()) {
+                    Text(
+                        meta,
+                        style = Gomob.type.numInline.copy(fontSize = 10.sp),
+                        color = Gomob.colors.fg3,
+                        maxLines = 1,
+                        modifier = Modifier.padding(start = Gomob.spacing.s8),
+                    )
+                }
+            }
+            Text(
+                subtitle,
+                fontSize = 11.sp,
+                color = Gomob.colors.fg2,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Icon(
+            GomobIcons.ChevronRight,
+            contentDescription = null,
+            tint = Gomob.colors.fg3,
+            modifier = Modifier.size(13.dp),
+        )
+    }
+}
+
+private data class MessageListSearchResults(
+    val contacts: List<ContactRowUi>,
+    val messages: List<MessageListSearchMessageUi>,
+    val conversations: List<ConversationRowUi>,
+) {
+    val empty: Boolean get() = contacts.isEmpty() && messages.isEmpty() && conversations.isEmpty()
+}
+
+private fun buildMessageListSearchResults(
+    query: String,
+    messageState: MessageListUiState,
+    searchState: MessageListSearchUiState,
+    helpState: HelpExpertsUiState,
+): MessageListSearchResults {
+    val keyword = query.trim()
+    if (keyword.isBlank()) {
+        return MessageListSearchResults(emptyList(), emptyList(), emptyList())
+    }
+    val normalizedKeyword = keyword.normalizedContactSearchToken()
+    val conversations = (messageState as? MessageListUiState.Content)
+        ?.conversations
+        .orEmpty()
+        .filter { it.matchesMessageListKeyword(keyword, normalizedKeyword) }
+        .take(6)
+    val contacts = buildSearchContactRows(helpState)
+        .filter { it.matchesContactKeyword(keyword, normalizedKeyword) }
+        .take(8)
+    val messages = searchState.messages
+        .filter { it.matchesMessageKeyword(keyword, normalizedKeyword) }
+        .take(10)
+    return MessageListSearchResults(
+        contacts = contacts,
+        messages = messages,
+        conversations = conversations,
+    )
+}
+
+private fun buildSearchContactRows(state: HelpExpertsUiState): List<ContactRowUi> {
+    val local = localContactProfiles().map { it.toContactRowUi() }
+    val experts = when (state) {
+        is HelpExpertsUiState.Content -> state.experts.map { it.toContactProfileUi().toContactRowUi() }
+        else -> emptyList()
+    }
+    return (local + experts).distinctBy { it.detailId }
+}
+
+private fun ConversationRowUi.matchesMessageListKeyword(keyword: String, normalizedKeyword: String): Boolean =
+    listOf(title, preview, initials).any { it.matchesSearchKeyword(keyword, normalizedKeyword) }
+
+private fun MessageListSearchMessageUi.matchesMessageKeyword(keyword: String, normalizedKeyword: String): Boolean =
+    listOf(conversationTitle, senderLabel, preview, searchableText).any {
+        it.matchesSearchKeyword(keyword, normalizedKeyword)
+    }
+
+private fun String.matchesSearchKeyword(keyword: String, normalizedKeyword: String): Boolean {
+    if (contains(keyword, ignoreCase = true)) return true
+    if (normalizedKeyword.isEmpty()) return false
+    return contactSearchTokens().any { it.contains(normalizedKeyword) }
+}
+
+private fun String.searchResultIcon(): ImageVector = when (this) {
+    "image" -> GomobIcons.Eyeball
+    "voice" -> GomobIcons.VoiceCircle
+    "video_clip" -> GomobIcons.Video
+    "inspection_card" -> GomobIcons.LinkShare
+    "call_invite", "video_call", "audio_call" -> GomobIcons.Phone
+    "file", "document" -> GomobIcons.Folder
+    else -> GomobIcons.Search
+}
+
+@Composable
+private fun MsgRow(item: ConversationRowUi, onClick: () -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Gomob.colors.bg0)
+            .clickable(onClick = onClick),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(68.dp)
+                .padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
+        ) {
+            MsgAvatar(seed = "conversation-${item.id}-${item.title}", kind = item.avatarKind)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        item.title,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = Gomob.colors.fg0,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        item.time,
+                        style = Gomob.type.numInline.copy(fontSize = 10.sp),
+                        color = Gomob.colors.fg3,
+                        modifier = Modifier.padding(start = Gomob.spacing.s8),
+                    )
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        item.preview.ifBlank { " " },
+                        fontSize = 12.sp,
+                        color = Gomob.colors.fg2,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (item.unreadCount > 0) {
+                        MultiLineUnreadBadge(item.unreadCount)
+                    }
+                }
+            }
+        }
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 76.dp, end = Gomob.spacing.s20)
+                .height(0.5.dp)
+                .background(Gomob.colors.line1.copy(alpha = 0.05f)),
+        )
+    }
+}
+
+@Composable
 private fun MsgAvatar(seed: String, kind: AvatarKind) {
     MessageAvatarImage(
         seed = "$kind-$seed",
-        size = 38.dp,
+        size = 44.dp,
         shape = Gomob.shapes.r2,
     )
 }
+
+@Composable
+private fun MultiLinePane(
+    roomsState: MultiLineRoomsUiState,
+    onRefresh: () -> Unit,
+    onOpenRoom: (MultiLineRoomRowUi) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    MultiLineRoomList(
+        state = roomsState,
+        onRefresh = onRefresh,
+        onOpenRoom = onOpenRoom,
+        modifier = modifier.fillMaxSize(),
+    )
+}
+
+@Composable
+private fun MultiLineRoomList(
+    state: MultiLineRoomsUiState,
+    onRefresh: () -> Unit,
+    onOpenRoom: (MultiLineRoomRowUi) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var query by rememberSaveable { mutableStateOf("") }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    fun dismissSearchInput() {
+        focusManager.clearFocus()
+        keyboardController?.hide()
+    }
+    val keyword = query.trim()
+    val normalizedKeyword = keyword.normalizedContactSearchToken()
+    val rooms = (state as? MultiLineRoomsUiState.Content)?.rooms.orEmpty()
+    val visibleRooms = remember(rooms, keyword, normalizedKeyword) {
+        if (keyword.isBlank()) {
+            rooms
+        } else {
+            rooms.filter { it.matchesMultiLineRoomKeyword(keyword, normalizedKeyword) }
+        }
+    }
+    Column(modifier.fillMaxSize()) {
+        MultiLineRoomSearchBar(
+            query = query,
+            onQueryChange = { query = it },
+        )
+        LazyColumn(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .clearInputFocusOnPointerDown(focusManager) {
+                    keyboardController?.hide()
+                },
+            contentPadding = PaddingValues(bottom = Gomob.spacing.s24),
+        ) {
+            when (state) {
+                MultiLineRoomsUiState.Loading -> item {
+                    StateBlock(text = "正在加载多人连线", tone = StatusTone.Neutral)
+                }
+                is MultiLineRoomsUiState.Error -> item {
+                    StateBlock(text = state.message, tone = StatusTone.Danger, onClick = onRefresh)
+                }
+                MultiLineRoomsUiState.Empty -> item {
+                    StateBlock(text = "暂无多人群聊", tone = StatusTone.Neutral, onClick = onRefresh)
+                }
+                is MultiLineRoomsUiState.Content -> {
+                    if (visibleRooms.isEmpty()) {
+                        item { StateBlock(text = "未找到相关群聊", tone = StatusTone.Neutral) }
+                    } else {
+                        items(visibleRooms, key = { it.id }) { room ->
+                            MultiLineRoomRow(
+                                room = room,
+                                onClick = {
+                                    dismissSearchInput()
+                                    onOpenRoom(room)
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MultiLineRoomSearchBar(
+    query: String,
+    onQueryChange: (String) -> Unit,
+) {
+    Box(
+        Modifier
+            .padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20, bottom = 8.dp)
+            .fillMaxWidth(),
+    ) {
+        SearchBar(
+            query = query,
+            onQueryChange = onQueryChange,
+            onActiveChange = {},
+            placeholder = "搜索群聊",
+        )
+    }
+}
+
+@Composable
+private fun MultiLineRoomRow(
+    room: MultiLineRoomRowUi,
+    onClick: () -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Gomob.colors.bg0)
+            .clickable(onClick = onClick),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(68.dp)
+                .padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
+        ) {
+            MultiLineRoomAvatarMosaic(room.avatarSeeds)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        room.title,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = Gomob.colors.fg0,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        room.time,
+                        style = Gomob.type.numInline.copy(fontSize = 10.sp),
+                        color = Gomob.colors.fg3,
+                        modifier = Modifier.padding(start = Gomob.spacing.s8),
+                    )
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        room.preview.ifBlank { room.subtitle },
+                        fontSize = 12.sp,
+                        color = Gomob.colors.fg2,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (room.unreadCount > 0) {
+                        MultiLineUnreadBadge(room.unreadCount)
+                    } else {
+                        Text(
+                            room.memberCountLabel,
+                            style = Gomob.type.numInline.copy(fontSize = 10.sp),
+                            color = Gomob.colors.fg3,
+                            modifier = Modifier.padding(start = Gomob.spacing.s8),
+                        )
+                    }
+                }
+            }
+        }
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 76.dp, end = Gomob.spacing.s20)
+                .height(0.5.dp)
+                .background(Gomob.colors.line1.copy(alpha = 0.05f)),
+        )
+    }
+}
+
+@Composable
+private fun MultiLineRoomAvatarMosaic(seeds: List<String>) {
+    val normalizedSeeds = seeds.filter { it.isNotBlank() }.take(4).ifEmpty {
+        listOf("group-default-a", "group-default-b", "group-default-c", "group-default-d")
+    }
+    Column(
+        Modifier
+            .size(44.dp)
+            .clip(Gomob.shapes.r2)
+            .background(Gomob.colors.bg2)
+            .padding(2.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        normalizedSeeds.chunked(2).forEach { row ->
+            Row(
+                Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                row.forEach { seed ->
+                    MessageAvatarImage(
+                        seed = seed,
+                        size = 19.dp,
+                        shape = Gomob.shapes.r1,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun MultiLineUnreadBadge(count: Long) {
+    val text = if (count > 99) "99+" else count.toString()
+    Box(
+        Modifier
+            .padding(start = Gomob.spacing.s8)
+            .height(18.dp)
+            .width(if (text.length > 1) 26.dp else 18.dp)
+            .clip(CircleShape)
+            .background(Gomob.colors.danger),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, style = Gomob.type.numInline.copy(fontSize = 10.sp), color = Color.White)
+    }
+}
+
+private fun MultiLineRoomRowUi.matchesMultiLineRoomKeyword(keyword: String, normalizedKeyword: String): Boolean =
+    listOf(title, subtitle, preview, memberCountLabel).any { it.matchesSearchKeyword(keyword, normalizedKeyword) }
 
 @Composable
 private fun UnreadStatusDot(
@@ -1055,491 +1545,6 @@ private fun UnreadStatusDot(
 }
 
 @Composable
-private fun HelpPane(
-    state: HelpExpertsUiState,
-    roomState: HelpRoomUiState,
-    onRefresh: () -> Unit,
-    onOpenExpertDetail: (HelpExpertRowUi) -> Unit,
-    onSendHelpMessage: (String, MessageQuote?) -> Unit,
-    onPickHelpImage: () -> Unit,
-    onTakeHelpPhoto: () -> Unit,
-    onSendHelpVoice: (android.net.Uri, Int) -> Unit,
-    onTranscribeHelpVoice: suspend (android.net.Uri, Int) -> String,
-    onSendHelpVideoClip: () -> Unit,
-    onShareHelpInspection: () -> Unit,
-    onRetry: (String?) -> Unit,
-    onRetryTranscript: (Long?) -> Unit,
-    onError: (String) -> Unit,
-    onOpenLocalVideo: () -> Unit,
-    forwardTargets: List<MessageForwardTargetUi>,
-    onForwardHelpMessages: (MessageForwardTargetUi, List<String>) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    var draft by remember { mutableStateOf("") }
-    var inputFocused by remember { mutableStateOf(false) }
-    var voiceRecording by remember { mutableStateOf(false) }
-    var quoteDraft by remember { mutableStateOf<QuoteDraftUi?>(null) }
-    var favoriteMessageKeys by rememberSaveable { mutableStateOf(emptyList<String>()) }
-    var multiSelectMode by rememberSaveable { mutableStateOf(false) }
-    var selectedMessageKeys by rememberSaveable { mutableStateOf(emptyList<String>()) }
-    var forwardingMessages by remember { mutableStateOf<List<MessageBubbleUi>>(emptyList()) }
-    var voiceTranscriptionDraft by remember { mutableStateOf<VoiceTranscriptionDraft?>(null) }
-    val context = LocalContext.current
-    val clipboard = LocalClipboardManager.current
-    val focusManager = LocalFocusManager.current
-    val coroutineScope = rememberCoroutineScope()
-    val voiceRecorder = rememberVoiceRecorder()
-    val voicePermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        if (granted) {
-            runCatching {
-                voiceRecorder.start()
-                voiceRecording = true
-            }.onFailure { onError(it.message ?: "录音启动失败") }
-        } else {
-            onError("未授予录音权限")
-        }
-    }
-    val startVoiceRecording: () -> Unit = startVoice@{
-        if (voiceRecording) return@startVoice
-        if (
-            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            runCatching {
-                voiceRecorder.start()
-                voiceRecording = true
-            }.onFailure { onError(it.message ?: "录音启动失败") }
-        } else {
-            voicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-        }
-    }
-    val sendVoiceRecording: () -> Unit = sendVoice@{
-        if (!voiceRecording) return@sendVoice
-        runCatching { voiceRecorder.stop() }
-            .onSuccess { result -> onSendHelpVoice(result.uri, result.durationSec) }
-            .onFailure { onError(it.message ?: "录音失败") }
-        voiceRecording = false
-    }
-    val cancelVoiceRecording: () -> Unit = cancelVoice@{
-        if (!voiceRecording) return@cancelVoice
-        voiceRecorder.cancel()
-        voiceRecording = false
-    }
-    val transcribeVoiceRecording: () -> Unit = transcribeVoice@{
-        if (!voiceRecording) return@transcribeVoice
-        runCatching { voiceRecorder.stop() }
-            .onSuccess { result ->
-                voiceTranscriptionDraft = VoiceTranscriptionDraft(
-                    uri = result.uri,
-                    durationSec = result.durationSec,
-                )
-                coroutineScope.launch {
-                    val text = runCatching {
-                        onTranscribeHelpVoice(result.uri, result.durationSec)
-                    }.getOrDefault("")
-                    voiceTranscriptionDraft = voiceTranscriptionDraft
-                        ?.takeIf { it.uri == result.uri }
-                        ?.copy(
-                            text = text,
-                            loading = false,
-                            failed = text.isBlank(),
-                        )
-                }
-            }
-            .onFailure { onError(it.message ?: "录音失败") }
-        voiceRecording = false
-    }
-    fun toggleMessageSelection(localKey: String) {
-        selectedMessageKeys = if (localKey in selectedMessageKeys) {
-            selectedMessageKeys - localKey
-        } else {
-            selectedMessageKeys + localKey
-        }
-        if (selectedMessageKeys.isEmpty()) multiSelectMode = false
-    }
-    fun selectedMessages(): List<MessageBubbleUi> =
-        (roomState as? HelpRoomUiState.Content)?.messages.orEmpty().filter { it.localKey in selectedMessageKeys }
-
-    fun exitMultiSelect() {
-        multiSelectMode = false
-        selectedMessageKeys = emptyList()
-    }
-    fun copyMessages(messages: List<MessageBubbleUi>) {
-        val text = messageShareText(messages)
-        if (text.isBlank()) return
-        clipboard.setText(AnnotatedString(text))
-        context.showMessageActionToast("已复制")
-    }
-    fun handleMessageAction(action: MessageQuickAction, bubble: MessageBubbleUi) {
-        when (action) {
-            MessageQuickAction.Copy -> copyMessages(listOf(bubble))
-            MessageQuickAction.Forward -> forwardingMessages = listOf(bubble)
-            MessageQuickAction.Favorite -> {
-                val added = bubble.localKey !in favoriteMessageKeys
-                favoriteMessageKeys = if (added) favoriteMessageKeys + bubble.localKey else favoriteMessageKeys - bubble.localKey
-                context.showMessageActionToast(if (added) "已收藏" else "已取消收藏")
-            }
-            MessageQuickAction.MultiSelect -> {
-                multiSelectMode = true
-                selectedMessageKeys = listOf(bubble.localKey)
-            }
-            MessageQuickAction.Quote -> {
-                quoteDraft = QuoteDraftUi(bubble.toMessageQuote())
-                context.showMessageActionToast("已引用")
-            }
-            MessageQuickAction.TranscribeVoice -> onRetryTranscript(bubble.serverId)
-        }
-    }
-
-    MessageForwardTargetDialog(
-        visible = forwardingMessages.isNotEmpty(),
-        targets = forwardTargets,
-        messageCount = forwardingMessages.size,
-        onDismiss = { forwardingMessages = emptyList() },
-        onSelectTarget = { target ->
-            val sourceLocalKeys = forwardingMessages.map { it.localKey }
-            forwardingMessages = emptyList()
-            exitMultiSelect()
-            onForwardHelpMessages(target, sourceLocalKeys)
-        },
-    )
-
-    Box(modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxSize().imePadding()) {
-            when (roomState) {
-                HelpRoomUiState.Loading -> LazyColumn(
-                    Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .clearInputFocusOnPointerDown(focusManager),
-                    contentPadding = PaddingValues(
-                        horizontal = Gomob.spacing.s20,
-                        vertical = Gomob.spacing.s8,
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-                ) {
-                    item {
-                        HelpParticipantCompactHeader(
-                            state = state,
-                            onOpenExpertDetail = onOpenExpertDetail,
-                            onRefresh = onRefresh,
-                        )
-                    }
-                }
-                is HelpRoomUiState.Error -> LazyColumn(
-                    Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .clearInputFocusOnPointerDown(focusManager),
-                    contentPadding = PaddingValues(
-                        horizontal = Gomob.spacing.s20,
-                        vertical = Gomob.spacing.s8,
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-                ) {
-                    item {
-                        HelpParticipantCompactHeader(
-                            state = state,
-                            onOpenExpertDetail = onOpenExpertDetail,
-                            onRefresh = onRefresh,
-                        )
-                    }
-                }
-                is HelpRoomUiState.Content -> HelpRoomMessageList(
-                    state = roomState,
-                    expertState = state,
-                    onRefresh = onRefresh,
-                    onOpenExpertDetail = onOpenExpertDetail,
-                    onRetry = onRetry,
-                    onRetryTranscript = onRetryTranscript,
-                    inputFocused = inputFocused,
-                    favoriteMessageKeys = favoriteMessageKeys,
-                    selectedMessageKeys = selectedMessageKeys,
-                    multiSelectMode = multiSelectMode,
-                    onToggleSelected = ::toggleMessageSelection,
-                    onQuickAction = ::handleMessageAction,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            if (multiSelectMode) {
-                MessageMultiSelectBar(
-                    selectedCount = selectedMessageKeys.size,
-                    onCancel = ::exitMultiSelect,
-                    onCopy = {
-                        copyMessages(selectedMessages())
-                        exitMultiSelect()
-                    },
-                    onForward = {
-                        forwardingMessages = selectedMessages()
-                    },
-                )
-            } else {
-                MessageComposerBar(
-                    draft = draft,
-                    enabled = roomState is HelpRoomUiState.Content,
-                    onDraftChange = { draft = it },
-                    onShareInspection = onShareHelpInspection,
-                    onPickImage = onPickHelpImage,
-                    onTakePhoto = onTakeHelpPhoto,
-                    onStartVoice = startVoiceRecording,
-                    onSendVoice = sendVoiceRecording,
-                    onCancelVoice = cancelVoiceRecording,
-                    onTranscribeVoice = transcribeVoiceRecording,
-                    onSendVideoClip = onSendHelpVideoClip,
-                    onOpenLocalVideo = onOpenLocalVideo,
-                    voiceRecording = voiceRecording,
-                    quoteDraft = quoteDraft,
-                    onClearQuote = { quoteDraft = null },
-                    onInputFocusChanged = { inputFocused = it },
-                    onSendText = {
-                        val text = draft.trim()
-                        if (text.isNotEmpty()) {
-                            onSendHelpMessage(text, quoteDraft?.quote)
-                            draft = ""
-                            quoteDraft = null
-                        }
-                    },
-                )
-            }
-        }
-        VoiceTranscriptionOverlay(
-            draft = voiceTranscriptionDraft,
-            onCancel = { voiceTranscriptionDraft = null },
-            onSendVoice = { draft ->
-                voiceTranscriptionDraft = null
-                onSendHelpVoice(draft.uri, draft.durationSec)
-            },
-            onSendText = { draft ->
-                val text = draft.text.trim()
-                if (text.isNotEmpty()) {
-                    voiceTranscriptionDraft = null
-                    onSendHelpMessage(text, quoteDraft?.quote)
-                    quoteDraft = null
-                }
-            },
-        )
-    }
-}
-
-@Composable
-private fun HelpParticipantCompactHeader(
-    state: HelpExpertsUiState,
-    onOpenExpertDetail: (HelpExpertRowUi) -> Unit,
-    onRefresh: () -> Unit,
-) {
-    when (state) {
-        HelpExpertsUiState.Loading -> HelpInlineStatus(
-            text = "正在加载固定专家",
-            tone = StatusTone.Neutral,
-            onClick = onRefresh,
-        )
-        HelpExpertsUiState.Empty -> HelpInlineStatus(
-            text = "服务端未配置固定专家",
-            tone = StatusTone.Warn,
-            onClick = onRefresh,
-        )
-        is HelpExpertsUiState.Error -> HelpInlineStatus(
-            text = "固定专家待刷新",
-            tone = StatusTone.Neutral,
-            onClick = onRefresh,
-        )
-        is HelpExpertsUiState.Content -> {
-            Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8)) {
-                ExpertParticipantCompactBar(
-                    experts = state.experts,
-                    onOpenExpertDetail = onOpenExpertDetail,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun HelpRoomMessageList(
-    state: HelpRoomUiState.Content,
-    expertState: HelpExpertsUiState,
-    onRefresh: () -> Unit,
-    onOpenExpertDetail: (HelpExpertRowUi) -> Unit,
-    onRetry: (String?) -> Unit,
-    onRetryTranscript: (Long?) -> Unit,
-    inputFocused: Boolean,
-    favoriteMessageKeys: List<String>,
-    selectedMessageKeys: List<String>,
-    multiSelectMode: Boolean,
-    onToggleSelected: (String) -> Unit,
-    onQuickAction: (MessageQuickAction, MessageBubbleUi) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val listState = rememberLazyListState()
-    val focusManager = LocalFocusManager.current
-    val density = LocalDensity.current
-    val latestMessage = state.messages.lastOrNull()
-    val timelineItems = remember(state.messages) { buildChatTimeline(state.messages) }
-    val displayItems = remember(timelineItems) { timelineItems.asReversed() }
-    val targetItemCount = helpRoomListItemCount(state, displayItems)
-    var lastObservedLatestMessageKey by remember { mutableStateOf<String?>(null) }
-    var hasObservedInitialLatestMessage by remember { mutableStateOf(false) }
-    val imeBottom = WindowInsets.ime.getBottom(density)
-    LaunchedEffect(
-        inputFocused,
-        imeBottom,
-        latestMessage?.localKey,
-        latestMessage?.mine,
-        state.loading,
-        state.errorMessage,
-        state.offlineCached,
-    ) {
-        val latestKey = latestMessage?.localKey
-        val latestChanged = latestKey != null && latestKey != lastObservedLatestMessageKey
-        val newOwnMessage = latestChanged && hasObservedInitialLatestMessage && latestMessage?.mine == true
-        if (targetItemCount > 0) {
-            val alreadyNearLatest = listState.layoutInfo.visibleItemsInfo.any { it.index <= 1 }
-            if (inputFocused || newOwnMessage || alreadyNearLatest) {
-                listState.animateScrollToItem(0)
-            }
-        }
-        if (latestKey != null) {
-            lastObservedLatestMessageKey = latestKey
-            hasObservedInitialLatestMessage = true
-        }
-    }
-
-    Box(
-        modifier
-            .fillMaxWidth()
-            .clipToBounds()
-            .clearInputFocusOnPointerDown(focusManager),
-    ) {
-        StarfieldBackground(Modifier.matchParentSize())
-        Column(Modifier.fillMaxSize()) {
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Gomob.spacing.s20, vertical = Gomob.spacing.s8),
-            ) {
-                HelpParticipantCompactHeader(
-                    state = expertState,
-                    onOpenExpertDetail = onOpenExpertDetail,
-                    onRefresh = onRefresh,
-                )
-            }
-            LazyColumn(
-                Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                state = listState,
-                contentPadding = PaddingValues(
-                    horizontal = Gomob.spacing.s20,
-                    vertical = Gomob.spacing.s8,
-                ),
-                verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-                reverseLayout = true,
-            ) {
-                when {
-                    state.errorMessage != null && state.messages.isEmpty() -> Unit
-                    state.empty -> Unit
-                    else -> items(displayItems, key = { it.key }) { item ->
-                        when (item) {
-                            is ChatTimelineItem.TimeDivider -> ChatTimeDivider(item.label)
-                            is ChatTimelineItem.Message -> {
-                                val bubble = item.bubble
-                                ChatMessageRow(
-                                    bubble = bubble,
-                                    favorite = bubble.localKey in favoriteMessageKeys,
-                                    selected = bubble.localKey in selectedMessageKeys,
-                                    multiSelectMode = multiSelectMode,
-                                    onToggleSelected = { onToggleSelected(bubble.localKey) },
-                                    onQuickAction = onQuickAction,
-                                    onRetry = { onRetry(bubble.clientMsgId) },
-                                    onRetryTranscript = { onRetryTranscript(bubble.serverId) },
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-private fun helpRoomListItemCount(
-    state: HelpRoomUiState.Content,
-    displayItems: List<ChatTimelineItem>,
-): Int {
-    return when {
-        state.errorMessage != null && state.messages.isEmpty() -> 0
-        state.empty -> 0
-        else -> displayItems.size
-    }
-}
-
-@Composable
-private fun ExpertParticipantCompactBar(
-    experts: List<HelpExpertRowUi>,
-    onOpenExpertDetail: (HelpExpertRowUi) -> Unit,
-) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .height(48.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        experts.take(6).forEach { expert ->
-            ExpertCompactAvatar(
-                expert = expert,
-                onAvatarClick = { onOpenExpertDetail(expert) },
-            )
-        }
-        if (experts.size > 6) {
-            ExpertOverflowAvatar(count = experts.size - 6)
-        }
-        Spacer(Modifier.weight(1f))
-    }
-}
-
-@Composable
-private fun ExpertCompactAvatar(
-    expert: HelpExpertRowUi,
-    onAvatarClick: () -> Unit,
-) {
-    val available = expert.availabilityText == "可发消息"
-    Box(
-        Modifier
-            .size(40.dp)
-            .clickable(onClick = onAvatarClick),
-        contentAlignment = Alignment.BottomEnd,
-    ) {
-        MessageAvatarImage(
-            seed = "expert-${expert.userId}-${expert.name}",
-            size = 36.dp,
-            shape = CircleShape,
-            online = available,
-            modifier = Modifier.align(Alignment.Center),
-        )
-    }
-}
-
-@Composable
-private fun ExpertOverflowAvatar(count: Int) {
-    Box(
-        Modifier
-            .size(36.dp)
-            .clip(CircleShape)
-            .background(Gomob.colors.bg2),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            "+$count",
-            style = Gomob.type.numInline,
-            color = Gomob.colors.fg3,
-        )
-    }
-}
-
-@Composable
 private fun StateBlock(
     text: String,
     tone: StatusTone,
@@ -1548,24 +1553,6 @@ private fun StateBlock(
     Box(
         Modifier
             .padding(horizontal = Gomob.spacing.s20, vertical = Gomob.spacing.s12)
-            .fillMaxWidth()
-            .clip(Gomob.shapes.r3)
-            .background(Gomob.colors.bg1)
-            .let { if (onClick != null) it.clickable(onClick = onClick) else it }
-            .padding(Gomob.spacing.s16),
-    ) {
-        StatusTag(text = text, tone = tone, showDot = tone != StatusTone.Neutral)
-    }
-}
-
-@Composable
-private fun HelpInlineStatus(
-    text: String,
-    tone: StatusTone,
-    onClick: (() -> Unit)?,
-) {
-    Box(
-        Modifier
             .fillMaxWidth()
             .clip(Gomob.shapes.r3)
             .background(Gomob.colors.bg1)

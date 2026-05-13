@@ -40,7 +40,7 @@
             android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout|uiMode|navigation"
             android:screenOrientation="portrait"
             android:windowSoftInputMode="adjustResize"
-            android:theme="@style/Theme.Gomob">
+            android:theme="@style/Theme.Gomob.Launcher">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

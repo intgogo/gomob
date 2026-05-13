@@ -37,6 +37,7 @@ def main(out_dir: str) -> int:
         "S16.client_msg_id_idempotent",
         "S17.http_mark_read",
         "S18.http_conversation_list",
+        "S18b.sender_own_messages_not_unread",
         "S9.invite_offline",
         "S10.pending_delivered_on_reconnect",
         "S11.answer_relay",

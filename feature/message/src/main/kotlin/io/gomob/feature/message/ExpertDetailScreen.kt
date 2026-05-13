@@ -58,7 +58,7 @@ fun ExpertDetailRoute(
         BackHeader(
             title = content?.expert?.name ?: "专家详情",
             onBack = onBack,
-            eyebrow = "专家连线 · 固定专家",
+            eyebrow = "多人连线 · 协作成员",
         )
 
         Box(Modifier.weight(1f)) {

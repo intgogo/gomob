@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#0F172A</color>
+    <color name="ic_launcher_background">#04111C</color>
+    <color name="splash_background">#04111C</color>
+    <color name="splash_icon_background">#061A26</color>
 </resources>

@@ -7,6 +7,7 @@
 #   ./dev.sh release      编译 release APK
 #   ./dev.sh install      推到当前已连接设备（:app:installDebug）
 #   ./dev.sh run          install + 启动 MainActivity
+#   ./dev.sh up           一键启动开发服务栈 + ASR + 后台 devserver + adb reverse
 #   ./dev.sh test         跑全部单元测试（:test）
 #   ./dev.sh ci           简化 CI 链路：lint + test + assemble
 #   ./dev.sh clean        清理 build / .dev/
@@ -44,6 +45,7 @@ set -euo pipefail
 
 PROJ_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEV_DIR="$PROJ_DIR/.dev"
+PODMAN_CONTAINERS="gomob-pg gomob-redis gomob-nats gomob-minio"
 mkdir -p "$DEV_DIR" "$DEV_DIR/screenshots"
 
 if [[ -z "${ANDROID_HOME:-}" ]]; then
@@ -141,9 +143,169 @@ ensure_livekit_container() {
     echo "LiveKit dev server: 已创建并启动 gomob-livekit (--dev: devkey/secret)"
 }
 
+ensure_server_containers() {
+    if ! command -v podman >/dev/null 2>&1; then
+        echo "server up: podman 不可用，无法启动容器栈"
+        return 1
+    fi
+    podman start $PODMAN_CONTAINERS 2>&1 | tail -10
+    ensure_livekit_container
+}
+
+default_asr_url() {
+    echo "http://127.0.0.1:${GOMOB_ASR_PORT:-18091}"
+}
+
+asr_service_url() {
+    echo "${GOMOB_ASR_URL:-$(default_asr_url)}"
+}
+
+asr_health_code() {
+    local url
+    url="$(asr_service_url)"
+    curl -s -o /dev/null -w '%{http_code}' --max-time 2 "${url%/}/healthz" 2>/dev/null || true
+}
+
+ensure_asr_service() {
+    export GOMOB_ASR_URL
+    GOMOB_ASR_URL="$(asr_service_url)"
+
+    if [[ "${GOMOB_ENABLE_ASR:-1}" == "0" ]]; then
+        echo "ASR 服务: 已按 GOMOB_ENABLE_ASR=0 跳过"
+        unset GOMOB_ASR_URL
+        return 0
+    fi
+    if [[ "$(asr_health_code)" == "200" ]]; then
+        echo "ASR 服务: 已运行 ($GOMOB_ASR_URL)"
+        return 0
+    fi
+    if [[ "$GOMOB_ASR_URL" != "$(default_asr_url)" ]]; then
+        echo "ASR 服务: $GOMOB_ASR_URL 未就绪，且不是本地默认服务，无法代启动"
+        return 1
+    fi
+
+    "$PROJ_DIR/server/asr_service/scripts/run.sh"
+    if [[ "$(asr_health_code)" == "200" ]]; then
+        echo "ASR 服务: /healthz 200"
+        return 0
+    fi
+    echo "ASR 服务: 启动后健康检查失败"
+    return 1
+}
+
+devserver_health_code() {
+    curl -s -o /dev/null -w '%{http_code}' --max-time 1 http://127.0.0.1:18808/healthz 2>/dev/null || true
+}
+
+devserver_pid_from_port() {
+    ss -ltnp 2>/dev/null | rg ':18808\b' | rg -o 'pid=[0-9]+' | head -1 | cut -d= -f2 || true
+}
+
+running_devserver_asr_url() {
+    local pid="$1"
+    [[ -n "$pid" && -r "/proc/$pid/environ" ]] || return 0
+    tr '\0' '\n' < "/proc/$pid/environ" | rg '^GOMOB_ASR_URL=' | sed 's/^GOMOB_ASR_URL=//' || true
+}
+
+stop_devserver_background() {
+    local pid="${1:-}"
+    if [[ -z "$pid" && -f "$DEV_DIR/devserver.pid" ]]; then
+        pid="$(cat "$DEV_DIR/devserver.pid" 2>/dev/null || true)"
+    fi
+    [[ -n "$pid" ]] || pid="$(devserver_pid_from_port)"
+    [[ -n "$pid" ]] || return 0
+
+    local pgid
+    pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+    if [[ -n "$pgid" ]]; then
+        kill -- "-$pgid" 2>/dev/null || true
+    else
+        kill "$pid" 2>/dev/null || true
+    fi
+
+    for _ in $(seq 1 30); do
+        if ! ss -ltnp 2>/dev/null | rg -q ':18808\b'; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "devserver: 停止超时，当前仍监听 :18808"
+    return 1
+}
+
+start_devserver_background() {
+    if [[ "$(devserver_health_code)" == "200" ]]; then
+        local pid running_asr
+        pid="$(devserver_pid_from_port)"
+        running_asr="$(running_devserver_asr_url "$pid")"
+        if [[ -n "${GOMOB_ASR_URL:-}" && "$running_asr" != "$GOMOB_ASR_URL" ]]; then
+            echo "devserver: 已运行但 ASR 配置不一致，重启接入 $GOMOB_ASR_URL"
+            stop_devserver_background "$pid"
+        else
+            echo "devserver: 已运行 (:18808)"
+            return 0
+        fi
+    fi
+    if [[ "$(devserver_health_code)" == "200" ]]; then
+        echo "devserver: 已运行 (:18808)"
+        return 0
+    fi
+    mkdir -p "$DEV_DIR"
+    : > "$DEV_DIR/devserver.log"
+    setsid bash -c 'cd "$1" && exec env GOMOB_ASR_URL="$3" ./dev.sh server run >> "$2/devserver.log" 2>&1' \
+        bash "$PROJ_DIR" "$DEV_DIR" "${GOMOB_ASR_URL:-}" < /dev/null > /dev/null 2>&1 &
+    echo $! > "$DEV_DIR/devserver.pid"
+    echo "devserver: 后台启动 pid=$(cat "$DEV_DIR/devserver.pid") log=$DEV_DIR/devserver.log"
+}
+
+wait_devserver_health() {
+    local timeout="${1:-60}"
+    local pid=""
+    [[ -f "$DEV_DIR/devserver.pid" ]] && pid="$(cat "$DEV_DIR/devserver.pid" 2>/dev/null || true)"
+    for _ in $(seq 1 "$timeout"); do
+        if [[ "$(devserver_health_code)" == "200" ]]; then
+            echo "devserver: /healthz 200"
+            return 0
+        fi
+        if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+            echo "devserver: 启动进程已退出，最近日志："
+            tail -120 "$DEV_DIR/devserver.log" 2>/dev/null || true
+            return 1
+        fi
+        sleep 1
+    done
+    echo "devserver: 等待 /healthz 超时，最近日志："
+    tail -160 "$DEV_DIR/devserver.log" 2>/dev/null || true
+    return 1
+}
+
+dev_up() {
+    echo "── server containers ──"
+    ensure_server_containers
+    echo
+    echo "── ASR service ──"
+    ensure_asr_service
+    echo
+    echo "── devserver ──"
+    start_devserver_background
+    wait_devserver_health 60
+    echo
+    echo "── adb reverse ──"
+    ensure_dev_reverse
+    echo
+    echo "开发服务已就绪："
+    echo "  gateway: http://127.0.0.1:18808"
+    echo "  health:  http://127.0.0.1:18808/healthz"
+    [[ -n "${GOMOB_ASR_URL:-}" ]] && echo "  asr:     $GOMOB_ASR_URL"
+    echo "  log:     $DEV_DIR/devserver.log"
+}
+
 case "$cmd" in
     doctor)
         doctor
+        ;;
+    up|start|dev-up)
+        dev_up
         ;;
     build)
         "$GRADLEW" :app:assembleDebug "$@" 2>&1 | tee "$DEV_DIR/build.log"
@@ -207,10 +369,9 @@ case "$cmd" in
         sub="${1:-doctor}"; shift || true
         # 容器栈统一走 podman（4 个 named-volume 持久容器 gomob-pg/redis/nats/minio）。
         # podman 出 OCI 标准镜像，部署到任意容器引擎都行 — 不再二分 dev/prod 运行时。
-        PODMAN_CONTAINERS="gomob-pg gomob-redis gomob-nats gomob-minio"
         case "$sub" in
             doctor)  "$PROJ_DIR/server/scripts/server-doctor.sh" ;;
-            up)      podman start $PODMAN_CONTAINERS 2>&1 | tail -10; ensure_livekit_container ;;
+            up)      ensure_server_containers ;;
             down)    podman stop  $PODMAN_CONTAINERS gomob-livekit 2>&1 | tail -10 || true ;;
             ps)      podman ps -a --filter name=gomob- \
                          --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' ;;

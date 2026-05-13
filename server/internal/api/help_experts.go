@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -178,7 +179,8 @@ func (h *Handler) isActiveHelpExpert(ctx context.Context, userID int64) (bool, e
 }
 
 type openP2PConversationReq struct {
-	PeerUserID string `json:"peer_user_id"`
+	PeerUserID     string `json:"peer_user_id"`
+	PeerEmployeeID string `json:"peer_employee_id"`
 }
 
 func (h *Handler) OpenP2PConversation(w http.ResponseWriter, r *http.Request) {
@@ -197,7 +199,7 @@ func (h *Handler) OpenP2PConversation(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, httpx.ErrBadParam)
 		return
 	}
-	peerID, err := strconv.ParseInt(req.PeerUserID, 10, 64)
+	peerID, err := h.resolvePeerUserID(r.Context(), req.PeerUserID, req.PeerEmployeeID)
 	if err != nil || peerID <= 0 || peerID == uid {
 		httpx.WriteError(w, httpx.ErrBadParam)
 		return
@@ -232,6 +234,25 @@ func (h *Handler) OpenP2PConversation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpx.OK(w, toConversationDTO(summary))
+}
+
+func (h *Handler) resolvePeerUserID(ctx context.Context, rawUserID, rawEmployeeID string) (int64, error) {
+	if trimmed := strings.TrimSpace(rawUserID); trimmed != "" {
+		return strconv.ParseInt(trimmed, 10, 64)
+	}
+	employeeID := strings.TrimSpace(rawEmployeeID)
+	if employeeID == "" {
+		return 0, httpx.ErrBadParam
+	}
+	var peerID int64
+	err := h.pool.QueryRow(ctx,
+		`SELECT id FROM users WHERE employee_id = $1 AND status = 'active' LIMIT 1`,
+		employeeID,
+	).Scan(&peerID)
+	if err != nil {
+		return 0, err
+	}
+	return peerID, nil
 }
 
 func (h *Handler) OpenHelpRoom(w http.ResponseWriter, r *http.Request) {

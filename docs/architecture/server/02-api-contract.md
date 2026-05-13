@@ -462,6 +462,7 @@ Body：原始字节流（非 multipart，简化）。Header：`Content-Length: <
 
 服务端按 `(sender_id, client_msg_id)` 幂等；同一客户端重试不会重复分配 `server_seq`，
 也不会重复推送给收件人。
+会话未读数只统计当前用户 `last_read_seq` 之后的他人/系统消息；自己发出的消息不制造未读。
 
 ### 7.4 标记已读
 
@@ -478,6 +479,21 @@ Body：原始字节流（非 multipart，简化）。Header：`Content-Length: <
   "conversation_id": "1",
   "last_read_seq": 1234,
   "unread_count": 0
+}
+```
+
+### 7.5 退出群聊
+
+`POST /v1/conversations/:id/leave`
+
+仅 `kind=group` 会话支持。服务端移除当前用户在该会话的成员关系和成员状态；历史消息不删除，仍对其它成员可见。
+
+返回：
+
+```json
+{
+  "conversation_id": "1",
+  "left": true
 }
 ```
 

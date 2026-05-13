@@ -20,9 +20,23 @@ export PYTHONPATH="$GOMOB_FIRERED_ASR2S_REPO${PYTHONPATH:+:$PYTHONPATH}"
 
 log="$DEV_DIR/asr-service.log"
 pidfile="$DEV_DIR/asr-service.pid"
+health_url="http://127.0.0.1:${GOMOB_ASR_PORT:-18091}/healthz"
 if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
-    echo "ASR 服务已运行: pid=$(cat "$pidfile") log=$log"
-    exit 0
+    if curl -fsS "$health_url" >/tmp/gomob-asr-health.json 2>/dev/null; then
+        cat /tmp/gomob-asr-health.json
+        echo
+        echo "ASR 服务已运行: pid=$(cat "$pidfile") log=$log"
+        exit 0
+    fi
+    echo "ASR 服务进程存在但健康检查未通过，重启: pid=$(cat "$pidfile")"
+    kill "$(cat "$pidfile")" 2>/dev/null || true
+    for _ in $(seq 1 20); do
+        kill -0 "$(cat "$pidfile")" 2>/dev/null || break
+        sleep 1
+    done
+    if kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+        kill -9 "$(cat "$pidfile")" 2>/dev/null || true
+    fi
 fi
 
 setsid bash -c 'cd "$1/server/asr_service" && exec "$2" app.py' _ "$ROOT" "$GOMOB_ASR_PYTHON" >"$log" 2>&1 < /dev/null &
@@ -35,10 +49,10 @@ for _ in $(seq 1 180); do
         tail -n 80 "$log" >&2 || true
         exit 1
     fi
-    if curl -fsS "http://127.0.0.1:${GOMOB_ASR_PORT:-18091}/healthz" >/tmp/gomob-asr-health.json 2>/dev/null; then
+    if curl -fsS "$health_url" >/tmp/gomob-asr-health.json 2>/dev/null; then
         cat /tmp/gomob-asr-health.json
         echo
-        echo "ASR 服务已就绪: http://127.0.0.1:${GOMOB_ASR_PORT:-18091}"
+        echo "ASR 服务已就绪: ${health_url%/healthz}"
         exit 0
     fi
     sleep 1

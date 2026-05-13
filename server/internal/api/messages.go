@@ -364,6 +364,35 @@ func (h *Handler) MarkConversationRead(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) LeaveConversation(w http.ResponseWriter, r *http.Request) {
+	uid := callerUserID(r)
+	if uid == 0 {
+		httpx.WriteError(w, httpx.ErrTokenInvalid)
+		return
+	}
+	id, err := parsePathID(r, "id")
+	if err != nil {
+		httpx.WriteError(w, httpx.ErrBadParam)
+		return
+	}
+	if err := h.conversations.LeaveGroup(r.Context(), id, uid); err != nil {
+		switch {
+		case errors.Is(err, repo.ErrNotFound):
+			httpx.WriteError(w, httpx.ErrPermDenied)
+		case strings.Contains(err.Error(), "群聊") || strings.Contains(err.Error(), "参数"):
+			httpx.WriteError(w, httpx.ErrBadParam)
+		default:
+			httpx.WriteError(w, httpx.ErrInternal)
+		}
+		return
+	}
+	h.recordAudit(r, "message.conversation.leave", "conversation:"+strconv.FormatInt(id, 10), nil, nil)
+	httpx.OK(w, map[string]any{
+		"conversation_id": strconv.FormatInt(id, 10),
+		"left":            true,
+	})
+}
+
 func toConversationDTO(s *repo.ConversationSummary) conversationDTO {
 	dto := conversationDTO{
 		ID:          strconv.FormatInt(s.Conversation.ID, 10),

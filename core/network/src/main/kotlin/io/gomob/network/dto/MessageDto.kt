@@ -121,7 +121,8 @@ data class CallInviteResponse(
 
 @Serializable
 data class OpenDirectConversationRequest(
-    @SerialName("peer_user_id") val peerUserId: String,
+    @SerialName("peer_user_id") val peerUserId: String? = null,
+    @SerialName("peer_employee_id") val peerEmployeeId: String? = null,
 )
 
 @Serializable
@@ -134,4 +135,10 @@ data class MarkReadResponse(
     @SerialName("conversation_id") val conversationId: String,
     @SerialName("last_read_seq") val lastReadSeq: Long,
     @SerialName("unread_count") val unreadCount: Long,
+)
+
+@Serializable
+data class LeaveConversationResponse(
+    @SerialName("conversation_id") val conversationId: String,
+    val left: Boolean,
 )

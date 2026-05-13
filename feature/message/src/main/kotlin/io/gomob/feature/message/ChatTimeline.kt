@@ -38,13 +38,14 @@ internal fun buildChatTimeline(messages: List<MessageBubbleUi>): List<ChatTimeli
             (index == 0 || (currentMillis != null && previousMillis != null &&
                 currentMillis - previousMillis > CHAT_TIME_GAP_MILLIS))
         if (shouldShowTime) {
+            val stableKey = bubble.timelineStableKey()
             items += ChatTimelineItem.TimeDivider(
-                key = "time:${bubble.localKey}",
+                key = "time:$stableKey",
                 label = bubble.timeDividerLabel,
             )
         }
         items += ChatTimelineItem.Message(
-            key = "message:${bubble.localKey}",
+            key = "message:${bubble.timelineStableKey()}",
             bubble = bubble,
         )
         if (currentMillis != null) {
@@ -53,6 +54,14 @@ internal fun buildChatTimeline(messages: List<MessageBubbleUi>): List<ChatTimeli
     }
     return items
 }
+
+internal fun MessageBubbleUi.timelineStableKey(): String =
+    clientMsgId
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+        ?.let { "client:$it" }
+        ?: serverId?.let { "server:$it" }
+        ?: localKey
 
 @Composable
 internal fun ChatTimeDivider(label: String) {

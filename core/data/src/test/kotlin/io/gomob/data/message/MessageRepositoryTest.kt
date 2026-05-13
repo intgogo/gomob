@@ -21,6 +21,7 @@ import io.gomob.network.dto.HelpExpertCaseDto
 import io.gomob.network.dto.HelpExpertCaseListResponse
 import io.gomob.network.dto.HelpExpertDto
 import io.gomob.network.dto.HelpExpertListResponse
+import io.gomob.network.dto.LeaveConversationResponse
 import io.gomob.network.dto.MarkReadRequest
 import io.gomob.network.dto.MarkReadResponse
 import io.gomob.network.dto.MessageDto
@@ -99,6 +100,46 @@ class MessageRepositoryTest {
         assertThat(saved.serverId).isEqualTo(101)
         assertThat(saved.serverSeq).isEqualTo(5)
         assertThat(saved.status).isEqualTo(MessageStatus.Sent.name)
+    }
+
+    @Test
+    fun sendImageShowsLocalUriImmediatelyButSendsOnlyAssetPayload() = runTest {
+        val api = FakeMessageApi()
+        val messageDao = FakeMessageDao()
+        val uploader = FakeMediaAssetUploader()
+        val repository = MessageRepository(
+            api = api,
+            mediaAssetUploader = uploader,
+            conversationDao = FakeConversationDao(),
+            messageDao = messageDao,
+            json = Json { ignoreUnknownKeys = true },
+        )
+        val localUri = "content://io.gomob.scan.debug.message.fileprovider/message_captures/capture.jpg"
+
+        val clientMsgId = repository.sendLocalImage(
+            conversationId = 9,
+            localUri = localUri,
+            uploadAsset = {
+                uploader.uploadedKinds += MediaAssetKind.Image
+                fakeUploadedAsset().copy(
+                    objectKey = "orphan/${MediaAssetKind.Image.serverKind}/901.bin",
+                    mime = MediaAssetKind.Image.fallbackMime,
+                )
+            },
+        )
+
+        assertThat(uploader.uploadedKinds).containsExactly(MediaAssetKind.Image)
+        val request = api.sentRequests.single()
+        assertThat(request.kind).isEqualTo("image")
+        assertThat(request.payload.toString()).contains("\"media_state\":\"ready\"")
+        assertThat(request.payload.toString()).contains("\"asset_id\":\"901\"")
+        assertThat(request.payload.toString()).doesNotContain("local_uri")
+        val saved = messageDao.items.single()
+        assertThat(saved.clientMsgId).isEqualTo(clientMsgId)
+        assertThat(saved.localKey).isEqualTo("s:101")
+        assertThat(saved.status).isEqualTo(MessageStatus.Sent.name)
+        assertThat(saved.payloadJson).contains("\"local_uri\":\"$localUri\"")
+        assertThat(saved.payloadJson).contains("\"download_url\":\"http://example.test/901\"")
     }
 
     @Test
@@ -368,6 +409,65 @@ class MessageRepositoryTest {
     }
 
     @Test
+    fun refreshMessagesKeepsLocalImageDisplayFieldsWhenServerPayloadIsSparse() = runTest {
+        val localUri = "content://io.gomob.scan.debug.message.fileprovider/message_captures/capture.jpg"
+        val messageDao = FakeMessageDao()
+        messageDao.upsertMessage(
+            MessageEntity(
+                localKey = "s:303",
+                serverId = 303,
+                conversationId = 9,
+                serverSeq = 7,
+                senderId = 1,
+                kind = "image",
+                payloadJson = buildJsonObject {
+                    put("media_state", "ready")
+                    put("asset_id", "901")
+                    put("download_url", "http://example.test/901")
+                    put("local_uri", localUri)
+                    put("mime", "image/jpeg")
+                }.toString(),
+                preview = "[图片]",
+                clientMsgId = "img-1",
+                status = MessageStatus.Sent.name,
+                createdAt = "2026-05-08T12:00:00Z",
+                editedAt = null,
+            ),
+        )
+        val repository = MessageRepository(
+            api = FakeMessageApi(
+                messages = listOf(
+                    MessageDto(
+                        id = "303",
+                        conversationId = "9",
+                        serverSeq = 7,
+                        senderId = "1",
+                        kind = "image",
+                        payload = buildJsonObject {
+                            put("media_state", "ready")
+                            put("asset_id", "901")
+                        },
+                        clientMsgId = "img-1",
+                        createdAt = "2026-05-08T12:00:01Z",
+                    ),
+                ),
+            ),
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = FakeConversationDao(),
+            messageDao = messageDao,
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        repository.refreshMessages(conversationId = 9)
+
+        val saved = messageDao.items.single()
+        assertThat(saved.localKey).isEqualTo("s:303")
+        assertThat(saved.payloadJson).contains("\"local_uri\":\"$localUri\"")
+        assertThat(saved.payloadJson).contains("\"download_url\":\"http://example.test/901\"")
+        assertThat(saved.payloadJson).contains("\"mime\":\"image/jpeg\"")
+    }
+
+    @Test
     fun fullRefreshMessagesPrunesCachedServerMessagesBeforeLatestWindow() = runTest {
         val messageDao = FakeMessageDao()
         messageDao.upsertMessage(
@@ -546,6 +646,46 @@ class MessageRepositoryTest {
     }
 
     @Test
+    fun warmRecentConversationSnapshotsCachesLocalListBeforeNetwork() = runTest {
+        val lastMessage = MessageEntity(
+            localKey = "s:101",
+            serverId = 101,
+            conversationId = 9,
+            serverSeq = 5,
+            senderId = 2,
+            kind = "text",
+            payloadJson = "{}",
+            preview = "本地会话列表先显示",
+            clientMsgId = null,
+            status = MessageStatus.Sent.name,
+            createdAt = "2026-05-08T12:00:00Z",
+            editedAt = null,
+        )
+        val messageDao = FakeMessageDao()
+        messageDao.upsertMessage(lastMessage)
+        val repository = MessageRepository(
+            api = FakeMessageApi(),
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = FakeConversationDao(
+                initialConversations = listOf(
+                    ConversationWithLastMessage(
+                        conversation = conversationEntity(id = 9).copy(lastMessageLocalKey = lastMessage.localKey),
+                        lastMessage = lastMessage,
+                    ),
+                ),
+            ),
+            messageDao = messageDao,
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        repository.warmRecentConversationSnapshots()
+
+        assertThat(repository.cachedConversations().map { it.id }).containsExactly(9L)
+        assertThat(repository.cachedConversations().single().lastMessage?.preview).isEqualTo("本地会话列表先显示")
+        assertThat(repository.cachedMessages(9).map { it.preview }).containsExactly("本地会话列表先显示")
+    }
+
+    @Test
     fun helpExpertsMapServerFixedExperts() = runTest {
         val repository = MessageRepository(
             api = FakeMessageApi(
@@ -660,6 +800,49 @@ class MessageRepositoryTest {
         assertThat(conversation.title).isEqualTo("在线求助")
         assertThat(conversation.subjectKind).isEqualTo("online_help")
         assertThat(conversationDao.upsertedSingle?.id).isEqualTo(77)
+    }
+
+    @Test
+    fun openHelpRoomSeedsMultiLineGroupRoomsWithMessages() = runTest {
+        val conversationDao = FakeConversationDao()
+        val messageDao = FakeMessageDao()
+        val repository = MessageRepository(
+            api = FakeMessageApi(),
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = conversationDao,
+            messageDao = messageDao,
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        repository.openHelpRoom()
+
+        val reviewRoom = conversationDao.findById(9_990_101L)
+        assertThat(reviewRoom?.kind).isEqualTo("group")
+        assertThat(reviewRoom?.title).isEqualTo("查验复核群")
+        assertThat(reviewRoom?.lastMessageLocalKey).isEqualTo("ml:9990101:4")
+        assertThat(messageDao.items.filter { it.conversationId in 9_990_101L..9_990_105L }).hasSize(17)
+        assertThat(messageDao.items.mapNotNull { it.preview })
+            .contains("外廓尺寸复核结论已同步，请值班员确认。")
+    }
+
+    @Test
+    fun refreshMessagesForLocalMultiLineRoomUsesSeededHistoryOnly() = runTest {
+        val api = FakeMessageApi()
+        val conversationDao = FakeConversationDao()
+        val messageDao = FakeMessageDao()
+        val repository = MessageRepository(
+            api = api,
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = conversationDao,
+            messageDao = messageDao,
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        repository.refreshMessages(conversationId = 9_990_104L)
+
+        assertThat(api.messageSinceSeqRequests).isEmpty()
+        assertThat(conversationDao.findById(9_990_104L)?.title).isEqualTo("3D 重建会审群")
+        assertThat(messageDao.items.filter { it.conversationId == 9_990_104L }).hasSize(4)
     }
 
     @Test
@@ -812,6 +995,158 @@ class MessageRepositoryTest {
         assertThat(saved.payloadJson).contains("真机收到的实时消息")
         assertThat(conversationDao.lastRecorded?.localKey).isEqualTo("s:302")
         assertThat(conversationDao.lastRecorded?.incrementUnread).isTrue()
+    }
+
+    @Test
+    fun realtimeReceivedForLocalImageKeepsLocalDisplayPayload() = runTest {
+        val localUri = "content://io.gomob.scan.debug.message.fileprovider/message_captures/capture.jpg"
+        val conversationDao = FakeConversationDao(
+            initialConversations = listOf(
+                ConversationWithLastMessage(
+                    conversation = conversationEntity(id = 9),
+                    lastMessage = null,
+                ),
+            ),
+        )
+        val messageDao = FakeMessageDao()
+        messageDao.upsertMessage(
+            pendingMessageEntity(
+                conversationId = 9,
+                kind = "image",
+                payload = buildJsonObject {
+                    put("media_state", "ready")
+                    put("asset_id", "901")
+                    put("download_url", "http://example.test/901")
+                    put("local_uri", localUri)
+                    put("mime", "image/jpeg")
+                },
+                preview = "[图片]",
+                clientMsgId = "img-1",
+                now = "2026-05-08T12:00:00Z",
+            ),
+        )
+        val repository = MessageRepository(
+            api = FakeMessageApi(),
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = conversationDao,
+            messageDao = messageDao,
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        repository.applyRealtimeEvent(
+            RealtimeEvent.MessageReceived(
+                messageId = 303,
+                conversationId = 9,
+                serverSeq = 8,
+                senderId = 1,
+                kind = "image",
+                content = buildJsonObject {
+                    put("media_state", "ready")
+                    put("asset_id", "901")
+                },
+                clientMsgId = "img-1",
+                createdAt = "2026-05-08T12:00:01Z",
+            ),
+        )
+
+        val saved = messageDao.items.single()
+        assertThat(saved.localKey).isEqualTo("s:303")
+        assertThat(saved.status).isEqualTo(MessageStatus.Sent.name)
+        assertThat(saved.payloadJson).contains("\"local_uri\":\"$localUri\"")
+        assertThat(saved.payloadJson).contains("\"download_url\":\"http://example.test/901\"")
+        assertThat(saved.payloadJson).contains("\"mime\":\"image/jpeg\"")
+        assertThat(conversationDao.lastRecorded?.incrementUnread).isFalse()
+    }
+
+    @Test
+    fun realtimeReceivedKnownServerMessageDoesNotIncrementUnreadAgain() = runTest {
+        val conversationDao = FakeConversationDao(
+            initialConversations = listOf(
+                ConversationWithLastMessage(
+                    conversation = conversationEntity(id = 9),
+                    lastMessage = null,
+                ),
+            ),
+        )
+        val messageDao = FakeMessageDao()
+        messageDao.upsertServerMessages(
+            listOf(
+                MessageEntity(
+                    localKey = "s:302",
+                    serverId = 302,
+                    conversationId = 9,
+                    serverSeq = 7,
+                    senderId = 31,
+                    kind = "text",
+                    payloadJson = """{"text":"重复实时消息"}""",
+                    preview = "重复实时消息",
+                    clientMsgId = "peer-1",
+                    status = MessageStatus.Sent.name,
+                    createdAt = "2026-05-08T12:00:02Z",
+                    editedAt = null,
+                ),
+            ),
+        )
+        val repository = MessageRepository(
+            api = FakeMessageApi(),
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = conversationDao,
+            messageDao = messageDao,
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        repository.applyRealtimeEvent(
+            RealtimeEvent.MessageReceived(
+                messageId = 302,
+                conversationId = 9,
+                serverSeq = 7,
+                senderId = 31,
+                kind = "text",
+                content = buildJsonObject { put("text", "重复实时消息") },
+                clientMsgId = "peer-1",
+                createdAt = "2026-05-08T12:00:02Z",
+            ),
+        )
+
+        assertThat(messageDao.items).hasSize(1)
+        assertThat(conversationDao.lastRecorded?.incrementUnread).isFalse()
+        assertThat(conversationDao.findById(9)?.unreadCount).isEqualTo(0)
+    }
+
+    @Test
+    fun realtimeReceivedOlderThanReadSeqDoesNotReopenUnread() = runTest {
+        val conversationDao = FakeConversationDao(
+            initialConversations = listOf(
+                ConversationWithLastMessage(
+                    conversation = conversationEntity(id = 9).copy(lastReadSeq = 10),
+                    lastMessage = null,
+                ),
+            ),
+        )
+        val messageDao = FakeMessageDao()
+        val repository = MessageRepository(
+            api = FakeMessageApi(),
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = conversationDao,
+            messageDao = messageDao,
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        repository.applyRealtimeEvent(
+            RealtimeEvent.MessageReceived(
+                messageId = 302,
+                conversationId = 9,
+                serverSeq = 7,
+                senderId = 31,
+                kind = "text",
+                content = buildJsonObject { put("text", "已读水位内消息") },
+                clientMsgId = "peer-1",
+                createdAt = "2026-05-08T12:00:02Z",
+            ),
+        )
+
+        assertThat(conversationDao.lastRecorded?.incrementUnread).isFalse()
+        assertThat(conversationDao.findById(9)?.unreadCount).isEqualTo(0)
     }
 
     @Test
@@ -1024,6 +1359,7 @@ private class FakeMessageApi(
     val callInviteRequests = mutableListOf<CreateCallInviteRequest>()
     val transcriptRetryRequests = mutableListOf<String>()
     val draftTranscribeRequests = mutableListOf<TranscribeDraftVoiceRequest>()
+    val leaveConversationRequests = mutableListOf<String>()
 
     override suspend fun conversations(cursor: String?, limit: Int): Envelope<ConversationListResponse> =
         Envelope(code = 0, data = ConversationListResponse(items = conversations))
@@ -1179,6 +1515,17 @@ private class FakeMessageApi(
                 unreadCount = 0,
             ),
         )
+
+    override suspend fun leaveConversation(conversationId: String): Envelope<LeaveConversationResponse> {
+        leaveConversationRequests += conversationId
+        return Envelope(
+            code = 0,
+            data = LeaveConversationResponse(
+                conversationId = conversationId,
+                left = true,
+            ),
+        )
+    }
 }
 
 private class FakeConversationDao(
@@ -1273,6 +1620,8 @@ private class FakeMessageDao : MessageDao {
     private val messagesFlow = MutableStateFlow<List<MessageEntity>>(emptyList())
 
     override fun observeMessages(conversationId: Long): Flow<List<MessageEntity>> = messagesFlow
+
+    override fun observeRecentSearchMessages(limit: Int): Flow<List<MessageEntity>> = messagesFlow
 
     override suspend fun recentMessages(conversationId: Long, limit: Int): List<MessageEntity> =
         items

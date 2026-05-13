@@ -1,7 +1,11 @@
 package io.gomob.feature.message
 
+import android.content.Context
+import android.graphics.BitmapFactory
+import android.net.Uri
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -11,6 +15,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -29,14 +34,19 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -53,6 +63,11 @@ import io.gomob.designsystem.component.StatusTone
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.model.message.MessageStatus
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.net.URL
+import java.util.LinkedHashMap
 
 @Composable
 internal fun ChatMessageRow(
@@ -62,6 +77,8 @@ internal fun ChatMessageRow(
     onOpenInspection: (String) -> Unit = {},
     onOpenUserDetail: (String) -> Unit = {},
     onAcceptCall: (CallInviteUi) -> Unit = {},
+    onStartVideoCall: (String?) -> Unit = {},
+    onOpenImage: (MessageBubbleUi) -> Unit = {},
     favorite: Boolean = false,
     selected: Boolean = false,
     multiSelectMode: Boolean = false,
@@ -138,7 +155,11 @@ internal fun ChatMessageRow(
                     Box(
                         Modifier.messageActionTouch(
                             onClick = {
-                                if (multiSelectMode) onToggleSelected()
+                                when {
+                                    multiSelectMode -> onToggleSelected()
+                                    bubble.canOpenImagePreview() -> onOpenImage(bubble)
+                                    bubble.canRedialVideoCall() -> onStartVideoCall(bubble.videoCallRedialTitle())
+                                }
                             },
                             onLongPress = { actionPanelOpen = true },
                         ),
@@ -213,7 +234,13 @@ private fun ChatBubble(
     val call = bubble.callInvite
     val callResult = bubble.callResult
 
-    if (bubble.isImageOrVideoFile()) {
+    if (bubble.kind == "image") {
+        ImageMessageBubble(
+            bubble = bubble,
+            maxWidth = maxWidth,
+            textColor = textColor,
+        )
+    } else if (bubble.kind == "video_clip") {
         MediaFileMessageBubble(
             bubble = bubble,
             maxWidth = maxWidth,
@@ -259,6 +286,64 @@ private fun ChatBubble(
             maxWidth = maxWidth,
             bubbleBg = bubbleBg,
             textColor = textColor,
+        )
+    }
+}
+
+@Composable
+private fun ImageMessageBubble(
+    bubble: MessageBubbleUi,
+    maxWidth: Dp,
+    textColor: Color,
+) {
+    val source = bubble.media?.imageSource
+    val imageState by rememberMessageImage(source)
+    val imageWidth = if (maxWidth < ImageMessageMinWidth) maxWidth else minOf(maxWidth, ImageMessageMaxWidth)
+    val imageHeight = imageWidth * 1.28f
+
+    Box(
+        Modifier
+            .width(imageWidth)
+            .height(imageHeight)
+            .clip(Gomob.shapes.r2)
+            .background(ImageMessageBg),
+        contentAlignment = Alignment.Center,
+    ) {
+        when (val state = imageState) {
+            is MessageImageLoadState.Ready -> {
+                Image(
+                    bitmap = state.bitmap,
+                    contentDescription = "照片消息",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+            MessageImageLoadState.Empty,
+            MessageImageLoadState.Failed,
+            MessageImageLoadState.Loading -> ImageMessagePlaceholder(
+                text = imagePlaceholderText(bubble, imageState),
+                textColor = textColor,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ImageMessagePlaceholder(
+    text: String,
+    textColor: Color,
+) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Gomob.colors.bg1),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text,
+            style = Gomob.type.caption,
+            color = textColor.copy(alpha = 0.62f),
+            maxLines = 1,
         )
     }
 }
@@ -331,8 +416,105 @@ private fun MediaFileMessageBubble(
     }
 }
 
-private fun MessageBubbleUi.isImageOrVideoFile(): Boolean =
-    kind == "image" || kind == "video_clip"
+@Composable
+internal fun rememberMessageImage(source: String?): androidx.compose.runtime.State<MessageImageLoadState> {
+    val context = LocalContext.current
+    val normalized = source?.trim().orEmpty()
+    val cached = remember(normalized) {
+        normalized.takeIf { it.isNotBlank() }?.let(MessageImageBitmapCache::get)
+    }
+    return produceState<MessageImageLoadState>(
+        initialValue = when {
+            normalized.isBlank() -> MessageImageLoadState.Empty
+            cached != null -> MessageImageLoadState.Ready(cached)
+            else -> MessageImageLoadState.Loading
+        },
+        normalized,
+    ) {
+        if (normalized.isBlank()) {
+            value = MessageImageLoadState.Empty
+            return@produceState
+        }
+        MessageImageBitmapCache.get(normalized)?.let { bitmap ->
+            value = MessageImageLoadState.Ready(bitmap)
+            return@produceState
+        }
+        if (value !is MessageImageLoadState.Ready) {
+            value = MessageImageLoadState.Loading
+        }
+        val bitmap = withContext(Dispatchers.IO) {
+            runCatching { loadMessageImageBitmap(context, normalized) }
+                .getOrNull()
+        }
+        value = if (bitmap != null) {
+            MessageImageBitmapCache.put(normalized, bitmap)
+            MessageImageLoadState.Ready(bitmap)
+        } else {
+            MessageImageLoadState.Failed
+        }
+    }
+}
+
+internal sealed interface MessageImageLoadState {
+    data object Empty : MessageImageLoadState
+    data object Loading : MessageImageLoadState
+    data object Failed : MessageImageLoadState
+    data class Ready(val bitmap: ImageBitmap) : MessageImageLoadState
+}
+
+private fun loadMessageImageBitmap(context: Context, source: String): ImageBitmap? {
+    val bitmap = when {
+        source.startsWith("http://", ignoreCase = true) ||
+            source.startsWith("https://", ignoreCase = true) -> {
+            URL(source).openStream().use { BitmapFactory.decodeStream(it) }
+        }
+        else -> {
+            val uri = Uri.parse(source)
+            when (uri.scheme?.lowercase()) {
+                "file" -> File(uri.path.orEmpty()).inputStream().use { BitmapFactory.decodeStream(it) }
+                "content" -> context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+                else -> File(source).takeIf { it.exists() }?.inputStream()?.use { BitmapFactory.decodeStream(it) }
+                    ?: context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+            }
+        }
+    }
+    return bitmap?.asImageBitmap()
+}
+
+private fun imagePlaceholderText(
+    bubble: MessageBubbleUi,
+    imageState: MessageImageLoadState,
+): String = when {
+    bubble.media?.mediaState == "awaiting_asset_upload" || bubble.status == MessageStatus.Pending -> "照片上传中"
+    imageState == MessageImageLoadState.Failed -> "照片暂不可显示"
+    imageState == MessageImageLoadState.Loading -> "照片加载中"
+    else -> "照片暂不可显示"
+}
+
+private val ImageMessageMinWidth = 136.dp
+private val ImageMessageMaxWidth = 188.dp
+private val ImageMessageBg = Color(0xFF111418)
+private const val MessageImageCacheMaxSize = 48
+
+private object MessageImageBitmapCache {
+    private val lock = Any()
+    private val values = LinkedHashMap<String, ImageBitmap>(MessageImageCacheMaxSize, 0.75f, true)
+
+    fun get(source: String): ImageBitmap? = synchronized(lock) {
+        values[source]
+    }
+
+    fun put(source: String, bitmap: ImageBitmap) = synchronized(lock) {
+        values[source] = bitmap
+        while (values.size > MessageImageCacheMaxSize) {
+            val firstKey = values.keys.firstOrNull() ?: return@synchronized
+            values.remove(firstKey)
+        }
+    }
+}
+
+internal fun MessageBubbleUi.canOpenImagePreview(): Boolean =
+    kind == "image" && !media?.imageSource.isNullOrBlank()
 
 private fun MessageBubbleUi.quickActions(): List<MessageQuickAction> =
     MessageQuickAction.values()
@@ -343,6 +525,20 @@ private fun MessageBubbleUi.canRequestVoiceTranscript(): Boolean =
         serverId != null &&
         serverId > 0 &&
         (voiceTranscript == null || voiceTranscript.status == "failed")
+
+internal fun MessageBubbleUi.canRedialVideoCall(): Boolean {
+    val invite = callInvite
+    val result = callResult
+    return when {
+        invite != null -> !invite.ringing && invite.status != "active"
+        result != null -> result.kind == "video_call"
+        else -> false
+    }
+}
+
+internal fun MessageBubbleUi.videoCallRedialTitle(): String? =
+    callInvite?.title
+        ?: callResult?.takeIf { it.kind == "video_call" }?.title
 
 @OptIn(ExperimentalFoundationApi::class)
 private fun Modifier.messageActionTouch(

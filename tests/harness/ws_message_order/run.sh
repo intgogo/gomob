@@ -15,6 +15,7 @@
 #   S16  同 client_msg_id 重发 → server_seq 不重复，收件人只收到一次
 #   S17  HTTP 标记已读 → unread_count=0
 #   S18  HTTP 会话列表 → last_message 与最新消息一致
+#   S18b 发送方会话列表 → 自己发出的消息不制造未读
 #   S9   B 离线时 A 发 call.invite → invite_ack online=false
 #   S10  B 重连 → 5s 内收到 pending invite (pending=true)
 #   S11  call.answer 透传到主叫

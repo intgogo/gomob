@@ -50,6 +50,7 @@ Down migration 必须按 FK 反向删除。
 - `ListConversationsForUser(ctx, userID, cursor, limit)`：返回会话、成员、最后一条消息、未读数。
 - `AppendIdempotent(ctx, msg, clientMsgID)`：同一 `sender_id + client_msg_id` 重发返回原消息，不重新分配 `server_seq`。
 - `MarkRead(ctx, conversationID, userID, lastReadSeq)`：只允许成员更新自己的已读水位。
+- `UnreadCount(ctx, conversationID, userID)`：只统计 `last_read_seq` 之后的他人/系统消息，自己发出的消息不制造未读。
 - `EnsureMemberState(ctx, conversationID, userID)`：创建会话成员时同步建 state。
 - `GetOrCreateSubjectGroup(ctx, title, subjectKind, subjectID, memberIDs)`：按业务 subject 创建 / 复用固定群会话，并补齐成员和已读状态。
 
@@ -63,9 +64,11 @@ Down migration 必须按 FK 反向删除。
 - `GET /v1/conversations/{id}/messages`
 - `POST /v1/conversations/{id}/messages`
 - `POST /v1/conversations/{id}/read`
+- `POST /v1/conversations/{id}/leave`
 
 返回格式遵守 `docs/architecture/server/02-api-contract.md`：int64 id 用字符串。
 `help-room` 是在线求助的固定多人聊天窗口：当前用户 + 固定专家加入同一个 `kind=group` 会话，App 只向该群发送消息，不再向每个专家拆分 P2P 消息。
+`leave` 只允许群聊；成功后删除当前用户的 `conversation_members` 和 `conversation_member_states`，会话历史继续保留给其它成员。
 
 ### 2.4 验收
 
@@ -74,6 +77,7 @@ Down migration 必须按 FK 反向删除。
   - S16：同一个 `client_msg_id` 连发两次，只出现一个 `server_seq`。
   - S17：`POST /v1/conversations/{id}/read` 后 `unread_count=0`。
   - S18：`GET /v1/conversations` 返回 last_message 与服务端最新消息一致。
+  - S18b：发送方会话列表 `unread_count=0`，自己发出的消息不制造未读。
 
 ## 3. M5.2 Android 实时数据层
 

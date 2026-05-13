@@ -400,7 +400,10 @@ func ensureDevSeedLogin(ctx context.Context, pool *pgxpool.Pool) error {
 		if err != nil {
 			return err
 		}
-		return ensureDevHelpExperts(ctx, pool, stationID)
+		if err := ensureDevHelpExperts(ctx, pool, stationID); err != nil {
+			return err
+		}
+		return ensureDevContacts(ctx, pool, stationID)
 	}
 
 	_, err = pool.Exec(ctx, `
@@ -419,7 +422,10 @@ func ensureDevSeedLogin(ctx context.Context, pool *pgxpool.Pool) error {
 	if err != nil {
 		return err
 	}
-	return ensureDevHelpExperts(ctx, pool, stationID)
+	if err := ensureDevHelpExperts(ctx, pool, stationID); err != nil {
+		return err
+	}
+	return ensureDevContacts(ctx, pool, stationID)
 }
 
 type devHelpExpert struct {
@@ -506,6 +512,59 @@ var devHelpExperts = []devHelpExpert{
 	},
 }
 
+type devContact struct {
+	Username   string
+	RealName   string
+	EmployeeID string
+	Role       string
+	Note       string
+}
+
+var devContacts = []devContact{
+	{
+		Username:   "contact_zhou",
+		RealName:   "周科",
+		EmployeeID: "ZAA01",
+		Role:       "reviewer",
+		Note:       "devserver contact: OBD 主审",
+	},
+	{
+		Username:   "contact_wu",
+		RealName:   "吴风",
+		EmployeeID: "ZAA02",
+		Role:       "reviewer",
+		Note:       "devserver contact: 外观件专家",
+	},
+	{
+		Username:   "contact_liu",
+		RealName:   "刘冶",
+		EmployeeID: "ZAA03",
+		Role:       "inspector",
+		Note:       "devserver contact: VIN 拓印",
+	},
+	{
+		Username:   "contact_jiang",
+		RealName:   "江庆宇",
+		EmployeeID: "ZAA04",
+		Role:       "inspector",
+		Note:       "devserver contact: 查验员",
+	},
+	{
+		Username:   "contact_reg_review",
+		RealName:   "省所复核",
+		EmployeeID: "REG01",
+		Role:       "supervisor",
+		Note:       "devserver contact: 监管复核",
+	},
+	{
+		Username:   "contact_reg_duty",
+		RealName:   "值班督导",
+		EmployeeID: "REG02",
+		Role:       "supervisor",
+		Note:       "devserver contact: 异常督办",
+	},
+}
+
 func ensureDevHelpExperts(ctx context.Context, pool *pgxpool.Pool, stationID int64) error {
 	hash, err := bcrypt.GenerateFromPassword([]byte(devSeedPassword), 12)
 	if err != nil {
@@ -555,6 +614,56 @@ func ensureDevHelpExperts(ctx context.Context, pool *pgxpool.Pool, stationID int
 		}
 		if err := ensureDevHelpExpertCases(ctx, pool, userID, expert.Cases); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func ensureDevContacts(ctx context.Context, pool *pgxpool.Pool, stationID int64) error {
+	hash, err := bcrypt.GenerateFromPassword([]byte(devSeedPassword), 12)
+	if err != nil {
+		return err
+	}
+	for _, contact := range devContacts {
+		var userID int64
+		err = pool.QueryRow(ctx, `
+			SELECT id
+			FROM users
+			WHERE username=$1 OR employee_id=$2
+			ORDER BY CASE WHEN username=$1 THEN 0 ELSE 1 END, id
+			LIMIT 1`,
+			contact.Username, contact.EmployeeID,
+		).Scan(&userID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			_, err = pool.Exec(ctx, `
+				INSERT INTO users (username, real_name, employee_id, station_id, password_hash, role, status, note, activated_at)
+				VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, now())`,
+				contact.Username, contact.RealName, contact.EmployeeID, stationID, string(hash), contact.Role, contact.Note,
+			)
+			if err != nil {
+				return err
+			}
+		} else {
+			_, err = pool.Exec(ctx, `
+				UPDATE users
+				SET username=$1,
+				    real_name=$2,
+				    employee_id=$3,
+				    station_id=$4,
+				    password_hash=$5,
+				    role=$6,
+				    status='active',
+				    note=$7,
+				    activated_at=COALESCE(activated_at, now())
+				WHERE id=$8`,
+				contact.Username, contact.RealName, contact.EmployeeID, stationID, string(hash), contact.Role, contact.Note, userID,
+			)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	return nil

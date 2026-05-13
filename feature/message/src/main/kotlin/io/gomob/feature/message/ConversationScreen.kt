@@ -2,6 +2,7 @@ package io.gomob.feature.message
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -73,6 +74,7 @@ fun ConversationRoute(
     targetLocalKey: String? = null,
     onBack: () -> Unit,
     onOpenSearch: (String) -> Unit = {},
+    onOpenInfo: (String) -> Unit = {},
     onOpenLocalVideo: (String) -> Unit = {},
     onOpenVideoCall: (roomId: String, title: String, mode: VideoCallMode) -> Unit = { _, _, _ -> },
     onOpenInspection: (String) -> Unit = {},
@@ -92,6 +94,9 @@ fun ConversationRoute(
     var selectedMessageKeys by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var forwardingMessages by remember { mutableStateOf<List<MessageBubbleUi>>(emptyList()) }
     var voiceTranscriptionDraft by remember { mutableStateOf<VoiceTranscriptionDraft?>(null) }
+    var pendingVideoCallTitle by remember { mutableStateOf<String?>(null) }
+    var pendingPhotoUriText by rememberSaveable { mutableStateOf<String?>(null) }
+    var imagePreview by remember { mutableStateOf<ImageMessagePreviewUi?>(null) }
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val focusManager = LocalFocusManager.current
@@ -102,9 +107,14 @@ fun ConversationRoute(
         onResult = { uri -> uri?.let(viewModel::sendImage) },
     )
     val photoCapture = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicturePreview(),
-        onResult = { bitmap ->
-            bitmap?.let { viewModel.sendImage(it.writeMessageCapture(context)) }
+        contract = ActivityResultContracts.TakePicture(),
+        onResult = { captured ->
+            val uri = pendingPhotoUriText?.let(Uri::parse)
+            pendingPhotoUriText = null
+            when {
+                captured && uri != null -> viewModel.sendImage(uri)
+                uri != null -> deleteMessageCapture(context, uri)
+            }
         },
     )
     val videoPicker = rememberLauncherForActivityResult(
@@ -129,16 +139,44 @@ fun ConversationRoute(
         val granted = listOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
             .all { grants[it] == true }
         if (granted) {
-            viewModel.startVideoCall()
+            viewModel.startVideoCall(pendingVideoCallTitle)
         } else {
             viewModel.showError("需要相机和麦克风权限")
         }
+        pendingVideoCallTitle = null
     }
     val openImagePicker: () -> Unit = {
         imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
     }
     val openVideoPicker: () -> Unit = {
         videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
+    }
+    fun launchPhotoCapture() {
+        runCatching { createMessageCaptureUri(context) }
+            .onSuccess { uri ->
+                pendingPhotoUriText = uri.toString()
+                photoCapture.launch(uri)
+            }
+            .onFailure { viewModel.showError(it.message ?: "拍照启动失败") }
+    }
+    val photoPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            launchPhotoCapture()
+        } else {
+            viewModel.showError("未授予相机权限")
+        }
+    }
+    val startPhotoCapture: () -> Unit = {
+        if (
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            launchPhotoCapture()
+        } else {
+            photoPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
     }
     val startVoiceRecording: () -> Unit = startVoice@{
         if (voiceRecording) return@startVoice
@@ -154,14 +192,15 @@ fun ConversationRoute(
             voicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
-    val startVideoCall: () -> Unit = {
+    val startVideoCall: (String?) -> Unit = { title ->
         val permissions = arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
         val granted = permissions.all {
             ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
         }
         if (granted) {
-            viewModel.startVideoCall()
+            viewModel.startVideoCall(title)
         } else {
+            pendingVideoCallTitle = title
             videoPermissionLauncher.launch(permissions)
         }
     }
@@ -306,8 +345,10 @@ fun ConversationRoute(
                 title = state.title,
                 onBack = onBack,
                 pinned = state.pinned,
+                group = state.group,
                 modifier = Modifier.clearInputFocusOnPointerDown(focusManager),
                 onSearch = { onOpenSearch(conversationId) },
+                onOpenInfo = { onOpenInfo(conversationId) },
                 onClearMessages = { clearConfirmOpen = true },
                 onTogglePinned = viewModel::togglePinned,
             )
@@ -322,6 +363,10 @@ fun ConversationRoute(
                 onOpenInspection = onOpenInspection,
                 onOpenUserDetail = onOpenUserDetail,
                 onAcceptCall = viewModel::acceptVideoCall,
+                onStartVideoCall = startVideoCall,
+                onOpenImage = { bubble ->
+                    imagePreview = bubble.toImageMessagePreview()
+                },
                 inputFocused = inputFocused,
                 favoriteMessageKeys = favoriteMessageKeys,
                 selectedMessageKeys = selectedMessageKeys,
@@ -353,8 +398,8 @@ fun ConversationRoute(
                         inspectionPickerOpen = true
                     },
                     onPickImage = openImagePicker,
-                    onTakePhoto = { photoCapture.launch(null) },
-                    onStartVideoCall = startVideoCall,
+                    onTakePhoto = startPhotoCapture,
+                    onStartVideoCall = { startVideoCall(null) },
                     onStartVoice = startVoiceRecording,
                     onSendVoice = sendVoiceRecording,
                     onCancelVoice = cancelVoiceRecording,
@@ -399,6 +444,10 @@ fun ConversationRoute(
                 }
             },
         )
+        ImageMessageViewer(
+            preview = imagePreview,
+            onDismiss = { imagePreview = null },
+        )
     }
 }
 
@@ -406,8 +455,10 @@ fun ConversationRoute(
 private fun ConversationTopBar(
     title: String,
     pinned: Boolean,
+    group: Boolean,
     onBack: () -> Unit,
     onSearch: () -> Unit,
+    onOpenInfo: () -> Unit,
     onClearMessages: () -> Unit,
     onTogglePinned: () -> Unit,
     modifier: Modifier = Modifier,
@@ -454,7 +505,13 @@ private fun ConversationTopBar(
                 Box(
                     Modifier
                         .size(Gomob.spacing.touchMin)
-                        .clickable { menuOpen = true },
+                        .clickable {
+                            if (group) {
+                                onOpenInfo()
+                            } else {
+                                menuOpen = true
+                            }
+                        },
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
@@ -585,6 +642,8 @@ private fun ConversationBody(
     onOpenInspection: (String) -> Unit,
     onOpenUserDetail: (String) -> Unit,
     onAcceptCall: (CallInviteUi) -> Unit,
+    onStartVideoCall: (String?) -> Unit,
+    onOpenImage: (MessageBubbleUi) -> Unit,
     inputFocused: Boolean,
     favoriteMessageKeys: List<String>,
     selectedMessageKeys: List<String>,
@@ -618,7 +677,7 @@ private fun ConversationBody(
     LaunchedEffect(
         inputFocused,
         imeBottom,
-        latestMessage?.localKey,
+        latestMessage?.timelineStableKey(),
         latestMessage?.mine,
         state.loading,
         state.errorMessage,
@@ -628,7 +687,7 @@ private fun ConversationBody(
         if (!targetLocalKey.isNullOrBlank()) {
             return@LaunchedEffect
         }
-        val latestKey = latestMessage?.localKey
+        val latestKey = latestMessage?.timelineStableKey()
         val latestChanged = latestKey != null && latestKey != lastObservedLatestMessageKey
         val newOwnMessage = latestChanged && hasObservedInitialLatestMessage && latestMessage?.mine == true
         if (normalizedQuery.isBlank()) {
@@ -688,16 +747,24 @@ private fun ConversationBody(
                         is ChatTimelineItem.TimeDivider -> ChatTimeDivider(item.label)
                         is ChatTimelineItem.Message -> {
                             val bubble = item.bubble
-                                ChatMessageRow(
-                                    bubble = bubble,
-                                    favorite = bubble.localKey in favoriteMessageKeys,
-                                    selected = bubble.localKey in selectedMessageKeys,
-                                    multiSelectMode = multiSelectMode,
-                                    onToggleSelected = { onToggleSelected(bubble.localKey) },
-                                    onQuickAction = onQuickAction,
-                                    onOpenInspection = onOpenInspection,
-                                    onOpenUserDetail = onOpenUserDetail,
-                                    onAcceptCall = {
+                            ChatMessageRow(
+                                bubble = bubble,
+                                favorite = bubble.localKey in favoriteMessageKeys,
+                                selected = bubble.localKey in selectedMessageKeys,
+                                multiSelectMode = multiSelectMode,
+                                onToggleSelected = { onToggleSelected(bubble.localKey) },
+                                onQuickAction = onQuickAction,
+                                onOpenInspection = onOpenInspection,
+                                onOpenUserDetail = onOpenUserDetail,
+                                onStartVideoCall = { title ->
+                                    focusManager.clearFocus()
+                                    onStartVideoCall(title)
+                                },
+                                onOpenImage = { imageBubble ->
+                                    focusManager.clearFocus()
+                                    onOpenImage(imageBubble)
+                                },
+                                onAcceptCall = {
                                     focusManager.clearFocus()
                                     onAcceptCall(it)
                                 },

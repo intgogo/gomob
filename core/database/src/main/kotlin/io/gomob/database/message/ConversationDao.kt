@@ -77,7 +77,7 @@ interface ConversationDao {
         SET lastMessageLocalKey = :localKey,
             updatedAt = :updatedAt,
             unreadCount = CASE
-                WHEN :incrementUnread THEN unreadCount + 1
+                WHEN :incrementUnread AND :serverSeq > lastReadSeq THEN unreadCount + 1
                 ELSE unreadCount
             END
         WHERE id = :conversationId

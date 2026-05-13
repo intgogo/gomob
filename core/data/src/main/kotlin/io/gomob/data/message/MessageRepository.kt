@@ -55,8 +55,92 @@ import javax.inject.Singleton
 
 private const val DEFAULT_PREWARM_CONVERSATION_LIMIT = 12
 private const val DEFAULT_PREWARM_MESSAGE_LIMIT = 30
+private const val DEFAULT_SEARCH_MESSAGE_LIMIT = 200
 private const val MESSAGE_REPOSITORY_TAG = "MessageRepository"
 private const val STALE_CONVERSATION_MESSAGE = "会话已失效，请返回消息中心重新打开"
+
+private val localMultiLineRoomSeeds = listOf(
+    LocalMultiLineRoomSeed(
+        id = 9_990_101L,
+        title = "查验复核群",
+        subjectKind = "查验复核",
+        subjectId = 101L,
+        unreadCount = 2,
+        messages = listOf(
+            LocalMultiLineMessageSeed(1, 2_101L, "第 3 工位外廓尺寸复核照片已补齐，右后侧角度可以进复核。", "2026-05-08T12:18:00Z"),
+            LocalMultiLineMessageSeed(2, 2_104L, "我把 VIN 拓印和行驶证照片放到群里，等会儿一起核对。", "2026-05-08T12:20:00Z"),
+            LocalMultiLineMessageSeed(3, 2_109L, "底盘号遮挡位置已标注，报告备注按这个口径走。", "2026-05-08T12:23:00Z"),
+            LocalMultiLineMessageSeed(4, 2_101L, "外廓尺寸复核结论已同步，请值班员确认。", "2026-05-08T12:25:00Z"),
+        ),
+    ),
+    LocalMultiLineRoomSeed(
+        id = 9_990_102L,
+        title = "杭州西湖检测站",
+        subjectKind = "站内协同",
+        subjectId = 102L,
+        unreadCount = 1,
+        messages = listOf(
+            LocalMultiLineMessageSeed(1, 2_201L, "下午高峰先保留 2 条查验线，复检车辆统一排到 B 区。", "2026-05-08T12:05:00Z"),
+            LocalMultiLineMessageSeed(2, 2_207L, "新来的危化品车需要两人交叉确认，证照我已经上传。", "2026-05-08T12:11:00Z"),
+            LocalMultiLineMessageSeed(3, 2_203L, "收到，调度屏已经更新，下一辆进 1 号通道。", "2026-05-08T12:16:00Z"),
+        ),
+    ),
+    LocalMultiLineRoomSeed(
+        id = 9_990_103L,
+        title = "监管抽查协作群",
+        subjectKind = "监管抽查",
+        subjectId = 103L,
+        unreadCount = 0,
+        messages = listOf(
+            LocalMultiLineMessageSeed(1, 2_301L, "抽查样本先按新能源轻客、重型货车各 3 台抽取。", "2026-05-08T11:42:00Z"),
+            LocalMultiLineMessageSeed(2, 2_303L, "监管端已经看到同步记录，异常项只保留有照片佐证的条目。", "2026-05-08T11:50:00Z"),
+            LocalMultiLineMessageSeed(3, 2_302L, "第 7 条的检测员签名缺一笔，我联系现场补签。", "2026-05-08T11:57:00Z"),
+        ),
+    ),
+    LocalMultiLineRoomSeed(
+        id = 9_990_104L,
+        title = "3D 重建会审群",
+        subjectKind = "三维会审",
+        subjectId = 104L,
+        unreadCount = 3,
+        messages = listOf(
+            LocalMultiLineMessageSeed(1, 2_401L, "这台车左前翼子板点云有一段反光缺洞，我重新采了一圈。", "2026-05-08T10:58:00Z"),
+            LocalMultiLineMessageSeed(2, 2_405L, "第二组 RGBD 帧已经上传，外参残差比上午那版稳定。", "2026-05-08T11:04:00Z"),
+            LocalMultiLineMessageSeed(3, 2_402L, "会审结论先写“需人工复核”，不要直接判异常。", "2026-05-08T11:09:00Z"),
+            LocalMultiLineMessageSeed(4, 2_405L, "我把重建截图和测量标尺都补到记录里了。", "2026-05-08T11:13:00Z"),
+        ),
+    ),
+    LocalMultiLineRoomSeed(
+        id = 9_990_105L,
+        title = "今日排队调度群",
+        subjectKind = "现场调度",
+        subjectId = 105L,
+        unreadCount = 0,
+        messages = listOf(
+            LocalMultiLineMessageSeed(1, 2_501L, "预约 14:00 后的车辆提醒车主提前准备三角警示牌。", "2026-05-08T10:20:00Z"),
+            LocalMultiLineMessageSeed(2, 2_503L, "A 区排队 12 辆，B 区复检 4 辆，预计 20 分钟消化。", "2026-05-08T10:27:00Z"),
+            LocalMultiLineMessageSeed(3, 2_502L, "临牌车辆请先走人工窗口，资料齐了再进线。", "2026-05-08T10:31:00Z"),
+        ),
+    ),
+)
+
+private val localMultiLineRoomIds = localMultiLineRoomSeeds.map { it.id }.toSet()
+
+private data class LocalMultiLineRoomSeed(
+    val id: Long,
+    val title: String,
+    val subjectKind: String,
+    val subjectId: Long,
+    val unreadCount: Long,
+    val messages: List<LocalMultiLineMessageSeed>,
+)
+
+private data class LocalMultiLineMessageSeed(
+    val index: Int,
+    val senderId: Long,
+    val text: String,
+    val createdAt: String,
+)
 
 private object NoopRealtimeMessageTransport : RealtimeMessageTransport {
     override val state = MutableStateFlow(RealtimeConnectionState.Disconnected)
@@ -96,6 +180,7 @@ class MessageRepository @Inject constructor(
     private val conversationSnapshots = ConcurrentHashMap<Long, ConversationSummary>()
     private val messageSnapshots = ConcurrentHashMap<Long, List<MessageRecord>>()
     private val hydratedConversationIds = ConcurrentHashMap.newKeySet<Long>()
+    private val exitedLocalMultiLineRoomIds = ConcurrentHashMap.newKeySet<Long>()
 
     fun startRealtimeSync() {
         if (realtimeStarted.compareAndSet(false, true)) {
@@ -132,6 +217,11 @@ class MessageRepository @Inject constructor(
             messageSnapshots[conversationId] = items
         }
 
+    fun observeRecentSearchMessages(limit: Int = DEFAULT_SEARCH_MESSAGE_LIMIT): Flow<List<MessageRecord>> =
+        messageDao.observeRecentSearchMessages(limit).map { items ->
+            items.map { it.toDomain() }
+        }
+
     fun observeConversation(conversationId: Long): Flow<ConversationSummary?> =
         conversationDao.observeConversation(conversationId).map { item ->
             item?.conversation?.toDomain(item.lastMessage)
@@ -152,6 +242,14 @@ class MessageRepository @Inject constructor(
     fun cachedMessages(conversationId: Long): List<MessageRecord> =
         messageSnapshots[conversationId].orEmpty()
 
+    fun cachedConversations(): List<ConversationSummary> =
+        conversationSnapshots.values
+            .sortedWith(
+                compareByDescending<ConversationSummary> { it.pinned }
+                    .thenByDescending { it.updatedAt }
+                    .thenByDescending { it.id },
+            )
+
     fun shouldHydrateConversationHistory(conversationId: Long): Boolean =
         !hydratedConversationIds.contains(conversationId)
 
@@ -163,11 +261,10 @@ class MessageRepository @Inject constructor(
         conversationLimit: Int = DEFAULT_PREWARM_CONVERSATION_LIMIT,
         messageLimit: Int = DEFAULT_PREWARM_MESSAGE_LIMIT,
     ) {
-        val conversations = conversationDao.recentConversations(conversationLimit)
-            .map { it.conversation.toDomain(it.lastMessage) }
+        warmRecentConversationSnapshots(conversationLimit, messageLimit)
+        val conversations = cachedConversations()
+            .take(conversationLimit)
             .filterNot { it.isOnlineHelpConversation() }
-        conversations.forEach(::rememberConversation)
-        conversations.forEach { warmConversationSnapshot(it.id, messageLimit) }
         conversations.forEach { conversation ->
             if (shouldHydrateConversationHistory(conversation.id)) {
                 runCatching {
@@ -179,6 +276,16 @@ class MessageRepository @Inject constructor(
                 }
             }
         }
+    }
+
+    suspend fun warmRecentConversationSnapshots(
+        conversationLimit: Int = DEFAULT_PREWARM_CONVERSATION_LIMIT,
+        messageLimit: Int = DEFAULT_PREWARM_MESSAGE_LIMIT,
+    ) {
+        val conversations = conversationDao.recentConversations(conversationLimit)
+            .map { it.conversation.toDomain(it.lastMessage) }
+        conversations.forEach(::rememberConversation)
+        conversations.forEach { warmConversationSnapshot(it.id, messageLimit) }
     }
 
     suspend fun prewarmConversationHistory(
@@ -199,12 +306,20 @@ class MessageRepository @Inject constructor(
         conversationId: Long,
         messageLimit: Int = DEFAULT_PREWARM_MESSAGE_LIMIT,
     ) {
-        conversationDao.findById(conversationId)?.toDomain(lastMessage = null)?.let(::rememberConversation)
+        val cachedLastMessage = conversationSnapshots[conversationId]?.lastMessage
+        conversationDao.findById(conversationId)
+            ?.toDomain(lastMessage = null)
+            ?.copy(lastMessage = cachedLastMessage)
+            ?.let(::rememberConversation)
         val localMessages = messageDao.recentMessages(conversationId, messageLimit)
             .asReversed()
             .map { it.toDomain() }
         if (localMessages.isNotEmpty()) {
             messageSnapshots[conversationId] = localMessages
+            conversationSnapshots[conversationId]
+                ?.takeIf { it.lastMessage == null }
+                ?.copy(lastMessage = localMessages.last())
+                ?.let(::rememberConversation)
         }
     }
 
@@ -214,7 +329,7 @@ class MessageRepository @Inject constructor(
         val localConversations = data.items.mapNotNull { dto ->
             dto.id.toLongOrNull()?.let { id -> id to conversationDao.findById(id) }
         }.toMap()
-        val messageEntities = data.items.mapNotNull { dto ->
+        val messageEntities = mergeKnownLocalMediaFields(data.items.mapNotNull { dto ->
             val conversationId = dto.id.toLongOrNull() ?: return@mapNotNull null
             val clearedBeforeSeq = localConversations[conversationId]?.clearedBeforeSeq ?: 0L
             dto.lastMessage
@@ -223,7 +338,7 @@ class MessageRepository @Inject constructor(
                     conversationId = conversationId,
                     json = json,
                 )
-        }
+        })
         if (messageEntities.isNotEmpty()) {
             messageDao.upsertServerMessages(messageEntities)
         }
@@ -248,6 +363,24 @@ class MessageRepository @Inject constructor(
         conversationDao.setPinned(conversationId, pinned)
     }
 
+    suspend fun leaveConversation(conversationId: Long) {
+        if (conversationId in localMultiLineRoomIds) {
+            exitedLocalMultiLineRoomIds += conversationId
+            forgetConversationLocal(conversationId)
+            return
+        }
+        try {
+            api.leaveConversation(conversationId.toString())
+        } catch (error: ApiException) {
+            if (error.isConversationGone) {
+                forgetConversationLocal(conversationId)
+                return
+            }
+            throw error
+        }
+        forgetConversationLocal(conversationId)
+    }
+
     suspend fun helpExperts(): List<HelpExpert> {
         val resp = api.helpExperts()
         val data = resp.data ?: throw ApiException(50001, 500, "专家列表响应缺数据")
@@ -260,9 +393,17 @@ class MessageRepository @Inject constructor(
         return data.items.map { it.toDomain() }
     }
 
-    suspend fun openDirectConversation(peerUserId: Long): ConversationSummary {
+    suspend fun openDirectConversation(
+        peerUserId: Long? = null,
+        peerEmployeeId: String? = null,
+    ): ConversationSummary {
+        val employeeId = peerEmployeeId?.trim().orEmpty()
+        require(peerUserId != null || employeeId.isNotBlank()) { "联系人参数无效" }
         val resp = api.openDirectConversation(
-            OpenDirectConversationRequest(peerUserId = peerUserId.toString()),
+            OpenDirectConversationRequest(
+                peerUserId = peerUserId?.toString(),
+                peerEmployeeId = employeeId.takeIf { it.isNotBlank() },
+            ),
         )
         val dto = resp.data ?: throw ApiException(50001, 500, "专家会话响应缺数据")
         val conversationId = dto.id.toLong()
@@ -273,6 +414,7 @@ class MessageRepository @Inject constructor(
                 conversationId = conversationId,
                 json = json,
             )
+            ?.let { mergeKnownLocalMediaFields(it) }
         if (lastMessage != null) {
             messageDao.upsertServerMessages(listOf(lastMessage))
         }
@@ -292,15 +434,23 @@ class MessageRepository @Inject constructor(
                 conversationId = conversationId,
                 json = json,
             )
+            ?.let { mergeKnownLocalMediaFields(it) }
         if (lastMessage != null) {
             messageDao.upsertServerMessages(listOf(lastMessage))
         }
         val entity = dto.toEntity(local = local)
         conversationDao.upsertConversation(entity)
+        ensureLocalMultiLineRooms()
         return entity.toDomain(lastMessage).also(::rememberConversation)
     }
 
     suspend fun refreshMessages(conversationId: Long, limit: Int = 100, fullSync: Boolean = false) {
+        if (conversationId in localMultiLineRoomIds) {
+            ensureLocalMultiLineRooms()
+            warmConversationSnapshot(conversationId, limit)
+            markConversationHistoryHydrated(conversationId)
+            return
+        }
         val since = if (fullSync) 0L else messageDao.maxServerSeq(conversationId) ?: 0L
         val resp = try {
             api.messages(
@@ -318,9 +468,11 @@ class MessageRepository @Inject constructor(
         }
         val data = resp.data ?: throw ApiException(50001, 500, "消息历史响应缺数据")
         val clearedBeforeSeq = conversationDao.findById(conversationId)?.clearedBeforeSeq ?: 0L
-        val entities = data.items
-            .filter { it.serverSeq > clearedBeforeSeq }
-            .map { it.toEntity(conversationId, json) }
+        val entities = mergeKnownLocalMediaFields(
+            data.items
+                .filter { it.serverSeq > clearedBeforeSeq }
+                .map { it.toEntity(conversationId, json) },
+        )
         if (fullSync) {
             entities.mapNotNull { it.serverSeq }.minOrNull()?.let { minServerSeq ->
                 messageDao.deleteServerMessagesBefore(conversationId, minServerSeq)
@@ -383,9 +535,49 @@ class MessageRepository @Inject constructor(
         return sourceMessages.size
     }
 
-    suspend fun sendImage(conversationId: Long, uri: Uri): String {
-        val asset = mediaAssetUploader.upload(uri, MediaAssetKind.Image)
-        return sendUploadedImage(conversationId, asset)
+    suspend fun sendImage(conversationId: Long, uri: Uri): String =
+        sendLocalImage(
+            conversationId = conversationId,
+            localUri = uri.toString(),
+            uploadAsset = { mediaAssetUploader.upload(uri, MediaAssetKind.Image) },
+        )
+
+    internal suspend fun sendLocalImage(
+        conversationId: Long,
+        localUri: String,
+        uploadAsset: suspend () -> UploadedMediaAsset,
+    ): String {
+        val clientMsgId = UUID.randomUUID().toString()
+        val pending = pendingMessageEntity(
+            conversationId = conversationId,
+            kind = "image",
+            payload = pendingImagePayload(localUri),
+            preview = "[图片]",
+            clientMsgId = clientMsgId,
+            now = Instant.now().toString(),
+        )
+        messageDao.upsertMessage(pending)
+        rememberMessage(conversationId, pending.toDomain())
+
+        val networkPayload = try {
+            val asset = uploadAsset()
+            val localPayload = mediaPayload(asset) {
+                put("local_uri", localUri)
+            }
+            updatePendingMessagePayload(
+                conversationId = conversationId,
+                clientMsgId = clientMsgId,
+                payload = localPayload,
+                preview = "[图片]",
+            )
+            mediaPayload(asset)
+        } catch (t: Throwable) {
+            messageDao.markFailed(clientMsgId)
+            markCachedMessageFailed(conversationId, clientMsgId)
+            throw t
+        }
+        sendExistingMessage(conversationId, clientMsgId, "image", networkPayload)
+        return clientMsgId
     }
 
     internal suspend fun sendUploadedImage(conversationId: Long, asset: UploadedMediaAsset): String {
@@ -506,6 +698,31 @@ class MessageRepository @Inject constructor(
             if (text.isBlank()) return
         }
         messageDao.markPending(clientMsgId)
+        if (entity.kind == "image" && payload.awaitingAssetUpload()) {
+            val localUri = payload.jsonObject["local_uri"]?.jsonPrimitive?.contentOrNull
+                ?.takeIf { it.isNotBlank() }
+            if (localUri != null) {
+                val networkPayload = try {
+                    val asset = mediaAssetUploader.upload(Uri.parse(localUri), MediaAssetKind.Image)
+                    val localPayload = mediaPayload(asset) {
+                        put("local_uri", localUri)
+                    }
+                    updatePendingMessagePayload(
+                        conversationId = entity.conversationId,
+                        clientMsgId = clientMsgId,
+                        payload = localPayload,
+                        preview = "[图片]",
+                    )
+                    mediaPayload(asset)
+                } catch (t: Throwable) {
+                    messageDao.markFailed(clientMsgId)
+                    markCachedMessageFailed(entity.conversationId, clientMsgId)
+                    throw t
+                }
+                sendExistingMessage(entity.conversationId, clientMsgId, entity.kind, networkPayload)
+                return
+            }
+        }
         sendExistingMessage(entity.conversationId, clientMsgId, entity.kind, payload)
     }
 
@@ -529,7 +746,7 @@ class MessageRepository @Inject constructor(
             realtimeRepository.sendMessage(
                 conversationId = conversationId,
                 kind = kind,
-                content = payload,
+                content = payload.withoutLocalMediaFields(),
                 clientMsgId = clientMsgId,
             )
         ) {
@@ -544,7 +761,7 @@ class MessageRepository @Inject constructor(
                 request = CreateMessageRequest(
                     clientMsgId = clientMsgId,
                     kind = kind,
-                    payload = payload,
+                    payload = payload.withoutLocalMediaFields(),
                 ),
             )
             val dto = resp.data ?: throw ApiException(50001, 500, "发送消息响应缺数据")
@@ -562,7 +779,7 @@ class MessageRepository @Inject constructor(
                 updatedAt = delivered.createdAt,
                 incrementUnread = false,
             )
-            rememberMessage(conversationId, delivered.toDomain())
+            rememberMessage(conversationId, messageDao.findByClientMsgId(clientMsgId)?.toDomain() ?: delivered.toDomain())
         } catch (t: Throwable) {
             if (t is ApiException && t.isPermissionDenied) {
                 forgetInaccessibleConversation(conversationId)
@@ -593,6 +810,23 @@ class MessageRepository @Inject constructor(
         rememberMessage(conversationId, pending.toDomain())
         sendExistingMessage(conversationId, clientMsgId, kind, payload)
         return clientMsgId
+    }
+
+    private suspend fun updatePendingMessagePayload(
+        conversationId: Long,
+        clientMsgId: String,
+        payload: JsonElement,
+        preview: String,
+    ) {
+        val updated = messageDao.findByClientMsgId(clientMsgId)
+            ?.copy(
+                payloadJson = payload.toString(),
+                preview = preview,
+                editedAt = Instant.now().toString(),
+            )
+            ?: return
+        messageDao.upsertMessage(updated)
+        rememberMessage(conversationId, updated.toDomain())
     }
 
     internal suspend fun applyRealtimeEvent(event: RealtimeEvent) {
@@ -639,23 +873,47 @@ class MessageRepository @Inject constructor(
     }
 
     private suspend fun applyRealtimeReceived(event: RealtimeEvent.MessageReceived) {
-        val conversationKnown = conversationDao.findById(event.conversationId) != null
-        val entity = event.toEntity(json)
+        val conversation = conversationDao.findById(event.conversationId)
+        val knownByServerId = event.messageId?.let { messageDao.findByServerId(it) }
+        val knownByClientMsgId = event.clientMsgId
+            ?.takeIf { it.isNotBlank() }
+            ?.let { messageDao.findByClientMsgId(it) }
+        val knownByRealtimeKey = if (event.messageId == null) {
+            messageDao.findByLocalKey("r:${event.conversationId}:${event.serverSeq}")
+        } else {
+            null
+        }
+        val messageAlreadyKnown = knownByServerId != null || knownByClientMsgId != null || knownByRealtimeKey != null
+        val localKnown = knownByClientMsgId ?: knownByServerId ?: knownByRealtimeKey
+        val entity = event.toEntity(json).withLocalMediaFieldsFrom(localKnown, json)
         messageDao.upsertServerMessages(listOf(entity))
         conversationDao.recordLastMessage(
             conversationId = event.conversationId,
             localKey = entity.localKey,
             serverSeq = event.serverSeq,
             updatedAt = event.createdAt,
-            incrementUnread = true,
+            incrementUnread = !messageAlreadyKnown && event.serverSeq > (conversation?.lastReadSeq ?: 0L),
         )
         rememberMessage(event.conversationId, entity.toDomain())
         logInfo(
             "实时消息已落库 conversation_id=${event.conversationId} server_seq=${event.serverSeq} message_id=${event.messageId}",
         )
-        if (!conversationKnown) {
+        if (conversation == null) {
             runCatching { refreshConversations() }
         }
+    }
+
+    private suspend fun mergeKnownLocalMediaFields(entities: List<MessageEntity>): List<MessageEntity> =
+        entities.map { mergeKnownLocalMediaFields(it) }
+
+    private suspend fun mergeKnownLocalMediaFields(entity: MessageEntity): MessageEntity {
+        if (!entity.canPreserveLocalMediaFields()) return entity
+        val known = entity.clientMsgId
+            ?.takeIf { it.isNotBlank() }
+            ?.let { messageDao.findByClientMsgId(it) }
+            ?: entity.serverId?.let { messageDao.findByServerId(it) }
+            ?: messageDao.findByLocalKey(entity.localKey)
+        return entity.withLocalMediaFieldsFrom(known, json)
     }
 
     private suspend fun applyMessageUpdated(event: RealtimeEvent.TranscriptUpdated) {
@@ -685,6 +943,44 @@ class MessageRepository @Inject constructor(
         logInfo(
             "消息实时更新已落库 conversation_id=${event.conversationId} server_seq=${event.serverSeq} message_id=${event.messageId}",
         )
+    }
+
+    private suspend fun ensureLocalMultiLineRooms() {
+        val conversationEntities = mutableListOf<ConversationEntity>()
+        val messageEntities = mutableListOf<MessageEntity>()
+        localMultiLineRoomSeeds.forEach { seed ->
+            if (seed.id in exitedLocalMultiLineRoomIds) return@forEach
+            val existing = conversationDao.findById(seed.id)
+            val messages = seed.messages.map { it.toEntity(seed.id) }
+            val lastMessage = messages.lastOrNull()
+            messageEntities += messages
+            conversationEntities += ConversationEntity(
+                id = seed.id,
+                kind = "group",
+                title = seed.title,
+                peerId = null,
+                peerName = null,
+                peerEmployeeId = null,
+                subjectKind = seed.subjectKind,
+                subjectId = seed.subjectId,
+                lastMessageLocalKey = lastMessage?.localKey,
+                lastReadSeq = existing?.lastReadSeq ?: 0L,
+                unreadCount = existing?.unreadCount ?: seed.unreadCount,
+                pinned = existing?.pinned ?: false,
+                clearedBeforeSeq = existing?.clearedBeforeSeq ?: 0L,
+                createdAt = messages.firstOrNull()?.createdAt ?: "2026-05-08T10:00:00Z",
+                updatedAt = lastMessage?.createdAt ?: "2026-05-08T10:00:00Z",
+            )
+            lastMessage?.let { rememberConversation(conversationEntities.last().toDomain(it)) }
+            messageSnapshots[seed.id] = messages.map { it.toDomain() }
+            markConversationHistoryHydrated(seed.id)
+        }
+        if (messageEntities.isNotEmpty()) {
+            messageDao.upsertServerMessages(messageEntities)
+        }
+        if (conversationEntities.isNotEmpty()) {
+            conversationDao.upsertConversations(conversationEntities)
+        }
     }
 
     private fun rememberConversation(summary: ConversationSummary) {
@@ -726,17 +1022,24 @@ class MessageRepository @Inject constructor(
     }
 
     private suspend fun forgetInaccessibleConversation(conversationId: Long) {
+        forgetConversationLocal(conversationId)
+        logWarn("本地会话已移除: 服务端拒绝访问 conversation_id=$conversationId")
+    }
+
+    private suspend fun forgetConversationLocal(conversationId: Long) {
         messageDao.deleteByConversationId(conversationId)
         conversationDao.deleteById(conversationId)
         conversationSnapshots.remove(conversationId)
         messageSnapshots.remove(conversationId)
         hydratedConversationIds.remove(conversationId)
-        logWarn("本地会话已移除: 服务端拒绝访问 conversation_id=$conversationId")
     }
 }
 
 private val ApiException.isPermissionDenied: Boolean
     get() = code == 40103 || httpStatus == 403
+
+private val ApiException.isConversationGone: Boolean
+    get() = isPermissionDenied || code == 40301 || httpStatus == 404
 
 private fun staleConversationError(cause: ApiException): ApiException =
     ApiException(cause.code, cause.httpStatus, STALE_CONVERSATION_MESSAGE, cause.traceId)
@@ -774,6 +1077,26 @@ internal fun pendingMessageEntity(
     clientMsgId = clientMsgId,
     status = MessageStatus.Pending.name,
     createdAt = now,
+    editedAt = null,
+)
+
+private fun pendingImagePayload(localUri: String): JsonElement = buildJsonObject {
+    put("media_state", "awaiting_asset_upload")
+    put("local_uri", localUri)
+}
+
+private fun LocalMultiLineMessageSeed.toEntity(conversationId: Long): MessageEntity = MessageEntity(
+    localKey = "ml:$conversationId:$index",
+    serverId = null,
+    conversationId = conversationId,
+    serverSeq = null,
+    senderId = senderId,
+    kind = "text",
+    payloadJson = buildJsonObject { put("text", text) }.toString(),
+    preview = text,
+    clientMsgId = null,
+    status = MessageStatus.Sent.name,
+    createdAt = createdAt,
     editedAt = null,
 )
 
@@ -831,6 +1154,63 @@ private fun mediaPayload(
     asset.downloadUrl?.takeIf { it.isNotBlank() }?.let { put("download_url", it) }
     extra()
 }
+
+private fun JsonElement.awaitingAssetUpload(): Boolean =
+    runCatching {
+        jsonObject["media_state"]?.jsonPrimitive?.contentOrNull == "awaiting_asset_upload"
+    }.getOrDefault(false)
+
+private fun JsonElement.withoutLocalMediaFields(): JsonElement {
+    val obj = this as? JsonObject ?: return this
+    if ("local_uri" !in obj && "localUri" !in obj) return this
+    return JsonObject(obj.filterKeys { it != "local_uri" && it != "localUri" })
+}
+
+private fun MessageEntity.canPreserveLocalMediaFields(): Boolean =
+    kind == "image" || kind == "video_clip"
+
+private fun MessageEntity.withLocalMediaFieldsFrom(local: MessageEntity?, json: Json): MessageEntity {
+    if (local == null || !canPreserveLocalMediaFields() || !local.canPreserveLocalMediaFields()) return this
+    val remotePayload = payloadJson.toJsonObjectOrNull(json) ?: return this
+    val localPayload = local.payloadJson.toJsonObjectOrNull(json) ?: return this
+    val preserved = mutableMapOf<String, JsonElement>()
+
+    fun JsonObject.hasUsableField(keys: Set<String>): Boolean =
+        keys.any { key ->
+            this[key]?.let { it.asPrimitiveString()?.isNotBlank() ?: true } == true
+        }
+
+    fun preserveIfRemoteMissing(remoteKeys: Set<String>, localKeys: Set<String>, targetKey: String) {
+        if (remotePayload.hasUsableField(remoteKeys)) return
+        val value = localKeys.firstNotNullOfOrNull { key ->
+            localPayload[key]?.takeIf { it.asPrimitiveString()?.isNotBlank() ?: true }
+        } ?: return
+        preserved[targetKey] = value
+    }
+
+    preserveIfRemoteMissing(
+        remoteKeys = setOf("local_uri", "localUri"),
+        localKeys = setOf("local_uri", "localUri"),
+        targetKey = "local_uri",
+    )
+    preserveIfRemoteMissing(
+        remoteKeys = setOf("download_url", "downloadUrl", "url"),
+        localKeys = setOf("download_url", "downloadUrl", "url"),
+        targetKey = "download_url",
+    )
+    preserveIfRemoteMissing(
+        remoteKeys = setOf("mime"),
+        localKeys = setOf("mime"),
+        targetKey = "mime",
+    )
+
+    if (preserved.isEmpty()) return this
+    val merged = JsonObject(remotePayload + preserved)
+    return copy(payloadJson = json.encodeToString(JsonElement.serializer(), merged))
+}
+
+private fun String.toJsonObjectOrNull(json: Json): JsonObject? =
+    runCatching { json.parseToJsonElement(this).jsonObject }.getOrNull()
 
 private fun inspectionCardPayload(card: InspectionShareCard): JsonElement = buildJsonObject {
     put("inspection_id", card.inspectionId)
