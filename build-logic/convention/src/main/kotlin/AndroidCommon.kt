@@ -28,6 +28,11 @@ internal fun Project.configureKotlinAndroid(
             targetCompatibility = JavaVersion.VERSION_17
             isCoreLibraryDesugaringEnabled = true
         }
+
+        lint {
+            // Lifecycle lint 当前版本与 Kotlin 2.1 UAST 不兼容，会在 release lintVital 崩溃。
+            disable += "NullSafeMutableLiveData"
+        }
     }
 
     extensions.configure<KotlinAndroidProjectExtension> {

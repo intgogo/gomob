@@ -55,6 +55,15 @@ class RealtimeEnvelopeParser @Inject constructor(
                 updatedAt = it.updatedAt,
             )
         } ?: RealtimeEvent.Unknown(envelope)
+        "msg.recall" -> envelope.payload?.decode<RecallPayload>()?.let {
+            RealtimeEvent.MessageRecalled(
+                messageId = it.messageId,
+                conversationId = it.conversationId,
+                serverSeq = it.serverSeq,
+                recalledBy = it.recalledBy,
+                deletedAt = it.deletedAt,
+            )
+        } ?: RealtimeEvent.Unknown(envelope)
         "error" -> RealtimeEvent.Error(
             code = envelope.code ?: 50001,
             message = envelope.message ?: "实时通道错误",
@@ -102,6 +111,15 @@ private data class TranscriptUpdatedPayload(
     val kind: String,
     val content: JsonElement? = null,
     @SerialName("updated_at") val updatedAt: String,
+)
+
+@Serializable
+private data class RecallPayload(
+    @SerialName("message_id") val messageId: Long,
+    @SerialName("conversation_id") val conversationId: Long,
+    @SerialName("server_seq") val serverSeq: Long,
+    @SerialName("recalled_by") val recalledBy: Long,
+    @SerialName("deleted_at") val deletedAt: String,
 )
 
 @Serializable

@@ -22,10 +22,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -78,12 +77,19 @@ import java.io.File
 internal data class ImageMessagePreviewUi(
     val source: String,
     val mime: String?,
+    val localKey: String,
+    val assetId: String?,
 )
 
 internal fun MessageBubbleUi.toImageMessagePreview(): ImageMessagePreviewUi? {
     val media = media ?: return null
     val source = media.imageSource?.trim()?.takeIf { it.isNotBlank() } ?: return null
-    return ImageMessagePreviewUi(source = source, mime = media.mime)
+    return ImageMessagePreviewUi(
+        source = source,
+        mime = media.mime,
+        localKey = localKey,
+        assetId = media.assetId,
+    )
 }
 
 @Composable
@@ -95,7 +101,11 @@ internal fun ImageMessageViewer(
 
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    val imageState by rememberMessageImage(preview.source)
+    val refresher = LocalMessageMediaRefresher.current
+    val onRefresh: (suspend () -> String?)? = if (refresher != null && !preview.assetId.isNullOrBlank() && preview.localKey.isNotBlank()) {
+        { refresher(preview.localKey, preview.assetId) }
+    } else null
+    val imageState by rememberMessageImage(preview.source, onRefresh)
     var scale by remember { mutableFloatStateOf(1f) }
     var rotation by remember { mutableFloatStateOf(0f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
@@ -205,7 +215,6 @@ internal fun ImageMessageViewer(
                 onShare = shareImage,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .background(Color.Black)
                     .navigationBarsPadding(),
             )
         }
@@ -374,21 +383,38 @@ private fun ImageViewerBottomBar(
     modifier: Modifier = Modifier,
 ) {
     val imageReady = imageState is MessageImageLoadState.Ready
-    Row(
+    Box(
         modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s12),
-        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8, Alignment.CenterHorizontally),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s12),
+        contentAlignment = Alignment.Center,
     ) {
-        ImageViewerActionButton(Icons.Filled.ZoomOut, "缩小", imageReady, onZoomOut)
-        ImageViewerActionButton(Icons.Filled.ZoomIn, "放大", imageReady, onZoomIn)
-        ImageViewerActionButton(Icons.AutoMirrored.Filled.RotateLeft, "左转", imageReady, onRotateLeft)
-        ImageViewerActionButton(Icons.AutoMirrored.Filled.RotateRight, "右转", imageReady, onRotateRight)
-        ImageViewerActionButton(Icons.Filled.RestartAlt, "重置", imageReady, onReset)
-        ImageViewerActionButton(Icons.Filled.FileDownload, "保存", imageReady, onSave)
-        ImageViewerActionButton(Icons.Filled.Share, "分享", true, onShare)
+        Column(
+            modifier = Modifier
+                .clip(Gomob.shapes.r3)
+                .background(Color.Black.copy(alpha = 0.72f))
+                .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ImageViewerActionButton(Icons.Filled.ZoomOut, "缩小", imageReady, onZoomOut)
+                ImageViewerActionButton(Icons.Filled.ZoomIn, "放大", imageReady, onZoomIn)
+                ImageViewerActionButton(Icons.AutoMirrored.Filled.RotateLeft, "左转", imageReady, onRotateLeft)
+                ImageViewerActionButton(Icons.AutoMirrored.Filled.RotateRight, "右转", imageReady, onRotateRight)
+                ImageViewerActionButton(Icons.Filled.RestartAlt, "重置", imageReady, onReset)
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ImageViewerActionButton(Icons.Filled.FileDownload, "保存", imageReady, onSave)
+                ImageViewerActionButton(Icons.Filled.Share, "分享", true, onShare)
+            }
+        }
     }
 }
 
@@ -402,7 +428,7 @@ private fun ImageViewerActionButton(
     val fg = if (enabled) Color.White else Color.White.copy(alpha = 0.34f)
     Box(
         Modifier
-            .size(44.dp)
+            .size(40.dp)
             .clip(Gomob.shapes.r2)
             .background(Color.White.copy(alpha = if (enabled) 0.14f else 0.07f))
             .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
@@ -412,7 +438,7 @@ private fun ImageViewerActionButton(
             imageVector = icon,
             contentDescription = contentDescription,
             tint = fg,
-            modifier = Modifier.size(22.dp),
+            modifier = Modifier.size(21.dp),
         )
     }
 }

@@ -15,4 +15,7 @@ interface LiveSessionDao {
 
     @Upsert
     suspend fun upsert(items: List<LiveSessionEntity>)
+
+    @Query("UPDATE live_sessions SET status = 'ended' WHERE status = :status AND id NOT IN (:keepIds)")
+    suspend fun endSessionsNotIn(status: String, keepIds: List<Long>)
 }

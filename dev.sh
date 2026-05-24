@@ -46,6 +46,11 @@ set -euo pipefail
 PROJ_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEV_DIR="$PROJ_DIR/.dev"
 PODMAN_CONTAINERS="gomob-pg gomob-redis gomob-nats gomob-minio"
+
+# 容器宿主端口段（避开服务器上其它产品默认端口）；真理源在 scripts/lib/dev-ports.sh。
+# shellcheck source=scripts/lib/dev-ports.sh
+source "$PROJ_DIR/scripts/lib/dev-ports.sh"
+
 mkdir -p "$DEV_DIR" "$DEV_DIR/screenshots"
 
 if [[ -z "${ANDROID_HOME:-}" ]]; then
@@ -115,10 +120,11 @@ reverse_one_device() {
     else
         echo "adb reverse: $serial tcp:7880 配置失败，LiveKit 需要改用设备可访问地址"
     fi
-    if adb -s "$serial" reverse tcp:9000 tcp:9000 >/dev/null 2>&1; then
-        echo "adb reverse: $serial tcp:9000 -> host tcp:9000"
+    # MinIO：server 端用 GOMOB_PORT_MINIO 签 URL，emulator 同端口反代到宿主新端口
+    if adb -s "$serial" reverse "tcp:${GOMOB_PORT_MINIO}" "tcp:${GOMOB_PORT_MINIO}" >/dev/null 2>&1; then
+        echo "adb reverse: $serial tcp:${GOMOB_PORT_MINIO} -> host tcp:${GOMOB_PORT_MINIO}"
     else
-        echo "adb reverse: $serial tcp:9000 配置失败，媒体下载需要改用设备可访问地址"
+        echo "adb reverse: $serial tcp:${GOMOB_PORT_MINIO} 配置失败，媒体下载需要改用设备可访问地址"
     fi
 }
 
@@ -143,12 +149,57 @@ ensure_livekit_container() {
     echo "LiveKit dev server: 已创建并启动 gomob-livekit (--dev: devkey/secret)"
 }
 
+ensure_one_container() {
+    # 用法: ensure_one_container <name> <main_host_port> <main_ctn_port> [podman_run_args... <image> [cmd args...]]
+    # 检查容器存在 + 主端口映射；不一致则 rm 重建（named volume 数据保留）。
+    local name="$1"; shift
+    local host_port="$1"; shift
+    local ctn_port="$1"; shift
+    if podman container exists "$name" 2>/dev/null; then
+        local cur
+        cur=$(podman inspect "$name" \
+            --format "{{ with (index .NetworkSettings.Ports \"${ctn_port}/tcp\") }}{{ (index . 0).HostPort }}{{ end }}" \
+            2>/dev/null || true)
+        if [[ "$cur" == "$host_port" ]]; then
+            if podman ps --format '{{.Names}}' | grep -qx "$name"; then
+                echo "  · $name 已运行 (:${host_port})"
+            else
+                podman start "$name" >/dev/null && echo "  → $name 启动 (:${host_port})"
+            fi
+            return 0
+        fi
+        echo "  ⚠ $name 端口 ${cur:-?} → ${host_port}，重建（named volume 数据保留）"
+        podman rm -f "$name" >/dev/null
+    fi
+    podman run -d --name "$name" "$@" >/dev/null
+    echo "  + $name 已创建并启动 (:${host_port})"
+}
+
 ensure_server_containers() {
     if ! command -v podman >/dev/null 2>&1; then
         echo "server up: podman 不可用，无法启动容器栈"
         return 1
     fi
-    podman start $PODMAN_CONTAINERS 2>&1 | tail -10
+    ensure_one_container gomob-pg "$GOMOB_PORT_PG" 5432 \
+        -p "${GOMOB_PORT_PG}:5432" \
+        -e POSTGRES_USER=gomob -e POSTGRES_PASSWORD=gomob_dev -e POSTGRES_DB=gomob \
+        -v gomob-pg-data:/var/lib/postgresql/data \
+        docker.io/library/postgres:16-alpine
+    ensure_one_container gomob-redis "$GOMOB_PORT_REDIS" 6379 \
+        -p "${GOMOB_PORT_REDIS}:6379" \
+        -v gomob-redis-data:/data \
+        docker.io/library/redis:7-alpine
+    ensure_one_container gomob-nats "$GOMOB_PORT_NATS" 4222 \
+        -p "${GOMOB_PORT_NATS}:4222" -p "${GOMOB_PORT_NATS_MON}:8222" \
+        docker.io/library/nats:2-alpine
+    # MinIO 凭据必须跟 server/cmd/devserver/main.go:342-343 的默认值对齐 (gomob/gomob_dev_minio)，
+    # 否则 asset handler 初始化时 bucket exists check 报 Access Key not exists → upload 返回 503。
+    ensure_one_container gomob-minio "$GOMOB_PORT_MINIO" 9000 \
+        -p "${GOMOB_PORT_MINIO}:9000" -p "${GOMOB_PORT_MINIO_CONSOLE}:9001" \
+        -e MINIO_ROOT_USER=gomob -e MINIO_ROOT_PASSWORD=gomob_dev_minio \
+        -v gomob-minio-data:/data \
+        docker.io/minio/minio:latest \
+        server /data --console-address :9001
     ensure_livekit_container
 }
 
@@ -379,6 +430,10 @@ case "$cmd" in
             build)   (cd "$PROJ_DIR/server" && make build) ;;
             test)    (cd "$PROJ_DIR/server" && go test ./...) ;;
             run)     ensure_livekit_container
+                     export GOMOB_DB_DSN="${GOMOB_DB_DSN:-$GOMOB_DEFAULT_DB_DSN}"
+                     export GOMOB_REDIS_ADDR="${GOMOB_REDIS_ADDR:-$GOMOB_DEFAULT_REDIS_ADDR}"
+                     export GOMOB_NATS_URL="${GOMOB_NATS_URL:-$GOMOB_DEFAULT_NATS_URL}"
+                     export GOMOB_MINIO_ENDPOINT="${GOMOB_MINIO_ENDPOINT:-$GOMOB_DEFAULT_MINIO_ENDPOINT}"
                      (cd "$PROJ_DIR/server" && ./scripts/migrate.sh up)
                      (cd "$PROJ_DIR/server/cmd/devserver" && \
                         GOMOB_LIVEKIT_URL="${GOMOB_LIVEKIT_URL:-ws://127.0.0.1:7880}" \
@@ -386,6 +441,7 @@ case "$cmd" in
                         GOMOB_LIVEKIT_API_SECRET="${GOMOB_LIVEKIT_API_SECRET:-secret}" \
                         go run .) ;;
             migrate) [[ $# -gt 0 ]] || set -- up
+                     export GOMOB_DB_DSN="${GOMOB_DB_DSN:-$GOMOB_DEFAULT_DB_DSN}"
                      (cd "$PROJ_DIR/server" && ./scripts/migrate.sh "$@") ;;
             proto)   (cd "$PROJ_DIR/server" && ./scripts/proto-gen.sh) ;;
             clean)   (cd "$PROJ_DIR/server" && rm -rf .dev/bin && echo "→ server/.dev/bin cleaned") ;;

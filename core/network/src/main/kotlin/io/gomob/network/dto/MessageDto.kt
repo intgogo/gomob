@@ -81,6 +81,7 @@ data class MessageDto(
     val preview: String? = null,
     @SerialName("created_at") val createdAt: String,
     @SerialName("edited_at") val editedAt: String? = null,
+    @SerialName("deleted_at") val deletedAt: String? = null,
 )
 
 @Serializable
@@ -126,6 +127,12 @@ data class OpenDirectConversationRequest(
 )
 
 @Serializable
+data class OpenAdHocGroupRequest(
+    @SerialName("member_user_ids") val memberUserIds: List<String>,
+    val title: String? = null,
+)
+
+@Serializable
 data class MarkReadRequest(
     @SerialName("last_read_seq") val lastReadSeq: Long,
 )
@@ -141,4 +148,20 @@ data class MarkReadResponse(
 data class LeaveConversationResponse(
     @SerialName("conversation_id") val conversationId: String,
     val left: Boolean,
+)
+
+@Serializable
+data class ContactListResponse(
+    val items: List<ContactDto>,
+)
+
+@Serializable
+data class ContactDto(
+    @SerialName("user_id") val userId: String,
+    val name: String,
+    @SerialName("employee_id") val employeeId: String,
+    val username: String = "",
+    val role: String,
+    @SerialName("station_id") val stationId: String = "",
+    @SerialName("station_name") val stationName: String = "",
 )

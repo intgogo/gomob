@@ -19,6 +19,7 @@ class EnvelopeErrorInterceptorTest {
         val interceptor = EnvelopeErrorInterceptor(tokenProvider)
         val request = Request.Builder()
             .url("http://127.0.0.1/v1/me")
+            .header("Authorization", "Bearer token")
             .build()
         val response = Response.Builder()
             .request(request)
@@ -64,6 +65,35 @@ class EnvelopeErrorInterceptorTest {
 
         assertThat(thrown).isInstanceOf(ApiException::class.java)
         assertThat((thrown as ApiException).code).isEqualTo(40101)
+        assertThat(tokenProvider.expiredMessages).isEmpty()
+    }
+
+    @Test
+    fun authExpiredOnAnonymousRequestDoesNotExpireSession() {
+        // 未登录态请求（如启动期 LogSyncManager 上传日志）被 server 拒成 40102，
+        // 不应触发 onAuthExpired —— 不存在"过期"的会话可以提示用户。
+        val tokenProvider = RecordingTokenProvider()
+        val interceptor = EnvelopeErrorInterceptor(tokenProvider)
+        val request = Request.Builder()
+            .url("http://127.0.0.1/v1/logs/upload")
+            .build()
+        val response = Response.Builder()
+            .request(request)
+            .protocol(Protocol.HTTP_1_1)
+            .code(401)
+            .message("Unauthorized")
+            .body(
+                """{"code":40102,"message":"登录已过期，请重新登录"}"""
+                    .toResponseBody("application/json; charset=utf-8".toMediaType()),
+            )
+            .build()
+
+        val thrown = runCatching {
+            interceptor.intercept(FakeChain(request, response))
+        }.exceptionOrNull()
+
+        assertThat(thrown).isInstanceOf(ApiException::class.java)
+        assertThat((thrown as ApiException).code).isEqualTo(40102)
         assertThat(tokenProvider.expiredMessages).isEmpty()
     }
 }

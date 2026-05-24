@@ -9,6 +9,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
 import io.gomob.nativebridge.berxel.BerxelService
+import io.gomob.nativebridge.berxel.BerxelStreamProfiles
 
 class DebugBerxelReceiver : BroadcastReceiver() {
 
@@ -19,10 +20,20 @@ class DebugBerxelReceiver : BroadcastReceiver() {
         when (intent.action) {
             ACTION_START -> {
                 val stream = intent.getStringExtra(EXTRA_STREAM)?.lowercase()
-                Log.i(TAG, "debug 广播启动 Berxel stream=${stream ?: "dual"}")
+                val profileName = intent.getStringExtra(EXTRA_PROFILE)?.lowercase()
+                val profile = profileName?.let(BerxelStreamProfiles::fromName)
+                if (profile != null) berxel.setStreamProfile(profile)
+                Log.i(TAG, "debug 广播启动 Berxel stream=${stream ?: "dual"} profile=${profileName ?: "default"}")
                 when (stream) {
                     "color" -> berxel.startColorOnlyForDebug()
                     "depth" -> berxel.startDepthOnlyForDebug()
+                    "depth_mix" -> berxel.startDepthInMixModeForDebug()
+                    "depth_halfstop" -> berxel.startDepthByDualHalfStopForDebug()
+                    "dual_then_stop_color" -> berxel.startDepthByDualThenHalfStopColor()
+                    "append_depth" -> berxel.tryAppendDepthForDebug()
+                    "ir" -> berxel.startIrOnlyForDebug()
+                    "ir_slave_true" -> berxel.startIrOnlySlaveTrueForDebug()
+                    "ir_slave_false" -> berxel.startIrOnlySlaveFalseForDebug()
                     else -> berxel.start()
                 }
             }
@@ -45,5 +56,6 @@ class DebugBerxelReceiver : BroadcastReceiver() {
         const val ACTION_START = "io.gomob.scan.debug.DEBUG_BERXEL_START"
         const val ACTION_STOP = "io.gomob.scan.debug.DEBUG_BERXEL_STOP"
         const val EXTRA_STREAM = "stream"
+        const val EXTRA_PROFILE = "profile"
     }
 }

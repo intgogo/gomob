@@ -6,7 +6,9 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -53,6 +55,7 @@ import io.gomob.feature.message.ConversationInfoRoute
 import io.gomob.feature.message.ChatSearchRoute
 import io.gomob.feature.message.ContactDetailRoute
 import io.gomob.feature.message.ExpertDetailRoute
+import io.gomob.feature.message.IncomingCallOverlay
 import io.gomob.feature.message.LocalVideoPreviewRoute
 import io.gomob.feature.message.MessageEntryTab
 import io.gomob.feature.message.MessageRoute
@@ -64,6 +67,7 @@ import io.gomob.feature.profile.ProfileAccountRoute
 import io.gomob.feature.profile.ProfileNotificationRoute
 import io.gomob.feature.profile.ProfilePersonalRoute
 import io.gomob.feature.profile.ProfileRoute
+import io.gomob.feature.profile.ThemeSettingsRoute
 import io.gomob.feature.scan3d.CalibrationRoute
 import io.gomob.feature.scan3d.DepthCameraCalibrationRoute
 import io.gomob.feature.scan3d.DepthCameraControlsRoute
@@ -110,7 +114,12 @@ fun GomobNavHost() {
     val onTabRoot = currentRoute in TAB_ROUTES
     val density = LocalDensity.current
     val imeVisible = WindowInsets.ime.getBottom(density) > 0
-    val rootBottomPadding = if (imeVisible) 0.dp else Gomob.spacing.tabBarHeight
+    val stableRootBottomPadding = Gomob.spacing.tabBarHeight
+    val rootBottomPadding by animateDpAsState(
+        targetValue = if (imeVisible) 0.dp else Gomob.spacing.tabBarHeight,
+        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        label = "root-bottom-padding",
+    )
 
     Box(
         modifier = Modifier
@@ -131,11 +140,18 @@ fun GomobNavHost() {
         ) {
             // ---- 首页 + 二级 ----
             composable(ROUTE_HOME) {
-                RootTabPage(bottomPadding = rootBottomPadding) {
+                RootTabPage(bottomPadding = stableRootBottomPadding) {
                     HomeRoute(
                         onOpenInspection = { id -> nav.navigate("home/inspection/$id") },
-                        onOpenNewChat = { prompt ->
-                            nav.navigate("home/chat/${Uri.encode(prompt)}")
+                        onOpenNewChat = { prompt, token ->
+                            if (token != null) {
+                                nav.navigate("home/chat/${Uri.encode(prompt)}/img/${Uri.encode(token)}")
+                            } else {
+                                nav.navigate("home/chat/${Uri.encode(prompt)}")
+                            }
+                        },
+                        onOpenAgent = { key ->
+                            nav.navigate("home/agent/${Uri.encode(key)}")
                         },
                     )
                 }
@@ -143,6 +159,22 @@ fun GomobNavHost() {
             composable("home/chat/{prompt}") { entry ->
                 HomeAiChatRoute(
                     initialPrompt = Uri.decode(entry.arguments?.getString("prompt").orEmpty()),
+                    imageToken = null,
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable("home/chat/{prompt}/img/{image}") { entry ->
+                HomeAiChatRoute(
+                    initialPrompt = Uri.decode(entry.arguments?.getString("prompt").orEmpty()),
+                    imageToken = Uri.decode(entry.arguments?.getString("image").orEmpty()),
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable("home/agent/{key}") { entry ->
+                HomeAiChatRoute(
+                    initialPrompt = "",
+                    imageToken = null,
+                    agentKey = Uri.decode(entry.arguments?.getString("key").orEmpty()),
                     onBack = { nav.popBackStack() },
                 )
             }
@@ -185,6 +217,11 @@ fun GomobNavHost() {
                         },
                         onOpenContactDetail = { id ->
                             nav.navigate("message/contact/${Uri.encode(id)}")
+                        },
+                        onOpenVideoCall = { roomId, title, mode ->
+                            nav.navigate(
+                                "message/video-call/${Uri.encode(roomId)}/${mode.routeValue}/${Uri.encode(title)}",
+                            )
                         },
                     )
                 }
@@ -370,6 +407,9 @@ fun GomobNavHost() {
                 FirstPersonViewerRoute(
                     streamId = entry.arguments?.getString("id") ?: "",
                     onBack = { nav.popBackStack() },
+                    onOpenInspector = { userId ->
+                        nav.navigate("message/contact/${Uri.encode(userId)}")
+                    },
                 )
             }
 
@@ -383,8 +423,12 @@ fun GomobNavHost() {
                         onOpenNotification = { nav.navigate("profile/notification") },
                         onOpenAbout = { nav.navigate("profile/about") },
                         onOpenHistory = { nav.navigate("profile/history") },
+                        onOpenTheme = { nav.navigate("profile/theme") },
                     )
                 }
+            }
+            composable("profile/theme") {
+                ThemeSettingsRoute(onBack = { nav.popBackStack() })
             }
             composable("profile/history") {
                 HistoryRoute(onBack = { nav.popBackStack() })
@@ -418,6 +462,20 @@ fun GomobNavHost() {
                 items = TABS,
                 selectedKey = currentRoute ?: ROUTE_HOME,
                 onSelect = { key -> nav.switchTab(key) },
+            )
+        }
+        // 全局来电浮窗：无论当前在哪个 tab，都能弹接听 / 拒绝。
+        // 当前是已登录主壳层，所以与 AuthGate 解耦放在这里，正好能拿到 navController 做 deep link。
+        // 已在 video-call 路由上时不再叠加，避免接听后还看到 banner。
+        if (currentRoute?.startsWith("message/video-call") != true) {
+            IncomingCallOverlay(
+                onAccept = { invite ->
+                    val roomId = invite.roomId?.takeIf { it.isNotBlank() } ?: return@IncomingCallOverlay
+                    nav.navigate(
+                        "message/video-call/${Uri.encode(roomId)}/${VideoCallMode.Callee.routeValue}/${Uri.encode(invite.title)}",
+                    )
+                },
+                modifier = Modifier.align(Alignment.TopCenter),
             )
         }
     }

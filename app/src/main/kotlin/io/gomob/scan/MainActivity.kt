@@ -25,7 +25,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.res.colorResource
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.AndroidEntryPoint
@@ -35,6 +34,7 @@ import io.gomob.designsystem.theme.Gomob
 import io.gomob.designsystem.theme.GomobTheme
 import io.gomob.feature.profile.AppearanceViewModel
 import io.gomob.nativebridge.berxel.BerxelService
+import io.gomob.nativebridge.berxel.BerxelStreamProfiles
 import javax.inject.Inject
 import kotlinx.coroutines.delay
 
@@ -56,6 +56,7 @@ class MainActivity : ComponentActivity() {
             setRecentsScreenshotEnabled(false)
         }
         Log.i("GomobApplication", "MainActivity onCreate action=${intent?.action.orEmpty()}")
+        consumeDebugBerxelIntent(intent)
         consumeUsbAttachIntent(intent)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
@@ -64,27 +65,26 @@ class MainActivity : ComponentActivity() {
         setContent {
             val appearance: AppearanceViewModel = hiltViewModel()
             val mode by appearance.mode.collectAsStateWithLifecycle()
+            val colorScheme by appearance.colorScheme.collectAsStateWithLifecycle()
             val systemDark = isSystemInDarkTheme()
             val darkTheme = when (mode) {
                 ThemeMode.Dark -> true
                 ThemeMode.Light -> false
                 ThemeMode.System -> systemDark
             }
+            // 注意：launchBackdropVisible 必须在 composition 作用域读取，
+            // 在 SideEffect lambda 内读不会建立 snapshot 订阅，splash 关闭时不会重跑。
+            val effectiveDark = launchBackdropVisible || darkTheme
             SideEffect {
                 val transparent = android.graphics.Color.TRANSPARENT
-                if (launchBackdropVisible || darkTheme) {
-                    enableEdgeToEdge(
-                        statusBarStyle = SystemBarStyle.dark(transparent),
-                        navigationBarStyle = SystemBarStyle.dark(transparent),
-                    )
-                } else {
-                    enableEdgeToEdge(
-                        statusBarStyle = SystemBarStyle.light(transparent, transparent),
-                        navigationBarStyle = SystemBarStyle.light(transparent, transparent),
-                    )
-                }
+                // 用 App 自身 darkTheme 作为 detectDarkMode 注入，避免 SystemBarStyle.light()
+                // 内部根据系统暗黑模式自行判定（系统暗+App 浅会出现白 icon 撞浅背景的问题）
+                enableEdgeToEdge(
+                    statusBarStyle = SystemBarStyle.auto(transparent, transparent) { effectiveDark },
+                    navigationBarStyle = SystemBarStyle.auto(transparent, transparent) { effectiveDark },
+                )
             }
-            GomobTheme(darkTheme = darkTheme) {
+            GomobTheme(darkTheme = darkTheme, colorScheme = colorScheme) {
                 LaunchedEffect(
                     launchBackdropVisible,
                     launchBackdropMayHide,
@@ -107,12 +107,11 @@ class MainActivity : ComponentActivity() {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(colorResource(R.color.splash_background)),
+                        .background(Gomob.colors.bg0),
                 ) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .background(Gomob.colors.bg0)
                             .windowInsetsPadding(WindowInsets.systemBars),
                     ) {
                         Box(Modifier.fillMaxSize().clipToBounds()) {
@@ -167,7 +166,29 @@ class MainActivity : ComponentActivity() {
         if (holdLaunchBackdropForInspection) {
             launchBackdropVisible = true
         }
+        consumeDebugBerxelIntent(intent)
         consumeUsbAttachIntent(intent)
+    }
+
+    private fun consumeDebugBerxelIntent(intent: Intent?) {
+        if (!BuildConfig.DEBUG || intent == null) return
+        when (intent.action) {
+            ACTION_DEBUG_BERXEL_START -> {
+                val stream = intent.getStringExtra(EXTRA_DEBUG_STREAM)?.lowercase()
+                val profileName = intent.getStringExtra(EXTRA_DEBUG_PROFILE)?.lowercase()
+                profileName?.let(BerxelStreamProfiles::fromName)?.let(berxelService::setStreamProfile)
+                Log.i(DEBUG_BERXEL_TAG, "debug 启动 Berxel stream=${stream ?: "dual"} profile=${profileName ?: "default"}")
+                when (stream) {
+                    "color" -> berxelService.startColorOnlyForDebug()
+                    "depth" -> berxelService.startDepthOnlyForDebug()
+                    else -> berxelService.start()
+                }
+            }
+            ACTION_DEBUG_BERXEL_STOP -> {
+                Log.i(DEBUG_BERXEL_TAG, "debug 停止 Berxel")
+                berxelService.stop()
+            }
+        }
     }
 
     private fun consumeUsbAttachIntent(intent: Intent?) {
@@ -182,5 +203,10 @@ class MainActivity : ComponentActivity() {
 
     private companion object {
         private const val EXTRA_HOLD_SPLASH = "gomob.debug.HOLD_SPLASH"
+        private const val DEBUG_BERXEL_TAG = "DebugBerxelActivity"
+        private const val ACTION_DEBUG_BERXEL_START = "io.gomob.scan.debug.DEBUG_BERXEL_START"
+        private const val ACTION_DEBUG_BERXEL_STOP = "io.gomob.scan.debug.DEBUG_BERXEL_STOP"
+        private const val EXTRA_DEBUG_STREAM = "stream"
+        private const val EXTRA_DEBUG_PROFILE = "profile"
     }
 }

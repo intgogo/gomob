@@ -265,6 +265,11 @@ func (h *Handler) OpenHelpRoom(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, httpx.ErrPermDenied)
 		return
 	}
+	// 求助群语义：inspector 求助、expert 应答。expert 自己调没意义且会按 subject_id=uid 建独立群。
+	if callerRole(r) != "inspector" {
+		httpx.WriteError(w, httpx.ErrPermDenied)
+		return
+	}
 
 	_, expertIDs, err := h.activeHelpExperts(r.Context())
 	if err != nil {

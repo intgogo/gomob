@@ -43,7 +43,10 @@ class MediaSessionRepository @Inject constructor(
     suspend fun refreshLiveSessions() {
         val resp = api.liveSessions(status = "live")
         val data = resp.data ?: throw ApiException(50001, 500, "直播列表响应缺数据")
-        liveSessionDao.upsert(data.items.map { it.toEntity() })
+        val items = data.items
+        liveSessionDao.upsert(items.map { it.toEntity() })
+        // 本地缓存里其它仍标记 live 的会话标记 ended，避免残留旧记录占协作列表
+        liveSessionDao.endSessionsNotIn(status = "live", keepIds = items.map { it.id.toLong() })
     }
 
     suspend fun joinLiveSession(liveSessionId: Long): LiveSessionJoinResult {

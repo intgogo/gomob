@@ -40,6 +40,13 @@ sealed interface RealtimeEvent {
         val content: JsonElement?,
         val updatedAt: String,
     ) : RealtimeEvent
+    data class MessageRecalled(
+        val messageId: Long,
+        val conversationId: Long,
+        val serverSeq: Long,
+        val recalledBy: Long,
+        val deletedAt: String,
+    ) : RealtimeEvent
     data class Error(val code: Int, val message: String, val inReplyTo: String?) : RealtimeEvent
     data class Unknown(val envelope: RealtimeEnvelope) : RealtimeEvent
 }

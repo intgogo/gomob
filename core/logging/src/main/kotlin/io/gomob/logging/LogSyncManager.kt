@@ -4,6 +4,7 @@ import android.util.Log
 import io.gomob.network.LogEntryDto
 import io.gomob.network.LogUploadRequest
 import io.gomob.network.LogsApi
+import io.gomob.network.TokenProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -29,6 +30,7 @@ import javax.inject.Singleton
 class LogSyncManager @Inject constructor(
     private val prefs: LogSyncPreferences,
     private val logsApi: LogsApi,
+    private val tokenProvider: TokenProvider,
 ) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -96,6 +98,12 @@ class LogSyncManager @Inject constructor(
     }
 
     private suspend fun uploadBatch(batch: List<LogEntryDto>) {
+        // 未登录态：上传必然 40102，且 "上传失败" warn 行又会被 tailer 抓走形成自我增殖；
+        // 同时 LoginScreen 会被 EnvelopeErrorInterceptor 写 session_notice 干扰为"登录已过期"。
+        // 静默丢弃这一批，不写 log。登录后 drainer 自然恢复。
+        if (tokenProvider.currentAccessToken().isNullOrBlank()) {
+            return
+        }
         try {
             val resp = logsApi.upload(LogUploadRequest(batch))
             if (resp.code != 0) {

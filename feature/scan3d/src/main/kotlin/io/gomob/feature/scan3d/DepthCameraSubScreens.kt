@@ -24,6 +24,7 @@ import io.gomob.designsystem.component.SettingRowDivider
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.nativebridge.berxel.BerxelDeviceControls
 import io.gomob.nativebridge.berxel.BerxelDeviceState
+import io.gomob.nativebridge.berxel.BerxelStreamFlagProfile
 import io.gomob.nativebridge.berxel.BerxelStreamSpec
 
 const val DEPTH_CAMERA_INFO_ROUTE = "scan3d/depth-camera/info"
@@ -78,6 +79,8 @@ private fun DeviceInfoSection(state: BerxelDeviceState) {
         InfoRow("SDK", info?.sdkVersion.orDash())
         SettingRowDivider()
         InfoRow("Firmware", info?.firmwareVersion.orDash())
+        SettingRowDivider()
+        InfoRow("Flag 模式", info?.streamFlagMode?.displayTitle() ?: "—")
         SettingRowDivider()
         InfoRow("Color 模式", info?.colorMode.formatStreamSpec())
         SettingRowDivider()
@@ -314,6 +317,15 @@ private fun ToggleRow(
 private fun BerxelStreamSpec?.formatStreamSpec(): String {
     if (this == null) return "—"
     return "${width}×${height}@${fps}  ${pixelType.removePrefix("BERXEL_HAWK_PIXEL_TYPE_")}"
+}
+
+private fun BerxelStreamFlagProfile.displayTitle(): String {
+    return when (this) {
+        BerxelStreamFlagProfile.SINGULAR -> "SINGULAR"
+        BerxelStreamFlagProfile.MIX -> "MIX"
+        BerxelStreamFlagProfile.MIX_HD -> "MIX_HD"
+        BerxelStreamFlagProfile.MIX_QVGA -> "MIX_QVGA"
+    }
 }
 
 private fun String?.orDash(): String =

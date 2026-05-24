@@ -40,6 +40,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -54,8 +55,8 @@ import javax.inject.Singleton
  * 设计：
  * - SDK 的 `BerxelHawkContext` 自身是单例 (`getBerxelContext` 反复调返回同一对象)，
  *   配合 USB BroadcastReceiver / AsyncTask 搞 USB 权限。本类与 SDK 的单例 1:1 对齐。
- * - 三态 reader：Color reader / Depth reader 两个独立线程，谁拿到帧谁更新自己的 [BerxelFrameStat]，
- *   主线程 UI 通过 [colorStat] / [depthStat] StateFlow 订阅。
+ * - Reader：双流按厂商 sample 用一个 MIX reader 先试 depth 再试 color；单流 debug 才用独立 reader。
+ *   谁拿到帧谁更新自己的 [BerxelFrameStat]，主线程 UI 通过 [colorStat] / [depthStat] StateFlow 订阅。
  * - 帧不出 reader 线程：SDK Frame 持有 native handle，逃出 reader 后做后续处理是 UAF 风险。
  *   后续 fusion / reconstruction 想要帧数据的话，应该在 reader 线程里立刻拷贝 ByteBuffer 出来再丢。
  *
@@ -83,6 +84,9 @@ class BerxelService @Inject constructor(
 
     private val _colorStat = MutableStateFlow<BerxelFrameStat?>(null)
     val colorStat: StateFlow<BerxelFrameStat?> = _colorStat.asStateFlow()
+
+    private val _streamProfile = MutableStateFlow(BerxelStreamProfiles.DEFAULT)
+    val streamProfile: StateFlow<BerxelStreamProfile> = _streamProfile.asStateFlow()
 
     private val _depthStat = MutableStateFlow<BerxelFrameStat?>(null)
     val depthStat: StateFlow<BerxelFrameStat?> = _depthStat.asStateFlow()
@@ -148,13 +152,47 @@ class BerxelService @Inject constructor(
     @Volatile private var device: BerxelHawkDevice? = null
     @Volatile private var deviceStatusCallbackRegistered = false
     @Volatile private var readerRunning = false
+    @Volatile private var loggedFirstColorFrame = false
+    @Volatile private var loggedFirstDepthFrame = false
+    private var mixReader: Thread? = null
     private var colorReader: Thread? = null
     private var depthReader: Thread? = null
     private var pendingStartJob: Job? = null
     private var companionRetryJob: Job? = null
+    /**
+     * OEM 脏缓存 watchdog —— 当 `requestPermission` broadcast 回 false 且 3 次延迟 probe 都
+     * 失败时，进 Error 状态后启动本 watchdog 后台每 8s 重新 probe。HONOR Magic OS / Xiaomi
+     * HyperOS 都出现过 broadcast deny 但 system_server 异步授权完成的 race；watchdog 让 SDK
+     * 不需要用户手动拔插或重启 app 就能自愈。
+     */
+    private var permissionWatchdogJob: Job? = null
     @Volatile private var partialNodeRetryCount = 0
     @Volatile private var lastPhysicalDisconnectAtMs = 0L
     @Volatile private var pendingUsbPermissionMode = StartupStreamMode.DUAL
+    /** 当前生效的 Berxel 流配置；切档时 stop + restart。 */
+    @Volatile private var activeStreamProfile: BerxelStreamProfile = BerxelStreamProfiles.DEFAULT
+    @Volatile private var lastStreamStartAtMs = 0L
+    @Volatile private var lastFirstFrameAtMs = 0L
+    @Volatile private var lastStartedProfile: BerxelStreamProfile = BerxelStreamProfiles.DEFAULT
+    @Volatile private var lastStartedMode = StartupStreamMode.DUAL
+    @Volatile private var streamStartBlockedReason: String? = null
+    @Volatile private var debugStartupModeOverride: StartupStreamMode? = null
+    /**
+     * 实验：DEPTH_ONLY 时让 setStreamFlagMode 走 MIX 路径（而不是默认 SINGULAR）。
+     * 用来验证 SDK SINGULAR + DEPTH_ONLY 路径是否漏发 Sonix firmware 的关键初始化命令。
+     */
+    @Volatile private var debugForceMixModeForSingle: Boolean = false
+    /**
+     * 实验：DUAL startStreams 成功后立即注入 stopStreams(COLOR) —— 满足 firmware lockstep
+     * 后立刻停掉 color BULK transfer，只留 depth 跑，看是否能绕开 25102RKBEC host kill。
+     */
+    @Volatile private var debugHalfStopColorAfterDual: Boolean = false
+    /**
+     * 实验：在 IR_STREAM 单流启动前调 enableDeviceSlaveMode(boolean)，试解开 Berxel
+     * 加在 Sonix firmware 上的 master/slave 同步约束。null = 不动；true/false = 切换。
+     */
+    @Volatile private var debugSlaveModeOverride: Boolean? = null
+    @Volatile private var stoppingAfterReaderError = false
     private val startEpoch = AtomicLong(0L)
     /**
      * 来自 USB_DEVICE_ATTACHED intent extras / requestPermission broadcast 的 UsbDevice。
@@ -183,9 +221,9 @@ class BerxelService @Inject constructor(
                 authorizedDevicesByName[grantedDevice.deviceName] = grantedDevice
                 scope.launch { startInternal(startEpoch.incrementAndGet(), pendingUsbPermissionMode) }
             } else {
-                // HONOR Magic OS 实测：用户点了允许后，dumpsys 已经有 device_permissions，
-                // 但广播仍可能回 granted=false/device=null。这里不信广播，立刻用 openDevice 复查。
-                scope.launch { continueAfterUsbPermissionBroadcastDenied() }
+                // HONOR Magic OS / Xiaomi HyperOS 实测：用户点了允许后，dumpsys 已经有 device_permissions，
+                // 但广播仍可能回 granted=false/device=null。这里不信广播，进入延迟重试 + watchdog 流程。
+                scope.launch { retryAfterUsbPermissionBroadcastDenied() }
             }
         }
     }
@@ -195,13 +233,295 @@ class BerxelService @Inject constructor(
      * 启动整套生命周期：加载 SDK → 弹 USB 权限 → 开 device → 起 reader 线程。
      * 幂等：当前已 Streaming/Opening/WaitingPermission 时直接返回，不重复触发权限弹窗。
      */
-    fun start() = start(StartupStreamMode.DUAL)
+    fun start() {
+        val debugMode = debugStartupModeOverride
+        if (debugMode != null) {
+            if (_state.value is BerxelDeviceState.Error) {
+                Log.d(TAG, "start() ignored under debug stream lock mode=$debugMode current=${_state.value}")
+                return
+            }
+            start(debugMode)
+            return
+        }
+        start(StartupStreamMode.DUAL)
+    }
 
-    fun startColorOnlyForDebug() = start(StartupStreamMode.COLOR_ONLY)
+    fun startColorOnlyForDebug() {
+        debugStartupModeOverride = StartupStreamMode.COLOR_ONLY
+        start(StartupStreamMode.COLOR_ONLY)
+    }
 
-    fun startDepthOnlyForDebug() = start(StartupStreamMode.DEPTH_ONLY)
+    fun startDepthOnlyForDebug() {
+        debugStartupModeOverride = StartupStreamMode.DEPTH_ONLY
+        debugForceMixModeForSingle = false
+        start(StartupStreamMode.DEPTH_ONLY)
+    }
+
+    /**
+     * 实验：DEPTH_ONLY 但让 setStreamFlagMode 走 MIX 模式（而不是 SINGULAR）。
+     * 验证假设：SINGULAR + DEPTH_ONLY 失败是因为 Sonix firmware 在 SINGULAR mode 下
+     * 不完整初始化 IR pipeline；如果用 MIX_QVGA mode 启 single DEPTH 能跑通，
+     * 就证明可以通过这条路径在 25102RKBEC 上拿到 USB3 IR 单流。
+     */
+    fun startDepthInMixModeForDebug() {
+        debugStartupModeOverride = StartupStreamMode.DEPTH_ONLY
+        debugForceMixModeForSingle = true
+        start(StartupStreamMode.DEPTH_ONLY)
+    }
+
+    /**
+     * 实验：startStreams(DUAL=3) 满足 Sonix firmware lockstep → 立即 stopStreams(COLOR=1) 停 color stream，
+     * 留 depth 单流跑。假设：(1) Berxel SDK 的 stopStreams(int flags) 真的支持单流 stop；
+     * (2) 停掉 color 后 host 端不再 submit color BULK transfer，25102RKBEC host stack
+     * 看不到两个 device 同时活跃 → 不触发 host kill bug；(3) Sonix companion 不依赖 color 持续
+     * streaming 维持 depth 路径。三个假设都对的话，1280 USB3 单深度流就通了。
+     */
+    /**
+     * 实验：单独启 IR_STREAM (flags=4, 即 BERXEL_HAWK_IR_STREAM)。
+     * 假设：DEPTH stream 的 lockstep 是因为 SDK 需要做 RGBD 对齐 ←→ 需要 color；
+     * IR_STREAM 是 Sonix companion 直接出的散斑 raw 图，理论上不依赖 color。
+     * 如果跑通：可以拉 IR raw + host 端调 inner_process_with_IR 自己算 depth，
+     * 完全绕开 25102RKBEC host kill + DEPTH lockstep。
+     */
+    /** IR_STREAM + 切到 slave 模式（true） */
+    fun startIrOnlySlaveTrueForDebug() {
+        debugSlaveModeOverride = true
+        startIrOnlyForDebug()
+    }
+
+    /** IR_STREAM + 切到 master 模式（slave=false） */
+    fun startIrOnlySlaveFalseForDebug() {
+        debugSlaveModeOverride = false
+        startIrOnlyForDebug()
+    }
+
+    fun startIrOnlyForDebug() {
+        debugForceMixModeForSingle = false
+        debugHalfStopColorAfterDual = false
+        // 注意：debugSlaveModeOverride 由调用方设置（startIrOnlySlaveTrue/False/None）
+        streamStartBlockedReason = null
+        scope.launch {
+            // 入口先清掉所有可能在跑的 stream + 清掉残留 reader thread，避免 state 污染。
+            device?.let { dev ->
+                val allFlags = 1 or 2 or 4 or 32
+                runCatching { dev.stopStreams(allFlags) }
+                    .onFailure { Log.w(TAG, "★ IR only: 清 stream 异常", it) }
+                Log.i(TAG, "★ IR only: 入口 stopStreams(ALL=$allFlags)")
+            }
+            readerRunning = false
+            runCatching { colorReader?.interrupt() }
+            runCatching { depthReader?.interrupt() }
+            runCatching { mixReader?.interrupt() }
+            colorReader = null
+            depthReader = null
+            mixReader = null
+            delay(500)  // 给 Sonix firmware 时间释放 endpoint
+            readerRunning = true
+            // 如果 device 是 null，先借 COLOR_ONLY 让 BerxelService 自己走 open device 流程
+            if (device == null) {
+                Log.i(TAG, "★ IR only: device==null，先启 COLOR_ONLY 让 SDK open device")
+                debugStartupModeOverride = StartupStreamMode.COLOR_ONLY
+                start(StartupStreamMode.COLOR_ONLY)
+                var waited = 0
+                while (device == null && waited < 6000) {
+                    delay(200)
+                    waited += 200
+                }
+                if (device == null) {
+                    Log.w(TAG, "★ IR only: 6s 内 device 仍 null，放弃")
+                    return@launch
+                }
+                Log.i(TAG, "★ IR only: device opened 后等 1s 让 color stream 稳")
+                delay(1000)
+                val devTmp = device
+                if (devTmp != null) {
+                    val stopRc = devTmp.stopStreams(BerxelHawkStreamTypeEnum.BERXEL_HAWK_COLOR_STREAM.value)
+                    Log.i(TAG, "★ IR only: 借完 device 后 stopStreams(COLOR) rc=$stopRc")
+                    // 清掉 color reader 让它别 spam logcat
+                    readerRunning = false
+                    runCatching { colorReader?.interrupt() }
+                    colorReader = null
+                    Log.i(TAG, "★ IR only: 清掉 color reader thread")
+                    delay(300)  // 等 reader 退出
+                    readerRunning = true  // 后续 IR reader 用
+                }
+            }
+            val dev = device
+            if (dev == null) {
+                Log.w(TAG, "startIrOnly: device 为空")
+                return@launch
+            }
+            // ★★★ 关键实验：在 setStreamFlagMode 之前先调 enableDeviceSlaveMode，
+            // 试解开 Berxel 加的 master/slave 双流耦合
+            val currentSlaveMode = runCatching { dev.deviceMasterSlaveMode }
+                .onFailure { Log.w(TAG, "★ IR only: getDeviceMasterSlaveMode 异常", it) }
+                .getOrNull()
+            Log.i(TAG, "★ IR only: 当前 master/slave mode (true=slave?) = $currentSlaveMode")
+            val debugSlaveValue = debugSlaveModeOverride
+            if (debugSlaveValue != null) {
+                val slaveRc = runCatching { dev.enableDeviceSlaveMode(debugSlaveValue) }
+                    .onFailure { Log.w(TAG, "★ IR only: enableDeviceSlaveMode 异常", it) }
+                    .getOrDefault(-99)
+                Log.i(TAG, "★ IR only: ★ enableDeviceSlaveMode($debugSlaveValue) rc=$slaveRc")
+                val afterSlaveMode = runCatching { dev.deviceMasterSlaveMode }.getOrNull()
+                Log.i(TAG, "★ IR only: 切换后 master/slave mode = $afterSlaveMode")
+            }
+            val flagRc = dev.setStreamFlagMode(BerxelHawkStreamFlagEnum.BERXEL_HAWK_SINGULAR_STREAM_FLAG_MODE)
+            Log.i(TAG, "★ IR only: setStreamFlagMode(SINGULAR) rc=$flagRc")
+            if (flagRc != 0) return@launch
+            // IR_STREAM 实测只支持 640x400@30 和 1280x800@30，没 fps/分辨率灵活选择。
+            // 这里直接从 supported list 选最高分辨率（1280×800），如果失败再降到 640×400。
+            val supportedIr = runCatching { dev.getSupportFrameModes(BerxelHawkStreamTypeEnum.BERXEL_HAWK_IR_STREAM) }
+                .onFailure { Log.w(TAG, "★ IR only: getSupportFrameModes 异常", it) }
+                .getOrNull()
+            Log.i(TAG, "★ IR only: ir supported modes=${supportedIr?.joinToString { frameModeLabel(it) }}")
+            val irMode = supportedIr?.maxByOrNull { it.resolutionX * it.resolutionY }
+            if (irMode == null) {
+                Log.w(TAG, "★ IR only: 没拿到 IR frame mode")
+                return@launch
+            }
+            Log.i(TAG, "★ IR only: 选 ir mode=${frameModeLabel(irMode)}")
+            val setRc = dev.setFrameMode(BerxelHawkStreamTypeEnum.BERXEL_HAWK_IR_STREAM, irMode)
+            Log.i(TAG, "★ IR only: setFrameMode ir=${frameModeLabel(irMode)} rc=$setRc")
+            val irFlag = BerxelHawkStreamTypeEnum.BERXEL_HAWK_IR_STREAM.value
+            Log.i(TAG, "★ IR only: startStreams flags=$irFlag (IR_STREAM bit)")
+            val startRc = dev.startStreams(irFlag)
+            Log.i(TAG, "★ IR only: startStreams rc=$startRc")
+            // 主动跑几次 readIrFrame 看是否拿到帧
+            repeat(20) { i ->
+                val frame = runCatching { dev.readIrFrame(500) }
+                    .onFailure { Log.w(TAG, "★ IR only: readIrFrame[$i] 异常", it) }
+                    .getOrNull()
+                if (frame != null) {
+                    Log.i(TAG, "★ IR only: readIrFrame[$i] 成功! ${frame.width}x${frame.height} pixelType=${frame.pixelType} size=${frame.dataSize}")
+                } else {
+                    Log.d(TAG, "★ IR only: readIrFrame[$i] null")
+                }
+                delay(200)
+            }
+            Log.i(TAG, "★ IR only: 20 次 readIrFrame 测试完成")
+        }
+    }
+
+    /**
+     * 走正常 DUAL 启动路径但启用 debugHalfStopColorAfterDual flag：
+     * startStreams(3) 成功后立刻 stopStreams(COLOR=1) 留 depth。
+     * 这样 BerxelService 自己走 open device 流程，不要求 device 已 attach。
+     */
+    fun startDepthByDualThenHalfStopColor() {
+        debugStartupModeOverride = null  // 走正常 DUAL 路径
+        debugForceMixModeForSingle = false
+        debugHalfStopColorAfterDual = true
+        streamStartBlockedReason = null  // 绕开 cooldown
+        start(StartupStreamMode.DUAL)
+    }
+
+    fun startDepthByDualHalfStopForDebug() {
+        debugStartupModeOverride = StartupStreamMode.DEPTH_ONLY
+        debugForceMixModeForSingle = false
+        scope.launch {
+            val dev = device
+            if (dev == null) {
+                Log.w(TAG, "startDepthByDualHalfStop: device 为空 - 先 USB attach")
+                return@launch
+            }
+            val requestedProfile = activeStreamProfile
+            val flagProfile = requestedProfile.flagProfile
+            val streamFlag = flagProfile.toSdkStreamFlag()
+            val flagRc = dev.setStreamFlagMode(streamFlag)
+            Log.i(TAG, "★ half-stop: setStreamFlagMode($streamFlag) rc=$flagRc profile=${requestedProfile.logLabel()}")
+            if (flagRc != 0) return@launch
+
+            val colorMode = selectStableFrameMode(
+                dev = dev,
+                streamType = BerxelHawkStreamTypeEnum.BERXEL_HAWK_COLOR_STREAM,
+                label = "color",
+                target = requestedProfile.color ?: BerxelStreamProfiles.QVGA_15.color!!,
+            )
+            val depthMode = selectStableFrameMode(
+                dev = dev,
+                streamType = BerxelHawkStreamTypeEnum.BERXEL_HAWK_DEPTH_STREAM,
+                label = "depth",
+                target = requestedProfile.depth ?: BerxelStreamProfiles.QVGA_15.depth!!,
+            )
+            if (colorMode == null || depthMode == null) {
+                Log.w(TAG, "★ half-stop: frame mode null")
+                return@launch
+            }
+            dev.setFrameMode(BerxelHawkStreamTypeEnum.BERXEL_HAWK_COLOR_STREAM, colorMode)
+            dev.setFrameMode(BerxelHawkStreamTypeEnum.BERXEL_HAWK_DEPTH_STREAM, depthMode)
+            val dualFlag = BerxelHawkStreamTypeEnum.BERXEL_HAWK_COLOR_STREAM.value or
+                BerxelHawkStreamTypeEnum.BERXEL_HAWK_DEPTH_STREAM.value
+            Log.i(TAG, "★ half-stop: startStreams DUAL flag=$dualFlag")
+            val startRc = dev.startStreams(dualFlag)
+            Log.i(TAG, "★ half-stop: startStreams rc=$startRc")
+            if (startRc != 0) return@launch
+            // 立刻停 color；不 delay 以减小被 25102RKBEC host kill 的时间窗口
+            val colorFlag = BerxelHawkStreamTypeEnum.BERXEL_HAWK_COLOR_STREAM.value
+            val stopRc = dev.stopStreams(colorFlag)
+            Log.i(TAG, "★ half-stop: stopStreams(COLOR) rc=$stopRc → 现在只剩 depth")
+            // 启 depth reader
+            depthReader = Thread({ readLoop(StreamKind.DEPTH) }, "berxel-depth-half-stop").also { it.start() }
+            Log.i(TAG, "★ half-stop: depth reader 启动")
+        }
+    }
+
+    /**
+     * 实验：在已有 COLOR_ONLY (SINGULAR) 流上**不 stop**直接追加 DEPTH startStreams。
+     * 用来验证 25102RKBEC + P100R3 上 host port disable 是不是 MIX 模式特定命令触发
+     * （而非 depth 流本身或 IR 投影器电流尖峰）。
+     */
+    fun tryAppendDepthForDebug() {
+        scope.launch {
+            val dev = device
+            if (dev == null) {
+                Log.w(TAG, "tryAppendDepthForDebug: device 为空，请先 start color")
+                return@launch
+            }
+            if (lastStartedMode != StartupStreamMode.COLOR_ONLY) {
+                Log.w(TAG, "tryAppendDepthForDebug: 仅支持在 COLOR_ONLY 跑通后追加；当前 mode=$lastStartedMode")
+                return@launch
+            }
+            val targetDepth = activeStreamProfile.depth
+            if (targetDepth == null) {
+                Log.w(TAG, "tryAppendDepthForDebug: activeStreamProfile 没有 depth target；profile=${activeStreamProfile.logLabel()}")
+                return@launch
+            }
+            val depthMode = selectStableFrameMode(
+                dev = dev,
+                streamType = BerxelHawkStreamTypeEnum.BERXEL_HAWK_DEPTH_STREAM,
+                label = "depth",
+                target = targetDepth,
+            )
+            if (depthMode == null) {
+                Log.w(TAG, "tryAppendDepthForDebug: 无 depth frame mode")
+                return@launch
+            }
+            val setRc = dev.setFrameMode(BerxelHawkStreamTypeEnum.BERXEL_HAWK_DEPTH_STREAM, depthMode)
+            Log.i(TAG, "tryAppendDepthForDebug setFrameMode depth=${frameModeLabel(depthMode)} rc=$setRc")
+            if (setRc != 0) return@launch
+            val depthFlag = BerxelHawkStreamTypeEnum.BERXEL_HAWK_DEPTH_STREAM.value
+            Log.i(TAG, "tryAppendDepthForDebug startStreams flag=$depthFlag (DEPTH only, color 已在跑)")
+            val rc = dev.startStreams(depthFlag)
+            Log.i(TAG, "tryAppendDepthForDebug startStreams rc=$rc")
+            if (rc != 0) return@launch
+            if (depthReader == null || depthReader?.isAlive != true) {
+                depthReader = Thread({ readLoop(StreamKind.DEPTH) }, "berxel-depth-reader-appended")
+                    .also { it.start() }
+                Log.i(TAG, "tryAppendDepthForDebug: depth reader 启动")
+            } else {
+                Log.i(TAG, "tryAppendDepthForDebug: depth reader 已在跑，复用")
+            }
+        }
+    }
 
     private fun start(mode: StartupStreamMode) {
+        val blockedReason = streamStartBlockedReason
+        if (mode == StartupStreamMode.DUAL && blockedReason != null) {
+            Log.w(TAG, "start() blocked after repeated early USB disconnect: $blockedReason")
+            _state.value = BerxelDeviceState.Error(blockedReason)
+            return
+        }
         when (_state.value) {
             is BerxelDeviceState.Streaming,
             is BerxelDeviceState.Opening,
@@ -216,7 +536,14 @@ class BerxelService @Inject constructor(
         companionRetryJob?.cancel()
         val token = startEpoch.incrementAndGet()
         pendingUsbPermissionMode = mode
-        pendingStartJob = scope.launch { startInternal(token, mode) }
+        pendingStartJob = scope.launch {
+            if (device != null || readerRunning) {
+                Log.i(TAG, "start() 清理旧 Berxel 句柄后重启 state=${_state.value}")
+                stopInternal(reason = null)
+                if (token != startEpoch.get()) return@launch
+            }
+            startInternal(token, mode)
+        }
     }
 
     /**
@@ -237,10 +564,61 @@ class BerxelService @Inject constructor(
         start()
     }
 
+    /**
+     * 切换 Berxel 流配置（在 Streaming 时会 stop 再 start，约 300-800ms 中断；Idle 时只改默认 profile）。
+     * 幂等：profile 没变直接 noop。
+     */
+    fun setStreamProfile(profile: BerxelStreamProfile) {
+        if (activeStreamProfile == profile && streamStartBlockedReason == null) return
+        Log.i(TAG, "setStreamProfile ${activeStreamProfile.logLabel()} → ${profile.logLabel()}")
+        streamStartBlockedReason = null
+        lastStreamStartAtMs = 0L
+        lastFirstFrameAtMs = 0L
+        activeStreamProfile = profile
+        _streamProfile.value = profile
+        // 当前如果在跑：stop → 短暂等 → 用新 profile restart。
+        val state = _state.value
+        val wasActive = state is BerxelDeviceState.Streaming ||
+            state is BerxelDeviceState.Opening ||
+            state is BerxelDeviceState.Initializing ||
+            device != null ||
+            readerRunning
+        if (!wasActive) return
+        startEpoch.incrementAndGet()
+        pendingStartJob?.cancel()
+        scope.launch {
+            stopInternal(reason = null)
+            // stopInternal 不动 _state；显式回 Idle，否则 start() 会被 "current=Streaming" 拦下
+            _state.value = BerxelDeviceState.Idle
+            // 等 P100R3 firmware 释放上一组 endpoint；不等的话开新流偶现 LIBUSB_ERROR_BUSY
+            delay(400)
+            start(pendingUsbPermissionMode)
+        }
+    }
+
+    /**
+     * 旧三档入口保留给外部调试广播 / 历史调用方。HD 现在映射到 1280×800@5fps，
+     * 因为手机 OTG 上高分辨率先保证深度帧出来，再由用户升到 10/15fps。
+     */
+    fun setStreamResolutionProfile(profile: StreamResolutionProfile) {
+        setStreamProfile(
+            when (profile) {
+                StreamResolutionProfile.QVGA -> BerxelStreamProfiles.QVGA_15
+                StreamResolutionProfile.STANDARD -> BerxelStreamProfiles.STANDARD_15
+                StreamResolutionProfile.HD -> BerxelStreamProfiles.HD_5
+            },
+        )
+    }
+
     /** 主动停止：reader 退出 → close device → destroy context → 状态回 Idle。 */
     fun stop() {
         startEpoch.incrementAndGet()
         pendingStartJob?.cancel()
+        permissionWatchdogJob?.cancel()
+        debugStartupModeOverride = null
+        streamStartBlockedReason = null
+        lastStreamStartAtMs = 0L
+        lastFirstFrameAtMs = 0L
         scope.launch {
             stopInternal(reason = null)
             _state.value = BerxelDeviceState.Idle
@@ -352,7 +730,13 @@ class BerxelService @Inject constructor(
                 ctx.addDeviceStatusCallBack(deviceStatusCallback)
                 deviceStatusCallbackRegistered = true
             }
-
+            val sdkDeviceInfos = runCatching { ctx.deviceLists }
+                .onFailure { Log.w(TAG, "SDK getDeviceLists 异常", it) }
+                .getOrNull()
+                .orEmpty()
+            if (sdkDeviceInfos.isNotEmpty()) {
+                Log.i(TAG, "SDK device list=${sdkDeviceInfos.joinToString { sdkDeviceLabel(it) }}")
+            }
             _state.value = BerxelDeviceState.Opening
             val dev = ctx.CreateDevice() ?: run {
                 _state.value = BerxelDeviceState.Error("CreateDevice 返回 null")
@@ -361,7 +745,7 @@ class BerxelService @Inject constructor(
             device = dev
 
             // openDevice 会异步打开设备 + 申请校准/参数；用回调驱动状态机
-            dev.openDevice(object : BerxelHawkDevice.OpenDeviceStatusCallBack {
+            val openCallback = object : BerxelHawkDevice.OpenDeviceStatusCallBack {
                 override fun onDeviceStausOpenSuccess() {
                     scope.launch {
                         if (token == startEpoch.get()) onDeviceOpened(token, mode)
@@ -372,7 +756,11 @@ class BerxelService @Inject constructor(
                         _state.value = BerxelDeviceState.Error("打开 iHawk 失败 —— 检查 USB 接口或拔了再插")
                     }
                 }
-            })
+            }
+            // P100R3 显式传主节点或 companion deviceInfo 都会让后续 setStreamFlagMode 返 -3；
+            // 无参入口由 SDK 自己挑内部 UVC 句柄，当前是唯一能走到 startStreams 的路径。
+            Log.i(TAG, "openDevice target=<SDK default>")
+            dev.openDevice(openCallback)
         } catch (t: Throwable) {
             Log.e(TAG, "startInternal 异常", t)
             _state.value = BerxelDeviceState.Error(t.message ?: t.javaClass.simpleName)
@@ -387,18 +775,35 @@ class BerxelService @Inject constructor(
 
             val deviceInfo = dev.currentDeviceInfo
             if (deviceInfo?.isP100R3Usb3() == true) {
-                Log.i(TAG, "skip setDeviceTransferMode(BULK) for P100R3; SDK returned -8 on phone OTG")
+                Log.i(TAG, "skip setDeviceTransferMode(BULK) for P100R3; firmware returns -8")
             }
+            // 2026-05-13 phone OTG 诊断：BULK / setDeviceBandwidth 都返 -8，但来自 firmware 不是 SDK。
+            // SDK Java/native 反汇编验证内部纯转发无 P100R3 拒绝逻辑。Native libusb bypass 也救不了。
+            // 见 finding_berxel_sdk_p100r3_phone_otg_2026-05-13。
 
-            val streamFlag = when (mode) {
-                StartupStreamMode.COLOR_ONLY -> BerxelHawkStreamFlagEnum.BERXEL_HAWK_SINGULAR_STREAM_FLAG_MODE
-                StartupStreamMode.DEPTH_ONLY,
-                StartupStreamMode.DUAL -> BerxelHawkStreamFlagEnum.BERXEL_HAWK_MIX_STREAM_FLAG_MODE
+            val requestedProfile = activeStreamProfile
+            val streamFlagProfile = when (mode) {
+                StartupStreamMode.COLOR_ONLY,
+                StartupStreamMode.DEPTH_ONLY -> if (debugForceMixModeForSingle) {
+                    requestedProfile.flagProfile
+                        .also { Log.i(TAG, "★ debugForceMixModeForSingle=true → 用 MIX profile $it 替代 SINGULAR") }
+                } else {
+                    BerxelStreamFlagProfile.SINGULAR
+                }
+                StartupStreamMode.DUAL -> requestedProfile.flagProfile
             }
+            val streamFlag = streamFlagProfile.toSdkStreamFlag()
             val flagRc = dev.setStreamFlagMode(streamFlag)
-            Log.i(TAG, "setStreamFlagMode($streamFlag) rc=$flagRc mode=$mode")
+            Log.i(
+                TAG,
+                "setStreamFlagMode($streamFlag) rc=$flagRc mode=$mode profile=${requestedProfile.logLabel()}",
+            )
+            if (flagRc != 0) {
+                _state.value = BerxelDeviceState.Error("setStreamFlagMode 失败 rc=$flagRc flag=$streamFlagProfile")
+                return
+            }
 
-            // P100R3 实测 SDK 的 current mode 可能给出 640x400@45；手机 OTG 双流先用保守 fps。
+            // P100R3 每个 Berxel flag 下有多组 frame mode；分辨率和 fps 必须一起选。
             val colorEnabled = mode != StartupStreamMode.DEPTH_ONLY
             val depthEnabled = mode != StartupStreamMode.COLOR_ONLY
             val colorMode = if (colorEnabled) {
@@ -406,6 +811,7 @@ class BerxelService @Inject constructor(
                     dev = dev,
                     streamType = BerxelHawkStreamTypeEnum.BERXEL_HAWK_COLOR_STREAM,
                     label = "color",
+                    target = requestedProfile.color,
                 )
             } else {
                 null
@@ -415,6 +821,7 @@ class BerxelService @Inject constructor(
                     dev = dev,
                     streamType = BerxelHawkStreamTypeEnum.BERXEL_HAWK_DEPTH_STREAM,
                     label = "depth",
+                    target = requestedProfile.depth,
                 )
             } else {
                 null
@@ -447,6 +854,10 @@ class BerxelService @Inject constructor(
                     BerxelHawkStreamTypeEnum.BERXEL_HAWK_DEPTH_STREAM.value
             }
             Log.i(TAG, "startStreams flags=$flags mode=$mode")
+            lastStartedProfile = requestedProfile
+            lastStartedMode = mode
+            lastStreamStartAtMs = SystemClock.elapsedRealtime()
+            lastFirstFrameAtMs = 0L
             val rc = dev.startStreams(flags)
             Log.i(TAG, "startStreams rc=$rc")
             if (token != startEpoch.get()) {
@@ -456,6 +867,13 @@ class BerxelService @Inject constructor(
             if (rc != 0) {
                 _state.value = BerxelDeviceState.Error("startStreams 返回 $rc")
                 return
+            }
+            // ★ 实验：DUAL 模式启完后立刻 stopStreams(COLOR=1) 留 depth 单流
+            if (debugHalfStopColorAfterDual && mode == StartupStreamMode.DUAL) {
+                val colorOnlyFlag = BerxelHawkStreamTypeEnum.BERXEL_HAWK_COLOR_STREAM.value
+                val stopRc = dev.stopStreams(colorOnlyFlag)
+                Log.i(TAG, "★ halfStopColor: 立刻 stopStreams(COLOR=$colorOnlyFlag) rc=$stopRc")
+                debugHalfStopColorAfterDual = false  // 一次性
             }
             if (deviceInfo?.isP100R3Usb3() == true && !hasFullP100R3UsbNodes()) {
                 Log.w(TAG, "startStreams returned but P100R3 USB nodes are incomplete; wait reconnect")
@@ -475,7 +893,7 @@ class BerxelService @Inject constructor(
             // 先保持 SDK 出厂默认值，等稳定出帧后再由用户操作显式下发控制命令。
             Log.i(TAG, "skip initial Berxel controls sync until stream is stable")
 
-            val info = collectDeviceInfo(dev, colorMode, depthMode)
+            val info = collectDeviceInfo(dev, streamFlagProfile, requestedProfile, colorMode, depthMode)
             if (token != startEpoch.get()) {
                 Log.i(TAG, "device info returned after USB disconnect; skip stale device")
                 return
@@ -488,11 +906,15 @@ class BerxelService @Inject constructor(
             _lastKnownInfo.value = info
             _state.value = BerxelDeviceState.Streaming(info)
 
+            loggedFirstColorFrame = false
+            loggedFirstDepthFrame = false
             readerRunning = true
-            if (colorEnabled) {
+            if (mode == StartupStreamMode.DUAL) {
+                mixReader = Thread({ readDualLoop() }, "berxel-mix-reader").also { it.start() }
+            } else if (colorEnabled) {
                 colorReader = Thread({ readLoop(StreamKind.COLOR) }, "berxel-color-reader").also { it.start() }
             }
-            if (depthEnabled) {
+            if (mode != StartupStreamMode.DUAL && depthEnabled) {
                 depthReader = Thread({ readLoop(StreamKind.DEPTH) }, "berxel-depth-reader").also { it.start() }
             }
         } catch (t: Throwable) {
@@ -505,6 +927,7 @@ class BerxelService @Inject constructor(
         dev: BerxelHawkDevice,
         streamType: BerxelHawkStreamTypeEnum,
         label: String,
+        target: BerxelStreamTarget?,
     ): BerxelHawkStreamFrameMode? {
         val current = runCatching { dev.getCurrentFrameMode(streamType) }
             .onFailure { Log.w(TAG, "$label getCurrentFrameMode 异常", it) }
@@ -521,19 +944,29 @@ class BerxelService @Inject constructor(
             Log.i(TAG, "$label support modes=${supported.joinToString { frameModeLabel(it) }}")
         }
 
-        val stable640x400 = supported
-            .filter { it.resolutionX == 640 && it.resolutionY == 400 && it.getmFps() in 1..P100R3_SAFE_STREAM_FPS }
-            .sortedWith(compareByDescending<BerxelHawkStreamFrameMode> { it.getmFps() })
-        val selected = stable640x400.firstOrNull()
-            ?: supported
-                .filter { it.getmFps() in 1..P100R3_SAFE_STREAM_FPS }
-                .sortedWith(
-                    compareBy<BerxelHawkStreamFrameMode> {
-                        kotlin.math.abs(it.resolutionX - 640) + kotlin.math.abs(it.resolutionY - 400)
-                    }.thenByDescending { it.getmFps() },
-                )
-                .firstOrNull()
-            ?: current?.coerceToStableFps()
+        if (target == null) {
+            val selected = supported.firstOrNull() ?: current
+            if (selected != null) Log.i(TAG, "$label selected mode ${frameModeLabel(selected)}")
+            return selected
+        }
+
+        val exactTarget = supported.firstOrNull {
+            it.resolutionX == target.width && it.resolutionY == target.height && it.getmFps() == target.fps
+        }
+        val sameResolution = supported
+            .filter { it.resolutionX == target.width && it.resolutionY == target.height }
+            .sortedWith(compareBy<BerxelHawkStreamFrameMode> { fpsRank(it.getmFps(), target.fps) })
+        val selected = exactTarget
+            ?: sameResolution.firstOrNull()
+            ?: if (supported.isEmpty()) current?.copyWithTarget(target, label) else null
+
+        if (selected == null && supported.isNotEmpty()) {
+            Log.e(
+                TAG,
+                "$label target ${target.label()} 不在当前 Berxel flag 支持列表内，" +
+                    "support=${supported.joinToString { frameModeLabel(it) }}",
+            )
+        }
 
         if (selected != null) {
             Log.i(TAG, "$label selected mode ${frameModeLabel(selected)}")
@@ -541,17 +974,41 @@ class BerxelService @Inject constructor(
         return selected
     }
 
-    private fun BerxelHawkStreamFrameMode.coerceToStableFps(): BerxelHawkStreamFrameMode {
-        val fps = getmFps()
-        if (fps in 1..P100R3_SAFE_STREAM_FPS) return this
-        val stableFps = P100R3_SAFE_STREAM_FPS
-        Log.w(TAG, "current mode fps=$fps 超过手机 OTG 保守上限，强制降到 $stableFps: ${frameModeLabel(this)}")
-        return BerxelHawkStreamFrameMode(pixelType, resolutionX, resolutionY, stableFps)
+    private fun fpsRank(fps: Int, targetFps: Int): Int {
+        return if (fps in 1..targetFps) targetFps - fps else 1000 + kotlin.math.abs(fps - targetFps)
+    }
+
+    private fun BerxelHawkStreamFrameMode.copyWithTarget(
+        target: BerxelStreamTarget,
+        label: String,
+    ): BerxelHawkStreamFrameMode {
+        if (resolutionX == target.width && resolutionY == target.height && getmFps() == target.fps) return this
+        Log.w(
+            TAG,
+            "$label support modes empty，按目标 ${target.label()} 构造 frame mode；" +
+                "current=${frameModeLabel(this)}",
+        )
+        return BerxelHawkStreamFrameMode(pixelType, target.width, target.height, target.fps)
     }
 
     private fun frameModeLabel(mode: BerxelHawkStreamFrameMode): String {
         return "${mode.resolutionX}x${mode.resolutionY}@${mode.getmFps()} ${mode.pixelType?.name.orEmpty()}"
     }
+
+    private fun BerxelStreamFlagProfile.toSdkStreamFlag(): BerxelHawkStreamFlagEnum {
+        return when (this) {
+            BerxelStreamFlagProfile.SINGULAR -> BerxelHawkStreamFlagEnum.BERXEL_HAWK_SINGULAR_STREAM_FLAG_MODE
+            BerxelStreamFlagProfile.MIX -> BerxelHawkStreamFlagEnum.BERXEL_HAWK_MIX_STREAM_FLAG_MODE
+            BerxelStreamFlagProfile.MIX_HD -> BerxelHawkStreamFlagEnum.BERXEL_HAWK_MIX_HD_STREAM_FLAG_MODE
+            BerxelStreamFlagProfile.MIX_QVGA -> BerxelHawkStreamFlagEnum.BERXEL_HAWK_MIX_QVGA_STREAM_FLAG_MODE
+        }
+    }
+
+    private fun BerxelStreamProfile.logLabel(): String {
+        return "${flagProfile.name} color=${color?.label() ?: "off"} depth=${depth?.label() ?: "off"}"
+    }
+
+    private fun BerxelStreamTarget.label(): String = "${width}x${height}@${fps}"
 
     /**
      * 从 SDK 读 [BerxelHawkCameraIntrinsic] 转成 core:model 的 [CameraIntrinsics]。
@@ -610,27 +1067,89 @@ class BerxelService @Inject constructor(
     }
 
     private enum class StartupStreamMode { DUAL, COLOR_ONLY, DEPTH_ONLY }
+
+    /** 旧三档兼容入口；新代码直接使用 [BerxelStreamProfile]。 */
+    enum class StreamResolutionProfile { QVGA, STANDARD, HD }
     private enum class StreamKind { COLOR, DEPTH }
 
     private fun readLoop(kind: StreamKind) {
         Log.i(TAG, "$kind reader 启动")
+        var nullStreak = 0
         while (readerRunning) {
-            val dev = device ?: break
-            val frame: BerxelHawkFrame? = try {
-                when (kind) {
-                    StreamKind.COLOR -> dev.readColorFrame(READ_TIMEOUT_MS)
-                    StreamKind.DEPTH -> dev.readDepthFrame(READ_TIMEOUT_MS)
-                }
-            } catch (t: Throwable) {
-                Log.w(TAG, "$kind readFrame 异常", t)
-                null
-            }
+            val frame = readFrame(kind)
             if (frame != null) {
+                nullStreak = 0
                 processFrame(kind, frame)
+            } else {
+                nullStreak = logReadTimeout(kind, nullStreak)
             }
             // SDK 不需要 release frame；GC 自动回收（Frame 内部 mFrameHandle 由 finalizer 处理）。
         }
         Log.i(TAG, "$kind reader 退出")
+    }
+
+    /**
+     * 厂商 HawkMixColorDepth / HawkMixHDColorDepth sample 是单循环先读 depth 再读 color。
+     * 即使 depth timeout，也继续读 color，避免把 native depth negotiation 问题误放大成双流全黑。
+     */
+    private fun readDualLoop() {
+        Log.i(TAG, "MIX reader 启动")
+        var depthNullStreak = 0
+        var colorNullStreak = 0
+        while (readerRunning) {
+            val depthFrame = readFrame(StreamKind.DEPTH)
+            if (depthFrame != null) {
+                depthNullStreak = 0
+                processFrame(StreamKind.DEPTH, depthFrame)
+            } else {
+                depthNullStreak = logReadTimeout(StreamKind.DEPTH, depthNullStreak)
+            }
+
+            val colorFrame = readFrame(StreamKind.COLOR)
+            if (colorFrame == null) {
+                colorNullStreak = logReadTimeout(StreamKind.COLOR, colorNullStreak)
+                continue
+            }
+            colorNullStreak = 0
+            processFrame(StreamKind.COLOR, colorFrame)
+        }
+        Log.i(TAG, "MIX reader 退出")
+    }
+
+    private fun readFrame(kind: StreamKind): BerxelHawkFrame? {
+        val dev = device ?: return null
+        return try {
+            when (kind) {
+                StreamKind.COLOR -> dev.readColorFrame(READ_TIMEOUT_MS)
+                StreamKind.DEPTH -> dev.readDepthFrame(READ_TIMEOUT_MS)
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "$kind readFrame 异常", t)
+            null
+        }
+    }
+
+    private fun logReadTimeout(kind: StreamKind, currentStreak: Int): Int {
+        val next = currentStreak + 1
+        if (next == 30 || next % 150 == 0) {
+            Log.w(TAG, "$kind readFrame 连续 ${next} 次 timeout/null")
+        }
+        if (kind == StreamKind.DEPTH && next == 30 && !loggedFirstDepthFrame) {
+            stopAfterReaderTimeout("Depth 读帧超时：SDK 已开流但 readDepthFrame 持续返回 null")
+        }
+        return next
+    }
+
+    private fun stopAfterReaderTimeout(reason: String) {
+        if (stoppingAfterReaderError) return
+        stoppingAfterReaderError = true
+        readerRunning = false
+        _state.value = BerxelDeviceState.Error(reason)
+        scope.launch {
+            stopInternal(reason = null)
+            _state.value = BerxelDeviceState.Error(reason)
+            stoppingAfterReaderError = false
+        }
     }
 
     /**
@@ -667,6 +1186,7 @@ class BerxelService @Inject constructor(
         val pixelTypeName = runCatching {
             BerxelHawkPixelTypeEnum.convertValueToEnum(frame.pixelType).name
         }.getOrDefault("unknown(${frame.pixelType})")
+        logFirstFrame(kind, frame, pixelTypeName, srcSize)
 
         when (kind) {
             StreamKind.COLOR -> {
@@ -684,15 +1204,18 @@ class BerxelService @Inject constructor(
                 tryEmitPair(color = cf, depth = null)
             }
             StreamKind.DEPTH -> {
-                // SDK pixelType 是 BERXEL_HAWK_PIXEL_TYPE_DEP_16BIT_12I_4D 时，每个 uint16 是
-                // 12bit-int + 4bit-fraction 定点格式：raw_value / 16.0 才是真实毫米。
-                // 实测 (LOG-AN10 + iHawk-072): raw=15041 应解释为 940mm，不是 15m。
-                // 在此原地把 dst 转成纯 mm（每像素右移 4 位），下游 ingest / 拓印 / 渲染统一拿 mm。
-                //
-                // 性能: 用 bulk get/put 走 ShortArray 一次性 256K 元素拷贝 + 处理 + 回写；
-                // 比 per-element ShortBuffer.put(i, v) 快 5-10x，在 reader 线程上 < 5ms 完成
-                // 不阻塞 30fps 帧流（之前 per-element 版本会拖慢 reader 导致前端时间不动）。
-                if (pixelTypeName.contains("12I_4D")) {
+                // SDK depth pixelType 用定点格式 `NNIb_MMd`：NN 位整数 + MM 位小数，
+                // 每个 uint16 的真实 mm = raw >> MM。当前已知两种：
+                //   - 12I_4D（iHawk-072 / Hawk-100B）: shr 4
+                //   - 13I_3D（iHawk100RS P100R3 / 2026-05-14 Redmi 实测）: shr 3
+                // 漏掉 13I_3D 分支会导致 raw（如 15041 实际 1880mm）被 depth16ToBitmap 当
+                // 成 15m 全部超过 maxMm → 全黑画面。
+                val fracBits = when {
+                    pixelTypeName.contains("12I_4D") -> 4
+                    pixelTypeName.contains("13I_3D") -> 3
+                    else -> 0  // 未知 pixelType 不转，下游可能误读 mm，需要新增 case 时补上
+                }
+                if (fracBits > 0) {
                     val sb = dst.asShortBuffer()
                     val pixels = srcSize / 2
                     val buf = depthScratch ?: ShortArray(pixels).also { depthScratch = it }
@@ -700,7 +1223,7 @@ class BerxelService @Inject constructor(
                     sb.position(0)
                     sb.get(tmp, 0, pixels)
                     for (i in 0 until pixels) {
-                        tmp[i] = ((tmp[i].toInt() and 0xFFFF) shr 4).toShort()
+                        tmp[i] = ((tmp[i].toInt() and 0xFFFF) shr fracBits).toShort()
                     }
                     sb.position(0)
                     sb.put(tmp, 0, pixels)
@@ -721,6 +1244,28 @@ class BerxelService @Inject constructor(
                 tryEmitPair(color = null, depth = df)
             }
         }
+    }
+
+    private fun logFirstFrame(
+        kind: StreamKind,
+        frame: BerxelHawkFrame,
+        pixelTypeName: String,
+        dataSize: Int,
+    ) {
+        val shouldLog = when (kind) {
+            StreamKind.COLOR -> !loggedFirstColorFrame.also { if (!it) loggedFirstColorFrame = true }
+            StreamKind.DEPTH -> !loggedFirstDepthFrame.also { if (!it) loggedFirstDepthFrame = true }
+        }
+        if (!shouldLog) return
+        if (lastFirstFrameAtMs < lastStreamStartAtMs) {
+            lastFirstFrameAtMs = SystemClock.elapsedRealtime()
+        }
+        streamStartBlockedReason = null
+        Log.i(
+            TAG,
+            "$kind first frame ${frame.width}x${frame.height}@${frame.fps} " +
+                "idx=${frame.frameIndex} t=${frame.timeStamp} size=$dataSize pixel=$pixelTypeName",
+        )
     }
 
     /**
@@ -775,8 +1320,12 @@ class BerxelService @Inject constructor(
         companionRetryJob?.cancel()
         companionRetryJob = null
         readerRunning = false
-        runCatching { colorReader?.join(500) }
-        runCatching { depthReader?.join(500) }
+        loggedFirstColorFrame = false
+        loggedFirstDepthFrame = false
+        joinReaderThread(mixReader, 500)
+        joinReaderThread(colorReader, 500)
+        joinReaderThread(depthReader, 500)
+        mixReader = null
         colorReader = null
         depthReader = null
         partialNodeRetryCount = 0
@@ -805,14 +1354,41 @@ class BerxelService @Inject constructor(
 
     private fun handlePhysicalDisconnect() {
         val token = startEpoch.incrementAndGet()
-        lastPhysicalDisconnectAtMs = SystemClock.elapsedRealtime()
+        val now = SystemClock.elapsedRealtime()
+        val streamLifetimeMs = if (lastStreamStartAtMs > 0L) now - lastStreamStartAtMs else Long.MAX_VALUE
+        val lostBeforeFirstFrame = lastFirstFrameAtMs < lastStreamStartAtMs
+        val earlyStreamDisconnect = streamLifetimeMs in 0..STREAM_START_DISCONNECT_WINDOW_MS && lostBeforeFirstFrame
+        val profileBeforeDisconnect = lastStartedProfile
+        if (earlyStreamDisconnect && lastStartedMode == StartupStreamMode.DUAL) {
+            val nextProfile = saferDualProfileAfterEarlyDisconnect(profileBeforeDisconnect)
+            if (nextProfile != null && nextProfile.id != profileBeforeDisconnect.id) {
+                streamStartBlockedReason = null
+                activeStreamProfile = nextProfile
+                _streamProfile.value = nextProfile
+                Log.w(
+                    TAG,
+                    "startStreams 后 ${streamLifetimeMs}ms USB 断开且无首帧；" +
+                        "自动降档 ${profileBeforeDisconnect.logLabel()} → ${nextProfile.logLabel()}",
+                )
+            } else {
+                streamStartBlockedReason =
+                    "iHawk 开流后 ${streamLifetimeMs}ms 内 USB 断开，最低 QVGA 双流也没有首帧；" +
+                    "请检查 OTG 供电/线材，或用 debug 单流 color/depth 分开验证"
+                Log.e(TAG, streamStartBlockedReason.orEmpty())
+            }
+        }
+        lastPhysicalDisconnectAtMs = now
         Log.i(TAG, "USB physical disconnect; abandon SDK device token=$token")
         pendingStartJob?.cancel()
         companionRetryJob?.cancel()
         companionRetryJob = null
         readerRunning = false
-        runCatching { colorReader?.join(200) }
-        runCatching { depthReader?.join(200) }
+        loggedFirstColorFrame = false
+        loggedFirstDepthFrame = false
+        joinReaderThread(mixReader, 200)
+        joinReaderThread(colorReader, 200)
+        joinReaderThread(depthReader, 200)
+        mixReader = null
         colorReader = null
         depthReader = null
         partialNodeRetryCount = 0
@@ -821,11 +1397,35 @@ class BerxelService @Inject constructor(
         currentDepthIntrinsics = null
         _colorStat.value = null
         _depthStat.value = null
-        _state.value = BerxelDeviceState.NoDevice
+        _state.value = streamStartBlockedReason?.let { BerxelDeviceState.Error(it) } ?: BerxelDeviceState.NoDevice
+    }
+
+    private fun joinReaderThread(thread: Thread?, timeoutMs: Long) {
+        if (thread == null || thread == Thread.currentThread()) return
+        runCatching { thread.join(timeoutMs) }
+    }
+
+    private fun saferDualProfileAfterEarlyDisconnect(profile: BerxelStreamProfile): BerxelStreamProfile? {
+        if (profile.id == BerxelStreamProfiles.QVGA_15.id) return null
+        return when (profile.flagProfile) {
+            BerxelStreamFlagProfile.MIX_QVGA -> BerxelStreamProfiles.QVGA_15
+            BerxelStreamFlagProfile.MIX_HD -> BerxelStreamProfiles.STANDARD_5
+            BerxelStreamFlagProfile.MIX -> {
+                val fps = profile.depth?.fps ?: profile.color?.fps ?: Int.MAX_VALUE
+                if (profile.id == BerxelStreamProfiles.STANDARD_5.id || fps <= 5) {
+                    BerxelStreamProfiles.QVGA_15
+                } else {
+                    BerxelStreamProfiles.STANDARD_5
+                }
+            }
+            BerxelStreamFlagProfile.SINGULAR -> null
+        }
     }
 
     private fun collectDeviceInfo(
         dev: BerxelHawkDevice,
+        streamFlagProfile: BerxelStreamFlagProfile,
+        requestedProfile: BerxelStreamProfile,
         colorMode: com.berxel.berxelInterface.api.admitmode.BerxelHawkStreamFrameMode?,
         depthMode: com.berxel.berxelInterface.api.admitmode.BerxelHawkStreamFrameMode?,
     ): BerxelDeviceInfo {
@@ -840,6 +1440,8 @@ class BerxelService @Inject constructor(
             deviceAddress = devInfo?.deviceAddress.orEmpty(),
             firmwareVersion = fwStr,
             sdkVersion = sdkStr,
+            streamFlagMode = streamFlagProfile,
+            requestedProfileId = requestedProfile.id,
             colorMode = colorMode?.let {
                 BerxelStreamSpec(
                     width = it.resolutionX,
@@ -985,16 +1587,63 @@ class BerxelService @Inject constructor(
         return conn != null
     }
 
-    private fun continueAfterUsbPermissionBroadcastDenied() {
+    /**
+     * 处理 `requestPermission` broadcast granted=false 的场景。
+     *
+     * OEM 实测：HONOR Magic OS / Xiaomi HyperOS 在用户点了"允许"后，broadcast 仍可能回 false
+     * 但 system_server 异步把 grant 落进 device_permissions。直接信 broadcast 就会卡死。
+     *
+     * 处理策略（per 2026-05-14 Redmi 实测）：
+     * 1. 延迟 500ms / 1500ms / 3000ms 各做一次 fd probe，任一次成功就立刻 startInternal
+     * 2. 三次全失败 → 进 Error("脏缓存") 状态 + 启动 [permissionWatchdogJob]
+     *    每 8s 后台 probe；权限突然好了自动恢复 startInternal，不需要用户手动拔插
+     */
+    private suspend fun retryAfterUsbPermissionBroadcastDenied() {
         val usbManager = appContext.getSystemService(Context.USB_SERVICE) as UsbManager
-        val usbDevices = usbManager.deviceList.values
-            .filter { needsBerxelSdkUsbPermission(it) }
-            .map { authorizedDevicesByName[it.deviceName] ?: it }
-        if (usbDevices.isNotEmpty() && usbDevices.all { canOpenUsbDevice(usbManager, it) }) {
-            Log.i(TAG, "USB permission broadcast was false, but fd probe says SDK-visible nodes are authorized")
-            startInternal(startEpoch.incrementAndGet(), pendingUsbPermissionMode)
-        } else {
-            _state.value = BerxelDeviceState.Error("用户拒绝了 USB 权限 — 拔出重插以重试")
+        val retryDelays = listOf(500L, 1500L, 3000L)
+        for ((idx, delayMs) in retryDelays.withIndex()) {
+            delay(delayMs)
+            val usbDevices = usbManager.deviceList.values
+                .filter { needsBerxelSdkUsbPermission(it) }
+                .map { authorizedDevicesByName[it.deviceName] ?: it }
+            if (usbDevices.isEmpty()) {
+                Log.i(TAG, "post-deny retry${idx + 1}: device 已拔出，放弃")
+                _state.value = BerxelDeviceState.NoDevice
+                return
+            }
+            if (usbDevices.all { canOpenUsbDevice(usbManager, it) }) {
+                Log.i(TAG, "post-deny retry${idx + 1}: fd probe ok, startInternal")
+                startInternal(startEpoch.incrementAndGet(), pendingUsbPermissionMode)
+                return
+            }
+        }
+        Log.w(TAG, "post-deny 3 次重试都失败；进 Error 状态 + 启动 watchdog")
+        startPermissionWatchdog()
+    }
+
+    private fun startPermissionWatchdog() {
+        _state.value = BerxelDeviceState.Error(
+            "USB 权限脏缓存 — 后台轮询恢复中；如长时间无响应请拔插相机或清 app 数据"
+        )
+        permissionWatchdogJob?.cancel()
+        permissionWatchdogJob = scope.launch {
+            val usbManager = appContext.getSystemService(Context.USB_SERVICE) as UsbManager
+            while (isActive) {
+                delay(PERMISSION_WATCHDOG_INTERVAL_MS)
+                val usbDevices = usbManager.deviceList.values
+                    .filter { needsBerxelSdkUsbPermission(it) }
+                    .map { authorizedDevicesByName[it.deviceName] ?: it }
+                if (usbDevices.isEmpty()) {
+                    Log.i(TAG, "permission watchdog: device 拔出，退出 watchdog → NoDevice")
+                    _state.value = BerxelDeviceState.NoDevice
+                    return@launch
+                }
+                if (usbDevices.all { canOpenUsbDevice(usbManager, it) }) {
+                    Log.i(TAG, "permission watchdog: fd probe ok，自动 startInternal 恢复")
+                    startInternal(startEpoch.incrementAndGet(), pendingUsbPermissionMode)
+                    return@launch
+                }
+            }
         }
     }
 
@@ -1026,12 +1675,7 @@ class BerxelService @Inject constructor(
     }
 
     private fun needsBerxelSdkUsbPermission(usbDevice: UsbDevice): Boolean {
-        return isBerxelUsbDevice(usbDevice) || isKnownDellDockUsbNode(usbDevice)
-    }
-
-    private fun isKnownDellDockUsbNode(usbDevice: UsbDevice): Boolean {
-        return usbDevice.vendorId == DELL_DOCK_VID &&
-            (usbDevice.productId == DELL_DOCK_PID_45166 || usbDevice.productId == DELL_DOCK_PID_45167)
+        return isBerxelUsbDevice(usbDevice)
     }
 
     private fun BerxelHawkDeviceInfo.isP100R3Usb3(): Boolean {
@@ -1043,6 +1687,11 @@ class BerxelService @Inject constructor(
         return "${usbDevice.deviceName} vid=0x${usbDevice.vendorId.toString(16)} pid=0x${usbDevice.productId.toString(16)}"
     }
 
+    private fun sdkDeviceLabel(info: BerxelHawkDeviceInfo): String {
+        return "vid=0x${info.vendorId.toString(16)} pid=0x${info.productId.toString(16)} " +
+            "sn=${info.serialNumber.orEmpty()} addr=${info.deviceAddress.orEmpty()}"
+    }
+
     private companion object {
         const val TAG = "BerxelService"
         const val READ_TIMEOUT_MS = 100
@@ -1050,13 +1699,12 @@ class BerxelService @Inject constructor(
         const val P100R3_PRIMARY_PID = 31       // 0x001f — iHawk100RS 主节点
         const val P100R3_COMPANION_VID = 13656  // 0x3558 — iHawk100RS 伴随 UVC 节点
         const val P100R3_COMPANION_PID = 4114   // 0x1012
-        const val DELL_DOCK_VID = 16700
-        const val DELL_DOCK_PID_45166 = 45166
-        const val DELL_DOCK_PID_45167 = 45167
         const val COMPANION_ONLY_RETRY_DELAY_MS = 800L
         const val PHYSICAL_DISCONNECT_RESTART_BACKOFF_MS = 5_000L
-        const val P100R3_SAFE_STREAM_FPS = 15
+        const val STREAM_START_DISCONNECT_WINDOW_MS = 2_500L
         const val USB_PERMISSION_ACTION = "io.gomob.nativebridge.berxel.USB_PERMISSION"
+        /** USB 权限脏缓存 watchdog 轮询间隔；HONOR/HyperOS broadcast-deny + system_server-grant 异步的 race。 */
+        const val PERMISSION_WATCHDOG_INTERVAL_MS = 8_000L
     }
 }
 

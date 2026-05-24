@@ -6,8 +6,33 @@ plugins {
     alias(libs.plugins.kotlin.parcelize)
 }
 
+fun secretProvider(name: String) =
+    providers.gradleProperty(name).orElse(providers.environmentVariable(name))
+
+val releaseStoreFile = secretProvider("GOMOB_RELEASE_STORE_FILE")
+val releaseStorePassword = secretProvider("GOMOB_RELEASE_STORE_PASSWORD")
+val releaseKeyAlias = secretProvider("GOMOB_RELEASE_KEY_ALIAS")
+val releaseKeyPassword = secretProvider("GOMOB_RELEASE_KEY_PASSWORD")
+val hasReleaseSigning = listOf(
+    releaseStoreFile,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { it.isPresent }
+
 android {
     namespace = "io.gomob.scan"
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = rootProject.file(releaseStoreFile.get())
+                storePassword = releaseStorePassword.get()
+                keyAlias = releaseKeyAlias.get()
+                keyPassword = releaseKeyPassword.get()
+            }
+        }
+    }
 
     defaultConfig {
         applicationId = "io.gomob.scan"
@@ -24,10 +49,14 @@ android {
             versionNameSuffix = "-debug"
         }
         release {
+            isDebuggable = false
+            isJniDebuggable = false
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("debug")
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
@@ -37,7 +66,11 @@ android {
 
     packaging {
         resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            excludes += listOf(
+                "/DebugProbesKt.bin",
+                "/META-INF/*.kotlin_module",
+                "/META-INF/{AL2.0,LGPL2.1}",
+            )
         }
     }
 }

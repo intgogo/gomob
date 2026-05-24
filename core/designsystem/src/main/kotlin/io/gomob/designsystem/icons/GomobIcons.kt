@@ -446,6 +446,31 @@ object GomobIcons {
         lineTo(18f, 8.2f)
     }
 
+    val Close: ImageVector = stroked("Close") {
+        moveTo(6f, 6f)
+        lineTo(18f, 18f)
+        moveTo(18f, 6f)
+        lineTo(6f, 18f)
+    }
+
+    val Camera: ImageVector = stroked("Camera") {
+        // 相机外框 + 顶部凸起 + 镜头
+        moveTo(8.5f, 5f)
+        lineTo(9.5f, 3.5f)
+        horizontalLineTo(14.5f)
+        lineTo(15.5f, 5f)
+        horizontalLineTo(19f)
+        curveToRelative(0.8f, 0f, 1.5f, 0.7f, 1.5f, 1.5f)
+        verticalLineTo(18f)
+        curveToRelative(0f, 0.8f, -0.7f, 1.5f, -1.5f, 1.5f)
+        horizontalLineTo(5f)
+        curveToRelative(-0.8f, 0f, -1.5f, -0.7f, -1.5f, -1.5f)
+        verticalLineTo(6.5f)
+        curveToRelative(0f, -0.8f, 0.7f, -1.5f, 1.5f, -1.5f)
+        close()
+        circle(12f, 12.5f, 3.5f)
+    }
+
     val Filter: ImageVector = stroked("Filter") {
         moveTo(3.5f, 5f); horizontalLineTo(20.5f)
         lineToRelative(-6.5f, 8f)

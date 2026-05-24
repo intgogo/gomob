@@ -21,6 +21,9 @@ import javax.inject.Singleton
 
 interface MediaAssetUploader {
     suspend fun upload(uri: Uri, kind: MediaAssetKind): UploadedMediaAsset
+
+    /** 重新签 download URL：原 pre-signed URL 5min 过期后用 asset_id 拿一个新的。 */
+    suspend fun refreshDownloadUrl(assetId: String): String?
 }
 
 enum class MediaAssetKind(
@@ -90,6 +93,11 @@ class DefaultMediaAssetUploader @Inject constructor(
         } finally {
             staged.file.delete()
         }
+    }
+
+    override suspend fun refreshDownloadUrl(assetId: String): String? {
+        if (assetId.isBlank()) return null
+        return runCatching { api.presignDownload(assetId).data?.downloadUrl }.getOrNull()
     }
 
     private fun stageUri(uri: Uri, kind: MediaAssetKind): StagedMediaAsset {

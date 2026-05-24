@@ -21,6 +21,17 @@ data class ConversationPeer(
     val employeeId: String?,
 )
 
+/** 站内通讯录条目 — 由 GET /v1/contacts 返回。 */
+data class StationContact(
+    val userId: Long,
+    val name: String,
+    val employeeId: String,
+    val username: String = "",
+    val role: String,
+    val stationId: Long? = null,
+    val stationName: String = "",
+)
+
 data class HelpExpert(
     val userId: Long,
     val name: String,
@@ -52,6 +63,7 @@ data class MessageRecord(
     val status: MessageStatus,
     val createdAt: String,
     val editedAt: String? = null,
+    val recalledAt: String? = null,
 )
 
 data class MessageQuote(

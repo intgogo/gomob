@@ -30,4 +30,5 @@ class ApiException(
     val isAuthExpired: Boolean get() = code == 40102
     val isLoginFailed: Boolean get() = code == 40101
     val isAccountInactive: Boolean get() = code == 40104
+    val isPermissionDenied: Boolean get() = code == 40103 || httpStatus == 403
 }

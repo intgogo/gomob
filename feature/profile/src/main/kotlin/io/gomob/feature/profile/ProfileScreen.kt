@@ -88,11 +88,13 @@ fun ProfileRoute(
     onOpenNotification: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
     onOpenHistory: () -> Unit = {},
+    onOpenTheme: () -> Unit = {},
     vm: ProfileViewModel = hiltViewModel(),
     appearance: AppearanceViewModel = hiltViewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     val themeMode by appearance.mode.collectAsStateWithLifecycle()
+    val colorScheme by appearance.colorScheme.collectAsStateWithLifecycle()
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
 
     val context = LocalContext.current
@@ -156,8 +158,11 @@ fun ProfileRoute(
             onOpenAccount = onOpenAccount,
             onOpenNotification = onOpenNotification,
             onOpenAbout = onOpenAbout,
-            themeLabel = themeLabel(themeMode),
-            onCycleTheme = { appearance.setMode(nextMode(themeMode)) },
+            themeLabel = themeLabel(themeMode) + " · " + colorScheme.displayName,
+            onOpenTheme = {
+                settingsOpen = false
+                onOpenTheme()
+            },
             cacheText = formatCacheSize(cacheSize),
             onClearCache = {
                 scope.launch {
@@ -173,12 +178,6 @@ private fun themeLabel(m: ThemeMode): String = when (m) {
     ThemeMode.System -> "跟随系统"
     ThemeMode.Light -> "浅色"
     ThemeMode.Dark -> "深色"
-}
-
-private fun nextMode(m: ThemeMode): ThemeMode = when (m) {
-    ThemeMode.System -> ThemeMode.Light
-    ThemeMode.Light -> ThemeMode.Dark
-    ThemeMode.Dark -> ThemeMode.System
 }
 
 private fun dirSize(root: File): Long {
@@ -555,7 +554,7 @@ private fun SettingsDrawer(
     onOpenNotification: () -> Unit,
     onOpenAbout: () -> Unit,
     themeLabel: String,
-    onCycleTheme: () -> Unit,
+    onOpenTheme: () -> Unit,
     cacheText: String,
     onClearCache: () -> Unit,
 ) {
@@ -588,7 +587,7 @@ private fun SettingsDrawer(
                 onOpenNotification = onOpenNotification,
                 onOpenAbout = onOpenAbout,
                 themeLabel = themeLabel,
-                onCycleTheme = onCycleTheme,
+                onOpenTheme = onOpenTheme,
                 cacheText = cacheText,
                 onClearCache = onClearCache,
             )
@@ -603,7 +602,7 @@ private fun DrawerContent(
     onOpenNotification: () -> Unit,
     onOpenAbout: () -> Unit,
     themeLabel: String,
-    onCycleTheme: () -> Unit,
+    onOpenTheme: () -> Unit,
     cacheText: String,
     onClearCache: () -> Unit,
 ) {
@@ -616,7 +615,7 @@ private fun DrawerContent(
     }
     val items = listOf(
         SettingItem(GomobIcons.Lock, "账号与安全", onClick = onOpenAccount),
-        SettingItem(GomobIcons.Moon, "切换主题", value = themeLabel, onClick = onCycleTheme),
+        SettingItem(GomobIcons.Moon, "切换主题", value = themeLabel, onClick = onOpenTheme),
         SettingItem(GomobIcons.Cache, "清理缓存", value = cacheText, onClick = onClearCache),
         SettingItem(GomobIcons.Bell, "通知设置", onClick = onOpenNotification),
         SettingItem(GomobIcons.Info, "关于 mob3d", value = "v0.1.0", onClick = onOpenAbout),

@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.gomob.data.auth.TokenStore
 import io.gomob.data.message.MessageRepository
+import io.gomob.network.ApiException
 import io.gomob.model.message.ConversationSummary
 import io.gomob.model.message.HelpExpert
 import io.gomob.model.message.HelpExpertCase
@@ -14,6 +15,7 @@ import io.gomob.model.message.InspectionShareCard
 import io.gomob.model.message.MessageRecord
 import io.gomob.model.message.MessageQuote
 import io.gomob.model.message.MessageStatus
+import io.gomob.model.message.StationContact
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -49,12 +51,16 @@ class MessageListViewModel @Inject constructor(
     private val helpExperts = MutableStateFlow<List<HelpExpertRowUi>>(emptyList())
     private val helpRefreshState = MutableStateFlow<RefreshState>(RefreshState.Loading)
     private val multiLineRoomsRefreshState = MutableStateFlow<RefreshState>(RefreshState.Loading)
+    private val stationContacts = MutableStateFlow<List<StationContact>>(emptyList())
+    private val stationContactsRefreshState = MutableStateFlow<RefreshState>(RefreshState.Loading)
     private val _contactActionError = MutableStateFlow<String?>(null)
     private val _openConversationEvents = MutableSharedFlow<Long>()
     private val _openSearchMessageEvents = MutableSharedFlow<MessageSearchOpenEvent>()
+    private val _adHocVideoCallEvents = MutableSharedFlow<VideoCallOpenEvent>()
     val contactActionError: StateFlow<String?> = _contactActionError.asStateFlow()
     val openConversationEvents = _openConversationEvents.asSharedFlow()
     val openSearchMessageEvents = _openSearchMessageEvents.asSharedFlow()
+    val adHocVideoCallEvents = _adHocVideoCallEvents.asSharedFlow()
 
     val uiState: StateFlow<MessageListUiState> =
         combine(repository.observeConversations(), refreshState) { conversations, refresh ->
@@ -98,10 +104,11 @@ class MessageListViewModel @Inject constructor(
         )
 
     val helpUiState: StateFlow<HelpExpertsUiState> =
-        combine(helpExperts, helpRefreshState) { experts, refresh ->
+        combine(helpExperts, helpRefreshState, stationContacts) { experts, refresh, contacts ->
             when {
-                experts.isNotEmpty() -> HelpExpertsUiState.Content(
+                experts.isNotEmpty() || contacts.isNotEmpty() -> HelpExpertsUiState.Content(
                     experts = experts,
+                    stationContacts = contacts,
                     offlineCached = refresh is RefreshState.Error,
                     errorMessage = (refresh as? RefreshState.Error)?.message,
                 )
@@ -119,6 +126,17 @@ class MessageListViewModel @Inject constructor(
         refresh()
         refreshHelpExperts()
         refreshHelpRoom()
+        refreshStationContacts()
+    }
+
+    fun refreshStationContacts() {
+        viewModelScope.launch {
+            stationContactsRefreshState.value = RefreshState.Loading
+            stationContactsRefreshState.value = runCatching {
+                stationContacts.value = repository.stationContacts()
+                RefreshState.Ready
+            }.getOrElse { RefreshState.Error(it.readableMessage()) }
+        }
     }
 
     fun refresh() {
@@ -165,7 +183,12 @@ class MessageListViewModel @Inject constructor(
                     )
                 }
                 RefreshState.Ready
-            }.getOrElse { RefreshState.Error(it.readableMessage()) }
+            }.getOrElse { error ->
+                // 求助群只对 inspector 开放（server 端 OpenHelpRoom 限角色）；
+                // expert / supervisor 角色被 40103 拒绝是正确语义，不算"消息服务异常"。
+                if (error is ApiException && error.isPermissionDenied) RefreshState.Ready
+                else RefreshState.Error(error.readableMessage())
+            }
             multiLineRoomsRefreshState.value = result
         }
     }
@@ -230,6 +253,42 @@ class MessageListViewModel @Inject constructor(
 
     fun clearContactActionError() {
         _contactActionError.value = null
+    }
+
+    /**
+     * 通讯录多选 → 拿/建临时群 conversation → 自动 createCallInvite → emit videoCallEvents 让 UI 跳进 VideoCallScreen。
+     *
+     * 一次性原子操作；任意一步失败把错误塞到 contactActionError 让 UI 顶部红条提示。
+     * 同一帮人多次发起会复用同一 conv（server hash 保证幂等），通话历史不会撕碎。
+     */
+    fun startAdHocCall(memberUserIds: List<Long>, title: String? = null) {
+        val cleaned = memberUserIds.filter { it > 0 }.distinct()
+        if (cleaned.isEmpty()) {
+            _contactActionError.value = "至少选择一位联系人"
+            return
+        }
+        viewModelScope.launch {
+            _contactActionError.value = null
+            val conversation = runCatching { repository.openAdHocGroup(cleaned, title) }
+                .getOrElse { error ->
+                    _contactActionError.value = error.readableMessage()
+                    return@launch
+                }
+            runCatching { repository.refreshConversations() }
+            val callTitle = title?.takeIf { it.isNotBlank() } ?: "多人连线"
+            val invite = runCatching { repository.createVideoCallInvite(conversation.id, callTitle) }
+                .getOrElse { error ->
+                    _contactActionError.value = "拨打失败：${error.readableMessage()}"
+                    return@launch
+                }
+            _adHocVideoCallEvents.emit(
+                VideoCallOpenEvent(
+                    roomId = invite.roomId,
+                    title = invite.title,
+                    mode = VideoCallMode.Caller,
+                ),
+            )
+        }
     }
 
     private fun List<ConversationSummary>.toMessageListUiState(refresh: RefreshState): MessageListUiState {
@@ -341,23 +400,18 @@ class ContactDetailViewModel @Inject constructor(
         viewModelScope.launch {
             _state.value = ContactDetailUiState.Loading
             _state.value = runCatching {
-                val local = localContactProfiles().firstOrNull { it.id == contactId }
-                if (local != null) {
-                    ContactDetailUiState.Content(contact = local, cases = emptyList())
+                val expertUserId = contactId.contactUserId()
+                    ?: throw IllegalArgumentException("联系人不存在")
+                val expert = repository.helpExperts()
+                    .map { it.toRowUi() }
+                    .firstOrNull { it.userId == expertUserId }
+                if (expert == null) {
+                    ContactDetailUiState.Content(contact = fallbackContactProfile(expertUserId), cases = emptyList())
                 } else {
-                    val expertUserId = contactId.contactUserId()
-                        ?: throw IllegalArgumentException("联系人不存在")
-                    val expert = repository.helpExperts()
-                        .map { it.toRowUi() }
-                        .firstOrNull { it.userId == expertUserId }
-                    if (expert == null) {
-                        ContactDetailUiState.Content(contact = fallbackContactProfile(expertUserId), cases = emptyList())
-                    } else {
-                        ContactDetailUiState.Content(
-                            contact = expert.toContactProfileUi(),
-                            cases = repository.helpExpertCases(expertUserId).map { it.toRowUi() },
-                        )
-                    }
+                    ContactDetailUiState.Content(
+                        contact = expert.toContactProfileUi(),
+                        cases = repository.helpExpertCases(expertUserId).map { it.toRowUi() },
+                    )
                 }
             }.getOrElse { ContactDetailUiState.Error(it.readableMessage()) }
         }
@@ -464,6 +518,26 @@ class ConversationViewModel @Inject constructor(
             ),
         )
 
+    /**
+     * 当前会话可 @ 提及的候选成员（不含自己）。
+     *
+     * 当前 server 还没有"会话成员名单"API；这里复用 ConversationInfoScreen 的同款逻辑：
+     * 从已知 conversation.peer + 已落库消息的 senderId 推断。群聊里有效，单聊永远只有
+     * 对方一个，没必要 @。
+     */
+    val mentionCandidates: StateFlow<List<MentionCandidate>> =
+        combine(
+            repository.observeConversation(conversationId),
+            repository.observeMessages(conversationId),
+            tokenStore.currentUserIdFlow,
+        ) { conversation, messages, currentUserId ->
+            buildMentionCandidates(conversation, messages, currentUserId)
+        }.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = emptyList(),
+        )
+
     val forwardTargets: StateFlow<List<MessageForwardTargetUi>> =
         combine(repository.observeConversations(), forwardExperts, tokenStore.currentUserIdFlow) { conversations, experts, currentUserId ->
             val directConversations = visibleMessageConversations(conversations)
@@ -530,12 +604,19 @@ class ConversationViewModel @Inject constructor(
         }
     }
 
-    fun send(text: String, quote: MessageQuote? = null) {
+    fun send(
+        text: String,
+        quote: MessageQuote? = null,
+        mentions: List<MentionRef> = emptyList(),
+    ) {
         val trimmed = text.trim()
         if (trimmed.isEmpty() || conversationId <= 0) return
         viewModelScope.launch {
             runCatching {
-                repository.sendText(conversationId, trimmed, quote)
+                val payloadMentions = mentions.map {
+                    io.gomob.data.message.MentionPayload(userId = it.userId, name = it.name)
+                }
+                repository.sendText(conversationId, trimmed, quote, payloadMentions)
                 refreshState.value = RefreshState.Ready
             }
                 .onFailure { refreshState.value = RefreshState.Error(it.readableMessage()) }
@@ -658,6 +739,35 @@ class ConversationViewModel @Inject constructor(
                 .onFailure { refreshState.value = RefreshState.Error(it.readableMessage()) }
         }
     }
+
+    /** 删除一条本地 Failed/Pending 消息（不通知 server — 它本来就没送达）。 */
+    fun deleteLocalMessage(localKey: String?) {
+        if (localKey.isNullOrBlank()) return
+        viewModelScope.launch {
+            runCatching { repository.deleteLocalMessage(localKey) }
+                .onFailure { refreshState.value = RefreshState.Error(it.readableMessage()) }
+        }
+    }
+
+    /**
+     * 撤回一条已 Sent 的消息（server 落 deleted_at + ws 推 msg.recall）。
+     * UI 列表的更新由 [MessageRepository.applyRealtimeRecalled] 异步落库回流，
+     * 这里只负责发请求 + 错误时把"超过撤回时限"等提示挂到 refreshState。
+     */
+    fun recallMessage(messageId: Long) {
+        if (conversationId <= 0 || messageId <= 0) return
+        viewModelScope.launch {
+            runCatching { repository.recallMessage(conversationId, messageId) }
+                .onFailure { refreshState.value = RefreshState.Error(it.readableMessage()) }
+        }
+    }
+
+    /**
+     * UI 图片加载失败时调用，拿 server 重签的新 download URL（pre-signed 5min 过期场景）。
+     * 调用方应该 suspend 等待结果再决定是否重 load。返回 null = 重签失败。
+     */
+    suspend fun refreshAssetUrl(localKey: String, assetId: String): String? =
+        repository.refreshAssetDownloadUrl(localKey, assetId)
 
     fun retryVoiceTranscript(messageId: Long?) {
         if (messageId == null || messageId <= 0) return
@@ -789,6 +899,7 @@ sealed interface HelpExpertsUiState {
     data class Error(val message: String) : HelpExpertsUiState
     data class Content(
         val experts: List<HelpExpertRowUi>,
+        val stationContacts: List<StationContact> = emptyList(),
         val offlineCached: Boolean,
         val errorMessage: String?,
     ) : HelpExpertsUiState
@@ -888,13 +999,17 @@ data class MessageBubbleUi(
     val voiceTranscript: VoiceTranscriptUi? = null,
     val quote: QuoteReferenceUi? = null,
     val media: MediaAttachmentUi? = null,
-)
+    val recalledAt: String? = null,
+) {
+    val isRecalled: Boolean get() = !recalledAt.isNullOrBlank()
+}
 
 data class MediaAttachmentUi(
     val mediaState: String,
     val localUri: String?,
     val downloadUrl: String?,
     val mime: String?,
+    val assetId: String? = null,
 ) {
     val imageSource: String?
         get() = localUri?.takeIf { it.isNotBlank() }
@@ -1001,6 +1116,46 @@ data class VideoCallOpenEvent(
 enum class VideoCallMode(val routeValue: String) {
     Caller("caller"),
     Callee("callee"),
+}
+
+/** @ 提及候选条目 — Composer picker 列表的最小展示 + 选中后回填字段。 */
+data class MentionCandidate(
+    val userId: Long,
+    val name: String,
+    val employeeId: String? = null,
+)
+
+/** 一次 send 时跟随 payload.mentions 上传的引用记录。 */
+data class MentionRef(
+    val userId: Long,
+    val name: String,
+)
+
+internal fun buildMentionCandidates(
+    conversation: ConversationSummary?,
+    messages: List<MessageRecord>,
+    currentUserId: Long?,
+): List<MentionCandidate> {
+    val result = linkedMapOf<Long, MentionCandidate>()
+    conversation?.peer?.let { peer ->
+        if (peer.id != currentUserId && peer.id > 0) {
+            result[peer.id] = MentionCandidate(
+                userId = peer.id,
+                name = peer.name.ifBlank { "成员 #${peer.id}" },
+                employeeId = peer.employeeId,
+            )
+        }
+    }
+    messages.forEach { record ->
+        val senderId = record.senderId ?: return@forEach
+        if (senderId == currentUserId || senderId <= 0) return@forEach
+        if (senderId in result) return@forEach
+        result[senderId] = MentionCandidate(
+            userId = senderId,
+            name = "成员 #$senderId",
+        )
+    }
+    return result.values.toList()
 }
 
 private sealed interface RefreshState {
@@ -1141,27 +1296,20 @@ private fun forwardContactProfiles(
     experts: List<HelpExpertRowUi>,
     currentUserId: Long?,
 ): List<ContactProfileUi> {
-    val localContacts = localContactProfiles()
-        .filterNot { it.id == "station-shen" }
-        .filterNot { it.peerUserId != null && it.peerUserId == currentUserId }
-    val expertContacts = experts
+    return experts
         .filterNot { it.userId == currentUserId }
         .map { it.toContactProfileUi() }
-    return (localContacts + expertContacts).distinctBy { contact ->
-        contact.peerUserId?.let { "peer-$it" } ?: "employee-${contact.employeeId.lowercase()}"
-    }
+        .distinctBy { contact ->
+            contact.peerUserId?.let { "peer-$it" } ?: "employee-${contact.employeeId.lowercase()}"
+        }
 }
 
 private fun ContactProfileUi.forwardSectionId(): String = when {
-    id.startsWith("station-") -> "station"
-    id.startsWith("supervision-") -> "supervision"
     id.startsWith("expert-") -> "experts"
     else -> "contacts"
 }
 
 private fun ContactProfileUi.forwardSectionTitle(): String = when (forwardSectionId()) {
-    "station" -> "本站 · 杭州西湖检测站"
-    "supervision" -> "监管中心 · 浙江省车管所"
     "experts" -> "外部专家 · 协作池"
     else -> "联系人"
 }
@@ -1247,6 +1395,7 @@ private fun MessageRecord.toBubbleUi(json: Json, currentUserId: Long?): MessageB
         voiceTranscript = transcript,
         quote = quote,
         media = media,
+        recalledAt = recalledAt,
     )
 }
 
@@ -1383,11 +1532,14 @@ internal fun MessageRecord.mediaAttachmentPayload(json: Json): MediaAttachmentUi
     val mediaState = obj["media_state"]?.jsonPrimitive?.contentOrNull
         ?: if (!downloadUrl.isNullOrBlank() || obj["asset_id"] != null) "ready" else ""
     val mime = obj["mime"]?.jsonPrimitive?.contentOrNull
+    val assetId = obj["asset_id"]?.jsonPrimitive?.contentOrNull
+        ?: obj["assetId"]?.jsonPrimitive?.contentOrNull
     return MediaAttachmentUi(
         mediaState = mediaState,
         localUri = localUri?.takeIf { it.isNotBlank() },
         downloadUrl = downloadUrl?.takeIf { it.isNotBlank() },
         mime = mime?.takeIf { it.isNotBlank() },
+        assetId = assetId?.takeIf { it.isNotBlank() },
     )
 }
 
@@ -1498,7 +1650,7 @@ private fun MessageRecord.avatarKind(): AvatarKind = when (kind) {
     else -> AvatarKind.Neutral
 }
 
-private fun initialsFor(title: String): String =
+internal fun initialsFor(title: String): String =
     title.trim().firstOrNull()?.toString()?.uppercase().orEmpty().ifBlank { "#" }
 
 private fun formatVoiceDuration(sec: Int): String {

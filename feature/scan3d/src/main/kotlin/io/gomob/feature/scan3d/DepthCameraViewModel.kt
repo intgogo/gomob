@@ -8,6 +8,8 @@ import io.gomob.nativebridge.berxel.BerxelDeviceControls
 import io.gomob.nativebridge.berxel.BerxelDeviceState
 import io.gomob.nativebridge.berxel.BerxelFrameStat
 import io.gomob.nativebridge.berxel.BerxelService
+import io.gomob.nativebridge.berxel.BerxelStreamProfile
+import io.gomob.nativebridge.berxel.BerxelStreamProfiles
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -24,6 +26,7 @@ data class DepthCameraUiState(
     val color: BerxelFrameStat? = null,
     val depth: BerxelFrameStat? = null,
     val controls: BerxelDeviceControls = BerxelDeviceControls(),
+    val streamProfile: BerxelStreamProfile = BerxelStreamProfiles.DEFAULT,
 )
 
 /**
@@ -43,8 +46,15 @@ class DepthCameraViewModel @Inject constructor(
         berxel.colorStat,
         berxel.depthStat,
         berxel.controls,
-    ) { state, color, depth, controls ->
-        DepthCameraUiState(state, color, depth, controls)
+        berxel.streamProfile,
+    ) { values ->
+        DepthCameraUiState(
+            device = values[0] as BerxelDeviceState,
+            color = values[1] as BerxelFrameStat?,
+            depth = values[2] as BerxelFrameStat?,
+            controls = values[3] as BerxelDeviceControls,
+            streamProfile = values[4] as BerxelStreamProfile,
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DepthCameraUiState())
 
     private val _colorPreview = MutableStateFlow<Bitmap?>(null)
@@ -78,6 +88,7 @@ class DepthCameraViewModel @Inject constructor(
     }
 
     // ─── 控制命令（直接转发到 BerxelService） ───
+    fun setStreamProfile(profile: BerxelStreamProfile) = berxel.setStreamProfile(profile)
     fun setRegistrationEnable(on: Boolean) = berxel.setRegistrationEnable(on)
     fun setStreamMirror(on: Boolean) = berxel.setStreamMirror(on)
     fun setDepthAutoExposure(on: Boolean) = berxel.setDepthAutoExposure(on)

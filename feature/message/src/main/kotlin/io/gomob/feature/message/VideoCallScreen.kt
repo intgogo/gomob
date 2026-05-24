@@ -1,15 +1,17 @@
 package io.gomob.feature.message
 
 import android.Manifest
+import android.app.Application
 import android.content.pm.PackageManager
+import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.camera.core.CameraSelector
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,6 +21,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CallEnd
@@ -30,9 +35,9 @@ import androidx.compose.material.icons.filled.VideocamOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -43,23 +48,31 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
-import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.gomob.data.message.MediaSessionRepository
-import io.gomob.designsystem.component.StatusTag
-import io.gomob.designsystem.component.StatusTone
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
+import io.livekit.android.LiveKit
+import io.livekit.android.LiveKitOverrides
+import io.livekit.android.events.RoomEvent
+import io.livekit.android.events.collect
+import io.livekit.android.renderer.TextureViewRenderer
+import io.livekit.android.room.Room
+import io.livekit.android.room.participant.Participant
+import io.livekit.android.room.track.LocalVideoTrack
+import io.livekit.android.room.track.Track
+import io.livekit.android.room.track.VideoTrack
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -72,11 +85,9 @@ fun VideoCallRoute(
     viewModel: VideoCallViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val participants by viewModel.participants.collectAsStateWithLifecycle()
+    val localControls by viewModel.localControls.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    var micEnabled by remember { mutableStateOf(true) }
-    var cameraEnabled by remember { mutableStateOf(true) }
-    var lensFacing by remember { mutableIntStateOf(CameraSelector.LENS_FACING_FRONT) }
-    var cameraError by remember { mutableStateOf<String?>(null) }
     var hasMediaPermission by remember {
         mutableStateOf(
             listOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO).all {
@@ -88,11 +99,11 @@ fun VideoCallRoute(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { grants ->
         hasMediaPermission = grants.values.all { it }
-        if (!hasMediaPermission) cameraError = "需要相机和麦克风权限"
+        if (hasMediaPermission) viewModel.onPermissionGranted()
     }
 
-    LaunchedEffect(roomId, title, mode) {
-        viewModel.bind(roomId = roomId, title = title, mode = mode)
+    LaunchedEffect(roomId, title, mode, hasMediaPermission) {
+        viewModel.bind(roomId = roomId, title = title, mode = mode, mediaGranted = hasMediaPermission)
         if (!hasMediaPermission) {
             permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
         }
@@ -104,8 +115,8 @@ fun VideoCallRoute(
     }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        RemoteVideoStage(
-            title = title,
+        ParticipantGrid(
+            participants = participants,
             state = state,
             modifier = Modifier.fillMaxSize(),
         )
@@ -138,37 +149,8 @@ fun VideoCallRoute(
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(title.ifBlank { "视频通话" }, style = Gomob.type.body, color = Color.White, maxLines = 1)
-                Text(state.subtitle, style = Gomob.type.caption, color = Color.White.copy(alpha = 0.68f), maxLines = 1)
+                Text(state.subtitle(participants.size), style = Gomob.type.caption, color = Color.White.copy(alpha = 0.68f), maxLines = 1)
             }
-        }
-
-        if (cameraEnabled && hasMediaPermission) {
-            Box(
-                Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = 86.dp, end = Gomob.spacing.s16)
-                    .width(112.dp)
-                    .height(154.dp)
-                    .clip(Gomob.shapes.r3)
-                    .background(Color(0xFF141821)),
-            ) {
-                CameraPreview(
-                    lensFacing = lensFacing,
-                    onError = { cameraError = it },
-                    modifier = Modifier.fillMaxSize(),
-                )
-            }
-        }
-
-        cameraError?.let {
-            StatusTag(
-                text = it,
-                tone = StatusTone.Warn,
-                showDot = true,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 116.dp),
-            )
         }
 
         Row(
@@ -180,32 +162,22 @@ fun VideoCallRoute(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             CallControlButton(
-                active = micEnabled,
-                icon = if (micEnabled) Icons.Filled.Mic else Icons.Filled.MicOff,
-                label = if (micEnabled) "关闭麦克风" else "打开麦克风",
-                onClick = { micEnabled = !micEnabled },
+                active = localControls.micEnabled,
+                icon = if (localControls.micEnabled) Icons.Filled.Mic else Icons.Filled.MicOff,
+                label = if (localControls.micEnabled) "关闭麦克风" else "打开麦克风",
+                onClick = { viewModel.toggleMicrophone() },
             )
             CallControlButton(
-                active = cameraEnabled,
-                icon = if (cameraEnabled) Icons.Filled.Videocam else Icons.Filled.VideocamOff,
-                label = if (cameraEnabled) "关闭摄像头" else "打开摄像头",
-                onClick = {
-                    cameraEnabled = !cameraEnabled
-                    if (cameraEnabled) cameraError = null
-                },
+                active = localControls.cameraEnabled,
+                icon = if (localControls.cameraEnabled) Icons.Filled.Videocam else Icons.Filled.VideocamOff,
+                label = if (localControls.cameraEnabled) "关闭摄像头" else "打开摄像头",
+                onClick = { viewModel.toggleCamera() },
             )
             CallControlButton(
                 active = true,
                 icon = Icons.Filled.Cameraswitch,
                 label = "切换摄像头",
-                onClick = {
-                    lensFacing = if (lensFacing == CameraSelector.LENS_FACING_FRONT) {
-                        CameraSelector.LENS_FACING_BACK
-                    } else {
-                        CameraSelector.LENS_FACING_FRONT
-                    }
-                    cameraError = null
-                },
+                onClick = { viewModel.flipCamera() },
             )
             CallControlButton(
                 active = true,
@@ -221,12 +193,124 @@ fun VideoCallRoute(
     }
 }
 
+/**
+ * 按 participant 数自适应网格：1 全屏，2 上下平铺，3-4 → 2x2，5-9 → 3x3，>9 → 3 列纵向滚动。
+ *
+ * 不可见 tile 不会创建 TextureViewRenderer，省 WebRTC 内存（LazyVerticalGrid 自动 recycle）。
+ */
 @Composable
-private fun RemoteVideoStage(
-    title: String,
+private fun ParticipantGrid(
+    participants: List<ParticipantUi>,
     state: VideoCallUiState,
     modifier: Modifier = Modifier,
 ) {
+    if (participants.isEmpty()) {
+        EmptyCallStage(state = state, modifier = modifier)
+        return
+    }
+    val columns = when {
+        participants.size <= 1 -> 1
+        participants.size <= 4 -> 2
+        else -> 3
+    }
+    BoxWithConstraints(modifier.padding(top = 96.dp, bottom = 132.dp)) {
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(columns),
+            modifier = Modifier.fillMaxSize(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp),
+        ) {
+            items(participants, key = { it.identity }) { p ->
+                ParticipantTile(participant = p)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ParticipantTile(participant: ParticipantUi) {
+    val track = participant.videoTrack
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(220.dp)
+            .clip(Gomob.shapes.r2)
+            .background(Color(0xFF141821)),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (track != null) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    TextureViewRenderer(ctx).apply {
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                        )
+                        // LiveKit 2.x: 必须显式 initVideoRenderer，否则 SDK 会刷
+                        // "Received frame when not initialized" 并黑屏。
+                        participant.initRenderer?.invoke(this)
+                        track.addRenderer(this)
+                    }
+                },
+                onRelease = { view -> track.removeRenderer(view) },
+            )
+        } else {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+            ) {
+                Box(
+                    Modifier
+                        .size(56.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.10f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.VideocamOff,
+                        contentDescription = null,
+                        tint = Color.White.copy(alpha = 0.65f),
+                        modifier = Modifier.size(24.dp),
+                    )
+                }
+                Text(
+                    participant.displayName,
+                    style = Gomob.type.caption,
+                    color = Color.White.copy(alpha = 0.82f),
+                )
+            }
+        }
+        if (!participant.micEnabled) {
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(6.dp)
+                    .size(24.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.62f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Filled.MicOff, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
+            }
+        }
+        Text(
+            participant.displayName + if (participant.isLocal) " · 我" else "",
+            style = Gomob.type.caption,
+            color = Color.White,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(6.dp)
+                .clip(Gomob.shapes.r1)
+                .background(Color.Black.copy(alpha = 0.55f))
+                .padding(horizontal = 8.dp, vertical = 3.dp),
+        )
+    }
+}
+
+@Composable
+private fun EmptyCallStage(state: VideoCallUiState, modifier: Modifier = Modifier) {
     Box(modifier.background(Color.Black), contentAlignment = Alignment.Center) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -247,23 +331,7 @@ private fun RemoteVideoStage(
                     modifier = Modifier.size(34.dp),
                 )
             }
-            Text(
-                title.ifBlank { "视频通话" },
-                style = Gomob.type.title,
-                color = Color.White,
-                textAlign = TextAlign.Center,
-                maxLines = 2,
-            )
-            Text(
-                state.message,
-                style = Gomob.type.bodySm,
-                color = Color.White.copy(alpha = 0.68f),
-                textAlign = TextAlign.Center,
-            )
-            if (state is VideoCallUiState.Connected) {
-                Spacer(Modifier.height(Gomob.spacing.s4))
-                StatusTag(text = "媒体房间 ${state.providerRoom}", tone = StatusTone.Ok, showDot = true)
-            }
+            Text(state.message, style = Gomob.type.bodySm, color = Color.White.copy(alpha = 0.78f), textAlign = TextAlign.Center)
         }
     }
 }
@@ -294,61 +362,100 @@ private fun CallControlButton(
     }
 }
 
+/**
+ * 真正的 LiveKit Room 接入：连接、publish 本地 track、订阅远端 participant flow。
+ *
+ * 关键边界：
+ * - Application context 持有 Room 生命周期（绑到 ViewModel scope）；离开页面 release。
+ * - 本地 track 不 publish 直到 mediaGranted=true，避免没权限时 publish 失败。
+ * - 远端 participant 通过 RoomEvent.ParticipantConnected/Disconnected 增量维护，
+ *   每条 ParticipantUi 包含当前的 videoTrack（订阅了第一条 camera track）。
+ */
 @HiltViewModel
 class VideoCallViewModel @Inject constructor(
     private val mediaSessionRepository: MediaSessionRepository,
+    private val app: Application,
     savedStateHandle: SavedStateHandle,
-) : ViewModel() {
+) : AndroidViewModel(app) {
     private val _state = MutableStateFlow<VideoCallUiState>(VideoCallUiState.Idle)
     val state: StateFlow<VideoCallUiState> = _state.asStateFlow()
+
+    private val _participants = MutableStateFlow<List<ParticipantUi>>(emptyList())
+    val participants: StateFlow<List<ParticipantUi>> = _participants.asStateFlow()
+
+    private val _localControls = MutableStateFlow(LocalControlsUi())
+    val localControls: StateFlow<LocalControlsUi> = _localControls.asStateFlow()
+
+    private var room: Room? = null
+    private var lensFront: Boolean = true
+    private var mediaGranted: Boolean = false
     private var boundRoomId = savedStateHandle.get<String>("roomId").orEmpty()
-    private var boundTitle = savedStateHandle.get<String>("title").orEmpty()
     private var boundMode = savedStateHandle.get<String>("mode").orEmpty()
 
-    init {
-        bind(boundRoomId, boundTitle, boundMode)
-    }
-
-    fun bind(roomId: String, title: String, mode: String) {
+    fun bind(roomId: String, title: String, mode: String, mediaGranted: Boolean) {
         if (roomId.isBlank()) {
             _state.value = VideoCallUiState.Error("媒体房间参数无效")
             return
         }
-        if (boundRoomId == roomId && _state.value !is VideoCallUiState.Idle) return
+        this.mediaGranted = mediaGranted
+        if (room != null && boundRoomId == roomId) return
         boundRoomId = roomId
-        boundTitle = title
         boundMode = mode
-        if (mode == VideoCallMode.Caller.routeValue) {
-            waitForAnswer()
-        } else {
-            connect()
+        connect()
+    }
+
+    fun onPermissionGranted() {
+        if (mediaGranted) return
+        mediaGranted = true
+        viewModelScope.launch {
+            publishLocalTracks()
+        }
+    }
+
+    fun toggleMicrophone() {
+        val current = _localControls.value.micEnabled
+        viewModelScope.launch {
+            runCatching {
+                room?.localParticipant?.setMicrophoneEnabled(!current)
+            }
+            _localControls.update { it.copy(micEnabled = !current) }
+        }
+    }
+
+    fun toggleCamera() {
+        val current = _localControls.value.cameraEnabled
+        viewModelScope.launch {
+            runCatching {
+                room?.localParticipant?.setCameraEnabled(!current)
+            }
+            _localControls.update { it.copy(cameraEnabled = !current) }
+            refreshParticipants()
+        }
+    }
+
+    fun flipCamera() {
+        val r = room ?: return
+        viewModelScope.launch {
+            runCatching {
+                val cameraTrack = r.localParticipant
+                    .getTrackPublication(Track.Source.CAMERA)
+                    ?.track as? LocalVideoTrack
+                cameraTrack?.switchCamera()
+                lensFront = !lensFront
+            }
         }
     }
 
     fun hangup() {
-        val roomId = boundRoomId.takeIf { it.isNotBlank() } ?: return
         viewModelScope.launch {
-            runCatching { mediaSessionRepository.endVideoCall(roomId) }
-            _state.value = VideoCallUiState.Ended
-        }
-    }
-
-    private fun waitForAnswer() {
-        _state.value = VideoCallUiState.Calling
-        viewModelScope.launch {
-            while (isActive && _state.value is VideoCallUiState.Calling) {
-                delay(1_000)
-                runCatching { mediaSessionRepository.videoCallRoomStatus(boundRoomId) }
-                    .onSuccess { room ->
-                        when {
-                            room.status == "ended" -> _state.value = VideoCallUiState.Ended
-                            room.callAccepted -> connect()
-                        }
-                    }
-                    .onFailure { error ->
-                        _state.value = VideoCallUiState.Error(error.readableCallMessage())
-                    }
+            val roomId = boundRoomId
+            runCatching { room?.disconnect() }
+            room?.release()
+            room = null
+            if (roomId.isNotBlank()) {
+                runCatching { mediaSessionRepository.endVideoCall(roomId) }
             }
+            _state.value = VideoCallUiState.Ended
         }
     }
 
@@ -356,47 +463,128 @@ class VideoCallViewModel @Inject constructor(
         if (_state.value is VideoCallUiState.Connecting || _state.value is VideoCallUiState.Connected) return
         _state.value = VideoCallUiState.Connecting
         viewModelScope.launch {
-            _state.value = runCatching {
-                val joined = mediaSessionRepository.joinVideoCall(boundRoomId)
-                VideoCallUiState.Connected(providerRoom = joined.providerRoom)
-            }.getOrElse { error ->
-                VideoCallUiState.Error(error.readableCallMessage())
+            val joinResult = runCatching { mediaSessionRepository.joinVideoCall(boundRoomId) }
+                .getOrElse {
+                    _state.value = VideoCallUiState.Error(it.readableCallMessage())
+                    return@launch
+                }
+            val r = LiveKit.create(
+                appContext = app.applicationContext,
+                overrides = LiveKitOverrides(),
+            )
+            room = r
+            launchEventCollector(r)
+            runCatching {
+                r.connect(url = joinResult.url, token = joinResult.token)
+                _state.value = VideoCallUiState.Connected(joinResult.providerRoom)
+                if (mediaGranted) {
+                    publishLocalTracks()
+                }
+                refreshParticipants()
+            }.onFailure {
+                _state.value = VideoCallUiState.Error(it.readableCallMessage())
             }
         }
     }
+
+    private suspend fun publishLocalTracks() {
+        val r = room ?: return
+        runCatching {
+            r.localParticipant.setMicrophoneEnabled(_localControls.value.micEnabled)
+            r.localParticipant.setCameraEnabled(_localControls.value.cameraEnabled)
+        }
+        refreshParticipants()
+    }
+
+    private fun launchEventCollector(r: Room) {
+        viewModelScope.launch {
+            r.events.collect { event ->
+                when (event) {
+                    is RoomEvent.ParticipantConnected,
+                    is RoomEvent.ParticipantDisconnected,
+                    is RoomEvent.TrackSubscribed,
+                    is RoomEvent.TrackUnsubscribed,
+                    is RoomEvent.TrackMuted,
+                    is RoomEvent.TrackUnmuted,
+                    is RoomEvent.TrackPublished,
+                    is RoomEvent.TrackUnpublished -> refreshParticipants()
+                    is RoomEvent.Disconnected -> _state.value = VideoCallUiState.Ended
+                    else -> Unit
+                }
+            }
+        }
+    }
+
+    private fun refreshParticipants() {
+        val r = room ?: return
+        val init: (TextureViewRenderer) -> Unit = { view -> r.initVideoRenderer(view) }
+        val list = mutableListOf<ParticipantUi>()
+        list += r.localParticipant.toUi(isLocal = true).copy(initRenderer = init)
+        r.remoteParticipants.values.forEach { list += it.toUi(isLocal = false).copy(initRenderer = init) }
+        _participants.value = list
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        room?.release()
+        room = null
+    }
 }
 
+private fun Participant.toUi(isLocal: Boolean): ParticipantUi {
+    val camTrack = getTrackPublication(Track.Source.CAMERA)?.track as? VideoTrack
+    val micPub = getTrackPublication(Track.Source.MICROPHONE)
+    val name = identity?.value?.takeIf { it.isNotBlank() } ?: name?.takeIf { it.isNotBlank() } ?: sid.value
+    return ParticipantUi(
+        identity = identity?.value ?: sid.value,
+        displayName = name,
+        isLocal = isLocal,
+        videoTrack = camTrack,
+        micEnabled = micPub?.muted?.not() ?: false,
+    )
+}
+
+data class ParticipantUi(
+    val identity: String,
+    val displayName: String,
+    val isLocal: Boolean,
+    val videoTrack: VideoTrack?,
+    val micEnabled: Boolean,
+    val initRenderer: ((TextureViewRenderer) -> Unit)? = null,
+)
+
+data class LocalControlsUi(
+    val micEnabled: Boolean = true,
+    val cameraEnabled: Boolean = true,
+)
+
 sealed interface VideoCallUiState {
-    val subtitle: String
+    fun subtitle(participantCount: Int): String
     val message: String
 
     data object Idle : VideoCallUiState {
-        override val subtitle: String = "准备中"
+        override fun subtitle(participantCount: Int) = "准备中"
         override val message: String = "正在准备视频通话"
     }
 
-    data object Calling : VideoCallUiState {
-        override val subtitle: String = "正在呼叫"
-        override val message: String = "等待对方接受后建立视频通话"
-    }
-
     data object Connecting : VideoCallUiState {
-        override val subtitle: String = "正在接通"
+        override fun subtitle(participantCount: Int) = "正在接通"
         override val message: String = "正在加入媒体房间"
     }
 
     data class Connected(val providerRoom: String) : VideoCallUiState {
-        override val subtitle: String = "通话中"
-        override val message: String = "已进入通话，等待 LiveKit 视频轨道渲染"
+        override fun subtitle(participantCount: Int): String =
+            if (participantCount <= 1) "等待对方加入" else "通话中 · $participantCount 人"
+        override val message: String = "等待对方加入"
     }
 
     data object Ended : VideoCallUiState {
-        override val subtitle: String = "已结束"
+        override fun subtitle(participantCount: Int) = "已结束"
         override val message: String = "视频通话已结束"
     }
 
     data class Error(val reason: String) : VideoCallUiState {
-        override val subtitle: String = "接通失败"
+        override fun subtitle(participantCount: Int) = "接通失败"
         override val message: String = reason
     }
 }

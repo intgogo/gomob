@@ -128,6 +128,7 @@ func main() {
 	mux.Handle("/v1/reviews/", protectedHandler)
 	mux.Handle("/v1/conversations", protectedHandler)
 	mux.Handle("/v1/conversations/", protectedHandler)
+	mux.Handle("/v1/contacts", protectedHandler)
 	mux.Handle("/v1/messages/", protectedHandler)
 	mux.Handle("/v1/assets/", protectedHandler)
 	mux.Handle("/v1/media/", protectedHandler)

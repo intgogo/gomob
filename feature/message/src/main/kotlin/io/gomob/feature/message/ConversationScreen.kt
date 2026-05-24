@@ -89,6 +89,8 @@ fun ConversationRoute(
     var inputFocused by remember { mutableStateOf(false) }
     var clearConfirmOpen by remember { mutableStateOf(false) }
     var quoteDraft by remember { mutableStateOf<QuoteDraftUi?>(null) }
+    var pendingMentions by remember { mutableStateOf<List<MentionRef>>(emptyList()) }
+    val mentionCandidates by viewModel.mentionCandidates.collectAsStateWithLifecycle()
     var favoriteMessageKeys by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var multiSelectMode by rememberSaveable { mutableStateOf(false) }
     var selectedMessageKeys by rememberSaveable { mutableStateOf(emptyList<String>()) }
@@ -243,9 +245,13 @@ fun ConversationRoute(
     val sendDraft = {
         val text = draft.trim()
         if (text.isNotEmpty()) {
-            viewModel.send(text, quoteDraft?.quote)
+            // 发送时把仍存在 draft 里的 @name 与 pendingMentions 匹配；其余文本里出现但
+            // 未在 pending 集合的 @ 串当普通文字（避免误把 "@xxx" 文字内容当成提及）。
+            val activeMentions = pendingMentions.filter { ref -> text.contains("@${ref.name}") }
+            viewModel.send(text, quoteDraft?.quote, activeMentions)
             draft = ""
             quoteDraft = null
+            pendingMentions = emptyList()
         }
     }
     fun toggleMessageSelection(localKey: String) {
@@ -289,6 +295,17 @@ fun ConversationRoute(
                 context.showMessageActionToast("已引用")
             }
             MessageQuickAction.TranscribeVoice -> viewModel.retryVoiceTranscript(bubble.serverId)
+            MessageQuickAction.Retry -> {
+                viewModel.retry(bubble.clientMsgId)
+                context.showMessageActionToast("正在重试…")
+            }
+            MessageQuickAction.Delete -> {
+                viewModel.deleteLocalMessage(bubble.localKey)
+                context.showMessageActionToast("已删除")
+            }
+            MessageQuickAction.Recall -> {
+                bubble.serverId?.let { viewModel.recallMessage(it) }
+            }
         }
     }
     LaunchedEffect(Unit) {
@@ -339,6 +356,11 @@ fun ConversationRoute(
         },
     )
 
+    androidx.compose.runtime.CompositionLocalProvider(
+        LocalMessageMediaRefresher provides { localKey: String, assetId: String ->
+            viewModel.refreshAssetUrl(localKey, assetId)
+        },
+    ) {
     Box(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
         Column(Modifier.fillMaxSize().imePadding()) {
             ConversationTopBar(
@@ -410,6 +432,13 @@ fun ConversationRoute(
                     onClearQuote = { quoteDraft = null },
                     onInputFocusChanged = { inputFocused = it },
                     onSendText = sendDraft,
+                    mentionCandidates = mentionCandidates,
+                    onPickMention = { candidate ->
+                        draft = applyMentionPick(draft, candidate)
+                        if (pendingMentions.none { it.userId == candidate.userId }) {
+                            pendingMentions = pendingMentions + MentionRef(candidate.userId, candidate.name)
+                        }
+                    },
                 )
             }
         }
@@ -449,6 +478,7 @@ fun ConversationRoute(
             onDismiss = { imagePreview = null },
         )
     }
+    } // CompositionLocalProvider close
 }
 
 @Composable

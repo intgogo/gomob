@@ -33,6 +33,7 @@ type Station struct {
 
 var ErrNotFound = errors.New("not found")
 var ErrConflict = errors.New("conflict")
+var ErrPermDenied = errors.New("permission denied")
 
 type UserRepo struct {
 	pool *pgxpool.Pool

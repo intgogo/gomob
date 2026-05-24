@@ -120,4 +120,18 @@ interface MessageDao {
 
     @Query("DELETE FROM messages WHERE conversationId = :conversationId")
     suspend fun deleteByConversationId(conversationId: Long)
+
+    @Query("DELETE FROM messages WHERE localKey = :localKey")
+    suspend fun deleteByLocalKey(localKey: String)
+
+    @Query(
+        """
+        UPDATE messages
+        SET recalledAt = :recalledAt,
+            payloadJson = '{}',
+            preview = '[消息已撤回]'
+        WHERE serverId = :serverId
+        """,
+    )
+    suspend fun markRecalledByServerId(serverId: Long, recalledAt: String)
 }

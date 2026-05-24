@@ -27,6 +27,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.VideoCall
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -96,6 +101,7 @@ fun MessageRoute(
     onOpenLocalVideo: (String) -> Unit = {},
     onOpenExpertDetail: (String) -> Unit = {},
     onOpenContactDetail: (String) -> Unit = {},
+    onOpenVideoCall: (roomId: String, title: String, mode: VideoCallMode) -> Unit = { _, _, _ -> },
     requestedTab: MessageEntryTab? = null,
     onRequestedTabConsumed: () -> Unit = {},
     viewModel: MessageListViewModel = hiltViewModel(),
@@ -108,6 +114,7 @@ fun MessageRoute(
     val focusManager = LocalFocusManager.current
     var tab by rememberSaveable { mutableStateOf((requestedTab ?: MessageEntryTab.List).toMsgTab()) }
     var contactsOpen by rememberSaveable { mutableStateOf(false) }
+    var adHocPickerOpen by rememberSaveable { mutableStateOf(false) }
     val hasMessageUnread = (state as? MessageListUiState.Content)
         ?.conversations
         ?.any { it.unreadCount > 0 } == true
@@ -140,6 +147,13 @@ fun MessageRoute(
         viewModel.openSearchMessageEvents.collect { event ->
             contactsOpen = false
             onOpenConversationTarget(event.conversationId.toString(), event.localKey)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.adHocVideoCallEvents.collect { event ->
+            adHocPickerOpen = false
+            onOpenVideoCall(event.roomId, event.title, event.mode)
         }
     }
 
@@ -185,6 +199,10 @@ fun MessageRoute(
                         viewModel.refreshHelpRoom()
                     },
                     onOpenRoom = { room -> viewModel.openConversation(room.id) },
+                    onStartAdHoc = {
+                        viewModel.clearContactActionError()
+                        adHocPickerOpen = true
+                    },
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -201,6 +219,16 @@ fun MessageRoute(
                 contactsOpen = false
                 onOpenContactDetail(contact.detailId)
             },
+        )
+        AdHocCallPicker(
+            visible = adHocPickerOpen,
+            state = helpState,
+            errorText = contactActionError,
+            onClose = {
+                adHocPickerOpen = false
+                viewModel.clearContactActionError()
+            },
+            onConfirm = { ids -> viewModel.startAdHocCall(ids) },
         )
         FloatingMessageError(
             text = pageNotice?.text,
@@ -561,43 +589,22 @@ private fun ContactAvatar(contact: ContactRowUi) {
 }
 
 private fun buildContactSections(state: HelpExpertsUiState): List<ContactSectionUi> {
-    val localContacts = localContactProfiles()
-    val station = localContacts
-        .filter { it.id.startsWith("station-") }
-        .map { it.toContactRowUi() }
-    val supervision = localContacts
-        .filter { it.id.startsWith("supervision-") }
-        .map { it.toContactRowUi() }
-    val experts = when (state) {
-        is HelpExpertsUiState.Content -> state.experts.map { it.toContactProfileUi().toContactRowUi() }
-        else -> emptyList()
-    }
-    val recent = experts.take(3).mapIndexed { index, contact ->
-        contact.copy(
-            id = "recent-${contact.id}",
-            role = when (index) {
-                0 -> "今日 12:31"
-                1 -> "今日 12:37"
-                else -> "昨日 18:02"
-            },
-        )
-    }.ifEmpty {
-        station.take(3).mapIndexed { index, contact ->
-            contact.copy(
-                id = "recent-${contact.id}",
-                role = when (index) {
-                    0 -> "今日 12:31"
-                    1 -> "今日 12:37"
-                    else -> "昨日 18:02"
-                },
-            )
+    // 外部专家来自 /v1/conversations/help-experts；本站联系人来自 /v1/contacts。
+    // 监管中心 / 跨站协作等更精细分组留待后续按 role 维度拆。
+    val experts: List<ContactRowUi>
+    val stationRows: List<ContactRowUi>
+    when (state) {
+        is HelpExpertsUiState.Content -> {
+            experts = state.experts.map { it.toContactProfileUi().toContactRowUi() }
+            stationRows = state.stationContacts.map { it.toContactProfileUi().toContactRowUi() }
+        }
+        else -> {
+            experts = emptyList()
+            stationRows = emptyList()
         }
     }
-
     return listOf(
-        ContactSectionUi("recent", "近期联系人", recent.size.toString(), WatchTone.Neutral, recent),
-        ContactSectionUi("station", "本站 · 杭州西湖检测站", station.size.toString(), WatchTone.Accent, station),
-        ContactSectionUi("supervision", "监管中心 · 浙江省车管所", supervision.size.toString(), WatchTone.Warn, supervision),
+        ContactSectionUi("station", "本站联系人", stationRows.size.toString(), WatchTone.Accent, stationRows),
         ContactSectionUi("experts", "外部专家 · 协作池", experts.size.toString(), WatchTone.Danger, experts),
     ).filter { it.contacts.isNotEmpty() }
 }
@@ -1200,12 +1207,13 @@ private fun buildMessageListSearchResults(
 }
 
 private fun buildSearchContactRows(state: HelpExpertsUiState): List<ContactRowUi> {
-    val local = localContactProfiles().map { it.toContactRowUi() }
-    val experts = when (state) {
-        is HelpExpertsUiState.Content -> state.experts.map { it.toContactProfileUi().toContactRowUi() }
+    return when (state) {
+        is HelpExpertsUiState.Content -> (
+            state.stationContacts.map { it.toContactProfileUi().toContactRowUi() } +
+                state.experts.map { it.toContactProfileUi().toContactRowUi() }
+            ).distinctBy { it.detailId }
         else -> emptyList()
     }
-    return (local + experts).distinctBy { it.detailId }
 }
 
 private fun ConversationRowUi.matchesMessageListKeyword(keyword: String, normalizedKeyword: String): Boolean =
@@ -1306,14 +1314,57 @@ private fun MultiLinePane(
     roomsState: MultiLineRoomsUiState,
     onRefresh: () -> Unit,
     onOpenRoom: (MultiLineRoomRowUi) -> Unit,
+    onStartAdHoc: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    MultiLineRoomList(
-        state = roomsState,
-        onRefresh = onRefresh,
-        onOpenRoom = onOpenRoom,
-        modifier = modifier.fillMaxSize(),
-    )
+    Column(modifier.fillMaxSize()) {
+        StartAdHocCallEntry(onClick = onStartAdHoc)
+        MultiLineRoomList(
+            state = roomsState,
+            onRefresh = onRefresh,
+            onOpenRoom = onOpenRoom,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
+private fun StartAdHocCallEntry(onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Gomob.spacing.s20, vertical = Gomob.spacing.s8)
+            .clip(Gomob.shapes.r2)
+            .background(Gomob.colors.accentSoft)
+            .clickable(onClick = onClick)
+            .padding(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s12),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+    ) {
+        Box(
+            Modifier
+                .size(36.dp)
+                .clip(CircleShape)
+                .background(Gomob.colors.accent),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.VideoCall,
+                contentDescription = null,
+                tint = Color.Black,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("发起多人连线", style = Gomob.type.bodySm, color = Gomob.colors.fg0, fontWeight = FontWeight.SemiBold)
+            Text("从联系人中多选成员，立即开启视频会议", style = Gomob.type.caption, color = Gomob.colors.fg2)
+        }
+        Icon(
+            imageVector = Icons.Filled.ChevronRight,
+            contentDescription = null,
+            tint = Gomob.colors.fg2,
+        )
+    }
 }
 
 @Composable
@@ -1542,6 +1593,174 @@ private fun UnreadStatusDot(
             .clip(CircleShape)
             .background(color)
     )
+}
+
+@Composable
+private fun AdHocCallPicker(
+    visible: Boolean,
+    state: HelpExpertsUiState,
+    errorText: String?,
+    onClose: () -> Unit,
+    onConfirm: (List<Long>) -> Unit,
+) {
+    BackHandler(enabled = visible, onBack = onClose)
+    AnimatedVisibility(visible = visible, enter = fadeIn(), exit = fadeOut()) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.62f))
+                .clickable(onClick = onClose),
+        )
+    }
+    AnimatedVisibility(
+        visible = visible,
+        enter = slideInHorizontally(initialOffsetX = { it }),
+        exit = slideOutHorizontally(targetOffsetX = { it }),
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.CenterEnd) {
+            AdHocCallPickerContent(
+                state = state,
+                errorText = errorText,
+                onClose = onClose,
+                onConfirm = onConfirm,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AdHocCallPickerContent(
+    state: HelpExpertsUiState,
+    errorText: String?,
+    onClose: () -> Unit,
+    onConfirm: (List<Long>) -> Unit,
+) {
+    val sections = remember(state) { buildContactSections(state) }
+    val candidates = remember(sections) {
+        // 仅取真实有 peerUserId 的联系人，过滤掉占位 / mock
+        sections.flatMap { sec -> sec.contacts.mapNotNull { it.peerUserId?.let { uid -> uid to it } } }
+            .distinctBy { it.first }
+    }
+    var selectedIds by rememberSaveable { mutableStateOf<List<Long>>(emptyList()) }
+    val selectedCount = selectedIds.size
+
+    Column(
+        Modifier
+            .fillMaxWidth(0.82f)
+            .fillMaxHeight()
+            .background(Gomob.colors.bg1),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s12),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("AD-HOC CALL", fontSize = 10.sp, fontFamily = FontFamily.Monospace, letterSpacing = 0.14.em, color = Gomob.colors.fg3)
+                Spacer(Modifier.height(Gomob.spacing.s2))
+                Text("发起多人连线", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = Gomob.colors.fg0)
+            }
+            Box(
+                Modifier
+                    .size(32.dp)
+                    .clip(CircleShape)
+                    .clickable(onClick = onClose),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Filled.Close, contentDescription = "关闭", tint = Gomob.colors.fg2, modifier = Modifier.size(20.dp))
+            }
+        }
+        if (!errorText.isNullOrBlank()) {
+            Text(
+                errorText,
+                style = Gomob.type.caption,
+                color = Gomob.colors.danger,
+                modifier = Modifier.padding(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s4),
+            )
+        }
+        LazyColumn(
+            Modifier.weight(1f).fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            if (candidates.isEmpty()) {
+                item {
+                    StateBlock(text = "暂无可呼叫的联系人", tone = StatusTone.Neutral)
+                }
+            } else {
+                items(candidates, key = { it.first }) { (userId, contact) ->
+                    AdHocCandidateRow(
+                        contact = contact,
+                        checked = userId in selectedIds,
+                        onToggle = {
+                            selectedIds = if (userId in selectedIds) selectedIds - userId
+                            else selectedIds + userId
+                        },
+                    )
+                }
+            }
+        }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(Gomob.spacing.s16),
+            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+        ) {
+            Box(
+                Modifier
+                    .weight(1f)
+                    .clip(Gomob.shapes.r2)
+                    .background(if (selectedCount > 0) Gomob.colors.accent else Gomob.colors.bg2)
+                    .clickable(enabled = selectedCount > 0) {
+                        onConfirm(selectedIds)
+                    }
+                    .padding(vertical = Gomob.spacing.s12),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    if (selectedCount > 0) "发起视频连线 ($selectedCount)" else "请至少选 1 位",
+                    style = Gomob.type.bodySm,
+                    color = if (selectedCount > 0) Color.Black else Gomob.colors.fg3,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdHocCandidateRow(
+    contact: ContactRowUi,
+    checked: Boolean,
+    onToggle: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(Gomob.shapes.r1)
+            .clickable(onClick = onToggle)
+            .padding(horizontal = Gomob.spacing.s8, vertical = Gomob.spacing.s8),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
+    ) {
+        Box(
+            Modifier
+                .size(22.dp)
+                .clip(CircleShape)
+                .background(if (checked) Gomob.colors.accent else Color.Transparent),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (checked) {
+                Icon(Icons.Filled.Check, contentDescription = null, tint = Color.Black, modifier = Modifier.size(14.dp))
+            } else {
+                Box(Modifier.size(22.dp).clip(CircleShape).background(Color.Transparent))
+            }
+        }
+        ContactRow(contact = contact, onClick = onToggle)
+    }
 }
 
 @Composable

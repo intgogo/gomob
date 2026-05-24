@@ -5,6 +5,8 @@ set -uo pipefail
 
 PROJ_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
 SERVER_DIR="$PROJ_DIR/server"
+# shellcheck source=../../../scripts/lib/dev-ports.sh
+source "$PROJ_DIR/scripts/lib/dev-ports.sh"
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJ_DIR/.dev/realtime_message_sync}"
 mkdir -p "$OUTPUT_DIR"
 RESULTS="$OUTPUT_DIR/results.jsonl"
@@ -95,6 +97,9 @@ log "2. 启动服务"
 PIDS=()
 trap 'for p in "${PIDS[@]:-}"; do kill $p 2>/dev/null || true; done; wait 2>/dev/null || true' EXIT
 
+# server binary 默认连 127.0.0.1:5432，宿主 pg 端口段已搬到 dev-ports.sh
+export GOMOB_DB_DSN="${GOMOB_DB_DSN:-$GOMOB_DEFAULT_DB_DSN}"
+
 GOMOB_AUTH_HTTP_ADDR=:18082 GOMOB_AUTH_DEV_AUTOACTIVATE=true \
     "$SERVER_DIR/.dev/bin/gomob-auth" > "$OUTPUT_DIR/auth.log" 2>&1 &
 PIDS+=($!)
@@ -104,7 +109,7 @@ GOMOB_CATALOG_TARGET= GOMOB_VINREF_TARGET= GOMOB_SHAPEREF_TARGET= \
     "$SERVER_DIR/.dev/bin/gomob-api" > "$OUTPUT_DIR/api.log" 2>&1 &
 PIDS+=($!)
 
-GOMOB_GATEWAY_ADDR=":$GATEWAY_PORT" GOMOB_REDIS_ADDR=127.0.0.1:6379 GOMOB_RATE_LIMIT=10000 \
+GOMOB_GATEWAY_ADDR=":$GATEWAY_PORT" GOMOB_REDIS_ADDR="$GOMOB_DEFAULT_REDIS_ADDR" GOMOB_RATE_LIMIT=10000 \
     "$SERVER_DIR/.dev/bin/gomob-gateway" > "$OUTPUT_DIR/gateway.log" 2>&1 &
 PIDS+=($!)
 

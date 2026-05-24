@@ -19,6 +19,27 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug" OR CMAKE_BUILD_TYPE STREQUAL "")
     add_compile_options(-O2)
 endif()
 
+# Release 包不暴露非 JNI 符号；AGP release 默认传 RelWithDebInfo。
+if(CMAKE_BUILD_TYPE STREQUAL "Release" OR
+   CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo" OR
+   CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
+    set(CMAKE_C_FLAGS_RELWITHDEBINFO   "-O3 -DNDEBUG -g0")
+    set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O3 -DNDEBUG -g0")
+    add_compile_options(
+        -O3
+        -DNDEBUG
+        -g0
+        -fvisibility=hidden
+        -fvisibility-inlines-hidden
+        -ffunction-sections
+        -fdata-sections
+    )
+    add_link_options(
+        -Wl,--gc-sections
+        -Wl,--strip-all
+    )
+endif()
+
 # 包含目录
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}

@@ -28,6 +28,7 @@ data class MessageEntity(
     val status: String,
     val createdAt: String,
     val editedAt: String?,
+    val recalledAt: String? = null,
 ) {
     fun toDomain(): MessageRecord = MessageRecord(
         localKey = localKey,
@@ -42,5 +43,6 @@ data class MessageEntity(
         status = runCatching { MessageStatus.valueOf(status) }.getOrDefault(MessageStatus.Sent),
         createdAt = createdAt,
         editedAt = editedAt,
+        recalledAt = recalledAt,
     )
 }

@@ -41,9 +41,141 @@ data class BerxelDeviceInfo(
     val deviceAddress: String,
     val firmwareVersion: String,
     val sdkVersion: String,
+    val streamFlagMode: BerxelStreamFlagProfile,
+    val requestedProfileId: String,
     val colorMode: BerxelStreamSpec?,
     val depthMode: BerxelStreamSpec?,
 )
+
+/** Berxel SDK 的 stream flag 模式；每个 flag 下才有各自可选的 frame mode。 */
+enum class BerxelStreamFlagProfile {
+    SINGULAR,
+    MIX,
+    MIX_HD,
+    MIX_QVGA,
+}
+
+/** 目标帧模式：分辨率必须和 fps 一起作为一个选择单元。 */
+data class BerxelStreamTarget(
+    val width: Int,
+    val height: Int,
+    val fps: Int,
+) {
+    init {
+        require(width > 0 && height > 0) { "stream target resolution must be positive" }
+        require(fps > 0) { "stream target fps must be positive" }
+    }
+}
+
+/**
+ * 一组可应用到 Berxel SDK 的流配置。
+ *
+ * [flagProfile] 先决定 SDK 处在哪个模式族；[color] / [depth] 再在该模式族下选择各自
+ * 的分辨率 + fps。这样不会把 "1280×800" 当成孤立档位，避免漏掉同分辨率下不同 fps。
+ */
+data class BerxelStreamProfile(
+    val id: String,
+    val flagProfile: BerxelStreamFlagProfile,
+    val color: BerxelStreamTarget?,
+    val depth: BerxelStreamTarget?,
+) {
+    init {
+        require(id.isNotBlank()) { "stream profile id must not be blank" }
+        require(color != null || depth != null) { "stream profile must enable at least one stream" }
+    }
+}
+
+/** P100R3 当前暴露给 UI 的双流 profile；每个 profile 都是 flag + 分辨率 + fps 的完整组合。 */
+object BerxelStreamProfiles {
+    val QVGA: List<BerxelStreamProfile> = listOf(15, 30, 45).map { fps ->
+        BerxelStreamProfile(
+            id = "mix_qvga_$fps",
+            flagProfile = BerxelStreamFlagProfile.MIX_QVGA,
+            color = BerxelStreamTarget(width = 640, height = 400, fps = fps),
+            depth = BerxelStreamTarget(width = 320, height = 200, fps = fps),
+        )
+    }
+
+    val STANDARD: List<BerxelStreamProfile> = listOf(5, 10, 15, 20, 25, 30, 45).map { fps ->
+        BerxelStreamProfile(
+            id = "mix_640_$fps",
+            flagProfile = BerxelStreamFlagProfile.MIX,
+            color = BerxelStreamTarget(width = 640, height = 400, fps = fps),
+            depth = BerxelStreamTarget(width = 640, height = 400, fps = fps),
+        )
+    }
+
+    val HD: List<BerxelStreamProfile> = listOf(5, 10, 15, 20, 25, 30, 45).map { fps ->
+        BerxelStreamProfile(
+            id = "mix_hd_$fps",
+            flagProfile = BerxelStreamFlagProfile.MIX_HD,
+            color = BerxelStreamTarget(width = 1280, height = 800, fps = fps),
+            depth = BerxelStreamTarget(width = 1280, height = 800, fps = fps),
+        )
+    }
+
+    val QVGA_15: BerxelStreamProfile = QVGA.requireFps(15)
+    val QVGA_30: BerxelStreamProfile = QVGA.requireFps(30)
+    val QVGA_45: BerxelStreamProfile = QVGA.requireFps(45)
+    val STANDARD_5: BerxelStreamProfile = STANDARD.requireFps(5)
+    val STANDARD_10: BerxelStreamProfile = STANDARD.requireFps(10)
+    val STANDARD_15: BerxelStreamProfile = STANDARD.requireFps(15)
+    val STANDARD_20: BerxelStreamProfile = STANDARD.requireFps(20)
+    val STANDARD_25: BerxelStreamProfile = STANDARD.requireFps(25)
+    val STANDARD_30: BerxelStreamProfile = STANDARD.requireFps(30)
+    val STANDARD_45: BerxelStreamProfile = STANDARD.requireFps(45)
+    val HD_5: BerxelStreamProfile = HD.requireFps(5)
+    val HD_10: BerxelStreamProfile = HD.requireFps(10)
+    val HD_15: BerxelStreamProfile = HD.requireFps(15)
+    val HD_20: BerxelStreamProfile = HD.requireFps(20)
+    val HD_25: BerxelStreamProfile = HD.requireFps(25)
+    val HD_30: BerxelStreamProfile = HD.requireFps(30)
+    val HD_45: BerxelStreamProfile = HD.requireFps(45)
+
+    val DUAL: List<BerxelStreamProfile> = listOf(
+        QVGA,
+        STANDARD,
+        HD,
+    ).flatten()
+
+    val DEFAULT: BerxelStreamProfile = QVGA_15
+
+    fun fromName(name: String): BerxelStreamProfile? {
+        val normalized = name.lowercase().replace("_", "").replace("-", "")
+        return when (normalized) {
+            "qvga", "qvga15", "mixqvga15" -> QVGA_15
+            "standard5", "std5", "mix6405" -> STANDARD_5
+            "standard10", "std10", "mix64010" -> STANDARD_10
+            "standard", "standard15", "std15", "mix64015" -> STANDARD_15
+            "hd", "hd5", "mixhd5" -> HD_5
+            "hd10", "mixhd10" -> HD_10
+            "hd15", "mixhd15" -> HD_15
+            else -> profileByPattern(normalized)
+        }
+    }
+
+    private fun profileByPattern(name: String): BerxelStreamProfile? {
+        return when {
+            name.startsWith("hd") -> HD.byFps(name.removePrefix("hd").toIntOrNull())
+            name.startsWith("std") -> STANDARD.byFps(name.removePrefix("std").toIntOrNull())
+            name.startsWith("standard") -> STANDARD.byFps(name.removePrefix("standard").toIntOrNull())
+            name.startsWith("qvga") -> QVGA.byFps(name.removePrefix("qvga").toIntOrNull())
+            name.startsWith("mixhd") -> HD.byFps(name.removePrefix("mixhd").toIntOrNull())
+            name.startsWith("mix640") -> STANDARD.byFps(name.removePrefix("mix640").toIntOrNull())
+            name.startsWith("mixqvga") -> QVGA.byFps(name.removePrefix("mixqvga").toIntOrNull())
+            else -> DUAL.firstOrNull { it.id.replace("_", "") == name }
+        }
+    }
+
+    private fun List<BerxelStreamProfile>.requireFps(fps: Int): BerxelStreamProfile {
+        return first { it.depth?.fps == fps || it.color?.fps == fps }
+    }
+
+    private fun List<BerxelStreamProfile>.byFps(fps: Int?): BerxelStreamProfile? {
+        if (fps == null) return null
+        return firstOrNull { it.depth?.fps == fps || it.color?.fps == fps }
+    }
+}
 
 /** 单条流（彩色 / 深度 / IR）的当前模式描述。 */
 data class BerxelStreamSpec(

@@ -12,6 +12,7 @@ import io.gomob.network.Envelope
 import io.gomob.network.ApiException
 import io.gomob.model.message.InspectionShareCard
 import io.gomob.network.MessageApi
+import io.gomob.network.dto.ContactListResponse
 import io.gomob.network.dto.ConversationDto
 import io.gomob.network.dto.ConversationListResponse
 import io.gomob.network.dto.CallInviteResponse
@@ -803,49 +804,6 @@ class MessageRepositoryTest {
     }
 
     @Test
-    fun openHelpRoomSeedsMultiLineGroupRoomsWithMessages() = runTest {
-        val conversationDao = FakeConversationDao()
-        val messageDao = FakeMessageDao()
-        val repository = MessageRepository(
-            api = FakeMessageApi(),
-            mediaAssetUploader = FakeMediaAssetUploader(),
-            conversationDao = conversationDao,
-            messageDao = messageDao,
-            json = Json { ignoreUnknownKeys = true },
-        )
-
-        repository.openHelpRoom()
-
-        val reviewRoom = conversationDao.findById(9_990_101L)
-        assertThat(reviewRoom?.kind).isEqualTo("group")
-        assertThat(reviewRoom?.title).isEqualTo("查验复核群")
-        assertThat(reviewRoom?.lastMessageLocalKey).isEqualTo("ml:9990101:4")
-        assertThat(messageDao.items.filter { it.conversationId in 9_990_101L..9_990_105L }).hasSize(17)
-        assertThat(messageDao.items.mapNotNull { it.preview })
-            .contains("外廓尺寸复核结论已同步，请值班员确认。")
-    }
-
-    @Test
-    fun refreshMessagesForLocalMultiLineRoomUsesSeededHistoryOnly() = runTest {
-        val api = FakeMessageApi()
-        val conversationDao = FakeConversationDao()
-        val messageDao = FakeMessageDao()
-        val repository = MessageRepository(
-            api = api,
-            mediaAssetUploader = FakeMediaAssetUploader(),
-            conversationDao = conversationDao,
-            messageDao = messageDao,
-            json = Json { ignoreUnknownKeys = true },
-        )
-
-        repository.refreshMessages(conversationId = 9_990_104L)
-
-        assertThat(api.messageSinceSeqRequests).isEmpty()
-        assertThat(conversationDao.findById(9_990_104L)?.title).isEqualTo("3D 重建会审群")
-        assertThat(messageDao.items.filter { it.conversationId == 9_990_104L }).hasSize(4)
-    }
-
-    @Test
     fun realtimeDeliveredMarksPendingRowAndUpdatesConversationSummary() = runTest {
         val conversationDao = FakeConversationDao(
             initialConversations = listOf(
@@ -1314,6 +1272,9 @@ private class FakeMediaAssetUploader : MediaAssetUploader {
             sha256 = "a".repeat(64),
         )
     }
+
+    override suspend fun refreshDownloadUrl(assetId: String): String? =
+        "http://example.test/$assetId?refreshed=1"
 }
 
 private fun fakeUploadedAsset(): UploadedMediaAsset =
@@ -1396,6 +1357,20 @@ private class FakeMessageApi(
             ),
         )
 
+    override suspend fun openAdHocGroup(
+        request: io.gomob.network.dto.OpenAdHocGroupRequest,
+    ): Envelope<ConversationDto> = Envelope(
+        code = 0,
+        data = ConversationDto(
+            id = "999",
+            kind = "group",
+            title = request.title ?: "多人连线",
+            subjectKind = "ad_hoc_group",
+            createdAt = "2026-05-24T06:00:00Z",
+            updatedAt = "2026-05-24T06:00:00Z",
+        ),
+    )
+
     override suspend fun messages(
         conversationId: String,
         sinceSeq: Long,
@@ -1427,6 +1402,25 @@ private class FakeMessageApi(
             ),
         )
     }
+
+    override suspend fun recallMessage(
+        conversationId: String,
+        messageId: String,
+    ): Envelope<MessageDto> = Envelope(
+        code = 0,
+        data = MessageDto(
+            id = messageId,
+            conversationId = conversationId,
+            serverSeq = 0,
+            senderId = null,
+            kind = "text",
+            createdAt = "2026-05-08T12:00:00Z",
+            deletedAt = "2026-05-08T12:00:00Z",
+        ),
+    )
+
+    override suspend fun contacts(query: String?, role: String?): Envelope<ContactListResponse> =
+        Envelope(code = 0, data = ContactListResponse(items = emptyList()))
 
     override suspend fun createCallInvite(
         conversationId: String,
@@ -1733,6 +1727,23 @@ private class FakeMessageDao : MessageDao {
     override suspend fun deleteByConversationId(conversationId: Long) {
         items.removeAll { it.conversationId == conversationId }
         messagesFlow.value = items.toList()
+    }
+
+    override suspend fun deleteByLocalKey(localKey: String) {
+        items.removeAll { it.localKey == localKey }
+        messagesFlow.value = items.toList()
+    }
+
+    override suspend fun markRecalledByServerId(serverId: Long, recalledAt: String) {
+        val index = items.indexOfFirst { it.serverId == serverId }
+        if (index >= 0) {
+            items[index] = items[index].copy(
+                recalledAt = recalledAt,
+                payloadJson = "{}",
+                preview = "[消息已撤回]",
+            )
+            messagesFlow.value = items.toList()
+        }
     }
 
     private fun updateStatus(clientMsgId: String, status: MessageStatus) {

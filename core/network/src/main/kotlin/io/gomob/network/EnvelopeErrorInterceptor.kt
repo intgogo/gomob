@@ -18,7 +18,8 @@ internal class EnvelopeErrorInterceptor(
     private val json = Json { ignoreUnknownKeys = true }
 
     override fun intercept(chain: Interceptor.Chain): Response {
-        val resp = chain.proceed(chain.request())
+        val request = chain.request()
+        val resp = chain.proceed(request)
         val body = resp.body ?: return resp
         val mt = body.contentType()
         val raw = body.bytes()
@@ -45,7 +46,10 @@ internal class EnvelopeErrorInterceptor(
             null
         }
         if (apiErr != null) {
-            if (apiErr.isAuthExpired) {
+            // 仅当请求实际带了 Authorization header 时，40102 才是"会话过期"。
+            // 未登录态的请求（如 LogSyncManager 启动期间）也会被 server 拒成 40102，
+            // 但语义上不是用户会话过期，不能触发 LoginScreen 弹"登录已过期"。
+            if (apiErr.isAuthExpired && !request.header("Authorization").isNullOrBlank()) {
                 tokenProvider.onAuthExpired(apiErr.message)
             }
             throw apiErr

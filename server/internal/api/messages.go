@@ -41,6 +41,7 @@ type lastMessageDTO struct {
 	Preview     string `json:"preview"`
 	ClientMsgID string `json:"client_msg_id,omitempty"`
 	CreatedAt   string `json:"created_at"`
+	DeletedAt   string `json:"deleted_at,omitempty"`
 }
 
 type messageDTO struct {
@@ -53,6 +54,7 @@ type messageDTO struct {
 	ClientMsgID    string          `json:"client_msg_id,omitempty"`
 	CreatedAt      string          `json:"created_at"`
 	EditedAt       string          `json:"edited_at,omitempty"`
+	DeletedAt      string          `json:"deleted_at,omitempty"`
 }
 
 func (h *Handler) ListConversations(w http.ResponseWriter, r *http.Request) {
@@ -190,6 +192,86 @@ func (h *Handler) CreateConversationMessage(w http.ResponseWriter, r *http.Reque
 		"client_msg_id": req.ClientMsgID,
 	})
 	httpx.OK(w, toMessageDTO(msg))
+}
+
+// 撤回时间窗口；超过则返回 ErrStateConflict（前端提示"超过撤回时限"）。
+const messageRecallWindow = 5 * time.Minute
+
+func (h *Handler) RecallConversationMessage(w http.ResponseWriter, r *http.Request) {
+	uid := callerUserID(r)
+	if uid == 0 {
+		httpx.WriteError(w, httpx.ErrTokenInvalid)
+		return
+	}
+	convID, err := parsePathID(r, "id")
+	if err != nil {
+		httpx.WriteError(w, httpx.ErrBadParam)
+		return
+	}
+	msgID, err := parsePathID(r, "messageId")
+	if err != nil {
+		httpx.WriteError(w, httpx.ErrBadParam)
+		return
+	}
+	ok, err := h.conversations.IsMember(r.Context(), convID, uid)
+	if err != nil {
+		httpx.WriteError(w, httpx.ErrInternal)
+		return
+	}
+	if !ok {
+		httpx.WriteError(w, httpx.ErrPermDenied)
+		return
+	}
+	message, err := h.messages.SoftDelete(r.Context(), convID, msgID, uid, messageRecallWindow)
+	if err != nil {
+		switch {
+		case errors.Is(err, repo.ErrNotFound):
+			httpx.WriteError(w, httpx.ErrNotFound)
+		case errors.Is(err, repo.ErrPermDenied):
+			httpx.WriteError(w, httpx.ErrPermDenied)
+		case errors.Is(err, repo.ErrStateConflict):
+			httpx.WriteError(w, httpx.NewError(10004, http.StatusUnprocessableEntity, "已超过撤回时限"))
+		default:
+			httpx.WriteError(w, httpx.ErrInternal)
+		}
+		return
+	}
+	h.notifyRealtimeRecall(r.Context(), uid, message)
+	h.recordAudit(r, "message.recall", "conversation:"+strconv.FormatInt(convID, 10), nil, map[string]any{
+		"message_id":  message.ID,
+		"server_seq":  message.ServerSeq,
+		"recalled_by": uid,
+	})
+	httpx.OK(w, toMessageDTO(message))
+}
+
+func (h *Handler) notifyRealtimeRecall(ctx context.Context, recalledBy int64, message *repo.Message) {
+	if h.realtime == nil || message == nil {
+		return
+	}
+	notifier, ok := h.realtime.(RealtimeMessageRecallNotifier)
+	if !ok {
+		return
+	}
+	delivered, err := notifier.NotifyMessageRecall(ctx, message, recalledBy)
+	if err != nil {
+		if h.log != nil {
+			h.log.Warn("撤回实时推送失败",
+				"err", err,
+				"conversation_id", message.ConversationID,
+				"message_id", message.ID,
+			)
+		}
+		return
+	}
+	if h.log != nil {
+		h.log.Debug("撤回事件已实时推送",
+			"conversation_id", message.ConversationID,
+			"message_id", message.ID,
+			"server_seq", message.ServerSeq,
+			"delivered_connections", delivered,
+		)
+	}
 }
 
 type createConversationCallInviteReq struct {
@@ -428,11 +510,15 @@ func toConversationDTO(s *repo.ConversationSummary) conversationDTO {
 }
 
 func toLastMessageDTO(m *repo.Message) *lastMessageDTO {
+	preview := messagePreview(m.Kind, m.Payload)
+	if m.DeletedAt != nil {
+		preview = "[消息已撤回]"
+	}
 	dto := &lastMessageDTO{
 		ID:        strconv.FormatInt(m.ID, 10),
 		ServerSeq: m.ServerSeq,
 		Kind:      m.Kind,
-		Preview:   messagePreview(m.Kind, m.Payload),
+		Preview:   preview,
 		CreatedAt: formatTime(m.CreatedAt),
 	}
 	if m.SenderID != nil {
@@ -441,16 +527,25 @@ func toLastMessageDTO(m *repo.Message) *lastMessageDTO {
 	if m.ClientMsgID != nil {
 		dto.ClientMsgID = *m.ClientMsgID
 	}
+	if m.DeletedAt != nil {
+		dto.DeletedAt = formatTime(*m.DeletedAt)
+	}
 	return dto
 }
 
 func toMessageDTO(m *repo.Message) messageDTO {
+	payload := m.Payload
+	if m.DeletedAt != nil {
+		// 撤回后不再向客户端暴露原 payload，避免敏感内容残留；保留 kind/server_seq
+		// 让客户端能定位本地行并改写为"消息已撤回"。
+		payload = json.RawMessage(`{}`)
+	}
 	dto := messageDTO{
 		ID:             strconv.FormatInt(m.ID, 10),
 		ConversationID: strconv.FormatInt(m.ConversationID, 10),
 		ServerSeq:      m.ServerSeq,
 		Kind:           m.Kind,
-		Payload:        m.Payload,
+		Payload:        payload,
 		CreatedAt:      formatTime(m.CreatedAt),
 	}
 	if m.SenderID != nil {
@@ -461,6 +556,9 @@ func toMessageDTO(m *repo.Message) messageDTO {
 	}
 	if m.EditedAt != nil {
 		dto.EditedAt = formatTime(*m.EditedAt)
+	}
+	if m.DeletedAt != nil {
+		dto.DeletedAt = formatTime(*m.DeletedAt)
 	}
 	return dto
 }

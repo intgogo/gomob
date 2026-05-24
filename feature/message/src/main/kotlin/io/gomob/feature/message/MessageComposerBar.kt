@@ -73,6 +73,8 @@ internal fun MessageComposerBar(
     quoteDraft: QuoteDraftUi? = null,
     onClearQuote: () -> Unit = {},
     onInputFocusChanged: (Boolean) -> Unit = {},
+    mentionCandidates: List<MentionCandidate> = emptyList(),
+    onPickMention: (MentionCandidate) -> Unit = {},
 ) {
     var voiceInputMode by rememberSaveable { mutableStateOf(false) }
     var voicePressTarget by remember { mutableStateOf<VoicePressTarget?>(null) }
@@ -86,7 +88,20 @@ internal fun MessageComposerBar(
         }
     }
 
+    val activeMentionQuery = remember(draft) { detectMentionQuery(draft) }
+    val filteredMentionCandidates = remember(activeMentionQuery, mentionCandidates) {
+        if (activeMentionQuery == null) emptyList()
+        else if (activeMentionQuery.isBlank()) mentionCandidates
+        else mentionCandidates.filter { it.name.contains(activeMentionQuery, ignoreCase = true) }
+    }
+
     Column(modifier.fixedDuringPageDrag().fillMaxWidth().background(Gomob.colors.bg1)) {
+        if (filteredMentionCandidates.isNotEmpty()) {
+            MentionPickerPanel(
+                candidates = filteredMentionCandidates,
+                onPick = onPickMention,
+            )
+        }
         Column(
             Modifier
                 .fillMaxWidth()
@@ -202,6 +217,78 @@ internal fun MessageComposerBar(
                     enabled = canSendText,
                     onClick = onSendText,
                 )
+            }
+        }
+    }
+}
+
+/**
+ * 检测 draft 末尾是否处于"正在 @ ..."的状态。
+ *
+ * 规则：从末尾向前扫，如果遇到 `@` 且 @ 与末尾之间不含空白/换行，则视为活跃 mention。
+ * 返回 query 字符串（不含 @）；若末尾不是有效 mention 触发点（已被空格关闭或没 @），返回 null。
+ */
+internal fun detectMentionQuery(draft: String): String? {
+    if (draft.isEmpty()) return null
+    val atIdx = draft.lastIndexOf('@')
+    if (atIdx < 0) return null
+    val tail = draft.substring(atIdx + 1)
+    if (tail.any { it == ' ' || it == '\n' || it == '\t' }) return null
+    return tail
+}
+
+/**
+ * 把候选 mention 插入到 draft 末尾。
+ *
+ * 规则：把最后一个 `@query` 替换成 `@name `（带尾随空格让光标自然继续输入）。
+ */
+internal fun applyMentionPick(draft: String, candidate: MentionCandidate): String {
+    val atIdx = draft.lastIndexOf('@')
+    if (atIdx < 0) return draft + "@${candidate.name} "
+    return draft.substring(0, atIdx) + "@${candidate.name} "
+}
+
+@Composable
+private fun MentionPickerPanel(
+    candidates: List<MentionCandidate>,
+    onPick: (MentionCandidate) -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Gomob.colors.bg2)
+            .padding(horizontal = Gomob.spacing.s8, vertical = Gomob.spacing.s4),
+        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
+    ) {
+        Text(
+            "选择要 @ 的成员",
+            style = Gomob.type.caption,
+            color = Gomob.colors.fg3,
+            modifier = Modifier.padding(start = Gomob.spacing.s4, top = Gomob.spacing.s2),
+        )
+        candidates.take(6).forEach { candidate ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(Gomob.shapes.r1)
+                    .clickable { onPick(candidate) }
+                    .padding(horizontal = Gomob.spacing.s6, vertical = Gomob.spacing.s6),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+            ) {
+                Text("@", style = Gomob.type.bodySm, color = Gomob.colors.accent)
+                Text(
+                    candidate.name,
+                    style = Gomob.type.bodySm,
+                    color = Gomob.colors.fg0,
+                )
+                candidate.employeeId?.takeIf { it.isNotBlank() }?.let {
+                    Text(
+                        it,
+                        style = Gomob.type.caption,
+                        color = Gomob.colors.fg3,
+                    )
+                }
             }
         }
     }

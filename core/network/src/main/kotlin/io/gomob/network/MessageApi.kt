@@ -1,5 +1,6 @@
 package io.gomob.network
 
+import io.gomob.network.dto.ContactListResponse
 import io.gomob.network.dto.ConversationListResponse
 import io.gomob.network.dto.ConversationDto
 import io.gomob.network.dto.CreateMessageRequest
@@ -12,6 +13,7 @@ import io.gomob.network.dto.MarkReadRequest
 import io.gomob.network.dto.MarkReadResponse
 import io.gomob.network.dto.MessageDto
 import io.gomob.network.dto.MessageListResponse
+import io.gomob.network.dto.OpenAdHocGroupRequest
 import io.gomob.network.dto.OpenDirectConversationRequest
 import io.gomob.network.dto.TranscribeDraftVoiceRequest
 import io.gomob.network.dto.TranscribeDraftVoiceResponse
@@ -31,6 +33,12 @@ interface MessageApi {
     @GET("v1/conversations/help-experts")
     suspend fun helpExperts(): Envelope<HelpExpertListResponse>
 
+    @GET("v1/contacts")
+    suspend fun contacts(
+        @Query("q") query: String? = null,
+        @Query("role") role: String? = null,
+    ): Envelope<ContactListResponse>
+
     @GET("v1/conversations/help-experts/{id}/cases")
     suspend fun helpExpertCases(
         @Path("id") expertUserId: String,
@@ -42,6 +50,11 @@ interface MessageApi {
     @POST("v1/conversations/p2p")
     suspend fun openDirectConversation(
         @Body request: OpenDirectConversationRequest,
+    ): Envelope<ConversationDto>
+
+    @POST("v1/conversations/ad-hoc")
+    suspend fun openAdHocGroup(
+        @Body request: OpenAdHocGroupRequest,
     ): Envelope<ConversationDto>
 
     @GET("v1/conversations/{id}/messages")
@@ -56,6 +69,12 @@ interface MessageApi {
     suspend fun sendMessage(
         @Path("id") conversationId: String,
         @Body request: CreateMessageRequest,
+    ): Envelope<MessageDto>
+
+    @POST("v1/conversations/{id}/messages/{messageId}/recall")
+    suspend fun recallMessage(
+        @Path("id") conversationId: String,
+        @Path("messageId") messageId: String,
     ): Envelope<MessageDto>
 
     @POST("v1/conversations/{id}/call-invites")

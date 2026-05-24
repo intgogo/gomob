@@ -40,6 +40,9 @@ zxing = "3.5.3"
 # 3D / rendering
 filament = "1.57.1"
 
+# LiveKit (多人视频 / SFU)
+livekit = "2.18.2"
+
 # Logging
 timber = "5.0.1"
 
@@ -119,6 +122,9 @@ zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 # Filament（3D 实时渲染：点云/Mesh 预览）
 filament-android = { module = "com.google.android.filament:filament-android", version.ref = "filament" }
 filament-utils-android = { module = "com.google.android.filament:filament-utils-android", version.ref = "filament" }
+
+# LiveKit Android SDK (内置 libwebrtc，统一 SFU 接入)
+livekit-android = { module = "io.livekit:livekit-android", version.ref = "livekit" }
 gltfio-android = { module = "com.google.android.filament:gltfio-android", version.ref = "filament" }
 
 # Logging

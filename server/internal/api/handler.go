@@ -26,6 +26,10 @@ type RealtimeMessageNotifier interface {
 	NotifyMessage(ctx context.Context, senderID int64, message *repo.Message) (int, error)
 }
 
+type RealtimeMessageRecallNotifier interface {
+	NotifyMessageRecall(ctx context.Context, message *repo.Message, recalledBy int64) (int, error)
+}
+
 type RealtimeTranscriptNotifier interface {
 	NotifyTranscriptUpdate(ctx context.Context, message *repo.Message) (int, error)
 }
@@ -95,9 +99,12 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/conversations/help-experts", h.ListHelpExperts)
 	mux.HandleFunc("GET /v1/conversations/help-experts/{id}/cases", h.ListHelpExpertCases)
 	mux.HandleFunc("POST /v1/conversations/help-room", h.OpenHelpRoom)
+	mux.HandleFunc("GET /v1/contacts", h.ListContacts)
 	mux.HandleFunc("POST /v1/conversations/p2p", h.OpenP2PConversation)
+	mux.HandleFunc("POST /v1/conversations/ad-hoc", h.OpenAdHocGroup)
 	mux.HandleFunc("GET /v1/conversations/{id}/messages", h.ListConversationMessages)
 	mux.HandleFunc("POST /v1/conversations/{id}/messages", h.CreateConversationMessage)
+	mux.HandleFunc("POST /v1/conversations/{id}/messages/{messageId}/recall", h.RecallConversationMessage)
 	mux.HandleFunc("POST /v1/conversations/{id}/call-invites", h.CreateConversationCallInvite)
 	mux.HandleFunc("POST /v1/conversations/{id}/read", h.MarkConversationRead)
 	mux.HandleFunc("POST /v1/conversations/{id}/leave", h.LeaveConversation)

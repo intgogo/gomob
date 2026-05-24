@@ -25,8 +25,11 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FormatQuote
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
@@ -37,6 +40,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -47,7 +51,11 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
@@ -171,18 +179,24 @@ internal fun ChatMessageRow(
                             onAcceptCall = onAcceptCall,
                         )
                         if (actionPanelOpen) {
-                            MessageActionPopup(
-                                actions = bubble.quickActions(),
-                                onDismiss = { actionPanelOpen = false },
-                                onAction = { action ->
-                                    actionPanelOpen = false
-                                    if (action == MessageQuickAction.TranscribeVoice) {
-                                        onRetryTranscript()
-                                    } else {
-                                        onQuickAction(action, bubble)
-                                    }
-                                },
-                            )
+                            val nowMillis = System.currentTimeMillis()
+                            val actions = bubble.quickActions(nowMillis)
+                            if (actions.isNotEmpty()) {
+                                MessageActionPopup(
+                                    actions = actions,
+                                    onDismiss = { actionPanelOpen = false },
+                                    onAction = { action ->
+                                        actionPanelOpen = false
+                                        if (action == MessageQuickAction.TranscribeVoice) {
+                                            onRetryTranscript()
+                                        } else {
+                                            onQuickAction(action, bubble)
+                                        }
+                                    },
+                                )
+                            } else {
+                                actionPanelOpen = false
+                            }
                         }
                     }
                 }
@@ -221,6 +235,27 @@ internal fun ChatMessageRow(
 }
 
 @Composable
+private fun RecalledMessageBubble(
+    bubble: MessageBubbleUi,
+    maxWidth: Dp,
+) {
+    val label = if (bubble.mine) "你撤回了一条消息" else "对方撤回了一条消息"
+    Box(
+        Modifier
+            .widthIn(max = maxWidth)
+            .clip(Gomob.shapes.r2)
+            .background(Gomob.colors.bg1.copy(alpha = 0.6f))
+            .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
+    ) {
+        Text(
+            label,
+            style = Gomob.type.numInline,
+            color = Gomob.colors.fg3,
+        )
+    }
+}
+
+@Composable
 private fun ChatBubble(
     bubble: MessageBubbleUi,
     maxWidth: Dp,
@@ -229,6 +264,11 @@ private fun ChatBubble(
 ) {
     val bubbleBg = if (bubble.mine) WechatMineBubble else Gomob.colors.bg1
     val textColor = if (bubble.mine) Color(0xF5000000) else Gomob.colors.fg0
+
+    if (bubble.isRecalled) {
+        RecalledMessageBubble(bubble = bubble, maxWidth = maxWidth)
+        return
+    }
 
     val card = bubble.inspectionCard
     val call = bubble.callInvite
@@ -297,7 +337,12 @@ private fun ImageMessageBubble(
     textColor: Color,
 ) {
     val source = bubble.media?.imageSource
-    val imageState by rememberMessageImage(source)
+    val refresher = LocalMessageMediaRefresher.current
+    val assetId = bubble.media?.assetId
+    val onRefresh: (suspend () -> String?)? = if (refresher != null && !assetId.isNullOrBlank() && bubble.localKey.isNotBlank()) {
+        { refresher(bubble.localKey, assetId) }
+    } else null
+    val imageState by rememberMessageImage(source, onRefresh)
     val imageWidth = if (maxWidth < ImageMessageMinWidth) maxWidth else minOf(maxWidth, ImageMessageMaxWidth)
     val imageHeight = imageWidth * 1.28f
 
@@ -355,16 +400,43 @@ private fun TextMessageBubble(
     bubbleBg: Color,
     textColor: Color,
 ) {
+    val mentionColor = Gomob.colors.accent
+    val annotated = remember(bubble.text, mentionColor) {
+        annotateMentions(bubble.text, mentionColor)
+    }
     MessageBubbleShell(
         mine = bubble.mine,
         maxWidth = maxWidth,
         bubbleBg = bubbleBg,
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6)) {
-            Text(bubble.text, style = Gomob.type.bodySm, color = textColor)
+            Text(annotated, style = Gomob.type.bodySm, color = textColor)
             bubble.quote?.let { quote ->
                 QuoteReferenceBlock(quote = quote, textColor = textColor, mine = bubble.mine)
             }
+        }
+    }
+}
+
+private val MENTION_REGEX = Regex("@([\\u4e00-\\u9fa5A-Za-z0-9_#\\-]+)")
+
+internal fun annotateMentions(text: String, mentionColor: Color): AnnotatedString {
+    if (text.isEmpty() || !text.contains('@')) return AnnotatedString(text)
+    val matches = MENTION_REGEX.findAll(text).toList()
+    if (matches.isEmpty()) return AnnotatedString(text)
+    return buildAnnotatedString {
+        var cursor = 0
+        matches.forEach { match ->
+            if (match.range.first > cursor) {
+                append(text.substring(cursor, match.range.first))
+            }
+            withStyle(SpanStyle(color = mentionColor, fontWeight = FontWeight.Medium)) {
+                append(match.value)
+            }
+            cursor = match.range.last + 1
+        }
+        if (cursor < text.length) {
+            append(text.substring(cursor))
         }
     }
 }
@@ -416,8 +488,18 @@ private fun MediaFileMessageBubble(
     }
 }
 
+/**
+ * 提供给 [rememberMessageImage]：图片加载失败时由 ConversationScreen 注入的重签函数。
+ * 入参 (localKey, assetId) → 拿新 download URL；null 表示无 refresher。
+ */
+internal val LocalMessageMediaRefresher = staticCompositionLocalOf<(suspend (String, String) -> String?)?> { null }
+
 @Composable
-internal fun rememberMessageImage(source: String?): androidx.compose.runtime.State<MessageImageLoadState> {
+internal fun rememberMessageImage(
+    source: String?,
+    /** 加载失败时调用：返回新 source（重签 URL）则再加载一次，null 则维持 Failed。 */
+    onRefreshUrl: (suspend () -> String?)? = null,
+): androidx.compose.runtime.State<MessageImageLoadState> {
     val context = LocalContext.current
     val normalized = source?.trim().orEmpty()
     val cached = remember(normalized) {
@@ -442,9 +524,20 @@ internal fun rememberMessageImage(source: String?): androidx.compose.runtime.Sta
         if (value !is MessageImageLoadState.Ready) {
             value = MessageImageLoadState.Loading
         }
-        val bitmap = withContext(Dispatchers.IO) {
-            runCatching { loadMessageImageBitmap(context, normalized) }
-                .getOrNull()
+        var bitmap = withContext(Dispatchers.IO) {
+            runCatching { loadMessageImageBitmap(context, normalized) }.getOrNull()
+        }
+        // pre-signed URL 5min 过期时，allow 一次重签重试（仅当 caller 提供了 refresher）
+        if (bitmap == null && onRefreshUrl != null) {
+            val fresh = runCatching { onRefreshUrl() }.getOrNull()?.takeIf { it.isNotBlank() }
+            if (fresh != null && fresh != normalized) {
+                bitmap = withContext(Dispatchers.IO) {
+                    runCatching { loadMessageImageBitmap(context, fresh) }.getOrNull()
+                }
+                if (bitmap != null) {
+                    MessageImageBitmapCache.put(fresh, bitmap)
+                }
+            }
         }
         value = if (bitmap != null) {
             MessageImageBitmapCache.put(normalized, bitmap)
@@ -516,9 +609,24 @@ private object MessageImageBitmapCache {
 internal fun MessageBubbleUi.canOpenImagePreview(): Boolean =
     kind == "image" && !media?.imageSource.isNullOrBlank()
 
-private fun MessageBubbleUi.quickActions(): List<MessageQuickAction> =
-    MessageQuickAction.values()
-        .filter { action -> action != MessageQuickAction.TranscribeVoice || canRequestVoiceTranscript() }
+private fun MessageBubbleUi.quickActions(nowMillis: Long): List<MessageQuickAction> {
+    if (isRecalled) {
+        // 撤回后的消息无操作意义
+        return emptyList()
+    }
+    val failed = status == MessageStatus.Failed
+    val recallable = canRecall(nowMillis)
+    return MessageQuickAction.values().filter { action ->
+        when (action) {
+            MessageQuickAction.TranscribeVoice -> canRequestVoiceTranscript()
+            MessageQuickAction.Retry, MessageQuickAction.Delete -> failed
+            MessageQuickAction.Recall -> recallable
+            // 发送失败的消息没必要 转发 / 收藏 / 引用 / 多选 — 只能 复制 / 重试 / 删除
+            MessageQuickAction.Copy -> true
+            else -> !failed
+        }
+    }
+}
 
 private fun MessageBubbleUi.canRequestVoiceTranscript(): Boolean =
     isVoice &&
@@ -654,6 +762,20 @@ internal enum class MessageQuickAction(
     MultiSelect("多选", Icons.Filled.Checklist),
     Quote("引用", Icons.Filled.FormatQuote),
     TranscribeVoice("转文字", GomobIcons.Compose),
+    Retry("重试", Icons.Filled.Refresh),
+    Recall("撤回", Icons.AutoMirrored.Filled.Undo),
+    Delete("删除", Icons.Filled.Delete),
+}
+
+// 撤回时限：5 分钟内自己发的 Sent 消息可撤回（与 server 端 messageRecallWindow 对齐）。
+private const val MESSAGE_RECALL_WINDOW_MILLIS = 5 * 60 * 1000L
+
+private fun MessageBubbleUi.canRecall(nowMillis: Long): Boolean {
+    if (!mine || isRecalled) return false
+    if (status != MessageStatus.Sent) return false
+    if (serverId == null || serverId <= 0) return false
+    val created = createdAtEpochMillis ?: return false
+    return nowMillis - created <= MESSAGE_RECALL_WINDOW_MILLIS
 }
 
 private class MessageActionPopupPositionProvider : PopupPositionProvider {

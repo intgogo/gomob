@@ -81,7 +81,7 @@ third_party/
 ## 构建变体
 
 - `debug` — applicationIdSuffix `.debug`，可与 release 同设备共存；NDK 不裁剪
-- `release` — minify + shrinkResources；签名待用户提供 keystore（不进库）
+- `release` — R8 混淆 + shrinkResources + native 符号裁剪；禁用 debuggable / cleartext；签名从 `GOMOB_RELEASE_*` 环境变量或 Gradle property 注入，keystore 不进库
 
 ## 资源 / 配置文件归属
 

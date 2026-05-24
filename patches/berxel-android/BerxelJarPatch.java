@@ -1,17 +1,24 @@
 // SPDX-License-Identifier: 内部工具
-// Berxel Android SDK 9.9.190 二进制兼容性补丁 — Android 12+ PendingIntent flag 修复
+// Berxel Android SDK 9.9.190 二进制兼容性补丁
 //
 // Why 存在：
-//   SDK 内部 BerxelHawkUsbManager.requestDevicePermission 用
+//   1. SDK 内部 BerxelHawkUsbManager.requestDevicePermission 用
 //   PendingIntent.getBroadcast(ctx, 0, intent, /*flags*/ 0)
 //   Android 12 (API 31) 起强制要求显式 IMMUTABLE 或 MUTABLE flag，否则 IllegalArgumentException。
 //   所有 BerxelHawkDevice.openDevice() 重载都强制走这条路，没有备用入口。
 //   厂家 SDK 9.9.190 (2026-03 build) 还没修，等不及，自己 patch。
 //
+//   2. BerxelHawkUsbManager.getUsbDeviceList() 在按 VID/PID 筛选前，对 bus 上每个
+//   UsbDevice 调 getSerialNumber()。外接 USB-C 扩展坞会暴露 HID/LAN 节点，HyperOS 对这些
+//   非 Berxel 节点直接抛 SecurityException，导致 Berxel 相机无法 openDevice。
+//   serial 只用于 SDK 日志，不参与筛选；这里把该方法里的 getSerialNumber() 改成 null。
+//
 // 原理：
-//   ASM 找 BerxelHawkUsbManager.class 内 invokestatic PendingIntent.getBroadcast 之前那个
-//   ICONST_0（推 0 上栈作 flags 参数），换成 LDC 0x12000000
-//   = FLAG_MUTABLE (0x02000000) | FLAG_UPDATE_CURRENT (0x10000000)。
+//   1. ASM 找 BerxelHawkUsbManager.class 内 invokestatic PendingIntent.getBroadcast 之前那个
+//   ICONST_0（推 0 上栈作 flags 参数），换成 LDC 0x14000000
+//   = FLAG_IMMUTABLE (0x04000000) | FLAG_UPDATE_CURRENT (0x10000000)。
+//   2. ASM 找 getUsbDeviceList() 内 UsbDevice.getSerialNumber() 调用，把前置 ALOAD + 调用
+//   改成 ACONST_NULL，保留后续日志 append(null) 形态，避免重写整段控制流。
 //   ASM 自动管常量池 + maxStack。
 //
 // 用法：
@@ -31,6 +38,9 @@ public class BerxelJarPatch {
     static final String TARGET_CLASS = "com/berxel/berxelInterface/api/admitmanager/BerxelHawkUsbManager.class";
     static final String PENDING_INTENT_OWNER = "android/app/PendingIntent";
     static final String PENDING_INTENT_METHOD = "getBroadcast";
+    static final String USB_DEVICE_OWNER = "android/hardware/usb/UsbDevice";
+    static final String USB_DEVICE_GET_SERIAL = "getSerialNumber";
+    static final String GET_USB_DEVICE_LIST = "getUsbDeviceList";
 
     // FLAG_IMMUTABLE (0x04000000) | FLAG_UPDATE_CURRENT (0x10000000) = 0x14000000
     //
@@ -88,10 +98,32 @@ public class BerxelJarPatch {
         ClassNode cn = new ClassNode();
         cr.accept(cn, 0);
 
-        int hits = 0;
+        int pendingIntentHits = 0;
+        int serialHits = 0;
         for (MethodNode m : cn.methods) {
             InsnList il = m.instructions;
             for (AbstractInsnNode insn = il.getFirst(); insn != null; insn = insn.getNext()) {
+                if (insn.getOpcode() == Opcodes.INVOKEVIRTUAL) {
+                    MethodInsnNode mi = (MethodInsnNode) insn;
+                    if (GET_USB_DEVICE_LIST.equals(m.name)
+                        && USB_DEVICE_OWNER.equals(mi.owner)
+                        && USB_DEVICE_GET_SERIAL.equals(mi.name)
+                        && "()Ljava/lang/String;".equals(mi.desc)) {
+                        AbstractInsnNode prev = insn.getPrevious();
+                        while (prev != null && (prev.getOpcode() < 0)) prev = prev.getPrevious();
+                        if (prev == null || prev.getOpcode() != Opcodes.ALOAD) {
+                            throw new RuntimeException("无法定位 getSerialNumber 的 receiver ALOAD：method="
+                                + m.name + m.desc);
+                        }
+                        il.remove(prev);
+                        il.set(insn, new InsnNode(Opcodes.ACONST_NULL));
+                        serialHits++;
+                        System.out.println("[patch] " + cn.name + "." + m.name + m.desc
+                            + " UsbDevice.getSerialNumber() → ACONST_NULL");
+                        continue;
+                    }
+                }
+
                 if (insn.getOpcode() != Opcodes.INVOKESTATIC) continue;
                 MethodInsnNode mi = (MethodInsnNode) insn;
                 if (!PENDING_INTENT_OWNER.equals(mi.owner)) continue;
@@ -112,16 +144,20 @@ public class BerxelJarPatch {
                 }
 
                 il.set(prev, new LdcInsnNode(Integer.valueOf(PI_FLAGS_PATCHED)));
-                hits++;
+                pendingIntentHits++;
                 System.out.println("[patch] " + cn.name + "." + m.name + m.desc
                     + " flags ICONST_0 → LDC 0x" + Integer.toHexString(PI_FLAGS_PATCHED));
             }
         }
-        if (hits == 0) {
+        if (pendingIntentHits == 0) {
             throw new RuntimeException("没找到任何 PendingIntent.getBroadcast(...,ICONST_0) 调用点 — "
                 + "可能 SDK 已自己修了，需复核 patch 必要性");
         }
-        System.out.println("[patch] hits=" + hits);
+        if (serialHits == 0) {
+            throw new RuntimeException("没找到 getUsbDeviceList() 内的 UsbDevice.getSerialNumber() 调用点 — "
+                + "可能 SDK 已自己修了，需复核 patch 必要性");
+        }
+        System.out.println("[patch] pendingIntentHits=" + pendingIntentHits + " serialHits=" + serialHits);
 
         // COMPUTE_FRAMES 会触发 frame 重算，需 ClassLoader resolve 类引用，超本地类没有 — 用 COMPUTE_MAXS 即可
         ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);

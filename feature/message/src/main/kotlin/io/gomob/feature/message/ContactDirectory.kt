@@ -1,5 +1,7 @@
 package io.gomob.feature.message
 
+import io.gomob.model.message.StationContact
+
 data class ContactProfileUi(
     val id: String,
     val name: String,
@@ -15,93 +17,6 @@ data class ContactProfileUi(
     val avatarSeed: String get() = "contact-$id-$name"
 }
 
-internal fun localContactProfiles(): List<ContactProfileUi> = listOf(
-    ContactProfileUi(
-        id = "station-zhou",
-        name = "周科",
-        initials = "周",
-        roleTitle = "OBD 主审",
-        specialty = "OBD 排放诊断、故障码复核",
-        employeeId = "ZAA01",
-        availabilityText = "在线",
-        organization = "杭州西湖检测站",
-        online = true,
-        peerUserId = null,
-    ),
-    ContactProfileUi(
-        id = "station-wu",
-        name = "吴风",
-        initials = "吴",
-        roleTitle = "外观件专家",
-        specialty = "车身外观件、结构件损伤复核",
-        employeeId = "ZAA02",
-        availabilityText = "在线",
-        organization = "杭州西湖检测站",
-        online = true,
-        peerUserId = null,
-    ),
-    ContactProfileUi(
-        id = "station-liu",
-        name = "刘冶",
-        initials = "刘",
-        roleTitle = "VIN 拓印",
-        specialty = "VIN 拓印、车架号一致性核验",
-        employeeId = "ZAA03",
-        availabilityText = "忙碌",
-        organization = "杭州西湖检测站",
-        online = false,
-        peerUserId = null,
-    ),
-    ContactProfileUi(
-        id = "station-jiang",
-        name = "江庆宇",
-        initials = "江",
-        roleTitle = "查验员",
-        specialty = "车辆查验、资料核对、现场协作",
-        employeeId = "ZAA04",
-        availabilityText = "忙碌",
-        organization = "杭州西湖检测站",
-        online = false,
-        peerUserId = null,
-    ),
-    ContactProfileUi(
-        id = "station-shen",
-        name = "沈海明",
-        initials = "沈",
-        roleTitle = "查验员",
-        specialty = "车辆查验、站内复核、异常记录",
-        employeeId = "ZAA0120230001",
-        availabilityText = "在线",
-        organization = "杭州西湖检测站",
-        online = true,
-        peerUserId = null,
-    ),
-    ContactProfileUi(
-        id = "supervision-review",
-        name = "省所复核",
-        initials = "省",
-        roleTitle = "监管复核",
-        specialty = "监管复核、争议查验、流程确认",
-        employeeId = "REG01",
-        availabilityText = "在线",
-        organization = "浙江省车管所",
-        online = true,
-        peerUserId = null,
-    ),
-    ContactProfileUi(
-        id = "supervision-duty",
-        name = "值班督导",
-        initials = "督",
-        roleTitle = "异常督办",
-        specialty = "异常督办、跨站协同、时效跟进",
-        employeeId = "REG02",
-        availabilityText = "忙碌",
-        organization = "浙江省车管所",
-        online = false,
-        peerUserId = null,
-    ),
-)
-
 internal fun HelpExpertRowUi.toContactProfileUi(): ContactProfileUi = ContactProfileUi(
     id = "expert-$userId",
     name = name,
@@ -114,3 +29,24 @@ internal fun HelpExpertRowUi.toContactProfileUi(): ContactProfileUi = ContactPro
     online = availabilityText == "可发消息",
     peerUserId = userId,
 )
+
+internal fun StationContact.toContactProfileUi(): ContactProfileUi = ContactProfileUi(
+    id = "user-$userId",
+    name = name,
+    initials = initialsFor(name),
+    roleTitle = role.toRoleTitleLabel(),
+    specialty = stationName.ifBlank { "本站" },
+    employeeId = employeeId,
+    availabilityText = "可发消息",
+    organization = stationName.ifBlank { "本站" },
+    online = true,
+    peerUserId = userId,
+)
+
+private fun String.toRoleTitleLabel(): String = when (this) {
+    "inspector" -> "查验员"
+    "supervisor" -> "监管员"
+    "reviewer" -> "复核员"
+    "admin" -> "管理员"
+    else -> this
+}

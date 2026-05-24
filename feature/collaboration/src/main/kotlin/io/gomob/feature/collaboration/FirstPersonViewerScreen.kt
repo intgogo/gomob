@@ -1,47 +1,83 @@
 package io.gomob.feature.collaboration
 
+import android.app.Application
+import android.view.ViewGroup
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBackIosNew
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Videocam
-import androidx.compose.material.icons.filled.WarningAmber
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.gomob.data.message.MediaSessionRepository
-import io.gomob.designsystem.component.BackHeader
-import io.gomob.designsystem.component.HairlineCard
-import io.gomob.designsystem.component.StatusTag
-import io.gomob.designsystem.component.StatusTone
-import io.gomob.designsystem.theme.Gomob
+import io.livekit.android.ConnectOptions
+import io.livekit.android.LiveKit
+import io.livekit.android.LiveKitOverrides
+import io.livekit.android.events.RoomEvent
+import io.livekit.android.events.collect
+import io.livekit.android.renderer.TextureViewRenderer
+import io.livekit.android.room.Room
+import io.livekit.android.room.track.Track
+import io.livekit.android.room.track.VideoTrack
+import livekit.org.webrtc.PeerConnection
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -49,211 +85,505 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 /**
- * 第一视角观看页 — 监管员/复核员视角实时观看某位查验员的工作画面。
+ * 第一视角观看页 — 抖音直播间风格。
  *
- * 布局:
- *   - 顶 BackHeader: ← / 标题 / eyebrow=LIVE+时长 / trailing=观看数+信号
- *   - 中部: 全屏 RGB 预览，媒体房间由 LiveKit 控制面签发 token
- *     - 左上 overlay: 采集者卡片(姓名 / 检测站 / 当前工单)
- *     - 右上 overlay: 实时指标(扫描部位 / AI 打分 / 异常计数)
- *     - 左下 overlay: 实时批注
- *   - 底部 hairline action bar: 5 圆按钮(介入语音 / 切视角 / 截图 / 标预警 / 通话)
+ * 顶部：← + 「查验员·名字 / 工号」 + 右上观看人数 pill（点击弹观众列表）
+ * 视频铺满，右侧竖排 头像(点头像跳主播详情) + 介入/截图/切换/预警/通话
+ * 底部：抖音直播评论栏 — 文字输入 pill + 麦克风按钮（发文字 / 录语音）
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FirstPersonViewerRoute(
     streamId: String,
     onBack: () -> Unit,
+    onOpenInspector: (String) -> Unit = {},
     viewModel: FirstPersonViewerViewModel = hiltViewModel(),
 ) {
     val s = STREAM_DETAILS[streamId] ?: STREAM_DETAILS.values.first()
     val mediaState by viewModel.state.collectAsStateWithLifecycle()
-    LaunchedEffect(streamId) {
-        viewModel.join(streamId)
-    }
+    val remoteTrack by viewModel.remoteTrack.collectAsStateWithLifecycle()
+    val room by viewModel.room.collectAsStateWithLifecycle()
 
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        BackHeader(
-            title = when (val state = mediaState) {
-                is ViewerLiveState.Ready -> "第一视角 · ${state.title}"
-                else -> "第一视角 · ${s.inspector}"
+    LaunchedEffect(streamId) { viewModel.join(streamId) }
+
+    var watchersOpen by remember { mutableStateOf(false) }
+    var commentDraft by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            // 点空白区域收起键盘 + 清除 TextField 焦点（抖音直播评论交互）
+            .pointerInput(Unit) {
+                detectTapGestures(onTap = {
+                    focusManager.clearFocus()
+                    keyboard?.hide()
+                })
             },
-            onBack = onBack,
-            eyebrow = when (mediaState) {
-                is ViewerLiveState.Ready -> "LIVE · 媒体房间已接通"
-                ViewerLiveState.Joining -> "正在接入 LiveKit"
-                is ViewerLiveState.Error -> "媒体房间不可用"
-                ViewerLiveState.Idle -> "等待媒体房间"
-            },
-            trailing = {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-                ) {
-                    StatusTag(
-                        text = "观看 ${s.watchers}",
-                        tone = StatusTone.Accent,
-                        showDot = true,
-                    )
-                    SignalBars(level = s.signalLevel)
-                }
-            },
-        )
-
-        // 视频区 — weight 占满中部
-        Box(
-            Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .background(Gomob.colors.bg2),
-        ) {
-            // 真实视频轨道接入前只展示媒体控制面状态，不用假画面冒充远端视频。
-            Column(
-                Modifier.align(Alignment.Center),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
-            ) {
-                val state = mediaState
-                Text(
-                    when (state) {
-                        is ViewerLiveState.Ready -> "LiveKit 房间已接通"
-                        ViewerLiveState.Joining -> "正在接入媒体房间"
-                        is ViewerLiveState.Error -> "媒体房间不可用"
-                        ViewerLiveState.Idle -> "等待直播信息"
-                    },
-                    style = Gomob.type.metricMd,
-                    color = Gomob.colors.fg3,
-                )
-                Text(
-                    when (state) {
-                        is ViewerLiveState.Ready -> state.providerRoom
-                        is ViewerLiveState.Error -> state.message
-                        else -> s.taskId + " · " + s.vehicleModel
-                    },
-                    style = Gomob.type.numInline,
-                    color = Gomob.colors.fg2,
-                )
-            }
-
-            // 左上 overlay: 采集者信息
-            HairlineCard(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(Gomob.spacing.s12)
-                    .width(Gomob.spacing.overlayCardWMd),
-                padding = Gomob.spacing.s12,
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-                    ) {
-                        Box(
-                            Modifier
-                                .size(Gomob.spacing.avatar28)
-                                .clip(CircleShape)
-                                .background(Gomob.colors.accentSoft),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                s.inspector.take(1),
-                                style = Gomob.type.numInline,
-                                color = Gomob.colors.accent,
-                            )
-                        }
-                        Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2)) {
-                            Text(s.inspector, style = Gomob.type.body, color = Gomob.colors.fg0)
-                            Text(s.employeeId, style = Gomob.type.caption, color = Gomob.colors.fg3)
-                        }
-                    }
-                    Spacer(Modifier.height(Gomob.spacing.s4))
-                    Text("检测站", style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
-                    Text(s.station, style = Gomob.type.bodySm, color = Gomob.colors.fg1)
-                    Text("当前工单", style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
-                    Text(s.taskId, style = Gomob.type.numInline, color = Gomob.colors.fg0)
-                }
-            }
-
-            // 右上 overlay: 实时指标 (与左上 inspector 分居左右)
-            HairlineCard(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(Gomob.spacing.s12)
-                    .width(Gomob.spacing.overlayCardWSm),
-                padding = Gomob.spacing.s12,
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8)) {
-                    MetricInline(
-                        label = "扫描部位",
-                        value = s.currentPart,
-                        valueColor = Gomob.colors.accent,
-                    )
-                    MetricInline(
-                        label = "AI 打分",
-                        value = "%.2f".format(s.aiScore),
-                        valueColor = if (s.aiScore < 0.6f) Gomob.colors.danger
-                        else if (s.aiScore < 0.85f) Gomob.colors.warn
-                        else Gomob.colors.ok,
-                    )
-                    MetricInline(
-                        label = "已检出异常",
-                        value = "${s.anomalyCount}",
-                        valueColor = if (s.anomalyCount > 0) Gomob.colors.danger else Gomob.colors.fg0,
-                    )
-                }
-            }
-
-            // 左下 overlay: 实时弹幕(简化为 1 条注释)
-            HairlineCard(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(Gomob.spacing.s12)
-                    .width(Gomob.spacing.overlayCardWMd),
-                padding = Gomob.spacing.s12,
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
-                    ) {
-                        Box(
-                            Modifier
-                                .size(Gomob.spacing.dot6)
-                                .clip(CircleShape)
-                                .background(Gomob.colors.accent),
+    ) {
+        // ---- 视频底层 ----
+        val track = remoteTrack
+        if (track != null) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    TextureViewRenderer(ctx).apply {
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
                         )
-                        Text("最新批注", style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
+                        room?.initVideoRenderer(this)
+                        track.addRenderer(this)
                     }
-                    Text(s.latestNote, style = Gomob.type.bodySm, color = Gomob.colors.fg1)
-                    Text(s.noteFrom + " · " + s.noteTime, style = Gomob.type.caption, color = Gomob.colors.fg3)
-                }
-            }
+                },
+                onRelease = { view -> track.removeRenderer(view) },
+            )
+        } else {
+            EmptyVideoStage(state = mediaState, fallbackTaskId = s.taskId)
         }
 
-        Row(
+        // ---- 顶部 / 底部 渐变蒙版 ----
+        Box(
             Modifier
+                .align(Alignment.TopCenter)
                 .fillMaxWidth()
-                .background(Gomob.colors.bg0)
-                .padding(horizontal = Gomob.spacing.s8, vertical = Gomob.spacing.s12),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically,
+                .height(160.dp)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color.Black.copy(alpha = 0.55f), Color.Transparent),
+                    ),
+                ),
+        )
+        Box(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(220.dp)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color.Transparent, Color.Black.copy(alpha = 0.62f)),
+                    ),
+                ),
+        )
+
+        // ---- 顶部：返回 + 标题(查验员) + 观看 pill ----
+        TopBar(
+            inspector = s.inspector,
+            employeeId = s.employeeId,
+            watchers = s.watchers,
+            onBack = {
+                viewModel.leave()
+                onBack()
+            },
+            onShowWatchers = { watchersOpen = true },
+        )
+
+        // ---- 右侧竖排 ----
+        SideActions(
+            inspectorInitial = s.inspector.take(1),
+            onOpenInspector = {
+                val pid = (mediaState as? ViewerLiveState.Ready)?.publisherId
+                if (!pid.isNullOrBlank()) {
+                    onOpenInspector(pid)
+                }
+            },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .padding(end = 12.dp, bottom = 96.dp),
+        )
+
+        // ---- 底部：评论输入栏 + 麦克风（抖音风） ----
+        CommentBar(
+            value = commentDraft,
+            onValueChange = { commentDraft = it },
+            onSend = {
+                // TODO: 接 ws 推送实时评论 / live_annotations
+                commentDraft = ""
+            },
+            onRecordVoice = {
+                // TODO: 接录音 + 发语音消息
+            },
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .imePadding()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+        )
+    }
+
+    // ---- 观众列表 sheet ----
+    if (watchersOpen) {
+        ModalBottomSheet(
+            onDismissRequest = { watchersOpen = false },
+            sheetState = sheetState,
+            containerColor = Color(0xFF111521),
+            contentColor = Color.White,
         ) {
-            ActionButton(icon = Icons.Filled.Mic, label = "介入语音", tone = ActionTone.Accent)
-            ActionButton(icon = Icons.Filled.SwapHoriz, label = "切视角", tone = ActionTone.Neutral)
-            ActionButton(icon = Icons.Filled.CameraAlt, label = "截图存档", tone = ActionTone.Neutral)
-            ActionButton(icon = Icons.Filled.WarningAmber, label = "标记预警", tone = ActionTone.Danger)
-            ActionButton(icon = Icons.Filled.Videocam, label = "视频通话", tone = ActionTone.Accent)
+            WatchersSheetContent(total = s.watchers)
         }
     }
 }
 
+// ============================================================================
+// 顶部 bar
+// ============================================================================
+@Composable
+private fun TopBar(
+    inspector: String,
+    employeeId: String,
+    watchers: Int,
+    onBack: () -> Unit,
+    onShowWatchers: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(36.dp)
+                .clip(CircleShape)
+                .background(Color.Black.copy(alpha = 0.36f))
+                .clickable(onClick = onBack),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Filled.ArrowBackIosNew,
+                contentDescription = "返回",
+                tint = Color.White,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                inspector,
+                color = Color.White,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+                style = TextStyle(shadow = textShadow()),
+            )
+            Text(
+                "查验员 · $employeeId",
+                color = Color.White.copy(alpha = 0.78f),
+                fontSize = 11.sp,
+                style = TextStyle(shadow = textShadow()),
+            )
+        }
+        WatchersPill(count = watchers, onClick = onShowWatchers)
+    }
+}
+
+@Composable
+private fun WatchersPill(count: Int, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color.Black.copy(alpha = 0.42f))
+            .clickable(onClick = onClick)
+            .padding(start = 10.dp, end = 6.dp, top = 5.dp, bottom = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text("观看 $count", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+        Icon(
+            Icons.Filled.KeyboardArrowDown,
+            contentDescription = "查看观众",
+            tint = Color.White.copy(alpha = 0.78f),
+            modifier = Modifier.size(16.dp),
+        )
+    }
+}
+
+// ============================================================================
+// 右侧互动按钮纵列
+// ============================================================================
+@Composable
+private fun SideActions(
+    inspectorInitial: String,
+    onOpenInspector: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(18.dp),
+    ) {
+        Box(
+            Modifier
+                .size(48.dp)
+                .clip(CircleShape)
+                .background(Color(0xFF2DD4BF))
+                .clickable(onClick = onOpenInspector),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                inspectorInitial,
+                color = Color.Black,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        SideActionButton(icon = Icons.Filled.Mic, label = "介入")
+        SideActionButton(icon = Icons.Filled.CameraAlt, label = "截图")
+        SideActionButton(icon = Icons.Filled.Videocam, label = "通话", tone = SideTone.Accent)
+    }
+}
+
+private enum class SideTone { Default, Accent }
+
+@Composable
+private fun SideActionButton(
+    icon: ImageVector,
+    label: String,
+    tone: SideTone = SideTone.Default,
+) {
+    val bg = when (tone) {
+        SideTone.Default -> Color.Black.copy(alpha = 0.36f)
+        SideTone.Accent -> Color(0xFF2DD4BF).copy(alpha = 0.92f)
+    }
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Box(
+            Modifier
+                .size(46.dp)
+                .clip(CircleShape)
+                .background(bg)
+                .clickable {},
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = Color.White,
+                modifier = Modifier.size(22.dp),
+            )
+        }
+        Text(
+            label,
+            color = Color.White,
+            fontSize = 11.sp,
+            style = TextStyle(shadow = textShadow()),
+        )
+    }
+}
+
+// ============================================================================
+// 底部抖音直播评论输入栏
+// ============================================================================
+@Composable
+private fun CommentBar(
+    value: String,
+    onValueChange: (String) -> Unit,
+    onSend: () -> Unit,
+    onRecordVoice: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        // 输入 pill
+        Row(
+            Modifier
+                .weight(1f)
+                .height(40.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(Color.Black.copy(alpha = 0.5f))
+                .padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.weight(1f)) {
+                BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    singleLine = true,
+                    textStyle = TextStyle(
+                        color = Color.White,
+                        fontSize = 13.sp,
+                    ),
+                    cursorBrush = SolidColor(Color(0xFF2DD4BF)),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(
+                        onSend = { if (value.isNotBlank()) onSend() },
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (value.isEmpty()) {
+                    Text(
+                        "说点什么...",
+                        color = Color.White.copy(alpha = 0.55f),
+                        fontSize = 13.sp,
+                    )
+                }
+            }
+            if (value.isNotBlank()) {
+                Spacer(Modifier.width(8.dp))
+                Box(
+                    Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF2DD4BF))
+                        .clickable(onClick = onSend),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.Send,
+                        contentDescription = "发送",
+                        tint = Color.Black,
+                        modifier = Modifier.size(15.dp),
+                    )
+                }
+            }
+        }
+        // 语音按钮（按住录音 / 点击切换）
+        Box(
+            Modifier
+                .size(40.dp)
+                .clip(CircleShape)
+                .background(Color.Black.copy(alpha = 0.5f))
+                .clickable(onClick = onRecordVoice),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Filled.Mic,
+                contentDescription = "按住说话",
+                tint = Color.White,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+    }
+}
+
+// ============================================================================
+// 观众列表 sheet (mock)
+// ============================================================================
+@Composable
+private fun WatchersSheetContent(total: Int) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            "当前观众 · $total 人",
+            color = Color.White,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+        WATCHERS_MOCK.take(total.coerceAtLeast(0)).forEach { w ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Box(
+                    Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(w.color),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        w.name.take(1),
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(w.name, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                    Text(w.role, color = Color.White.copy(alpha = 0.62f), fontSize = 11.sp)
+                }
+                if (w.muted) {
+                    Text("已静默", color = Color.White.copy(alpha = 0.5f), fontSize = 11.sp)
+                }
+            }
+        }
+    }
+}
+
+private data class WatcherUi(val name: String, val role: String, val color: Color, val muted: Boolean = false)
+
+private val WATCHERS_MOCK = listOf(
+    WatcherUi("沈海明", "西湖区检测站 · 监管员", Color(0xFFEF4444)),
+    WatcherUi("林知远", "外部专家 · 三维外廓", Color(0xFF22C55E)),
+    WatcherUi("陈若愚", "外部专家 · VIN 拓印", Color(0xFFF59E0B)),
+    WatcherUi("周一苇", "外部专家 · 设备链路", Color(0xFF2DD4BF)),
+    WatcherUi("许明庭", "监管会审专家", Color(0xFFEC4899)),
+    WatcherUi("省所复核", "省所 · 督导", Color(0xFF6366F1)),
+    WatcherUi("江庆宇", "本站 · 查验员", Color(0xFFA855F7), muted = true),
+    WatcherUi("吴风", "本站 · 复核员", Color(0xFF14B8A6)),
+    WatcherUi("周科", "本站 · 复核员", Color(0xFFFB923C)),
+    WatcherUi("刘冶", "本站 · 查验员", Color(0xFF94A3B8)),
+)
+
+// ============================================================================
+// 空视频提示
+// ============================================================================
+@Composable
+private fun EmptyVideoStage(state: ViewerLiveState, fallbackTaskId: String) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color(0xFF050810)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            val main = when (state) {
+                is ViewerLiveState.Ready -> "等待发布者推视频"
+                ViewerLiveState.Joining -> "正在接入媒体房间"
+                is ViewerLiveState.Error -> "媒体房间不可用"
+                ViewerLiveState.Idle -> "等待直播信息"
+            }
+            val sub = when (state) {
+                is ViewerLiveState.Ready -> state.providerRoom
+                is ViewerLiveState.Error -> state.message
+                else -> fallbackTaskId
+            }
+            Text(main, color = Color.White.copy(alpha = 0.86f), fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Text(sub, color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp)
+        }
+    }
+}
+
+// ============================================================================
+// ViewModel — 接 LiveKit subscriber，订到远端 camera track
+// ============================================================================
 @HiltViewModel
 class FirstPersonViewerViewModel @Inject constructor(
     private val mediaSessionRepository: MediaSessionRepository,
-) : ViewModel() {
+    private val app: Application,
+) : AndroidViewModel(app) {
     private val _state = MutableStateFlow<ViewerLiveState>(ViewerLiveState.Idle)
     val state: StateFlow<ViewerLiveState> = _state.asStateFlow()
 
+    private val _remoteTrack = MutableStateFlow<VideoTrack?>(null)
+    val remoteTrack: StateFlow<VideoTrack?> = _remoteTrack.asStateFlow()
+
+    private val _room = MutableStateFlow<Room?>(null)
+    val room: StateFlow<Room?> = _room.asStateFlow()
+
+    private var bound: Boolean = false
+
     fun join(streamId: String) {
+        if (bound) return
+        bound = true
         val liveSessionId = streamId.toLongOrNull()
         if (liveSessionId == null) {
             _state.value = ViewerLiveState.Error("直播会话参数无效")
@@ -261,155 +591,149 @@ class FirstPersonViewerViewModel @Inject constructor(
         }
         viewModelScope.launch {
             _state.value = ViewerLiveState.Joining
-            _state.value = runCatching {
-                val joined = mediaSessionRepository.joinLiveSession(liveSessionId)
-                ViewerLiveState.Ready(
+            val joined = runCatching { mediaSessionRepository.joinLiveSession(liveSessionId) }
+                .getOrElse {
+                    _state.value = ViewerLiveState.Error(
+                        it.message?.takeIf { m -> m.isNotBlank() } ?: "接入直播失败",
+                    )
+                    return@launch
+                }
+            val r = LiveKit.create(
+                appContext = app.applicationContext,
+                overrides = LiveKitOverrides(),
+            )
+            _room.value = r
+            launchEventCollector(r)
+            runCatching {
+                r.connect(
+                    url = joined.url,
+                    token = joined.token,
+                    options = emulatorFriendlyConnectOptions(),
+                )
+                _state.value = ViewerLiveState.Ready(
                     title = joined.session.title,
                     providerRoom = joined.providerRoom,
                     url = joined.url,
+                    publisherId = joined.session.publisherId.toString(),
                 )
-            }.getOrElse {
-                ViewerLiveState.Error(it.message?.takeIf { msg -> msg.isNotBlank() } ?: "接入直播失败")
+                refreshRemoteTrack()
+            }.onFailure {
+                _state.value = ViewerLiveState.Error(
+                    it.message?.takeIf { m -> m.isNotBlank() } ?: "LiveKit 接入失败",
+                )
             }
         }
+    }
+
+    fun leave() {
+        viewModelScope.launch {
+            val r = _room.value
+            runCatching { r?.disconnect() }
+            r?.release()
+            _room.value = null
+            _remoteTrack.value = null
+        }
+    }
+
+    private fun launchEventCollector(r: Room) {
+        viewModelScope.launch {
+            r.events.collect { event ->
+                when (event) {
+                    is RoomEvent.TrackSubscribed,
+                    is RoomEvent.TrackUnsubscribed,
+                    is RoomEvent.ParticipantConnected,
+                    is RoomEvent.ParticipantDisconnected,
+                    is RoomEvent.TrackPublished,
+                    is RoomEvent.TrackUnpublished -> refreshRemoteTrack()
+                    is RoomEvent.Disconnected -> _remoteTrack.value = null
+                    else -> Unit
+                }
+            }
+        }
+    }
+
+    private fun refreshRemoteTrack() {
+        val r = _room.value ?: return
+        val track = r.remoteParticipants.values
+            .asSequence()
+            .mapNotNull { p ->
+                p.getTrackPublication(Track.Source.CAMERA)?.track as? VideoTrack
+            }
+            .firstOrNull()
+        _remoteTrack.value = track
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        _room.value?.release()
+        _room.value = null
     }
 }
 
 sealed interface ViewerLiveState {
     data object Idle : ViewerLiveState
     data object Joining : ViewerLiveState
-    data class Ready(val title: String, val providerRoom: String, val url: String) : ViewerLiveState
+    data class Ready(
+        val title: String,
+        val providerRoom: String,
+        val url: String,
+        val publisherId: String,
+    ) : ViewerLiveState
     data class Error(val message: String) : ViewerLiveState
 }
 
-@Composable
-private fun MetricInline(label: String, value: String, valueColor: Color) {
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, style = Gomob.type.caption, color = Gomob.colors.fg3)
-        Text(value, style = Gomob.type.numInline, color = valueColor)
+private fun emulatorFriendlyConnectOptions(): ConnectOptions {
+    val rtc = PeerConnection.RTCConfiguration(emptyList()).apply {
+        tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.ENABLED
+        iceTransportsType = PeerConnection.IceTransportsType.ALL
+        continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
     }
+    return ConnectOptions(rtcConfig = rtc)
 }
 
-// 4 阶信号条的几何细节 — 仅本地复用一次, 不上升为设计 token
-private val SIGNAL_BAR_W = 3.dp
-private val SIGNAL_BAR_H_BASE = 4.dp
-private val SIGNAL_BAR_H_STEP = 3.dp
-private val SIGNAL_BAR_GAP = 2.dp
+// ============================================================================
+// 小件
+// ============================================================================
+private fun textShadow() = Shadow(
+    color = Color.Black.copy(alpha = 0.55f),
+    blurRadius = 4f,
+)
 
-@Composable
-private fun SignalBars(level: Int) {
-    Row(
-        verticalAlignment = Alignment.Bottom,
-        horizontalArrangement = Arrangement.spacedBy(SIGNAL_BAR_GAP),
-    ) {
-        for (i in 0 until 4) {
-            val active = i < level
-            Box(
-                Modifier
-                    .width(SIGNAL_BAR_W)
-                    .height(SIGNAL_BAR_H_BASE + SIGNAL_BAR_H_STEP * i)
-                    .background(if (active) Gomob.colors.ok else Gomob.colors.bg3),
-            )
-        }
-        Spacer(Modifier.width(Gomob.spacing.s4))
-        Text(
-            text = listOf("差", "弱", "中", "良", "强")[level.coerceIn(0, 4)],
-            style = Gomob.type.caption,
-            color = Gomob.colors.fg2,
-        )
-    }
-}
-
-private enum class ActionTone { Accent, Neutral, Danger }
-
-@Composable
-private fun ActionButton(
-    icon: ImageVector,
-    label: String,
-    tone: ActionTone,
-) {
-    val (iconColor, fillColor) = when (tone) {
-        ActionTone.Accent -> Gomob.colors.accent to Gomob.colors.accentSoft
-        ActionTone.Danger -> Gomob.colors.danger to Gomob.colors.dangerSoft
-        ActionTone.Neutral -> Gomob.colors.fg1 to Gomob.colors.bg2
-    }
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
-        modifier = Modifier.clickable {},
-    ) {
-        Box(
-            Modifier
-                .size(Gomob.spacing.avatar48)
-                .clip(CircleShape)
-                .background(fillColor),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = iconColor,
-                modifier = Modifier.size(Gomob.spacing.icon20),
-            )
-        }
-        Text(label, style = Gomob.type.caption, color = Gomob.colors.fg2)
-    }
-}
-
-// ---- mock 数据 ----
+// ============================================================================
+// 装饰 mock 数据（待 ws 推真实 publisher metadata 时替换）
+// ============================================================================
 internal data class StreamDetail(
     val id: String,
     val inspector: String,
     val employeeId: String,
     val station: String,
-    val duration: String,
-    val watchers: Int,
-    val signalLevel: Int,        // 0..4
     val taskId: String,
-    val vehicleModel: String,
-    val currentPart: String,
-    val aiScore: Float,
-    val anomalyCount: Int,
-    val latestNote: String,
-    val noteFrom: String,
-    val noteTime: String,
+    val watchers: Int,
 )
 
 private val STREAM_DETAILS = mapOf(
     "L1" to StreamDetail(
         id = "L1",
-        inspector = "刘沿", employeeId = "ZAA0120230102", station = "杭州市西湖区车管所检测站",
-        duration = "12:34", watchers = 8, signalLevel = 4,
-        taskId = "LSVHM133022221761", vehicleModel = "上汽大众 · 小型轿车",
-        currentPart = "VIN 区域", aiScore = 0.92f, anomalyCount = 0,
-        latestNote = "VIN 字符清晰,可继续扫铭牌。", noteFrom = "沈海明", noteTime = "1 分钟前",
+        inspector = "刘沿", employeeId = "ZAA0120230102",
+        station = "杭州市西湖区车管所检测站",
+        taskId = "LSVHM133022221761", watchers = 8,
     ),
     "L2" to StreamDetail(
         id = "L2",
-        inspector = "陈工", employeeId = "ZAA0120230087", station = "杭州市余杭区检测站",
-        duration = "08:21", watchers = 4, signalLevel = 3,
-        taskId = "WJN1133022221761", vehicleModel = "日产系列 · 中型轿车",
-        currentPart = "外观尺寸", aiScore = 0.54f, anomalyCount = 1,
-        latestNote = "前保险杠右下方加装件需复核登记。", noteFrom = "沈海明", noteTime = "30 秒前",
+        inspector = "陈工", employeeId = "ZAA0120230087",
+        station = "杭州市余杭区检测站",
+        taskId = "WJN1133022221761", watchers = 4,
     ),
     "L3" to StreamDetail(
         id = "L3",
-        inspector = "周文俊", employeeId = "ZAA0120230054", station = "杭州市拱墅区检测站",
-        duration = "23:07", watchers = 12, signalLevel = 4,
-        taskId = "THGCM6263312345", vehicleModel = "丰田系列 · SUV",
-        currentPart = "OBD 接口", aiScore = 0.88f, anomalyCount = 0,
-        latestNote = "OBD 数据读取正常,无 DTC。", noteFrom = "刘沿", noteTime = "刚刚",
+        inspector = "周文俊", employeeId = "ZAA0120230054",
+        station = "杭州市拱墅区检测站",
+        taskId = "THGCM6263312345", watchers = 12,
     ),
     "L4" to StreamDetail(
         id = "L4",
-        inspector = "吴敏", employeeId = "ZAA0120230033", station = "杭州市滨江区检测站",
-        duration = "01:42", watchers = 2, signalLevel = 2,
-        taskId = "LSVHM411821234", vehicleModel = "大众系列 · 紧凑轿车",
-        currentPart = "车架号铭牌", aiScore = 0.78f, anomalyCount = 0,
-        latestNote = "信号略弱,正在切换 5G 通道。", noteFrom = "系统", noteTime = "刚刚",
+        inspector = "吴敏", employeeId = "ZAA0120230033",
+        station = "杭州市滨江区检测站",
+        taskId = "LSVHM411821234", watchers = 2,
     ),
 )

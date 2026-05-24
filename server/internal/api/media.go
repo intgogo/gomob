@@ -22,17 +22,31 @@ import (
 const liveKitTokenTTL = 10 * time.Minute
 
 type liveKitConfig struct {
-	URL       string
-	APIKey    string
-	APISecret string
+	// URL 是发给 client 的 ws URL（用于 SDK Room.connect）。
+	URL string
+	// InternalURL 是 server 自己调 RoomService Twirp API 用的。
+	// emulator 场景下 client 走 ws://10.0.2.2:7880 / 127.0.0.1，
+	// server 在 host 上需要用 127.0.0.1 — 两边可能不同。
+	// 未配置时 fallback 到 URL。
+	InternalURL string
+	APIKey      string
+	APISecret   string
 }
 
 func currentLiveKitConfig() liveKitConfig {
 	return liveKitConfig{
-		URL:       os.Getenv("GOMOB_LIVEKIT_URL"),
-		APIKey:    os.Getenv("GOMOB_LIVEKIT_API_KEY"),
-		APISecret: os.Getenv("GOMOB_LIVEKIT_API_SECRET"),
+		URL:         os.Getenv("GOMOB_LIVEKIT_URL"),
+		InternalURL: os.Getenv("GOMOB_LIVEKIT_INTERNAL_URL"),
+		APIKey:      os.Getenv("GOMOB_LIVEKIT_API_KEY"),
+		APISecret:   os.Getenv("GOMOB_LIVEKIT_API_SECRET"),
 	}
+}
+
+func (c liveKitConfig) apiURL() string {
+	if c.InternalURL != "" {
+		return c.InternalURL
+	}
+	return c.URL
 }
 
 func (c liveKitConfig) configured() bool {
@@ -740,7 +754,7 @@ func callLiveKitRoomService(ctx context.Context, cfg liveKitConfig, method strin
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		liveKitHTTPBase(cfg.URL)+"/twirp/livekit.RoomService/"+method,
+		liveKitHTTPBase(cfg.apiURL())+"/twirp/livekit.RoomService/"+method,
 		bytes.NewReader(raw),
 	)
 	if err != nil {

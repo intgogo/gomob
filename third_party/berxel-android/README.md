@@ -40,10 +40,11 @@ libopencv_java3.so        OpenCV 3 运行时（SDK 内部使用）
    - `implementation(files("$rootDir/third_party/berxel-android/libs/BerxelSDK.jar"))`
    - `sourceSets["main"].jniLibs.srcDir(...)` 把上面 jniLibs/ 接进 APK
 5. App `usb_device_filter.xml` 把 0x0000/0x0000 占位换成 Berxel 真实 VID/PID
-6. **必跑**：`bash patches/berxel-android/patch.sh` —— 应用 Android 12+/14+ PendingIntent 二进制兼容补丁
+6. **必跑**：`bash patches/berxel-android/patch.sh` —— 应用 Android 12+/14+ / HyperOS 二进制兼容补丁
    （SDK 9.9.190 内部 `BerxelHawkUsbManager.requestDevicePermission` 用 `PendingIntent.getBroadcast(...,0)`
    flag=0 + implicit Intent，在 Android 12+/14+ 必崩；patch 用 ASM 改成 `IMMUTABLE | UPDATE_CURRENT`。
-   详见 `patches/berxel-android/BerxelJarPatch.java` 顶部 + memory `finding_berxel_sdk_internals_2026-05-07.md`）
+   同时规避 `getUsbDeviceList()` 对外接 USB-C dock 节点提前读 serial 导致的 `SecurityException`。
+   详见 `patches/berxel-android/BerxelJarPatch.java` 顶部 + memory `finding_p100r3_android_depth_stream_2026-05-14.md`）
 
 ## 重要：实际 SDK 形态 ≠ 早期假设
 

@@ -57,6 +57,8 @@ class TokenStore @Inject constructor(
         context.tokenDataStore.edit {
             it.remove(keyAccess)
             it.remove(keyRefresh)
+            // 主动 logout 时也清提示，避免下次启动残留 expireSession 写下的 notice 干扰 LoginScreen。
+            it.remove(keySessionNotice)
         }
     }
 

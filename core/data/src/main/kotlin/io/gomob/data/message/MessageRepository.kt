@@ -9,6 +9,7 @@ import io.gomob.database.message.MessageEntity
 import io.gomob.model.message.ConversationSummary
 import io.gomob.model.message.HelpExpert
 import io.gomob.model.message.HelpExpertCase
+import io.gomob.model.message.StationContact
 import io.gomob.model.message.InspectionShareCard
 import io.gomob.model.message.MessageRecord
 import io.gomob.model.message.MessageQuote
@@ -22,6 +23,7 @@ import io.gomob.network.dto.CreateMessageRequest
 import io.gomob.network.dto.HelpExpertCaseDto
 import io.gomob.network.dto.HelpExpertDto
 import io.gomob.network.dto.MessageDto
+import io.gomob.network.dto.OpenAdHocGroupRequest
 import io.gomob.network.dto.OpenDirectConversationRequest
 import io.gomob.network.dto.TranscribeDraftVoiceRequest
 import io.gomob.realtime.RealtimeConnectionState
@@ -32,6 +34,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
@@ -59,87 +63,32 @@ private const val DEFAULT_SEARCH_MESSAGE_LIMIT = 200
 private const val MESSAGE_REPOSITORY_TAG = "MessageRepository"
 private const val STALE_CONVERSATION_MESSAGE = "会话已失效，请返回消息中心重新打开"
 
-private val localMultiLineRoomSeeds = listOf(
-    LocalMultiLineRoomSeed(
-        id = 9_990_101L,
-        title = "查验复核群",
-        subjectKind = "查验复核",
-        subjectId = 101L,
-        unreadCount = 2,
-        messages = listOf(
-            LocalMultiLineMessageSeed(1, 2_101L, "第 3 工位外廓尺寸复核照片已补齐，右后侧角度可以进复核。", "2026-05-08T12:18:00Z"),
-            LocalMultiLineMessageSeed(2, 2_104L, "我把 VIN 拓印和行驶证照片放到群里，等会儿一起核对。", "2026-05-08T12:20:00Z"),
-            LocalMultiLineMessageSeed(3, 2_109L, "底盘号遮挡位置已标注，报告备注按这个口径走。", "2026-05-08T12:23:00Z"),
-            LocalMultiLineMessageSeed(4, 2_101L, "外廓尺寸复核结论已同步，请值班员确认。", "2026-05-08T12:25:00Z"),
-        ),
-    ),
-    LocalMultiLineRoomSeed(
-        id = 9_990_102L,
-        title = "杭州西湖检测站",
-        subjectKind = "站内协同",
-        subjectId = 102L,
-        unreadCount = 1,
-        messages = listOf(
-            LocalMultiLineMessageSeed(1, 2_201L, "下午高峰先保留 2 条查验线，复检车辆统一排到 B 区。", "2026-05-08T12:05:00Z"),
-            LocalMultiLineMessageSeed(2, 2_207L, "新来的危化品车需要两人交叉确认，证照我已经上传。", "2026-05-08T12:11:00Z"),
-            LocalMultiLineMessageSeed(3, 2_203L, "收到，调度屏已经更新，下一辆进 1 号通道。", "2026-05-08T12:16:00Z"),
-        ),
-    ),
-    LocalMultiLineRoomSeed(
-        id = 9_990_103L,
-        title = "监管抽查协作群",
-        subjectKind = "监管抽查",
-        subjectId = 103L,
-        unreadCount = 0,
-        messages = listOf(
-            LocalMultiLineMessageSeed(1, 2_301L, "抽查样本先按新能源轻客、重型货车各 3 台抽取。", "2026-05-08T11:42:00Z"),
-            LocalMultiLineMessageSeed(2, 2_303L, "监管端已经看到同步记录，异常项只保留有照片佐证的条目。", "2026-05-08T11:50:00Z"),
-            LocalMultiLineMessageSeed(3, 2_302L, "第 7 条的检测员签名缺一笔，我联系现场补签。", "2026-05-08T11:57:00Z"),
-        ),
-    ),
-    LocalMultiLineRoomSeed(
-        id = 9_990_104L,
-        title = "3D 重建会审群",
-        subjectKind = "三维会审",
-        subjectId = 104L,
-        unreadCount = 3,
-        messages = listOf(
-            LocalMultiLineMessageSeed(1, 2_401L, "这台车左前翼子板点云有一段反光缺洞，我重新采了一圈。", "2026-05-08T10:58:00Z"),
-            LocalMultiLineMessageSeed(2, 2_405L, "第二组 RGBD 帧已经上传，外参残差比上午那版稳定。", "2026-05-08T11:04:00Z"),
-            LocalMultiLineMessageSeed(3, 2_402L, "会审结论先写“需人工复核”，不要直接判异常。", "2026-05-08T11:09:00Z"),
-            LocalMultiLineMessageSeed(4, 2_405L, "我把重建截图和测量标尺都补到记录里了。", "2026-05-08T11:13:00Z"),
-        ),
-    ),
-    LocalMultiLineRoomSeed(
-        id = 9_990_105L,
-        title = "今日排队调度群",
-        subjectKind = "现场调度",
-        subjectId = 105L,
-        unreadCount = 0,
-        messages = listOf(
-            LocalMultiLineMessageSeed(1, 2_501L, "预约 14:00 后的车辆提醒车主提前准备三角警示牌。", "2026-05-08T10:20:00Z"),
-            LocalMultiLineMessageSeed(2, 2_503L, "A 区排队 12 辆，B 区复检 4 辆，预计 20 分钟消化。", "2026-05-08T10:27:00Z"),
-            LocalMultiLineMessageSeed(3, 2_502L, "临牌车辆请先走人工窗口，资料齐了再进线。", "2026-05-08T10:31:00Z"),
-        ),
-    ),
+/**
+ * 一次发送文本消息时携带的 @ 提及记录（落到 payload.mentions[]）。
+ * server 当前只是原样存 payload；后续要为"提到我的"做未读 / 通知聚合时会读这个字段。
+ */
+data class MentionPayload(
+    val userId: Long,
+    val name: String,
 )
 
-private val localMultiLineRoomIds = localMultiLineRoomSeeds.map { it.id }.toSet()
-
-private data class LocalMultiLineRoomSeed(
-    val id: Long,
+/**
+ * 全局来电邀请事件 — 通过 [MessageRepository.incomingCallInvites] 暴露给 UI 顶层弹浮窗。
+ * 消费方需要自己根据 currentUserId 过滤掉 `senderId == self` 的本端发起项。
+ */
+data class IncomingCallInvite(
+    val conversationId: Long,
+    val messageId: Long?,
+    val serverSeq: Long,
+    val senderId: Long?,
+    val clientMsgId: String?,
     val title: String,
-    val subjectKind: String,
-    val subjectId: Long,
-    val unreadCount: Long,
-    val messages: List<LocalMultiLineMessageSeed>,
-)
-
-private data class LocalMultiLineMessageSeed(
-    val index: Int,
-    val senderId: Long,
-    val text: String,
+    val roomId: String?,
+    val providerRoom: String?,
+    val livekitUrl: String?,
     val createdAt: String,
+    val conversationKind: String = "p2p",
+    val conversationTitle: String? = null,
 )
 
 private object NoopRealtimeMessageTransport : RealtimeMessageTransport {
@@ -180,7 +129,13 @@ class MessageRepository @Inject constructor(
     private val conversationSnapshots = ConcurrentHashMap<Long, ConversationSummary>()
     private val messageSnapshots = ConcurrentHashMap<Long, List<MessageRecord>>()
     private val hydratedConversationIds = ConcurrentHashMap.newKeySet<Long>()
-    private val exitedLocalMultiLineRoomIds = ConcurrentHashMap.newKeySet<Long>()
+
+    /**
+     * 来电邀请事件流：ws 收到 kind=call_invite 且 sender 不是自己时 emit 一条。
+     * AppRoot 订阅 → 弹全局浮窗，不论用户当前在哪个页面都能接到。
+     */
+    private val _incomingCallInvites = MutableSharedFlow<IncomingCallInvite>(extraBufferCapacity = 4)
+    val incomingCallInvites: SharedFlow<IncomingCallInvite> = _incomingCallInvites.asSharedFlow()
 
     fun startRealtimeSync() {
         if (realtimeStarted.compareAndSet(false, true)) {
@@ -364,11 +319,6 @@ class MessageRepository @Inject constructor(
     }
 
     suspend fun leaveConversation(conversationId: Long) {
-        if (conversationId in localMultiLineRoomIds) {
-            exitedLocalMultiLineRoomIds += conversationId
-            forgetConversationLocal(conversationId)
-            return
-        }
         try {
             api.leaveConversation(conversationId.toString())
         } catch (error: ApiException) {
@@ -385,6 +335,29 @@ class MessageRepository @Inject constructor(
         val resp = api.helpExperts()
         val data = resp.data ?: throw ApiException(50001, 500, "专家列表响应缺数据")
         return data.items.map { it.toDomain() }
+    }
+
+    /**
+     * 拉取站内通讯录（GET /v1/contacts）。
+     *
+     * 当前 server 默认只返回当前用户同 station 下的活跃用户；自己未绑 station 时退化为全站。
+     * 这里不缓存到 Room — 通讯录变更频次低、规模小，每次进入"联系人" tab 重新拉，避免缓存
+     * 滞后造成"已离职 / 已禁用"用户残留在 picker 里。
+     */
+    suspend fun stationContacts(query: String? = null, role: String? = null): List<StationContact> {
+        val resp = api.contacts(query = query?.takeIf { it.isNotBlank() }, role = role?.takeIf { it.isNotBlank() })
+        val data = resp.data ?: throw ApiException(50001, 500, "通讯录响应缺数据")
+        return data.items.map { dto ->
+            StationContact(
+                userId = dto.userId.toLong(),
+                name = dto.name,
+                employeeId = dto.employeeId,
+                username = dto.username,
+                role = dto.role,
+                stationId = dto.stationId.toLongOrNull(),
+                stationName = dto.stationName,
+            )
+        }
     }
 
     suspend fun helpExpertCases(expertUserId: Long): List<HelpExpertCase> {
@@ -423,6 +396,36 @@ class MessageRepository @Inject constructor(
         return entity.toDomain(lastMessage).also(::rememberConversation)
     }
 
+    /**
+     * 通讯录多选发起多人通话时拿/建临时群会话。
+     *
+     * server 端按 sorted(member_ids) 哈希作 subject_id，同一帮人多次发起仍是同一 conv
+     * （保证通话历史 + 文件 + 流水在一个上下文里连续）。返回的 conv 跟普通群聊一样落库
+     * 显示在消息列表，调用方拿到 id 后直接走既有 createCallInvite。
+     */
+    suspend fun openAdHocGroup(memberUserIds: List<Long>, title: String? = null): ConversationSummary {
+        require(memberUserIds.isNotEmpty()) { "成员列表不能为空" }
+        val resp = api.openAdHocGroup(
+            OpenAdHocGroupRequest(
+                memberUserIds = memberUserIds.map { it.toString() },
+                title = title?.takeIf { it.isNotBlank() },
+            ),
+        )
+        val dto = resp.data ?: throw ApiException(50001, 500, "多人会话响应缺数据")
+        val conversationId = dto.id.toLong()
+        val local = conversationDao.findById(conversationId)
+        val lastMessage = dto.lastMessage
+            ?.takeIf { it.serverSeq > (local?.clearedBeforeSeq ?: 0L) }
+            ?.toEntity(conversationId, json)
+            ?.let { mergeKnownLocalMediaFields(it) }
+        if (lastMessage != null) {
+            messageDao.upsertServerMessages(listOf(lastMessage))
+        }
+        val entity = dto.toEntity(local = local)
+        conversationDao.upsertConversation(entity)
+        return entity.toDomain(lastMessage).also(::rememberConversation)
+    }
+
     suspend fun openHelpRoom(): ConversationSummary {
         val resp = api.openHelpRoom()
         val dto = resp.data ?: throw ApiException(50001, 500, "在线求助会话响应缺数据")
@@ -440,17 +443,10 @@ class MessageRepository @Inject constructor(
         }
         val entity = dto.toEntity(local = local)
         conversationDao.upsertConversation(entity)
-        ensureLocalMultiLineRooms()
         return entity.toDomain(lastMessage).also(::rememberConversation)
     }
 
     suspend fun refreshMessages(conversationId: Long, limit: Int = 100, fullSync: Boolean = false) {
-        if (conversationId in localMultiLineRoomIds) {
-            ensureLocalMultiLineRooms()
-            warmConversationSnapshot(conversationId, limit)
-            markConversationHistoryHydrated(conversationId)
-            return
-        }
         val since = if (fullSync) 0L else messageDao.maxServerSeq(conversationId) ?: 0L
         val resp = try {
             api.messages(
@@ -486,7 +482,12 @@ class MessageRepository @Inject constructor(
         }
     }
 
-    suspend fun sendText(conversationId: Long, text: String, quote: MessageQuote? = null): String {
+    suspend fun sendText(
+        conversationId: Long,
+        text: String,
+        quote: MessageQuote? = null,
+        mentions: List<MentionPayload> = emptyList(),
+    ): String {
         val payload = buildJsonObject {
             put("text", text)
             quote?.let { quoted ->
@@ -499,6 +500,18 @@ class MessageRepository @Inject constructor(
                         put("text", quoted.text)
                     },
                 )
+            }
+            if (mentions.isNotEmpty()) {
+                putJsonArray("mentions") {
+                    mentions.forEach { ref ->
+                        add(
+                            buildJsonObject {
+                                put("user_id", ref.userId)
+                                put("name", ref.name)
+                            },
+                        )
+                    }
+                }
             }
         }
         return sendClientMessage(
@@ -812,6 +825,43 @@ class MessageRepository @Inject constructor(
         return clientMsgId
     }
 
+    /**
+     * 仅删除本地一条消息（Failed / Pending 场景，server 没有 row）。
+     * 已 Sent 到 server 的消息不应该走本地删除路径。
+     */
+    suspend fun deleteLocalMessage(localKey: String) {
+        if (localKey.isBlank()) return
+        val entity = messageDao.findByLocalKey(localKey) ?: return
+        val status = runCatching { MessageStatus.valueOf(entity.status) }.getOrNull()
+        if (status != MessageStatus.Failed && status != MessageStatus.Pending) return
+        messageDao.deleteByLocalKey(localKey)
+        messageSnapshots[entity.conversationId] = messageSnapshots[entity.conversationId]
+            .orEmpty()
+            .filterNot { it.localKey == localKey }
+    }
+
+    /**
+     * 给本地 image / video / voice 消息重签 download URL。
+     *
+     * 触发场景：UI 加载图片失败（pre-signed URL 5min 过期）。拿 asset_id 调
+     * server presign 接口拿新 URL，写回本地 message.payload，下次进入对话 UI 也能用。
+     * 返回新 URL（成功）或 null（失败）。
+     */
+    suspend fun refreshAssetDownloadUrl(localKey: String, assetId: String): String? {
+        if (assetId.isBlank() || localKey.isBlank()) return null
+        val newUrl = mediaAssetUploader.refreshDownloadUrl(assetId) ?: return null
+        val entity = messageDao.findByLocalKey(localKey) ?: return newUrl
+        val payload = runCatching { json.parseToJsonElement(entity.payloadJson).jsonObject }.getOrNull()
+            ?: return newUrl
+        val patched = buildJsonObject {
+            payload.forEach { (k, v) -> if (k != "download_url" && k != "downloadUrl") put(k, v) }
+            put("download_url", newUrl)
+        }
+        messageDao.upsertMessage(entity.copy(payloadJson = patched.toString()))
+        rememberMessage(entity.conversationId, entity.copy(payloadJson = patched.toString()).toDomain())
+        return newUrl
+    }
+
     private suspend fun updatePendingMessagePayload(
         conversationId: Long,
         clientMsgId: String,
@@ -839,11 +889,42 @@ class MessageRepository @Inject constructor(
             is RealtimeEvent.MessageDelivered -> applyRealtimeDelivered(event)
             is RealtimeEvent.MessageReceived -> applyRealtimeReceived(event)
             is RealtimeEvent.TranscriptUpdated -> applyMessageUpdated(event)
+            is RealtimeEvent.MessageRecalled -> applyRealtimeRecalled(event)
             is RealtimeEvent.Error -> logWarn(
                 "实时通道业务错误 code=${event.code} message=${event.message}",
             )
             is RealtimeEvent.Unknown -> logWarn("未知实时事件 type=${event.envelope.type}")
         }
+    }
+
+    /**
+     * 撤回一条已 Sent 的消息（服务端落 deleted_at）。
+     *
+     * 服务端会同时 ws 推 msg.recall 给所有在线成员（含自己其它端），所以这里不主动
+     * markRecalled — 全部由 [applyRealtimeRecalled] 统一落库，避免双写不一致。
+     * HTTP 响应只用来确认成功 / 返回 ApiException 让 UI 提示"超过撤回时限"等。
+     */
+    suspend fun recallMessage(conversationId: Long, messageId: Long) {
+        api.recallMessage(conversationId.toString(), messageId.toString())
+    }
+
+    private suspend fun applyRealtimeRecalled(event: RealtimeEvent.MessageRecalled) {
+        messageDao.markRecalledByServerId(event.messageId, event.deletedAt)
+        val updated = messageDao.findByServerId(event.messageId) ?: return
+        rememberMessage(event.conversationId, updated.toDomain())
+        // last_message 是已撤回消息时也要刷新 conversation 摘要预览
+        if ((messageDao.maxServerSeq(event.conversationId) ?: 0L) == event.serverSeq) {
+            conversationDao.recordLastMessage(
+                conversationId = event.conversationId,
+                localKey = "s:${event.messageId}",
+                serverSeq = event.serverSeq,
+                updatedAt = event.deletedAt,
+                incrementUnread = false,
+            )
+        }
+        logInfo(
+            "消息已撤回 conversation_id=${event.conversationId} server_seq=${event.serverSeq} recalled_by=${event.recalledBy}",
+        )
     }
 
     private suspend fun applyRealtimeDelivered(event: RealtimeEvent.MessageDelivered) {
@@ -901,6 +982,28 @@ class MessageRepository @Inject constructor(
         if (conversation == null) {
             runCatching { refreshConversations() }
         }
+        // 全局来电浮窗：只对新收到的 call_invite emit，避免历史 fetch / 自我 echo 误触发。
+        if (event.kind == "call_invite" && !messageAlreadyKnown) {
+            val payload = event.content?.let { runCatching { it.jsonObject }.getOrNull() }
+            val title = payload?.get("title")?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                ?: "视频通话"
+            _incomingCallInvites.tryEmit(
+                IncomingCallInvite(
+                    conversationId = event.conversationId,
+                    messageId = event.messageId,
+                    serverSeq = event.serverSeq,
+                    senderId = event.senderId,
+                    clientMsgId = event.clientMsgId,
+                    title = title,
+                    roomId = payload?.get("room_id")?.jsonPrimitive?.contentOrNull,
+                    providerRoom = payload?.get("provider_room")?.jsonPrimitive?.contentOrNull,
+                    livekitUrl = payload?.get("livekit_url")?.jsonPrimitive?.contentOrNull,
+                    createdAt = event.createdAt,
+                    conversationKind = conversation?.kind ?: "p2p",
+                    conversationTitle = conversation?.title,
+                ),
+            )
+        }
     }
 
     private suspend fun mergeKnownLocalMediaFields(entities: List<MessageEntity>): List<MessageEntity> =
@@ -943,44 +1046,6 @@ class MessageRepository @Inject constructor(
         logInfo(
             "消息实时更新已落库 conversation_id=${event.conversationId} server_seq=${event.serverSeq} message_id=${event.messageId}",
         )
-    }
-
-    private suspend fun ensureLocalMultiLineRooms() {
-        val conversationEntities = mutableListOf<ConversationEntity>()
-        val messageEntities = mutableListOf<MessageEntity>()
-        localMultiLineRoomSeeds.forEach { seed ->
-            if (seed.id in exitedLocalMultiLineRoomIds) return@forEach
-            val existing = conversationDao.findById(seed.id)
-            val messages = seed.messages.map { it.toEntity(seed.id) }
-            val lastMessage = messages.lastOrNull()
-            messageEntities += messages
-            conversationEntities += ConversationEntity(
-                id = seed.id,
-                kind = "group",
-                title = seed.title,
-                peerId = null,
-                peerName = null,
-                peerEmployeeId = null,
-                subjectKind = seed.subjectKind,
-                subjectId = seed.subjectId,
-                lastMessageLocalKey = lastMessage?.localKey,
-                lastReadSeq = existing?.lastReadSeq ?: 0L,
-                unreadCount = existing?.unreadCount ?: seed.unreadCount,
-                pinned = existing?.pinned ?: false,
-                clearedBeforeSeq = existing?.clearedBeforeSeq ?: 0L,
-                createdAt = messages.firstOrNull()?.createdAt ?: "2026-05-08T10:00:00Z",
-                updatedAt = lastMessage?.createdAt ?: "2026-05-08T10:00:00Z",
-            )
-            lastMessage?.let { rememberConversation(conversationEntities.last().toDomain(it)) }
-            messageSnapshots[seed.id] = messages.map { it.toDomain() }
-            markConversationHistoryHydrated(seed.id)
-        }
-        if (messageEntities.isNotEmpty()) {
-            messageDao.upsertServerMessages(messageEntities)
-        }
-        if (conversationEntities.isNotEmpty()) {
-            conversationDao.upsertConversations(conversationEntities)
-        }
     }
 
     private fun rememberConversation(summary: ConversationSummary) {
@@ -1035,9 +1100,6 @@ class MessageRepository @Inject constructor(
     }
 }
 
-private val ApiException.isPermissionDenied: Boolean
-    get() = code == 40103 || httpStatus == 403
-
 private val ApiException.isConversationGone: Boolean
     get() = isPermissionDenied || code == 40301 || httpStatus == 404
 
@@ -1084,21 +1146,6 @@ private fun pendingImagePayload(localUri: String): JsonElement = buildJsonObject
     put("media_state", "awaiting_asset_upload")
     put("local_uri", localUri)
 }
-
-private fun LocalMultiLineMessageSeed.toEntity(conversationId: Long): MessageEntity = MessageEntity(
-    localKey = "ml:$conversationId:$index",
-    serverId = null,
-    conversationId = conversationId,
-    serverSeq = null,
-    senderId = senderId,
-    kind = "text",
-    payloadJson = buildJsonObject { put("text", text) }.toString(),
-    preview = text,
-    clientMsgId = null,
-    status = MessageStatus.Sent.name,
-    createdAt = createdAt,
-    editedAt = null,
-)
 
 private fun retryableMessageKind(kind: String): Boolean =
     kind == "text" || kind == "image" || kind == "voice" || kind == "video_clip" || kind == "inspection_card"
@@ -1272,6 +1319,13 @@ private fun HelpExpertCaseDto.toDomain(): HelpExpertCase = HelpExpertCase(
 
 private fun MessageDto.toEntity(conversationId: Long, json: Json): MessageEntity {
     val serverId = id.toLong()
+    val recalled = !deletedAt.isNullOrBlank()
+    val effectivePreview = if (recalled) "[消息已撤回]" else preview?.takeIf { it.isNotBlank() }
+    val effectivePayloadJson = if (recalled) {
+        "{}"
+    } else {
+        payload?.let { json.encodeToString(JsonElement.serializer(), it) } ?: "{}"
+    }
     return MessageEntity(
         localKey = "s:$serverId",
         serverId = serverId,
@@ -1279,14 +1333,13 @@ private fun MessageDto.toEntity(conversationId: Long, json: Json): MessageEntity
         serverSeq = serverSeq,
         senderId = senderId?.toLongOrNull(),
         kind = kind,
-        payloadJson = payload?.let { jsonElement ->
-            json.encodeToString(JsonElement.serializer(), jsonElement)
-        } ?: "{}",
-        preview = preview?.takeIf { it.isNotBlank() },
+        payloadJson = effectivePayloadJson,
+        preview = effectivePreview,
         clientMsgId = clientMsgId,
         status = MessageStatus.Sent.name,
         createdAt = createdAt,
         editedAt = editedAt,
+        recalledAt = deletedAt,
     )
 }
 

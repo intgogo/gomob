@@ -257,6 +257,42 @@ func (r *Router) pushMessageToRecipients(recipients []int64, senderID int64, m *
 	return delivered
 }
 
+type msgRecallPayload struct {
+	MessageID      int64  `json:"message_id"`
+	ConversationID int64  `json:"conversation_id"`
+	ServerSeq      int64  `json:"server_seq"`
+	RecalledBy     int64  `json:"recalled_by"`
+	DeletedAt      string `json:"deleted_at"`
+}
+
+// NotifyMessageRecall 把撤回事件推给会话内所有成员（含 sender 的其它端，便于多端同步）。
+func (r *Router) NotifyMessageRecall(ctx context.Context, m *repo.Message, recalledBy int64) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	// 包含 sender 自己 — 这样他在其它设备上的同会话也能同步撤回。
+	memberIDs, err := r.convRepo.CounterpartIDs(ctx, m.ConversationID, 0)
+	if err != nil {
+		return 0, err
+	}
+	deletedAt := ""
+	if m.DeletedAt != nil {
+		deletedAt = m.DeletedAt.UTC().Format(time.RFC3339Nano)
+	}
+	payload := msgRecallPayload{
+		MessageID:      m.ID,
+		ConversationID: m.ConversationID,
+		ServerSeq:      m.ServerSeq,
+		RecalledBy:     recalledBy,
+		DeletedAt:      deletedAt,
+	}
+	delivered := 0
+	for _, recipient := range memberIDs {
+		delivered += r.hub.Push(recipient, Envelope{Type: "msg.recall", Payload: mustJSON(payload)})
+	}
+	return delivered, nil
+}
+
 func messageToRecvPayload(m *repo.Message, senderID int64) msgRecvPayload {
 	clientMsgID := ""
 	if m.ClientMsgID != nil {

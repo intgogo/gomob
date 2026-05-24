@@ -349,7 +349,6 @@ func (r *ConversationRepo) ListForUser(ctx context.Context, userID int64, limit 
 			LEFT JOIN conversation_member_states cms
 			  ON cms.conversation_id = c.id AND cms.user_id = $1
 			WHERE ($2 = 0 OR c.id < $2)
-			  AND COALESCE(c.subject_kind, '') <> 'online_help'
 			ORDER BY c.updated_at DESC, c.id DESC
 			LIMIT $3
 		)
@@ -363,7 +362,7 @@ func (r *ConversationRepo) ListForUser(ctx context.Context, userID int64, limit 
 		LEFT JOIN LATERAL (
 			SELECT id, sender_id, server_seq, kind, payload, client_msg_id, created_at, edited_at, deleted_at
 			FROM messages
-			WHERE conversation_id = mc.id AND deleted_at IS NULL
+			WHERE conversation_id = mc.id
 			ORDER BY server_seq DESC
 			LIMIT 1
 		) lm ON true
@@ -633,6 +632,9 @@ func (r *MessageRepo) AppendIdempotent(ctx context.Context, m *Message, clientMs
 }
 
 // ListSince 返回 conversation 中 server_seq > since 的消息（升序）；用于离线补齐。
+//
+// 包含已撤回的消息（deleted_at IS NOT NULL）— 离线期间撤回的消息也要让客户端感知。
+// payload 不在 SQL 层清空，让上层 DTO 决定是否返回（保持仓库层中立）。
 func (r *MessageRepo) ListSince(ctx context.Context, convID, since int64, limit int) ([]Message, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
@@ -641,7 +643,7 @@ func (r *MessageRepo) ListSince(ctx context.Context, convID, since int64, limit 
 		SELECT id, conversation_id, sender_id, server_seq, kind, payload, client_msg_id,
 		       created_at, edited_at, deleted_at
 		FROM messages
-		WHERE conversation_id=$1 AND server_seq > $2 AND deleted_at IS NULL
+		WHERE conversation_id=$1 AND server_seq > $2
 		ORDER BY server_seq ASC
 		LIMIT $3`
 	rows, err := r.pool.Query(ctx, q, convID, since, limit)
@@ -667,6 +669,7 @@ func (r *MessageRepo) ListSince(ctx context.Context, convID, since int64, limit 
 }
 
 // ListLatest 返回 conversation 最新 limit 条消息（升序）；用于首屏/预热缓存。
+// 同 ListSince，包含已撤回的消息让客户端能感知；UI 上由 deleted_at 决定渲染。
 func (r *MessageRepo) ListLatest(ctx context.Context, convID int64, limit int) ([]Message, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 30
@@ -678,7 +681,7 @@ func (r *MessageRepo) ListLatest(ctx context.Context, convID int64, limit int) (
 			SELECT id, conversation_id, sender_id, server_seq, kind, payload, client_msg_id,
 			       created_at, edited_at, deleted_at
 			FROM messages
-			WHERE conversation_id=$1 AND deleted_at IS NULL
+			WHERE conversation_id=$1
 			ORDER BY server_seq DESC
 			LIMIT $2
 		) latest
@@ -811,6 +814,68 @@ func (r *MessageRepo) UpdateCallInvitePayload(ctx context.Context, conversationI
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
+	return &m, nil
+}
+
+// SoftDelete 把消息标记为已撤回（设置 deleted_at=now()），仅 sender 自己可撤回，
+// 且要求在 maxAge 时间窗口内（典型 2 分钟）。返回更新后的消息（保持原 server_seq，
+// payload 不清空 — 由 DTO 层决定是否对外暴露）。
+//
+// 错误：
+//   - ErrNotFound: 消息不存在 / 已被删除 / 不在该会话；
+//   - ErrPermDenied: 调用者不是 sender；
+//   - ErrStateConflict: 已超过 maxAge 撤回窗口。
+func (r *MessageRepo) SoftDelete(ctx context.Context, conversationID, messageID, requesterID int64, maxAge time.Duration) (*Message, error) {
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	const sel = `
+		SELECT id, conversation_id, sender_id, server_seq, kind, payload, client_msg_id,
+		       created_at, edited_at, deleted_at
+		FROM messages
+		WHERE id=$1 AND conversation_id=$2
+		FOR UPDATE`
+	var m Message
+	var senderID sql.NullInt64
+	var clientMsgID sql.NullString
+	var editedAt, deletedAt sql.NullTime
+	if err := tx.QueryRow(ctx, sel, messageID, conversationID).Scan(
+		&m.ID, &m.ConversationID, &senderID, &m.ServerSeq, &m.Kind, &m.Payload, &clientMsgID,
+		&m.CreatedAt, &editedAt, &deletedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	m.SenderID = nullInt64Ptr(senderID)
+	m.ClientMsgID = nullStringPtr(clientMsgID)
+	m.EditedAt = nullTimePtr(editedAt)
+	m.DeletedAt = nullTimePtr(deletedAt)
+	if m.DeletedAt != nil {
+		return nil, ErrNotFound
+	}
+	if m.SenderID == nil || *m.SenderID != requesterID {
+		return nil, ErrPermDenied
+	}
+	if maxAge > 0 && time.Since(m.CreatedAt) > maxAge {
+		return nil, ErrStateConflict
+	}
+	const upd = `UPDATE messages SET deleted_at=now() WHERE id=$1 RETURNING deleted_at`
+	var newDeletedAt time.Time
+	if err := tx.QueryRow(ctx, upd, messageID).Scan(&newDeletedAt); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE conversations SET updated_at=now() WHERE id=$1`, conversationID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	m.DeletedAt = &newDeletedAt
 	return &m, nil
 }
 
