@@ -467,20 +467,20 @@ private fun KpiTile(
             .background(Gomob.colors.bg1)
     ) {
         Column(
-            Modifier.padding(horizontal = 14.dp, vertical = Gomob.spacing.s12),
+            Modifier.padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
         ) {
             Text(label, fontSize = 11.sp, color = Gomob.colors.fg2)
-            Spacer(Modifier.height(Gomob.spacing.s4))
+            Spacer(Modifier.height(Gomob.spacing.s2))
             Text(
                 value,
                 style = Gomob.type.numInline.copy(
-                    fontSize = 30.sp,
+                    fontSize = 22.sp,
                     letterSpacing = (-0.01).em,
-                    lineHeight = 32.sp,
+                    lineHeight = 24.sp,
                 ),
                 color = color,
             )
-            Spacer(Modifier.height(Gomob.spacing.s6))
+            Spacer(Modifier.height(Gomob.spacing.s4))
             Text(meta, fontSize = 10.sp, color = Gomob.colors.fg3)
         }
     }

@@ -333,7 +333,7 @@ private fun SideActions(
                 fontWeight = FontWeight.Bold,
             )
         }
-        SideActionButton(icon = Icons.Filled.Mic, label = "介入")
+        SideActionButton(icon = Icons.Filled.Mic, label = "语音")
         SideActionButton(icon = Icons.Filled.CameraAlt, label = "截图")
         SideActionButton(icon = Icons.Filled.Videocam, label = "通话", tone = SideTone.Accent)
     }

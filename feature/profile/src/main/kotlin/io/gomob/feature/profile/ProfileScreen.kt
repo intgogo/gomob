@@ -618,7 +618,7 @@ private fun DrawerContent(
         SettingItem(GomobIcons.Moon, "切换主题", value = themeLabel, onClick = onOpenTheme),
         SettingItem(GomobIcons.Cache, "清理缓存", value = cacheText, onClick = onClearCache),
         SettingItem(GomobIcons.Bell, "通知设置", onClick = onOpenNotification),
-        SettingItem(GomobIcons.Info, "关于 mob3d", value = "v0.1.0", onClick = onOpenAbout),
+        SettingItem(GomobIcons.Info, "关于方寸观车", value = "v0.1.0", onClick = onOpenAbout),
     )
     Column(
         Modifier

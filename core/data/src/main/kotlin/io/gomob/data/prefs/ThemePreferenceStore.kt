@@ -15,7 +15,7 @@ import javax.inject.Singleton
  *
  * 与 Token / 网络配置分开存储,避免登出时被清掉。
  *
- * 默认值：外观模式 [Dark]、色彩主题 key "mint" — dark-first，首次安装直接给暖石墨 + 薄荷青绿。
+ * 默认值：外观模式 [Light]、色彩主题 key "mint" — light-first，首次安装走浅色 + 薄荷青绿。
  *
  * Note: 这里色彩主题用 String key 持久化（不直接依赖 designsystem 的 enum），
  *   feature/AppearanceViewModel 负责 String ↔ ColorScheme 映射。
@@ -27,7 +27,10 @@ enum class ThemeMode(val key: String) {
     ;
 
     companion object {
-        fun fromKey(key: String?): ThemeMode = entries.firstOrNull { it.key == key } ?: Dark
+        /** 首装 / 键缺失时的默认外观 — light-first */
+        val Default: ThemeMode = Light
+
+        fun fromKey(key: String?): ThemeMode = entries.firstOrNull { it.key == key } ?: Default
     }
 }
 

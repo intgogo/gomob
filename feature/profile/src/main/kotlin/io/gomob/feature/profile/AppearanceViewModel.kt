@@ -27,7 +27,7 @@ class AppearanceViewModel @Inject constructor(
     val mode: StateFlow<ThemeMode> = store.modeFlow.stateIn(
         scope = viewModelScope,
         started = SharingStarted.Eagerly,
-        initialValue = ThemeMode.Dark,
+        initialValue = ThemeMode.Default,
     )
 
     /** 色彩主题 — String → enum 在 VM 层做映射，DataStore 只持久化 key 字符串 */
@@ -47,10 +47,10 @@ class AppearanceViewModel @Inject constructor(
         viewModelScope.launch { store.setColorSchemeKey(value.key) }
     }
 
-    /** 恢复默认 — 跟随系统 + 薄荷青绿（与首装一致） */
+    /** 恢复默认 — 与首装一致（外观默认见 [ThemeMode.Default]） */
     fun resetToDefault() {
         viewModelScope.launch {
-            store.setMode(ThemeMode.System)
+            store.setMode(ThemeMode.Default)
             store.setColorSchemeKey(ColorScheme.Mint.key)
         }
     }

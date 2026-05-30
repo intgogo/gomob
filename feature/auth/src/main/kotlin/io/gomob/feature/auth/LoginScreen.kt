@@ -52,7 +52,7 @@ const val LOGIN_ROUTE = "auth/login"
  * 01 登录屏 — 严格对齐 jsx login.jsx 排版。
  *
  * 视觉骨架（自上而下）：
- *   1. 顶部 Brand 行（padding 14/20/0）：左 Logo 28dp + "mob3d / v0.1.0" 横排 / 右 DEV tag
+ *   1. 顶部 Brand 行（padding 14/20/0）：左 Logo 28dp + "方寸观车 / v0.1.0" 横排 / 右 DEV tag
  *   2. 欢迎区（padding 60/24/0）："你好" / "登录工作台" 28sp / 副标题
  *   3. 输入区（padding 36/24/0 gap 14）：Field × 2 + 记住账号 / 去注册同行
  *   4. 主按钮（padding 24/24/0）：48dp 高 + accentSoft + "登 录" 字距 0.3em + ArrowRight
@@ -188,7 +188,7 @@ private fun BrandRow(onDevBypass: () -> Unit) {
             }
             Column {
                 Text(
-                    "mob3d",
+                    "方寸观车",
                     fontSize = 14.sp,
                     fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
                     letterSpacing = 0.04.em,

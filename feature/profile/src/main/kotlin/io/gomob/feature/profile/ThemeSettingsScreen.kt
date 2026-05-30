@@ -123,8 +123,8 @@ fun ThemeSettingsRoute(
                 LivePreviewCard(scheme = scheme, dark = effectiveDark)
             }
 
-            // 非默认配置时给「恢复默认」出口（默认 = 跟随系统 + 薄荷青绿）
-            if (mode != ThemeMode.System || scheme != ColorScheme.Mint) {
+            // 非默认配置时给「恢复默认」出口（默认见 ThemeMode.Default + ColorScheme.Mint）
+            if (mode != ThemeMode.Default || scheme != ColorScheme.Mint) {
                 Spacer(Modifier.height(Gomob.spacing.s24))
                 ResetDefaultButton(onClick = vm::resetToDefault)
             }
