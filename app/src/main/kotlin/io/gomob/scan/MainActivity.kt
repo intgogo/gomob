@@ -1,6 +1,8 @@
 package io.gomob.scan
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
@@ -47,6 +49,7 @@ class MainActivity : ComponentActivity() {
     private var launchBackdropMayHide by mutableStateOf(true)
     private var appContentReady by mutableStateOf(false)
     private var holdLaunchBackdropForInspection by mutableStateOf(false)
+    private var debugRouteRequest by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         setTheme(R.style.Theme_Gomob)
@@ -123,6 +126,8 @@ class MainActivity : ComponentActivity() {
                                             launchBackdropVisible = true
                                         }
                                     },
+                                    debugRouteRequest = debugRouteRequest,
+                                    onDebugRouteConsumed = { debugRouteRequest = null },
                                 )
                             }
                         }
@@ -176,6 +181,15 @@ class MainActivity : ComponentActivity() {
             ACTION_DEBUG_BERXEL_START -> {
                 val stream = intent.getStringExtra(EXTRA_DEBUG_STREAM)?.lowercase()
                 val profileName = intent.getStringExtra(EXTRA_DEBUG_PROFILE)?.lowercase()
+                if (!ensureCameraPermissionForDebugBerxel()) return
+                if (intent.hasExtra(EXTRA_DEBUG_MASTER_RGB)) {
+                    berxelService.setNativeMasterStreamForDebug(
+                        intent.getBooleanExtra(EXTRA_DEBUG_MASTER_RGB, false),
+                    )
+                }
+                intent.getStringExtra(EXTRA_DEBUG_ROUTE)
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { debugRouteRequest = it }
                 profileName?.let(BerxelStreamProfiles::fromName)?.let(berxelService::setStreamProfile)
                 Log.i(DEBUG_BERXEL_TAG, "debug 启动 Berxel stream=${stream ?: "dual"} profile=${profileName ?: "default"}")
                 when (stream) {
@@ -189,6 +203,14 @@ class MainActivity : ComponentActivity() {
                 berxelService.stop()
             }
         }
+    }
+
+    private fun ensureCameraPermissionForDebugBerxel(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
+        if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) return true
+        Log.i(DEBUG_BERXEL_TAG, "debug Berxel 需要 CAMERA 权限，拉起系统授权弹窗")
+        requestPermissions(arrayOf(Manifest.permission.CAMERA), REQUEST_DEBUG_CAMERA_PERMISSION)
+        return false
     }
 
     private fun consumeUsbAttachIntent(intent: Intent?) {
@@ -208,5 +230,8 @@ class MainActivity : ComponentActivity() {
         private const val ACTION_DEBUG_BERXEL_STOP = "io.gomob.scan.debug.DEBUG_BERXEL_STOP"
         private const val EXTRA_DEBUG_STREAM = "stream"
         private const val EXTRA_DEBUG_PROFILE = "profile"
+        private const val EXTRA_DEBUG_MASTER_RGB = "master_rgb"
+        private const val EXTRA_DEBUG_ROUTE = "route"
+        private const val REQUEST_DEBUG_CAMERA_PERMISSION = 0xB3
     }
 }

@@ -78,11 +78,14 @@ fun DepthCameraRoute(
     onOpenInfo: () -> Unit = {},
     onOpenControls: () -> Unit = {},
     onOpenCalibration: () -> Unit = {},
+    onOpenSonixDebug: () -> Unit = {},
     vm: DepthCameraViewModel = hiltViewModel(),
 ) {
     val ui by vm.uiState.collectAsStateWithLifecycle()
     val colorBmp by vm.colorPreview.collectAsStateWithLifecycle()
     val depthBmp by vm.depthPreview.collectAsStateWithLifecycle()
+    val strictFrameSize by vm.strictFrameSize.collectAsStateWithLifecycle()
+    val irRenderMode by vm.irRenderMode.collectAsStateWithLifecycle()
 
     // Camera 运行时权限 —— HyperOS / 部分 OEM 把 USB UVC 设备访问跟 CAMERA 权限挂钩，
     // 没拿到 CAMERA 时静默 deny USB_PERMISSION 广播。这里在进入页面时主动申请。
@@ -120,8 +123,31 @@ fun DepthCameraRoute(
                     onChange = { vm.setStreamProfile(it) },
                 )
             }
-            item { LargePreview(label = "COLOR", bitmap = colorBmp) }
-            item { LargePreview(label = "DEPTH", bitmap = depthBmp) }
+            item { LargePreview(label = "COLOR", bitmap = colorBmp, placeholder = "等待彩色帧") }
+            item {
+                LargePreview(
+                    label = buildString {
+                        append(if (irRenderMode) "DEPTH · IR-GREY" else "DEPTH · TURBO")
+                        append(" · ")
+                        append(if (strictFrameSize) "STRICT 401" else "RAW")
+                    },
+                    bitmap = depthBmp,
+                    placeholder = when (ui.device) {
+                        BerxelDeviceState.NoDevice -> "未检测到相机"
+                        BerxelDeviceState.Initializing -> "正在枚举 USB"
+                        BerxelDeviceState.Opening -> "正在打开深度流"
+                        BerxelDeviceState.WaitingPermission -> "等待 USB 权限"
+                        is BerxelDeviceState.Error -> "深度流异常"
+                        else -> "等待深度帧"
+                    },
+                    actionLabel = if (strictFrameSize) "切 RAW" else "切 STRICT",
+                    onAction = { vm.toggleStrictFrameSize() },
+                    action2Label = if (irRenderMode) "切 TURBO" else "切 IR",
+                    onAction2 = { vm.toggleIrRenderMode() },
+                    action3Label = "DUMP",
+                    onAction3 = { vm.triggerFrameDump() },
+                )
+            }
             item { LiveStatusStrip(ui = ui) }
             item { Spacer(Modifier.height(Gomob.spacing.s4)) }
             item {
@@ -132,6 +158,12 @@ fun DepthCameraRoute(
                     NavRow(title = "成像控制", subtitle = "Color / Depth 曝光 · 去噪 · 配准", onClick = onOpenControls)
                     SettingRowDivider()
                     NavRow(title = "Color ↔ Depth 标定", subtitle = "外参微调 / Charuco 标定向导", onClick = onOpenCalibration)
+                    SettingRowDivider()
+                    NavRow(
+                        title = "Sonix ASIC 调试",
+                        subtitle = "M1.6.5/6 · 直发 XU vendor cmd 读寄存器",
+                        onClick = onOpenSonixDebug,
+                    )
                 }
             }
         }
@@ -144,6 +176,10 @@ private fun StreamProfileSelector(
     current: BerxelStreamProfile,
     onChange: (BerxelStreamProfile) -> Unit,
 ) {
+    if (current.id.startsWith("native_rewrite")) {
+        NativeProfileCard(current = current)
+        return
+    }
     val families = listOf(
         StreamProfileFamily("QVGA", BerxelStreamProfiles.QVGA),
         StreamProfileFamily("MIX", BerxelStreamProfiles.STANDARD),
@@ -244,6 +280,38 @@ private fun StreamProfileSelector(
     }
 }
 
+@Composable
+private fun NativeProfileCard(current: BerxelStreamProfile) {
+    Box(Modifier.padding(horizontal = Gomob.spacing.s16)) {
+        HairlineCard(padding = 0.dp) {
+            Column(
+                Modifier.fillMaxWidth().padding(Gomob.spacing.s12),
+                verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+            ) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "NATIVE",
+                        fontSize = 14.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = Gomob.colors.accent,
+                    )
+                    Text(
+                        "${current.primaryFps() ?: 0}fps",
+                        fontSize = 13.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = Gomob.colors.fg2,
+                    )
+                }
+                Text(current.summaryLine(), fontSize = 10.sp, color = Gomob.colors.fg3)
+            }
+        }
+    }
+}
+
 private data class StreamProfileFamily(
     val title: String,
     val profiles: List<BerxelStreamProfile>,
@@ -267,7 +335,17 @@ private fun BerxelStreamTarget.formatTarget(): String = "${width}×${height}@${f
 
 // ─── 大画面单流预览（占满宽度） ──────────────────────────────────────────────
 @Composable
-private fun LargePreview(label: String, bitmap: Bitmap?) {
+private fun LargePreview(
+    label: String,
+    bitmap: Bitmap?,
+    placeholder: String = "等待首帧",
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+    action2Label: String? = null,
+    onAction2: (() -> Unit)? = null,
+    action3Label: String? = null,
+    onAction3: (() -> Unit)? = null,
+) {
     Box(
         Modifier
             .fillMaxWidth()
@@ -284,9 +362,18 @@ private fun LargePreview(label: String, bitmap: Bitmap?) {
                 filterQuality = FilterQuality.Low,
                 modifier = Modifier.fillMaxSize(),
             )
+        } else {
+            Text(
+                placeholder,
+                fontSize = 12.sp,
+                fontFamily = FontFamily.Monospace,
+                color = Gomob.colors.fg3,
+                modifier = Modifier.align(Alignment.Center),
+            )
         }
         Box(
             Modifier
+                .align(Alignment.TopStart)
                 .padding(Gomob.spacing.s8)
                 .clip(Gomob.shapes.r1)
                 .background(Color.Black.copy(alpha = 0.55f))
@@ -299,6 +386,46 @@ private fun LargePreview(label: String, bitmap: Bitmap?) {
                 color = Color.White,
             )
         }
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(Gomob.spacing.s8),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            if (action2Label != null && onAction2 != null) {
+                Box(
+                    Modifier
+                        .clip(Gomob.shapes.r1)
+                        .background(Color.Black.copy(alpha = 0.65f))
+                        .clickable { onAction2() }
+                        .padding(horizontal = Gomob.spacing.s12, vertical = 4.dp),
+                ) {
+                    Text(action2Label, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = Color.White)
+                }
+            }
+            if (actionLabel != null && onAction != null) {
+                Box(
+                    Modifier
+                        .clip(Gomob.shapes.r1)
+                        .background(Color.Black.copy(alpha = 0.65f))
+                        .clickable { onAction() }
+                        .padding(horizontal = Gomob.spacing.s12, vertical = 4.dp),
+                ) {
+                    Text(actionLabel, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = Color.White)
+                }
+            }
+            if (action3Label != null && onAction3 != null) {
+                Box(
+                    Modifier
+                        .clip(Gomob.shapes.r1)
+                        .background(Color(0xFF8B0000).copy(alpha = 0.85f))
+                        .clickable { onAction3() }
+                        .padding(horizontal = Gomob.spacing.s12, vertical = 4.dp),
+                ) {
+                    Text(action3Label, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = Color.White)
+                }
+            }
+        }
     }
 }
 
@@ -306,17 +433,29 @@ private fun LargePreview(label: String, bitmap: Bitmap?) {
 @Composable
 private fun LiveStatusStrip(ui: DepthCameraUiState) {
     val streaming = ui.device is BerxelDeviceState.Streaming
-    val errorReason = (ui.device as? BerxelDeviceState.Error)?.reason
     val color = ui.color
     val depth = ui.depth
-    val fpsText = (depth?.measuredFps ?: color?.measuredFps)?.let { "$it fps" } ?: "—"
+    val measuredFps = depth?.measuredFps ?: color?.measuredFps
+    val fpsText = measuredFps?.let { if (it > 0) "$it fps" else "测量中" } ?: "—"
     val frameText = (depth?.frameIndex ?: color?.frameIndex)?.let { "frame#$it" } ?: "等待首帧"
-    val syncText = if (color != null && depth != null && color.timestampUs == depth.timestampUs) {
-        "RGBD 同步 ✓"
-    } else {
-        "未配对"
+    val statusText = when (val device = ui.device) {
+        BerxelDeviceState.Idle -> "未启动"
+        BerxelDeviceState.Initializing -> "正在枚举 USB"
+        BerxelDeviceState.NoDevice -> "未检测到相机"
+        BerxelDeviceState.WaitingPermission -> "等待 USB 权限"
+        BerxelDeviceState.Opening -> "正在打开深度流"
+        is BerxelDeviceState.Error -> device.reason
+        is BerxelDeviceState.Streaming -> when {
+            depth != null && ui.streamProfile.color == null -> "深度单流 · ${depth.width}×${depth.height}"
+            color != null && depth != null && color.timestampUs == depth.timestampUs -> "RGBD 同步 ✓"
+            color != null && depth != null -> "RGBD 未同步"
+            color != null -> "彩色单流 · ${color.width}×${color.height}"
+            depth != null -> "深度单流 · ${depth.width}×${depth.height}"
+            else -> "等待首帧"
+        }
     }
     val tone = if (streaming) Gomob.colors.accent else Gomob.colors.fg3
+    val statusColor = if (ui.device is BerxelDeviceState.Error) Gomob.colors.danger else Gomob.colors.fg3
     Box(Modifier.padding(horizontal = Gomob.spacing.s16)) {
         HairlineCard(padding = 0.dp) {
             Box(Modifier.fillMaxWidth().padding(Gomob.spacing.s12)) {
@@ -328,14 +467,7 @@ private fun LiveStatusStrip(ui: DepthCameraUiState) {
                         Text(fpsText, style = Gomob.type.numInline.copy(fontSize = 16.sp), color = tone)
                         Text(frameText, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = Gomob.colors.fg2)
                     }
-                    Text(syncText, fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = Gomob.colors.fg3)
-                    if (errorReason != null) {
-                        Text(
-                            errorReason,
-                            fontSize = 11.sp,
-                            color = Gomob.colors.danger,
-                        )
-                    }
+                    Text(statusText, fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = statusColor)
                 }
             }
         }

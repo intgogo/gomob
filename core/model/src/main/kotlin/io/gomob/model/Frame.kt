@@ -41,6 +41,10 @@ data class DepthFrame(
     /** true = SDK 已把 depth 重投影到 color 像素坐标（registration on）；
      *  false = 原始 depth，沿用 depth 镜头自身坐标 */
     val registeredToColor: Boolean,
+    /** 逐像素 confidence（uint8，与 [data] 同尺寸 W*H）：255=raw 高置信、衰减值=时域补/弱置信、
+     *  **0=无效或飞点**。null = 未提供（旧链路/未启用时域降噪）。量测/点云/重建应优先按此取点：
+     *  conf>0 才用、飞点(conf==0)天然跳过；保持 [data] 为 raw 测量真值不被改写。 */
+    val confidence: ByteBuffer? = null,
 )
 
 /**

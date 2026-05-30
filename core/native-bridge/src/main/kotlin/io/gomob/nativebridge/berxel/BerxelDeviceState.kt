@@ -132,13 +132,20 @@ object BerxelStreamProfiles {
     val HD_30: BerxelStreamProfile = HD.requireFps(30)
     val HD_45: BerxelStreamProfile = HD.requireFps(45)
 
+    val NATIVE_REWRITE_640_401_45 = BerxelStreamProfile(
+        id = "native_rewrite_640x401_45",
+        flagProfile = BerxelStreamFlagProfile.SINGULAR,
+        color = null,
+        depth = BerxelStreamTarget(width = 640, height = 401, fps = 45),
+    )
+
     val DUAL: List<BerxelStreamProfile> = listOf(
         QVGA,
         STANDARD,
         HD,
     ).flatten()
 
-    val DEFAULT: BerxelStreamProfile = QVGA_15
+    val DEFAULT: BerxelStreamProfile = HD_25
 
     fun fromName(name: String): BerxelStreamProfile? {
         val normalized = name.lowercase().replace("_", "").replace("-", "")

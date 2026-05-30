@@ -48,6 +48,7 @@ OUTPUT_DIR=.dev/<name>-soak ./dev.sh harness <name>
 | 名字 | 触发 | 覆盖模块 |
 |------|------|---------|
 | `rgbd_sync` | 参数敏感 + 长时序 | RGBD 双流时间戳同步、丢帧率 |
+| `berxel_depth_parity` | 参数敏感 + 硬件状态 | P100R3 host raw depth 与原厂 SDK 多帧对齐 |
 | `fusion_quality` | 涌现行为 | 主从外参投影颜色回填、点云密度 |
 | `recon_quality` | 涌现行为 + 参数敏感 | TSDF voxel size、Marching Cubes 面片质量 |
 | `calibration_quality` | 参数敏感 | 双摄标定 reprojection error / 跨标定一致性 |

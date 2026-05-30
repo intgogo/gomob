@@ -6,12 +6,21 @@ plugins {
 android {
     namespace = "io.gomob.nativebridge"
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     defaultConfig {
         externalNativeBuild {
             cmake {
                 targets += listOf("gomob_native")
             }
         }
+        // M1.6.6 feature flag — 选 Berxel stack 后端：
+        //   "SDK"            = 用厂商 BerxelHawkContext（libBerxelHawk.so + libuvc-0.0.7 + 自家 libusb），默认值
+        //   "NATIVE_REWRITE" = 用 BerxelNativeStack（libusb-1.0 + 自实现 Sonix XU 协议，M1.6.6 实验路径）
+        // 翻这个值不用改代码 — gradle 重编一次就走另一路。运行时也可被 [BerxelStackBackendOverride] 临时覆盖。
+        buildConfigField("String", "BERXEL_STACK_BACKEND", "\"NATIVE_REWRITE\"")
     }
 
     externalNativeBuild {
@@ -24,6 +33,8 @@ android {
     // 自动打进 APK。SDK 缺失时这里是空目录，不会让构建失败 —— 但运行时调 Berxel
     // API 会 UnsatisfiedLinkError。
     sourceSets["main"].jniLibs.srcDir(file("../../third_party/berxel-android/jniLibs"))
+    // libusb-1.0 prebuilt：gomob_native.so 链接它，APK 里也要带它的 .so 才能运行时 dlopen。
+    sourceSets["main"].jniLibs.srcDir(file("../../third_party/libusb-android/lib"))
 }
 
 dependencies {
@@ -40,4 +51,7 @@ dependencies {
             include("*.jar")
         }
     )
+
+    testImplementation(libs.junit)
+    testImplementation(libs.truth)
 }

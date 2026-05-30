@@ -10,5 +10,17 @@
                 <action android:name="io.gomob.scan.debug.DEBUG_BERXEL_STOP" />
             </intent-filter>
         </receiver>
+        <receiver
+            android:name=".debug.DebugSonixReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="io.gomob.scan.debug.DEBUG_SONIX_ASIC_READ" />
+                <action android:name="io.gomob.scan.debug.DEBUG_USB_DESCRIPTOR_DUMP" />
+                <action android:name="io.gomob.scan.debug.DEBUG_SESSION_TEST" />
+                <action android:name="io.gomob.scan.debug.DEBUG_STREAM_TEST" />
+                <action android:name="io.gomob.scan.debug.DEBUG_BULK_SYNC" />
+                <action android:name="io.gomob.scan.debug.DEBUG_DUAL_STREAM" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

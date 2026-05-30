@@ -1,0 +1,6 @@
+# scene_name	material	distance_mm	angle_deg	notes
+matte_0	matte	500	0	哑光平面正对相机
+matte_30	matte	500	30	哑光平面约 30 度
+matte_45	matte	500	45	哑光平面约 45 度
+metal_0	metal	500	0	金属或高光表面正对相机
+black_0	black	500	0	黑色材质正对相机

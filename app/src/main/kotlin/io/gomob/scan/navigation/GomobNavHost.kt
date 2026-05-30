@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.GroupWork
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -76,6 +77,7 @@ import io.gomob.feature.scan3d.DepthCameraRoute
 import io.gomob.feature.scan3d.Scan3dRecordingRoute
 import io.gomob.feature.scan3d.Scan3dRoute
 import io.gomob.feature.scan3d.ScanCaptureRoute
+import io.gomob.feature.scan3d.SonixDebugRoute
 import io.gomob.feature.scan3d.VehicleContourScanRoute
 
 private const val ROUTE_HOME = "home"
@@ -107,7 +109,10 @@ private val TAB_ROUTES = TABS.map { it.key }.toSet()
  * TabBar 仅在 root 路由显示;二级页面 push 到当前 tab 的栈,自带 BackHeader。
  */
 @Composable
-fun GomobNavHost() {
+fun GomobNavHost(
+    debugRouteRequest: String? = null,
+    onDebugRouteConsumed: () -> Unit = {},
+) {
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
@@ -120,6 +125,13 @@ fun GomobNavHost() {
         animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
         label = "root-bottom-padding",
     )
+    LaunchedEffect(debugRouteRequest) {
+        val route = debugRouteRequest?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
+        nav.navigate(route) {
+            launchSingleTop = true
+        }
+        onDebugRouteConsumed()
+    }
 
     Box(
         modifier = Modifier
@@ -353,6 +365,8 @@ fun GomobNavHost() {
                         onOpenContourScan = { nav.navigate("scan3d/vehicle") },
                         // 设备卡入口 → 深度相机详情页（看设备 / 调控制 / 标定 — 不含扫描动作）
                         onOpenDepthCamera = { nav.navigate("scan3d/depth-camera") },
+                        // 设备卡长按 → 直达 Sonix 调试页，跳过 DepthCameraScreen 触发 BerxelService 双流导致的 vivo USB kill
+                        onOpenSonixDebug = { nav.navigate("scan3d/depth-camera/sonix-debug") },
                         // VIN 数码拓印入口
                         onOpenVinRectify = { nav.navigate("scan3d/scan") },
                     )
@@ -373,6 +387,7 @@ fun GomobNavHost() {
                     onOpenInfo = { nav.navigate("scan3d/depth-camera/info") },
                     onOpenControls = { nav.navigate("scan3d/depth-camera/controls") },
                     onOpenCalibration = { nav.navigate("scan3d/depth-camera/calibration") },
+                    onOpenSonixDebug = { nav.navigate("scan3d/depth-camera/sonix-debug") },
                 )
             }
             composable("scan3d/depth-camera/info") {
@@ -383,6 +398,9 @@ fun GomobNavHost() {
             }
             composable("scan3d/depth-camera/calibration") {
                 DepthCameraCalibrationRoute(onBack = { nav.popBackStack() })
+            }
+            composable("scan3d/depth-camera/sonix-debug") {
+                SonixDebugRoute(onBack = { nav.popBackStack() })
             }
             composable("scan3d/recording") {
                 Scan3dRecordingRoute(onBack = { nav.popBackStack() })

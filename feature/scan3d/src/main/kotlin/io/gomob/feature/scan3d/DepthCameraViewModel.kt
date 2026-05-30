@@ -64,8 +64,9 @@ class DepthCameraViewModel @Inject constructor(
     val depthPreview: StateFlow<Bitmap?> = _depthPreview.asStateFlow()
 
     init {
-        // 进本子页才启动 SDK（主页不再常驻）；幂等 — 已 Streaming 就 noop
-        berxel.start()
+        // 进本子页：引用计数 acquire（单一 owner 管相机生命周期，不再各自 start）。
+        // 主页不常驻；与 Scan3dRecordingViewModel 切换时计数 >0 全程保持相机不抖。
+        berxel.acquire()
 
         viewModelScope.launch {
             var counter = 0
@@ -76,12 +77,27 @@ class DepthCameraViewModel @Inject constructor(
                 _colorPreview.value = bmp
             }
         }
+        // 真深度（16bit mm）→ turbo 伪彩，仅非 IR 模式渲染
         viewModelScope.launch {
             var counter = 0
             berxel.depthFrames.collect { frame ->
+                if (_irRenderMode.value) return@collect
                 counter++
                 if (counter % PREVIEW_DECIMATION != 0) return@collect
                 val bmp = withContext(Dispatchers.Default) { FrameRenderer.depth16ToBitmap(frame) }
+                _depthPreview.value = bmp
+            }
+        }
+        // IR/phase 帧（8bit 灰度，companion 交织出来的真实 IR 图）→ 灰度，仅 IR 模式渲染。
+        // Step 4（2026-05-29）：companion 0x82 交织真深度与 IR 帧，native 分流；depth 走 depthFrames，
+        // IR 走 irFrames。「切 IR」看精细 IR 图，默认看真深度。
+        viewModelScope.launch {
+            var counter = 0
+            berxel.irFrames.collect { frame ->
+                if (!_irRenderMode.value) return@collect
+                counter++
+                if (counter % PREVIEW_DECIMATION != 0) return@collect
+                val bmp = withContext(Dispatchers.Default) { FrameRenderer.depthRawAsGrey(frame) }
                 _depthPreview.value = bmp
             }
         }
@@ -97,11 +113,29 @@ class DepthCameraViewModel @Inject constructor(
     fun setDepthTemperatureCompensation(on: Boolean) = berxel.setDepthTemperatureCompensation(on)
     fun setColorAutoExposure(on: Boolean) = berxel.setColorAutoExposure(on)
 
+    // M1.6.8 debug：NATIVE_REWRITE assembler 切帧策略 toggle
+    private val _strictFrameSize = MutableStateFlow(berxel.isDepthStrictFrameSize())
+    val strictFrameSize: StateFlow<Boolean> = _strictFrameSize.asStateFlow()
+    fun toggleStrictFrameSize() {
+        val next = !_strictFrameSize.value
+        berxel.setDepthStrictFrameSize(next)
+        _strictFrameSize.value = next
+    }
+
+    /** IR 模式：把 depth raw bytes 当 8-bit grey 渲染。
+     *  Step 4（2026-05-29）：生产路径已切到 native portable 双流，DepthFrame.data 是真 16bit mm，
+     *  default 改回 false 走 turbo 伪彩（depth16ToBitmap）。IR 灰度仅留作 LIGHT_IR 散斑预览调试 toggle。 */
+    private val _irRenderMode = MutableStateFlow(false)
+    val irRenderMode: StateFlow<Boolean> = _irRenderMode.asStateFlow()
+    fun toggleIrRenderMode() { _irRenderMode.value = !_irRenderMode.value }
+
+    fun triggerFrameDump() = berxel.triggerDump(30)
+
     override fun onCleared() {
         super.onCleared()
-        // 离开详情页（导航回主页 / 退出 App）→ 停 SDK 释放 USB / 省电省热
+        // 离开详情页 → 引用计数 release（归 0 且宽限期内无人 acquire 才真停，释放 USB / 省电省热）。
         // lastKnownInfo 保留在 BerxelService 里，主页继续展示
-        berxel.stop()
+        berxel.release()
     }
 
     private companion object {

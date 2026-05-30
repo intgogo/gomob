@@ -19,6 +19,9 @@ import java.nio.FloatBuffer
 object NativeBridge {
 
     init {
+        // libusb-1.0 是 gomob_native 的运行时依赖（berxel/ Sonix XU 协议层链接它）。
+        // 显式先 load，避免某些 OEM 上 implicit dlopen 找不到 SONAME=libusb-1.0.so。
+        System.loadLibrary("usb-1.0")
         System.loadLibrary("gomob_native")
     }
 
@@ -206,6 +209,224 @@ object NativeBridge {
         colorIntr: DoubleArray, depthIntr: DoubleArray,
         width: Int, height: Int,
     ): DoubleArray
+
+    // ===== berxel/* — Sonix XU 协议（M1.6.5 复现层；M1.6.6 NDK port 入口） =====
+
+    /**
+     * Berxel iHawk P100R3 companion chip 单寄存器读（Sonix XU selector 0x01）。
+     *
+     * 走 libusb_wrap_sys_device 接管 Android `UsbDeviceConnection.getFileDescriptor()` 拿到的
+     * usbfs fd，claim 指定 interface（通常 0 = control / XU 所在接口）后调
+     * BerxelProtocolSonix.asic_read。**调用方负责**：
+     * 1. 已通过 [android.hardware.usb.UsbManager] 拿到该设备的 USB 权限；
+     * 2. 当前没有别的 owner（包括 Berxel SDK 自身）正在 claim 同一 interface。
+     *
+     * @param usbFd UsbDeviceConnection.getFileDescriptor() 返回的整数 fd
+     * @param interfaceNumber 要 claim 的 USB interface 号（companion 节点上 XU Unit 3 在 Interface 0）
+     * @param regAddr 16-bit ASIC 寄存器地址（如 0x10D0 / 0x10D8 / 0x10D9）
+     * @param timeoutMs 单次 control transfer 超时，建议 1000
+     * @return 寄存器值 ∈ [0, 255]；< 0 错误码：
+     *   - -1001 libusb init / set_option 失败
+     *   - -1002 libusb_wrap_sys_device 失败（fd 无效 / 没权限）
+     *   - -1003 libusb_claim_interface 失败（被占用 / interface 不存在）
+     *   - -1004 asic_read 自身失败（USB stall / 超时 / firmware 拒绝）
+     */
+    external fun berxelSonixAsicRead(
+        usbFd: Int,
+        interfaceNumber: Int,
+        regAddr: Int,
+        timeoutMs: Int,
+    ): Int
+
+    /**
+     * Dump USB descriptor (device + active config + interfaces + altsettings + endpoints) to
+     * 多行可读字符串。M1.6.6 入口铺地：所有后续 stream control 都要拿这个的真理源。
+     *
+     * @param usbFd UsbDeviceConnection.getFileDescriptor() 返回的整数 fd
+     * @return 多行 dump 字符串；以 "ERR " 开头的串说明 init/wrap 失败
+     */
+    external fun berxelUsbDescriptorDump(usbFd: Int): String
+
+    // ─── 会话级 API（M1.6.6 主体）─────────────────────────────────────────
+    //
+    // 流程：openDeviceByFd → (任意顺序) sessionAsicRead / sessionBatchCmd / openStream...
+    //       → closeDevice。所有 session 操作复用同一个 libusb_context + handle，
+    //       不每次重复 init / wrap，避免 vivo 等机器上反复 detach kernel HID 的开销。
+    //
+    // 错误码：返回值 < 0 时 -2001..-2006 见 native/jni/jni_bridge.cpp 注释。
+
+    /**
+     * 打开一个 device 会话。claim VC + VS interface，必要时 detach Android kernel HID 驱动。
+     *
+     * @param usbFd UsbDeviceConnection.getFileDescriptor()
+     * @param vcInterface VideoControl interface 号（companion=0, master=0）。<0 跳过
+     * @param vsInterface VideoStreaming interface 号（companion=1, master=1）。<0 跳过
+     * @return sessionHandle (非 0) 或 **0L 表示失败**（细节看 logcat tag `gomob_native`）
+     */
+    external fun berxelOpenDeviceByFd(usbFd: Int, vcInterface: Int, vsInterface: Int): Long
+
+    /** 关闭会话：释放 interface + 把 kernel driver attach 回去 + 销毁 ctx。idempotent。 */
+    external fun berxelCloseDevice(sessionHandle: Long)
+
+    /**
+     * 绕过 UsbManager 直接 open /dev/bus/usb/BBB/DDD 拿 fd。
+     *
+     * Why：Android kernel 把 UVC class 设备（master 节点）从 `usbManager.deviceList`
+     * 过滤掉了，但 device_permissions ACL 已经授给 app uid，原生 open() 应该成功。
+     * Linux uvcvideo driver 占着 interface 0/1 — 后续 [berxelOpenDeviceByFd] 里
+     * libusb_kernel_driver_active + detach 流程会解掉。
+     *
+     * @return fd ≥ 0 或 -errno（EACCES=-13 / ENOENT=-2 / ...）
+     */
+    external fun berxelOpenUsbPath(path: String): Int
+
+    /** 会话级 ASIC read。返回 [0,255] 或 -2005/-2006。 */
+    external fun berxelSessionAsicRead(sessionHandle: Long, regAddr: Int, timeoutMs: Int): Int
+
+    /** 会话级 ASIC write。返回 0 / 负错误。 */
+    external fun berxelSessionAsicWrite(sessionHandle: Long, regAddr: Int, value: Int, timeoutMs: Int): Int
+
+    /**
+     * 会话级 Sonix vendor batch_cmd（selector 0x19/0x1e/... 上传 stream_ctrl block / firmware params）。
+     * @return 传输的字节数 >= 0，或 -2005/-2006
+     */
+    external fun berxelSessionBatchCmd(
+        sessionHandle: Long,
+        selector: Int,
+        payload: ByteArray,
+        timeoutMs: Int,
+    ): Int
+
+    /**
+     * 会话级 Sonix vendor XU_GET_CUR（读 selector 指定的状态块）。
+     * @return ByteArray 长度 = length，失败返 null
+     */
+    external fun berxelSessionXuGetCur(
+        sessionHandle: Long,
+        selector: Int,
+        length: Int,
+        timeoutMs: Int,
+    ): ByteArray?
+
+    /**
+     * 打开 BULK 视频流：UVC probe/commit 协商 + 分配 transfer pool + 提交 + 起 event 线程。
+     *
+     * 调用前提：session 已 [berxelOpenDeviceByFd] 成功并按需跑完 init sequence。
+     *
+     * @param sessionHandle from [berxelOpenDeviceByFd]
+     * @param bulkInEndpoint BULK IN endpoint address（companion=0x82, master=0x81）
+     * @param formatIndex UVC bFormatIndex（companion YUYV=1, master MJPEG=1）
+     * @param frameIndex UVC bFrameIndex（看 descriptor 选档）
+     * @param frameInterval100Ns dwFrameInterval，100ns 单位（45fps≈222222=0x3640E）
+     * @param transferCount 并发 BULK transfer 数量，建议 16；<=0 取默认 16
+     * @param transferSize 每个 transfer 缓冲字节；<=0 用 server 协商的 dwMaxPayloadTransferSize
+     * @return 0 / 负错误码（-3001..-3004）
+     */
+    external fun berxelOpenStream(
+        sessionHandle: Long,
+        bulkInEndpoint: Int,
+        formatIndex: Int,
+        frameIndex: Int,
+        frameInterval100Ns: Int,
+        transferCount: Int,
+        transferSize: Int,
+    ): Int
+
+    /** 关闭视频流：cancel transfer + join event thread + free。idempotent。 */
+    external fun berxelCloseStream(sessionHandle: Long): Int
+
+    /** 阻塞读一个完成的 BULK transfer chunk（**不是**完整帧；上层按 UVC payload header 拼）。 */
+    external fun berxelReadFrame(sessionHandle: Long, timeoutMs: Int): ByteArray?
+
+    /** [callbacks, totalBytes, totalErrors, queueDepth] 的快照。 */
+    external fun berxelStreamStats(sessionHandle: Long): LongArray
+
+    /**
+     * 同步 BULK IN 单次读 —— 绕过 transfer pool / event loop，直接 libusb_bulk_transfer 一次。
+     * 用于诊断"firmware 是否真不发数据" vs "我们的 async pool 有 bug"。
+     *
+     * @return >=0 拿到的字节数；-3001 invalid handle；其它负值 = -1000+libusb_error
+     */
+    external fun berxelBulkSyncRead(
+        sessionHandle: Long, endpoint: Int, length: Int, timeoutMs: Int,
+    ): Int
+
+    /**
+     * 同步 BULK IN 单次读（生产路径）。返字节数组（actual_length 长度），失败 / timeout 返 null。
+     * 用于 [io.gomob.nativebridge.berxel.BerxelNativeStack.pullChunk]。
+     */
+    external fun berxelBulkSyncReadBytes(
+        sessionHandle: Long, endpoint: Int, length: Int, timeoutMs: Int,
+    ): ByteArray?
+
+    /**
+     * 通用 control transfer。bmRequestType MSB=1 (0x80) 时是 IN，dataIn 忽略，length=wLengthIn；
+     * MSB=0 时是 OUT，dataIn=payload，wLengthIn 忽略（用 dataIn.size）。
+     * IN 成功返 ByteArray 长度 = 实际读取字节；OUT 成功返长度 0 的 ByteArray；失败均返 null。
+     */
+    external fun berxelControlTransfer(
+        sessionHandle: Long,
+        bmRequestType: Int, bRequest: Int,
+        wValue: Int, wIndex: Int,
+        dataIn: ByteArray?, wLengthIn: Int,
+        timeoutMs: Int,
+    ): ByteArray?
+
+    /**
+     * P100R3 双流会话（Android 迁移 Step 3，native 全流程）。
+     * native 侧用 portable 层（IUvcDevice 编排 + assembler + RgbdFramePairer）原样复用
+     * Linux host 已验证的 12 步启动序列：master XU5 replay → keepalive → companion XU3 replay →
+     * dense depth controls → UVC commit depth(0x82) + color(0x81) → bulk pump。
+     *
+     * @param masterFd 主控 0603:001f 的 usbfs fd（Java UsbDeviceConnection.fileDescriptor）
+     * @param companionFd companion 3558:1012 的 usbfs fd
+     * @param masterXu  master XU5 init JSON（asset iHawkP100R3_master_xu5_init.json）原始字节
+     * @param companionInit companion init JSON（asset iHawkP100R3_init_sequence.json）原始字节
+     * @param config [depthW, depthH, depthFps, depthFrameIndex, depthInterval100ns,
+     *                colorW, colorH, colorFps, colorFrameIndex, colorInterval100ns,
+     *                keepaliveMs, readLen, enableColor]
+     * @return 会话句柄（指针），失败返 0L
+     */
+    external fun berxelDualStart(
+        masterFd: Int, companionFd: Int,
+        masterXu: ByteArray, companionInit: ByteArray, config: IntArray,
+    ): Long
+
+    /** 停止并释放双流会话。 */
+    external fun berxelDualStop(handle: Long)
+
+    /**
+     * 双流运行态统计：[depthFrames, depthChunks, depthBytes, depthErrors,
+     * colorFrames, colorChunks, colorBytes, colorErrors, pairs, lastDeltaNs,
+     * meanAbsDeltaNs, maxAbsDeltaNs, lastColorFrameNo, lastDepthFrameNo, keepaliveChunks, depthSeq]。
+     */
+    external fun berxelDualStats(handle: Long): LongArray
+
+    /**
+     * 取最新 depth 帧的 active 16bit mm，写入 directBuffer（容量需 >= activeW*activeH*2）。
+     * 返回写入字节数；无帧返 0；buffer 不足返 -1。outInfo(>=4)=[activeW, activeH, frameNumber, hostMidpointNs]。
+     */
+    external fun berxelDualPollDepthMm(handle: Long, directBuffer: java.nio.ByteBuffer, outInfo: LongArray): Int
+
+    /**
+     * 取最新 depth 帧逐像素 confidence（uint8，0=无效/飞点，255=raw 高置信）写入 directBuffer
+     * （容量需 >= activeW*activeH）。与 PollDepthMm 同帧；下游按 conf 阈值取点（飞点=0 天然跳过）。
+     * 返回写入字节数；无 conf（未启用时域降噪/暂无融合帧）返 0；buffer 不足返 -1。
+     * outInfo(>=4)=[activeW, activeH, frameNumber, hostMidpointNs]。
+     */
+    external fun berxelDualPollDepthConf(handle: Long, directBuffer: java.nio.ByteBuffer, outInfo: LongArray): Int
+
+    /**
+     * 取最新 IR/phase 帧的 IR 亮度（每像素高字节）写入 directBuffer 当 8-bit 灰度（容量 >= activeW*activeH）。
+     * 供「切 IR」预览。返回写入字节数；无帧返 0；buffer 不足返 -1。outInfo(>=4)=[activeW,activeH,frameNumber,hostNs]。
+     */
+    external fun berxelDualPollIrGrey(handle: Long, directBuffer: java.nio.ByteBuffer, outInfo: LongArray): Int
+
+    /** 取最新 master MJPEG color 帧字节（consume-once，无新帧返 null）。Kotlin 侧 BitmapFactory 解码。 */
+    external fun berxelDualPollColorMjpeg(handle: Long): ByteArray?
+
+    /** 调试：把最新 depth transport 帧的完整原始字节写到 outPath，供逐字节分析 4B/px 结构。返回写入字节数。 */
+    external fun berxelDualDumpRawDepth(handle: Long, outPath: String): Int
 }
 
 /**

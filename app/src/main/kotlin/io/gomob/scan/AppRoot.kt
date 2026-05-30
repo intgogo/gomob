@@ -56,6 +56,8 @@ import io.gomob.scan.navigation.GomobNavHost
 @Composable
 fun AppRoot(
     onContentReadinessChanged: (Boolean) -> Unit = {},
+    debugRouteRequest: String? = null,
+    onDebugRouteConsumed: () -> Unit = {},
     vm: AuthGateViewModel = hiltViewModel(),
 ) {
     val loggedIn by vm.isLoggedIn.collectAsStateWithLifecycle(initialValue = null)
@@ -98,7 +100,10 @@ fun AppRoot(
                 warmup.prepareForShell()
             }
             if (readyForShell) {
-                GomobNavHost()
+                GomobNavHost(
+                    debugRouteRequest = debugRouteRequest,
+                    onDebugRouteConsumed = onDebugRouteConsumed,
+                )
             } else {
                 SplashLoading()
             }

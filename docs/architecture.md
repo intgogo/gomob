@@ -32,6 +32,8 @@
 | `architecture/05-calibration-pipeline.md` | 双摄内/外参标定 | 待写 |
 | `architecture/09-realtime-message-live.md` | 实时消息、视频通话、第一视角直播控制面 / 媒体面设计 | 草稿 |
 | `architecture/09-realtime-message-live-implementation.md` | M5 实时协作实施步骤、端侧 / 服务端 / harness 验收 | 草稿 |
+| `architecture/10-android-uvc-stack-rewrite.md` | 自研 Android UVC stack 重写（绕开厂商 SDK 坏栈） | 草稿 |
+| `architecture/11-embedded-camera-form.md` | P100R3 内嵌手机形态设计（供电软恢复 / 位姿固定 / 分阶段路线 / 风险） | 草稿 |
 
 ## 设计原则速览
 

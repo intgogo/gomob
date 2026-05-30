@@ -60,27 +60,51 @@ include_directories(SYSTEM ${GOMOB_EIGEN_DIR})
 
 # Berxel Android SDK 不暴露 C++ 头给业务，业务侧从 Kotlin 直接调
 # BerxelSDK.jar 的 Java API（见 core:native-bridge/build.gradle.kts），
-# 我们的 gomob_native.so 不需要在 C++ 层链接 Berxel 任何 .so。
-# 所以这里没有 -DGOMOB_HAS_BERXEL，没有 IMPORTED libberxel —— 故意留空。
+# 我们的 gomob_native.so 不需要在 C++ 层链接 Berxel SDK 任何 .so。
+# 所以这里没有 -DGOMOB_HAS_BERXEL，没有 IMPORTED libBerxel —— 故意留空。
+#
+# 但 M1.6.5 起，我们自己写了 Sonix XU 协议复现层（native/berxel/，独立于 Berxel SDK），
+# 接 third_party/libusb-android prebuilt，跑在 Berxel SDK 边上以替代其内嵌的 libuvc/libusb stack。
+
+# libusb-1.0 prebuilt（third_party/libusb-android/，arm64-v8a + armeabi-v7a，主线 v1.0.27）
+# SYSTEM include 避免 -Wpedantic 触发第三方头警告
+set(GOMOB_LIBUSB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libusb-android)
+if(NOT EXISTS ${GOMOB_LIBUSB_DIR}/include/libusb-1.0/libusb.h)
+    message(FATAL_ERROR "libusb-android not found at ${GOMOB_LIBUSB_DIR}; 见 third_party/libusb-android/README.md")
+endif()
+include_directories(SYSTEM ${GOMOB_LIBUSB_DIR}/include)
+add_library(usb-1.0 SHARED IMPORTED)
+set_target_properties(usb-1.0 PROPERTIES IMPORTED_LOCATION
+    ${GOMOB_LIBUSB_DIR}/lib/${ANDROID_ABI}/libusb-1.0.so)
+
+# berxel/ 子模块（Sonix XU 协议复现，M1.6.5+）
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/berxel/include)
+file(GLOB BERXEL_SOURCES CONFIGURE_DEPENDS "berxel/src/*.cpp")
+
+# berxel/portable 子模块（P100R3 可移植层，libusb-free，2026-05-29）
+# Linux host 与 Android 共用同一份已验证纯逻辑：UVC 帧组装 / RGBD 配对 / depth&light-ir 解码 /
+# XU payload 生成 / 协议编排（IUvcDevice 接口）。不依赖 libusb，Android 端各自实现 IUvcDevice。
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/berxel/portable)
+file(GLOB BERXEL_PORTABLE_SOURCES CONFIGURE_DEPENDS "berxel/portable/*.cpp")
 
 # depth/ 子模块（占位）
-file(GLOB DEPTH_SOURCES "depth/*.cpp")
+file(GLOB DEPTH_SOURCES CONFIGURE_DEPENDS "depth/*.cpp")
 list(LENGTH DEPTH_SOURCES DEPTH_COUNT)
 
 # fusion/ 子模块（占位）
-file(GLOB FUSION_SOURCES "fusion/*.cpp")
+file(GLOB FUSION_SOURCES CONFIGURE_DEPENDS "fusion/*.cpp")
 
 # reconstruction/ 子模块（占位）
-file(GLOB RECON_SOURCES "reconstruction/*.cpp")
+file(GLOB RECON_SOURCES CONFIGURE_DEPENDS "reconstruction/*.cpp")
 
 # vin/ 子模块（占位）
-file(GLOB VIN_SOURCES "vin/*.cpp")
+file(GLOB VIN_SOURCES CONFIGURE_DEPENDS "vin/*.cpp")
 
 # calibration/ 子模块（占位）
-file(GLOB CALIB_SOURCES "calibration/*.cpp")
+file(GLOB CALIB_SOURCES CONFIGURE_DEPENDS "calibration/*.cpp")
 
 # JNI 入口
-file(GLOB JNI_SOURCES "jni/*.cpp")
+file(GLOB JNI_SOURCES CONFIGURE_DEPENDS "jni/*.cpp")
 
 # 主 .so：app 端只 dlopen 这一个
 add_library(gomob_native SHARED
@@ -90,6 +114,8 @@ add_library(gomob_native SHARED
     ${RECON_SOURCES}
     ${VIN_SOURCES}
     ${CALIB_SOURCES}
+    ${BERXEL_SOURCES}
+    ${BERXEL_PORTABLE_SOURCES}
 )
 
 target_link_libraries(gomob_native
@@ -97,4 +123,5 @@ target_link_libraries(gomob_native
     android
     GLESv3
     EGL
+    usb-1.0
 )

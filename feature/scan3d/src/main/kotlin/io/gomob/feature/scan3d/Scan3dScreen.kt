@@ -5,6 +5,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -51,6 +52,7 @@ fun Scan3dRoute(
     cameraSlot: @Composable () -> Unit = {},
     onOpenContourScan: () -> Unit = {},
     onOpenDepthCamera: () -> Unit = {},
+    onOpenSonixDebug: () -> Unit = {},
     onOpenVinRectify: () -> Unit = {},
     vm: Scan3dViewModel = hiltViewModel(),
 ) {
@@ -60,6 +62,7 @@ fun Scan3dRoute(
         Scan3dHeader(
             state = ui,
             onOpenDepthCamera = onOpenDepthCamera,
+            onOpenSonixDebug = onOpenSonixDebug,
         )
         LazyColumn(
             modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -80,28 +83,35 @@ fun Scan3dRoute(
 private fun Scan3dHeader(
     state: Scan3dDeviceUiState,
     onOpenDepthCamera: () -> Unit,
+    onOpenSonixDebug: () -> Unit = {},
 ) {
     val badge = state.toBadgeView()
     ScreenHeader(
         title = "三维扫描",
         eyebrow = "便携手持采集 · 实时点云预览",
         trailing = {
-            DepthCameraBadge(badge = badge, onClick = onOpenDepthCamera)
+            DepthCameraBadge(
+                badge = badge,
+                onClick = onOpenDepthCamera,
+                onLongClick = onOpenSonixDebug,
+            )
         },
     )
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun DepthCameraBadge(
     badge: DeviceBadgeView,
     onClick: () -> Unit,
+    onLongClick: () -> Unit = {},
 ) {
     Box(
         modifier = Modifier
             .size(30.dp)
             .clip(Gomob.shapes.r2)
             .background(Gomob.colors.bg1)
-            .clickable(onClick = onClick),
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         contentAlignment = Alignment.Center,
     ) {
         Icon(

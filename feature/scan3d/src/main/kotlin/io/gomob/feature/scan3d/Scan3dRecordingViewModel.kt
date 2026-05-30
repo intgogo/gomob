@@ -64,16 +64,15 @@ sealed interface ScanRecordingState {
  * 三维外廓扫描 VM —— 自包含 SDK 生命周期 + 实时预览 + native scanSession 三段。
  *
  * 生命周期：
- *   - VM 创建（进 Screen）→ init.start() 启动 BerxelService（已 streaming 时幂等）+ collect
+ *   - VM 创建（进 Screen）→ init.acquire() 引用计数 +1 拉起 BerxelService + collect
  *     colorFrames/depthFrames 出 Bitmap 给 UI 预览
  *   - 用户点"开始" → start()：建 native session 并把 depthFrames 喂进去
  *   - 用户点"停止" → stop() → Finalizing → Marching Tetrahedra → Completed
- *   - VM cleared（退栈）→ onCleared() 关 native session + 停 SDK 释放 USB
+ *   - VM cleared（退栈）→ onCleared() 关 native session + berxel.release() 引用计数 -1
  *
- * 不嵌套：本 VM 与 [DepthCameraViewModel] 都做 init.start / onCleared.stop；为避免嵌套
- * 入栈时 Recording 关 SDK 让上游 DepthCamera VM 看到空流，**不再从 DepthCameraScreen 提供
- * 进入 Recording 的入口**（DepthCameraScreen 的 emphasis NavRow 已删，3D 主页 ActionTile 01
- * 直接进 Recording）。
+ * 相机生命周期由 [BerxelService] 引用计数单一管控：本 VM 与 [DepthCameraViewModel] 都走
+ * acquire/release，导航在两页间切换时计数全程 >0，相机不再被旧 VM 的 stop 抢关（修掉历史"双 VM
+ * 抢相机"）。3D 主页 ActionTile 01 直接进 Recording。
  *
  * pose7：第一阶段统一传 identity，让 native ICP 自估。后续接 IMU 时可在每帧给"IMU 估计的姿态"
  * 作为 ICP 初值（提高鲁棒性）。
@@ -127,8 +126,8 @@ class Scan3dRecordingViewModel @Inject constructor(
     private val nativeDispatcher = nativeExecutor.asCoroutineDispatcher()
 
     init {
-        // 进入扫描页即启动 SDK（幂等）+ collect Color/Depth 预览帧（横排小窗给用户看实时画面）
-        berxel.start()
+        // 进入扫描页：引用计数 acquire（单一 owner 管相机），+ collect Color/Depth 预览帧
+        berxel.acquire()
 
         viewModelScope.launch {
             var counter = 0
@@ -381,7 +380,7 @@ class Scan3dRecordingViewModel @Inject constructor(
             }
             executor.shutdown()
         }
-        berxel.stop()
+        berxel.release()
     }
 
     companion object {
