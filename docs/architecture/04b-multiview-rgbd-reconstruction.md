@@ -154,6 +154,16 @@ iso-charts 与 xatlas(激进打包)UV 利用率都只 ~62–70%(小 chart 多、
 
 阶段 1 启发式分割是 MVP 兜底，**不为它做多余优化**——一旦阶段 2 SAM-HD 上线就被替代。
 
+**M3.17 第一增量(2026-05-31)已落 —— 阶段 2 服务端 HQ-SAM**:`server/sam_service`(Python FastAPI + GPU,
+形态对标 `fusion_service`)。模型选 **HQ-SAM(sam-hq,Apache-2.0 可商用)`vit_h`**:原版 SAM 加 High-Quality
+输出 token + 融合早/末期 ViT 特征,边界更锐(细结构/薄边)。`/segment` 收「RGB + 框/点」→ 出 mask PNG。
+**当前边界:框由人工给**(不做自动 grounding —— NVIDIA LocateAnything 等开放词表 grounding 模型可当"自动出框"
+前端,但 LocateAnything 非商用许可对本产品是硬约束,暂不引入;Grounded-SAM/Semantic-SAM 留候选)。
+box 提示天然定尺度 → 单 mask,正好避开点提示的粒度歧义(点轮胎=轮胎还是整车)。
+质量门 `tests/harness/sam_segmentation`:合成星形(细尖)场景 + 人工松框 → IoU ≥ 0.92。
+**后续增量**:mask 借 iHawk RGB↔depth 像素对齐投到 depth(依赖 `05-calibration` 外参)、与阶段 1 启发式 ROI 的 A/B、
+端侧 MobileSAM/SAM2 轻量化。
+
 ### 5.3 RGB 与 Depth 像素对齐
 
 P100R3 spec 表 1 明确："**深度彩色像素对齐**"是固件能力。意味着：
