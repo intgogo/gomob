@@ -179,3 +179,23 @@ def fuse(frames, cfg: Optional[FusionConfig] = None) -> o3d.geometry.TriangleMes
     t0_inv = np.linalg.inv(poses[0])
     poses = [t0_inv @ p for p in poses]
     return integrate_tsdf(frames, poses, cfg)
+
+
+def mesh_stats(mesh: o3d.geometry.TriangleMesh) -> dict:
+    return {"vertices": len(mesh.vertices), "triangles": len(mesh.triangles)}
+
+
+def mesh_to_glb(mesh: o3d.geometry.TriangleMesh) -> bytes:
+    """Open3D mesh → GLB 字节。用 trimesh 导出(Open3D 0.19 自带 .glb 写出损坏,实测回读 0 顶点)。
+    顶点色直出 GLB(per-vertex color);UV atlas 纹理烘焙列 M3.14 后续。"""
+    import trimesh
+    v = np.asarray(mesh.vertices)
+    f = np.asarray(mesh.triangles)
+    if len(v) == 0 or len(f) == 0:
+        raise ValueError("空 mesh,无法导出 GLB")
+    kw = {}
+    if mesh.has_vertex_colors():
+        c = (np.clip(np.asarray(mesh.vertex_colors), 0, 1) * 255).astype(np.uint8)
+        kw["vertex_colors"] = c
+    tm = trimesh.Trimesh(vertices=v, faces=f, process=False, **kw)
+    return tm.export(file_type="glb")

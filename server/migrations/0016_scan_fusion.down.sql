@@ -1,0 +1,3 @@
+BEGIN;
+DROP TABLE IF EXISTS scan_fusion_jobs;
+COMMIT;
