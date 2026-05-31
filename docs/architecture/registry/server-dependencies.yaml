@@ -75,8 +75,8 @@ nats_topics:
     description: "车型档案变更 → api 失效本地 LRU 缓存"
   - topic: scan.fusion_done
     publisher: fusionworker
-    subscribers: []
-    description: "M3.14 多视角 RGBD 融合完成 → 载 result GLB 对象键;端侧 gallery 拉回看(M3.15,服务端订阅待接)"
+    subscribers: [signaling]
+    description: "M3.14 多视角 RGBD 融合完成 → 载 result GLB 对象键;signaling 按 owner_user_id 经 ws 推给端侧 gallery 拉回看(M3.15 服务端桥)"
 
 # 禁止的调用关系
 forbidden:

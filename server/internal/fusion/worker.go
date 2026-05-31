@@ -19,10 +19,14 @@ import (
 const TopicFusionDone = "scan.fusion_done"
 
 // FusionDoneEvent scan.fusion_done 载荷。
+//
+// 安全契约:本事件由 signaling.FusionBridge 原样转发给端侧 ws 客户端,故只能承载客户端可见信息
+// (GLB 对象键 + 几何统计 + 归属人自身 id)。严禁新增服务端密钥/他人隐私/内部对象键(如 input bundle key)等敏感字段。
 type FusionDoneEvent struct {
 	JobID           int64  `json:"job_id"`
 	SessionKey      string `json:"session_key"`
 	InspectionID    *int64 `json:"inspection_id,omitempty"`
+	OwnerUserID     *int64 `json:"owner_user_id,omitempty"` // signaling 据此把事件推给归属用户的 ws 连接
 	ResultObjectKey string `json:"result_object_key"`
 	Vertices        int    `json:"vertices"`
 	Triangles       int    `json:"triangles"`
@@ -137,6 +141,7 @@ func (w *Worker) publish(ctx context.Context, job *repo.ScanFusionJob) {
 		JobID:           job.ID,
 		SessionKey:      job.SessionKey,
 		InspectionID:    job.InspectionID,
+		OwnerUserID:     job.OwnerUserID,
 		ResultObjectKey: resultKey,
 		Vertices:        vertices,
 		Triangles:       triangles,

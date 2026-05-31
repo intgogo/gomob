@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -38,6 +39,7 @@ import (
 	"io.gomob/server/pkg/audit"
 	"io.gomob/server/pkg/httpx"
 	"io.gomob/server/pkg/logger"
+	"io.gomob/server/pkg/pubsub"
 	"io.gomob/server/pkg/rbac"
 	"io.gomob/server/pkg/repo"
 )
@@ -75,6 +77,7 @@ func main() {
 	signalingRouter.SetTranscriptConfig(transcriptCfg)
 	apiH.SetRealtimeMessageNotifier(signalingRouter)
 	startASRWorker(ctx, pool, signalingRouter, transcriptCfg, log)
+	startFusionBridge(ctx, signalingHub, log)
 	assetH := newDevAssetHandler(ctx, pool, log)
 	logRoot := envOr("GOMOB_LOG_UPLOAD_DIR", ".dev/server-logs")
 	logsH, err := api.NewLogsHandler(logRoot, 0)
@@ -360,6 +363,32 @@ func startASRWorker(
 		"model", trCfg.Model,
 		"language", trCfg.Language,
 	)
+}
+
+// startFusionBridge 把 NATS scan.fusion_done 桥接到 ws(M3.15)。
+// 未配 GOMOB_NATS_URL 或 NATS 不可用只降级关实时推送,不拖垮 devserver 核心。
+func startFusionBridge(ctx context.Context, hub *signaling.Hub, log *slog.Logger) {
+	natsURL := strings.TrimSpace(os.Getenv("GOMOB_NATS_URL"))
+	if natsURL == "" {
+		log.Info("scan.fusion_done 实时推送未启动", "reason", "GOMOB_NATS_URL 未配置")
+		return
+	}
+	pub, err := pubsub.NewNATS(natsURL)
+	if err != nil {
+		log.Error("NATS 连接失败,scan.fusion_done 实时推送关闭", "err", err)
+		return
+	}
+	bridge, err := signaling.StartFusionBridge(pub.Conn(), hub, log)
+	if err != nil {
+		log.Error("scan.fusion_done 桥接启动失败", "err", err)
+		pub.Close()
+		return
+	}
+	go func() {
+		<-ctx.Done()
+		bridge.Close()
+		pub.Close()
+	}()
 }
 
 const (

@@ -17,12 +17,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"io.gomob/server/internal/signaling"
 	"io.gomob/server/pkg/audit"
 	"io.gomob/server/pkg/logger"
+	"io.gomob/server/pkg/pubsub"
 	"io.gomob/server/pkg/repo"
 )
 
@@ -43,6 +45,24 @@ func main() {
 	auditRec := audit.NewPG(pool)
 	router := signaling.NewRouter(pool, hub, auditRec, parseDuration("GOMOB_PENDING_CALL_TTL", 60*time.Second))
 	handler := signaling.NewHandler(router, hub)
+
+	// scan.fusion_done → ws 桥接(M3.15):fusionworker 完成融合后发 NATS 事件,这里按 owner_user_id
+	// 推给该用户在线 ws 连接。NATS 不可用只降级(关实时推送,端侧可轮询),不拖垮消息/通话核心。
+	if natsURL := strings.TrimSpace(os.Getenv("GOMOB_NATS_URL")); natsURL != "" {
+		if pub, err := pubsub.NewNATS(natsURL); err != nil {
+			log.Error("NATS 连接失败,scan.fusion_done 实时推送关闭", "err", err)
+		} else {
+			defer pub.Close()
+			bridge, err := signaling.StartFusionBridge(pub.Conn(), hub, log)
+			if err != nil {
+				log.Error("scan.fusion_done 桥接启动失败", "err", err)
+			} else {
+				defer bridge.Close()
+			}
+		}
+	} else {
+		log.Info("GOMOB_NATS_URL 未配置,scan.fusion_done 实时推送关闭(端侧可轮询)")
+	}
 
 	// 后台清扫过期 invite
 	sweepCtx, sweepCancel := context.WithCancel(rootCtx)

@@ -60,6 +60,9 @@ echo "== 5a. 真实上传 init/part/complete(kind=scan3d_bundle)→ 断言自动
 echo "== 5b. 入队 + worker 单步 + 断言 done/事件/GLB(go e2e)=="
 ( cd "$ROOT/server" && go test -tags e2e_fusion ./internal/fusion/ -run TestFusionE2E -v -count=1 )
 
+echo "== 5c. signaling fusion bridge:经真 NATS 发 scan.fusion_done → owner ws 连接收到 =="
+( cd "$ROOT/server" && go test -tags e2e_fusion ./internal/signaling/ -run TestFusionBridgeNATSRoundtrip -v -count=1 )
+
 echo "== 6. GLB 几何复核(chamfer vs 观测面)=="
 "$PY" "$ROOT/tests/harness/scan_fusion_e2e/verify.py"
 

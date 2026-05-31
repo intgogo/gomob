@@ -454,7 +454,8 @@ func (h *Handler) UploadComplete(w http.ResponseWriter, r *http.Request) {
 
 	// 多视角扫描 bundle:上传完成即入队云端融合(DB 轮询队列,fusionworker 自动领取,无需 NATS)。
 	if sessionKey, ok := fusionEnqueueParams(sess.Kind, req.ScanSessionID, uploadID); ok {
-		if _, err := h.fusion.Enqueue(r.Context(), sessionKey, sess.ObjectKey, sess.InspectionID, req.FrameCount); err != nil {
+		ownerID := sess.UserID // 上传发起者即扫描归属人,供 scan.fusion_done 实时推送路由
+		if _, err := h.fusion.Enqueue(r.Context(), sessionKey, sess.ObjectKey, sess.InspectionID, &ownerID, req.FrameCount); err != nil {
 			// 不阻断上传成功;Enqueue 幂等(ON CONFLICT),端侧可重传或后续补偿。
 			h.log.Warn("入队多视角融合失败", "session", sessionKey, "object", sess.ObjectKey, "err", err)
 		} else {

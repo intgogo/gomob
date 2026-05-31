@@ -97,11 +97,18 @@ data class ScanFusionResult(
   导出 GLB / OBJ / PLY → MinIO + DB inspections.scan_assets
        ↓
                             │
-                            ↓ NATS event "scan.fusion_done"
+                            ↓ NATS event "scan.fusion_done"(带 owner_user_id)
+                            ↓ signaling.FusionBridge 按 owner 经 ws 推 type=scan.fusion_done 帧
 ─────────────────────────────────────────────────────────────
-端侧 gallery 拉 GLB → Filament PBR + IBL 渲染回看
+端侧 gallery 收 ws 帧(或轮询)拉 GLB → Filament PBR + IBL 渲染回看
 ─────────────────────────────────────────────────────────────
 ```
+
+> M3.15 服务端实时推送桥(2026-05-31 已落):融合任务记 `owner_user_id`(上传发起者),
+> `fusionworker` 完成后发的 `scan.fusion_done` 带该 owner;`signaling` 进程经
+> `internal/signaling/fusion_bridge.go` 订阅该 topic,按 owner_user_id `hub.Push` 给在线 ws 连接。
+> signaling 不耦合 fusion 包(只解出 owner 路由,payload 原样转发);NATS 不可用时降级关推送、
+> 端侧可轮询兜底。端侧 Android/Filament gallery 订阅消费待 M3.15 端侧增量(需真机)。
 
 ## 5. 关键技术选型
 

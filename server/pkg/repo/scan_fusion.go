@@ -24,6 +24,7 @@ type ScanFusionJob struct {
 	ID              int64
 	SessionKey      string
 	InspectionID    *int64
+	OwnerUserID     *int64 // 扫描发起者;scan.fusion_done 实时推送的路由键(可空)
 	InputObjectKey  string
 	FrameCount      int
 	Status          string
@@ -53,19 +54,22 @@ func NewScanFusionRepo(pool *pgxpool.Pool) *ScanFusionRepo {
 	return &ScanFusionRepo{pool: pool}
 }
 
-const scanFusionCols = `id, session_key, inspection_id, input_object_key, frame_count, status,
+// scanFusionCols 的列顺序必须与 scanFusionJob() 里 row.Scan(...) 的接收参数顺序逐一对应;
+// scanFusionColsPrefixed 的 cols 切片同理。任何重排/增删列都必须三处同步改,否则 Scan 会错位读字段。
+const scanFusionCols = `id, session_key, inspection_id, owner_user_id, input_object_key, frame_count, status,
 	result_object_key, vertices, triangles, stats, error_message,
 	attempt_count, next_retry_at, created_at, updated_at`
 
 // Enqueue 幂等入队:同 session_key 已存在则原样返回(端侧重传不重复融合)。
+// ownerUserID 为扫描发起者(可空),供 scan.fusion_done 实时推送路由。
 func (r *ScanFusionRepo) Enqueue(ctx context.Context, sessionKey, inputObjectKey string,
-	inspectionID *int64, frameCount int) (*ScanFusionJob, error) {
+	inspectionID, ownerUserID *int64, frameCount int) (*ScanFusionJob, error) {
 	job := &ScanFusionJob{}
 	err := scanFusionJob(r.pool.QueryRow(ctx, `
-		INSERT INTO scan_fusion_jobs(session_key, inspection_id, input_object_key, frame_count, status)
-		VALUES($1, $2, $3, $4, 'pending')
+		INSERT INTO scan_fusion_jobs(session_key, inspection_id, owner_user_id, input_object_key, frame_count, status)
+		VALUES($1, $2, $3, $4, $5, 'pending')
 		ON CONFLICT (session_key) DO NOTHING
-		RETURNING `+scanFusionCols, sessionKey, inspectionID, inputObjectKey, frameCount), job)
+		RETURNING `+scanFusionCols, sessionKey, inspectionID, ownerUserID, inputObjectKey, frameCount), job)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return r.FindBySessionKey(ctx, sessionKey)
@@ -190,7 +194,7 @@ func (r *ScanFusionRepo) FindByID(ctx context.Context, id int64) (*ScanFusionJob
 
 // scanFusionColsPrefixed 给 ClaimNext 的 RETURNING 加表别名前缀。
 func scanFusionColsPrefixed(alias string) string {
-	cols := []string{"id", "session_key", "inspection_id", "input_object_key", "frame_count", "status",
+	cols := []string{"id", "session_key", "inspection_id", "owner_user_id", "input_object_key", "frame_count", "status",
 		"result_object_key", "vertices", "triangles", "stats", "error_message",
 		"attempt_count", "next_retry_at", "created_at", "updated_at"}
 	out := ""
@@ -208,12 +212,12 @@ type scanFusionScanner interface {
 }
 
 func scanFusionJob(row scanFusionScanner, job *ScanFusionJob) error {
-	var inspectionID sql.NullInt64
+	var inspectionID, ownerUserID sql.NullInt64
 	var resultKey, errMsg sql.NullString
 	var vertices, triangles sql.NullInt32
 	var stats []byte
 	err := row.Scan(
-		&job.ID, &job.SessionKey, &inspectionID, &job.InputObjectKey, &job.FrameCount, &job.Status,
+		&job.ID, &job.SessionKey, &inspectionID, &ownerUserID, &job.InputObjectKey, &job.FrameCount, &job.Status,
 		&resultKey, &vertices, &triangles, &stats, &errMsg,
 		&job.AttemptCount, &job.NextRetryAt, &job.CreatedAt, &job.UpdatedAt,
 	)
@@ -222,6 +226,9 @@ func scanFusionJob(row scanFusionScanner, job *ScanFusionJob) error {
 	}
 	if inspectionID.Valid {
 		job.InspectionID = &inspectionID.Int64
+	}
+	if ownerUserID.Valid {
+		job.OwnerUserID = &ownerUserID.Int64
 	}
 	if resultKey.Valid {
 		job.ResultObjectKey = &resultKey.String

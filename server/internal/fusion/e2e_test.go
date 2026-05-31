@@ -67,7 +67,7 @@ func TestFusionE2E(t *testing.T) {
 	t.Logf("上传 bundle %d 字节 → %s/%s", len(bundle), bucket, bundleKey)
 
 	// 2) 入队
-	job, err := jobs.Enqueue(ctx, session, bundleKey, nil, 10)
+	job, err := jobs.Enqueue(ctx, session, bundleKey, nil, nil, 10)
 	must(err, "入队")
 	t.Logf("入队 job=%d session=%s status=%s", job.ID, session, job.Status)
 
@@ -121,13 +121,16 @@ func TestFusionE2E(t *testing.T) {
 	t.Logf("✓ DB done:result=%s vertices=%d triangles=%d stats=%s", *got.ResultObjectKey, *got.Vertices, tri, string(got.Stats))
 
 	// 6) 断言 scan.fusion_done 事件(排空可能先收到遗留任务的事件,循环匹配本 session)
+	// 每轮用新 evt:owner_user_id 等 omitempty 字段不会跨消息残留上一条的指针。
 	var evt FusionDoneEvent
 	matched := false
 	for i := 0; i < 20; i++ {
 		msg, err := sub.NextMsg(15 * time.Second)
 		must(err, "等 scan.fusion_done")
-		must(json.Unmarshal(msg.Data, &evt), "解析事件")
-		if evt.SessionKey == session {
+		var e FusionDoneEvent
+		must(json.Unmarshal(msg.Data, &e), "解析事件")
+		if e.SessionKey == session {
+			evt = e
 			matched = true
 			break
 		}

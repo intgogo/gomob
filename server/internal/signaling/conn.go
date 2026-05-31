@@ -53,6 +53,9 @@ const (
 //	call.ice               ICE candidate 透传 (双向)；payload: {call_id, to_user_id, candidate}
 //	call.bye               挂断 (双向)；payload: {call_id, reason}
 //
+//	scan.fusion_done       多视角融合完成 (S→C)；payload: {session_key, result_object_key, vertices, triangles, frame_count, ...}
+//	                       由 FusionBridge 从 NATS scan.fusion_done 转发,端侧 gallery 据此拉 GLB 回看。
+//
 // 客户端可在 payload 内放 client_msg_id 用于和回执匹配。
 type Envelope struct {
 	Type    string          `json:"type"`

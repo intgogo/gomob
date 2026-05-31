@@ -140,6 +140,9 @@ func TestUploadBundleEnqueuesFusion(t *testing.T) {
 	if job.FrameCount != 10 {
 		t.Fatalf("frame_count=%d 期望 10", job.FrameCount)
 	}
-	t.Logf("✓ 上传完成自动入队:job=%d session=%s input=%s frames=%d",
-		job.ID, job.SessionKey, job.InputObjectKey, job.FrameCount)
+	if job.OwnerUserID == nil || *job.OwnerUserID != userID {
+		t.Fatalf("owner_user_id=%v 期望 %d(上传者应为融合归属人)", job.OwnerUserID, userID)
+	}
+	t.Logf("✓ 上传完成自动入队:job=%d session=%s input=%s frames=%d owner=%d",
+		job.ID, job.SessionKey, job.InputObjectKey, job.FrameCount, *job.OwnerUserID)
 }
