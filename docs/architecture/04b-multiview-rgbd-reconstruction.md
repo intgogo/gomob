@@ -130,6 +130,18 @@ data class ScanFusionResult(
 
 **不自己写**这些算法。Open3D 在 cv-engine（Python）侧调即可。
 
+**配准尺度跟 voxel 派生（M3.16，2026-05-31）**：FPFH 下采样体素与 RANSAC/Color-ICP/全局优化的
+最大对应距离不能用固定值。`scan_multiview_quality`(Stanford Bunny 8 视角)暴露:旧固定 FPFH 12mm /
+对应 30mm 对复杂有机体特征过粗、对应过松,宽基线视角对(近背对)误配且 fitness 假高(0.64),
+全局优化 line process 拦不住 → 位姿翻转(chamfer 在 3 / 7.5mm 间随机跳)。改为
+`reg_voxel = min(voxel_size, 12mm)`、对应距离 `= 2.5×reg_voxel`(`fusion_core.FusionConfig.reg_voxel_m/reg_corr_m`)后,
+Bunny 8 视角 **7.5→1.76mm 且跨跑稳定**,box+sphere(M3.14)无回归。
+
+**UV unwrap 用 Open3D iso-charts(`compute_uvatlas`),不引入 xatlas**:实测在 marching-cubes 有机网格上
+iso-charts 与 xatlas(激进打包)UV 利用率都只 ~62–70%(小 chart 多、曲边界难密铺单位方),
+原定"≥70%"不可达 → UV 利用率作**质量监测软报告**(非硬门);硬门取 chamfer + 覆盖度(扫描真实化本质)。
+详见 `tests/harness/scan_multiview_quality/README.md`。
+
 ### 5.2 物体分割
 
 阶段 1（启发式）→ 阶段 2（SAM-HD）→ 阶段 3（端侧 SAM2 Mobile）三步走。

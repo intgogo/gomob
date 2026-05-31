@@ -51,9 +51,33 @@ class FusionConfig:
     conf_threshold: int = 80            # conf<thr 的像素预掩码(端侧 M1.6.20 / mask_recovery 同阈)
     enable_confidence: bool = True
     depth_trunc_mm: float = 8000.0      # P100R3 工作距离上限
-    fpfh_voxel_mm: float = 12.0         # 粗配准下采样(= 2×voxel)
-    icp_max_corr_mm: float = 30.0       # Color-ICP 最大对应距离
+    # 配准尺度默认跟 voxel_size 派生(reg_voxel≈voxel、对应距离≈2.5×voxel):
+    #   配准下采样要与重建分辨率同量级,FPFH 特征才够判别、Color-ICP/全局对应才够紧。
+    #   旧固定 fpfh=12mm / corr=30mm 对 voxel≈6mm 的紧致物体勉强能用,但对更细 voxel 或复杂
+    #   有机体(Bunny)特征过粗、对应过松 → 宽基线对(近背对视角)误配且 fitness 假高,line
+    #   process 拦不住 → 位姿翻转。实测 scan_multiview_quality:Bunny 8 视角 7.5mm → 1.8mm。
+    #   None=按 voxel 派生;显式赋值可覆盖(目前无调用方覆盖)。
+    reg_voxel_mm: Optional[float] = None    # 配准下采样体素(None→voxel_size)
+    reg_corr_mm: Optional[float] = None     # Color-ICP / 全局优化最大对应距离(None→2.5×voxel_size)
     loop_closure: bool = True           # 末视角→首视角闭环边(04b 强制)
+
+    def reg_voxel_m(self) -> float:
+        """配准下采样体素(m):特征/RANSAC 用。默认 = min(voxel_size, 12mm)。
+
+        跟 voxel_size 派生让细 voxel(如 Bunny voxel5)用细特征、配准更准;但**封顶 12mm**:
+        输出 voxel 很粗时(如纹理 harness voxel20)配准仍需足够细的点云才有判别力,
+        不能让配准下采样跟着粗到 20mm(实测会让低多边形纹理 bake 位姿偏、纹理增益反转)。
+        派生不变式:RANSAC 对应=1.5×reg_voxel、Color-ICP 对应=reg_corr_m()=2.5×reg_voxel(见下)。
+        用 `is not None` 而非真值判断:reg_voxel_mm=0 是显式覆盖(虽无意义),不应被当未设。"""
+        if self.reg_voxel_mm is not None:
+            return self.reg_voxel_mm / 1000.0
+        return min(self.voxel_size_mm, 12.0) / 1000.0
+
+    def reg_corr_m(self) -> float:
+        """Color-ICP 与全局优化最大对应距离(m),默认 = 2.5×reg_voxel(跟随封顶后的配准体素)。"""
+        if self.reg_corr_mm is not None:
+            return self.reg_corr_mm / 1000.0
+        return 2.5 * self.reg_voxel_m()
 
 
 def _masked_depth(f: RgbdFrame, cfg: FusionConfig) -> np.ndarray:
@@ -91,17 +115,17 @@ def _prep(pcd: o3d.geometry.PointCloud, voxel_m: float):
 
 def pairwise_register(src_d, src_f, dst_d, dst_f, cfg: FusionConfig):
     """已下采样(带色+法向+FPFH)点云的 src→dst 配准:FPFH+RANSAC 粗 → Color-ICP 多尺度精。
-    返回 (4x4 变换, information 矩阵)。Color-ICP 在下采样云上跑(带色,提速)。"""
-    voxel_m = cfg.fpfh_voxel_mm / 1000.0
-    dist = voxel_m * 1.5
+    返回 (4x4 变换, information 矩阵)。配准尺度跟 voxel 派生(见 FusionConfig)。"""
+    ransac_dist = cfg.reg_voxel_m() * 1.5               # RANSAC 对应距离 = 1.5×reg_voxel
+    icp_corr = cfg.reg_corr_m()                         # Color-ICP 最大对应距离 = 2.5×reg_voxel
     ransac = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
-        src_d, dst_d, src_f, dst_f, True, dist,
+        src_d, dst_d, src_f, dst_f, True, ransac_dist,
         o3d.pipelines.registration.TransformationEstimationPointToPoint(False), 3,
         [o3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(0.9),
-         o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(dist)],
+         o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(ransac_dist)],
         o3d.pipelines.registration.RANSACConvergenceCriteria(100000, 0.999))
     current = ransac.transformation
-    for corr, iters in ((dist, 50), (dist / 2, 30)):    # 多尺度对应距离(粗→细)精修
+    for corr, iters in ((icp_corr, 50), (icp_corr / 2, 30)):  # 多尺度对应距离(粗→细)精修
         try:
             res = o3d.pipelines.registration.registration_colored_icp(
                 src_d, dst_d, corr, current,
@@ -111,7 +135,7 @@ def pairwise_register(src_d, src_f, dst_d, dst_f, cfg: FusionConfig):
         except RuntimeError:
             break  # 弱纹理面 color-icp 可能退化,保留上一级结果
     info = o3d.pipelines.registration.get_information_matrix_from_point_clouds(
-        src_d, dst_d, dist, current)
+        src_d, dst_d, ransac_dist, current)
     return current, info
 
 
@@ -125,8 +149,8 @@ def build_pose_graph(pcds, cfg: FusionConfig) -> o3d.pipelines.registration.Pose
       pairwise_register(src,dst)→T 使 src 对齐 dst;odometry=T@odometry;节点存 inv(odometry)=cam→world。
     """
     PG = o3d.pipelines.registration
-    voxel_m = cfg.fpfh_voxel_mm / 1000.0
-    preps = [_prep(p, voxel_m) for p in pcds]            # 每云下采样+FPFH 只算一次
+    reg_voxel = cfg.reg_voxel_m()
+    preps = [_prep(p, reg_voxel) for p in pcds]          # 每云下采样+FPFH 只算一次
     n = len(pcds)
     pg = PG.PoseGraph()
     odometry = np.identity(4)
@@ -146,7 +170,7 @@ def build_pose_graph(pcds, cfg: FusionConfig) -> o3d.pipelines.registration.Pose
         o3d.pipelines.registration.GlobalOptimizationLevenbergMarquardt(),
         o3d.pipelines.registration.GlobalOptimizationConvergenceCriteria(),
         o3d.pipelines.registration.GlobalOptimizationOption(
-            max_correspondence_distance=cfg.icp_max_corr_mm / 1000.0,
+            max_correspondence_distance=cfg.reg_corr_m(),
             edge_prune_threshold=0.25, reference_node=0))
     return pg
 
