@@ -86,17 +86,29 @@ func TestFusionE2E(t *testing.T) {
 		EnableConfidence: false,
 	})
 	must(err, "建 worker")
-	w.ProcessOne(ctx)
+	// 排空队列直到本 session 终态:ClaimNext 是 FIFO,队列里可能有其它 pending(如 5a 真实上传遗留),
+	// 单次 ProcessOne 未必处理到本任务,故循环排空(顺带清理遗留 pending)。
+	var got *repo.ScanFusionJob
+	for i := 0; i < 20; i++ {
+		w.ProcessOne(ctx)
+		got, err = jobs.FindBySessionKey(ctx, session)
+		must(err, "查 job")
+		if got.Status == repo.ScanFusionStatusDone || got.Status == repo.ScanFusionStatusFailed {
+			break
+		}
+	}
 
 	// 5) 断言 DB done
-	got, err := jobs.FindBySessionKey(ctx, session)
-	must(err, "查 job")
-	if got.Status != repo.ScanFusionStatusDone {
+	if got == nil || got.Status != repo.ScanFusionStatusDone {
 		em := ""
-		if got.ErrorMessage != nil {
+		if got != nil && got.ErrorMessage != nil {
 			em = *got.ErrorMessage
 		}
-		t.Fatalf("job 状态=%s 非 done;err=%q", got.Status, em)
+		st := "<nil>"
+		if got != nil {
+			st = got.Status
+		}
+		t.Fatalf("排空后本任务状态=%s 非 done;err=%q", st, em)
 	}
 	if got.ResultObjectKey == nil || got.Vertices == nil || *got.Vertices < 1000 {
 		t.Fatalf("结果不完整:result=%v vertices=%v", got.ResultObjectKey, got.Vertices)
@@ -107,13 +119,20 @@ func TestFusionE2E(t *testing.T) {
 	}
 	t.Logf("✓ DB done:result=%s vertices=%d triangles=%d stats=%s", *got.ResultObjectKey, *got.Vertices, tri, string(got.Stats))
 
-	// 6) 断言 scan.fusion_done 事件
-	msg, err := sub.NextMsg(15 * time.Second)
-	must(err, "等 scan.fusion_done")
+	// 6) 断言 scan.fusion_done 事件(排空可能先收到遗留任务的事件,循环匹配本 session)
 	var evt FusionDoneEvent
-	must(json.Unmarshal(msg.Data, &evt), "解析事件")
-	if evt.SessionKey != session || evt.ResultObjectKey != *got.ResultObjectKey || evt.Vertices != *got.Vertices {
-		t.Fatalf("事件不符:%+v", evt)
+	matched := false
+	for i := 0; i < 20; i++ {
+		msg, err := sub.NextMsg(15 * time.Second)
+		must(err, "等 scan.fusion_done")
+		must(json.Unmarshal(msg.Data, &evt), "解析事件")
+		if evt.SessionKey == session {
+			matched = true
+			break
+		}
+	}
+	if !matched || evt.ResultObjectKey != *got.ResultObjectKey || evt.Vertices != *got.Vertices {
+		t.Fatalf("未收到本 session 的 scan.fusion_done 或字段不符:%+v", evt)
 	}
 	t.Logf("✓ scan.fusion_done:%+v", evt)
 

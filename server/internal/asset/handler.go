@@ -67,6 +67,7 @@ type Handler struct {
 	core   *minio.Core   // 低层 core（multipart 用）
 	assets *repo.AssetRepo
 	insps  *repo.InspectionRepo
+	fusion *repo.ScanFusionRepo
 	audit  audit.Recorder
 	log    *slog.Logger
 }
@@ -100,6 +101,7 @@ func NewHandler(cfg Config, pool *pgxpool.Pool, rdb *redis.Client, audit audit.R
 		core:   core,
 		assets: repo.NewAssetRepo(pool),
 		insps:  repo.NewInspectionRepo(pool),
+		fusion: repo.NewScanFusionRepo(pool),
 		audit:  audit,
 		log:    logger.New("asset.handler"),
 	}, nil
@@ -303,6 +305,25 @@ func (h *Handler) UploadPart(w http.ResponseWriter, r *http.Request) {
 
 type uploadCompleteReq struct {
 	TotalChunks int `json:"total_chunks"`
+	// 多视角扫描 bundle(kind=scan3d_bundle)专用:端侧扫描会话 id + 帧数,
+	// 用于完成上传后入队 scan_fusion_jobs(session_key=scan_session_id,贯穿到 scan.fusion_done 便于端侧关联)。
+	ScanSessionID string `json:"scan_session_id,omitempty"`
+	FrameCount    int    `json:"frame_count,omitempty"`
+}
+
+// KindScan3DBundle 多视角 RGBD 融合 bundle 的 asset kind;上传完成即入队云端融合。
+const KindScan3DBundle = "scan3d_bundle"
+
+// fusionEnqueueParams 判定某次上传是否该触发融合,并算出 session_key(端侧未给则回退 uploadID,保唯一)。
+func fusionEnqueueParams(kind, scanSessionID, uploadID string) (sessionKey string, ok bool) {
+	if kind != KindScan3DBundle {
+		return "", false
+	}
+	sessionKey = strings.TrimSpace(scanSessionID)
+	if sessionKey == "" {
+		sessionKey = uploadID
+	}
+	return sessionKey, true
 }
 
 type assetDTO struct {
@@ -415,12 +436,31 @@ func (h *Handler) UploadComplete(w http.ResponseWriter, r *http.Request) {
 		SizeBytes:    stat.Size,
 		MIME:         sess.MIME,
 	}
+	if sess.Kind == KindScan3DBundle {
+		// bundle 资产带上扫描会话元数据,便于回溯与端侧关联。
+		if meta, err := json.Marshal(map[string]any{
+			"scan_session_id": strings.TrimSpace(req.ScanSessionID),
+			"frame_count":     req.FrameCount,
+		}); err == nil {
+			asset.Metadata = meta
+		}
+	}
 	if err := h.assets.CreateInspectionAsset(r.Context(), asset); err != nil {
 		h.log.Error("CreateInspectionAsset 失败", "upload_id", uploadID, "err", err)
 		httpx.WriteError(w, httpx.ErrInternal)
 		return
 	}
 	_ = h.assets.CompleteUploadSession(r.Context(), uploadID, asset.ID)
+
+	// 多视角扫描 bundle:上传完成即入队云端融合(DB 轮询队列,fusionworker 自动领取,无需 NATS)。
+	if sessionKey, ok := fusionEnqueueParams(sess.Kind, req.ScanSessionID, uploadID); ok {
+		if _, err := h.fusion.Enqueue(r.Context(), sessionKey, sess.ObjectKey, sess.InspectionID, req.FrameCount); err != nil {
+			// 不阻断上传成功;Enqueue 幂等(ON CONFLICT),端侧可重传或后续补偿。
+			h.log.Warn("入队多视角融合失败", "session", sessionKey, "object", sess.ObjectKey, "err", err)
+		} else {
+			h.log.Info("已入队多视角融合", "session", sessionKey, "object", sess.ObjectKey, "frames", req.FrameCount)
+		}
+	}
 
 	// audit
 	if h.audit != nil {

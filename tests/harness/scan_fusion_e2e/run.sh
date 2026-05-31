@@ -17,6 +17,7 @@ export GOMOB_DB_DSN="${GOMOB_DB_DSN:-$GOMOB_DEFAULT_DB_DSN}"
 export GOMOB_NATS_URL="${GOMOB_NATS_URL:-$GOMOB_DEFAULT_NATS_URL}"
 export GOMOB_MINIO_ENDPOINT="${GOMOB_MINIO_ENDPOINT:-$GOMOB_DEFAULT_MINIO_ENDPOINT}"
 export GOMOB_MINIO_BUCKET="${GOMOB_MINIO_BUCKET:-gomob-assets}"
+export GOMOB_REDIS_ADDR="${GOMOB_REDIS_ADDR:-$GOMOB_DEFAULT_REDIS_ADDR}"
 FUSION_PORT="${GOMOB_FUSION_PORT:-18092}"
 export GOMOB_FUSION_URL="http://127.0.0.1:${FUSION_PORT}"
 
@@ -49,10 +50,14 @@ for i in $(seq 1 60); do
 done
 echo "  fusion_service ready: $(curl -fsS http://127.0.0.1:${FUSION_PORT}/healthz)"
 
-echo "== 5. 入队 + worker 单步 + 断言(go e2e)=="
 export GOMOB_E2E_BUNDLE_PATH="$E2E_BUNDLE_FILE"
 export GOMOB_E2E_BUNDLE_KEY="scan_fusion_e2e/${GOMOB_E2E_SESSION}/bundle.zip"
 export GOMOB_E2E_RESULT_PATH="$E2E_RESULT_FILE"
+
+echo "== 5a. 真实上传 init/part/complete(kind=scan3d_bundle)→ 断言自动入队 =="
+( cd "$ROOT/server" && go test -tags e2e_fusion ./internal/asset/ -run TestUploadBundleEnqueuesFusion -v -count=1 )
+
+echo "== 5b. 入队 + worker 单步 + 断言 done/事件/GLB(go e2e)=="
 ( cd "$ROOT/server" && go test -tags e2e_fusion ./internal/fusion/ -run TestFusionE2E -v -count=1 )
 
 echo "== 6. GLB 几何复核(chamfer vs 观测面)=="
