@@ -13,6 +13,8 @@
 //	GOMOB_FUSION_CONF_THRESHOLD   conf 阈值预掩码，默认 80
 //	GOMOB_FUSION_ENABLE_CONF      默认 true
 //	GOMOB_FUSION_VOXEL_MM         TSDF voxel，默认 6
+//	GOMOB_FUSION_TEXTURE          烘焙 UV-atlas 纹理(default true;false 则仅顶点色 GLB)
+//	GOMOB_FUSION_TEX_SIZE         纹理分辨率,默认 1024
 //	GOMOB_MINIO_* / GOMOB_DB_DSN  复用平台约定
 package main
 
@@ -73,6 +75,8 @@ func main() {
 		ConfThreshold:    parseInt("GOMOB_FUSION_CONF_THRESHOLD", 80),
 		EnableConfidence: envOr("GOMOB_FUSION_ENABLE_CONF", "true") != "false",
 		VoxelSizeMm:      parseFloat("GOMOB_FUSION_VOXEL_MM", 6.0),
+		Texture:          envOr("GOMOB_FUSION_TEXTURE", "true") != "false",
+		TexSize:          parseInt("GOMOB_FUSION_TEX_SIZE", 1024),
 	}
 	worker, err := fusion.NewWorker(pool, publisher, cfg)
 	if err != nil {
@@ -80,7 +84,8 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("融合 worker 启动", "url", cfg.ServiceURL, "conf_threshold", cfg.ConfThreshold,
-		"enable_conf", cfg.EnableConfidence, "voxel_mm", cfg.VoxelSizeMm, "nats", publisher != nil)
+		"enable_conf", cfg.EnableConfidence, "voxel_mm", cfg.VoxelSizeMm,
+		"texture", cfg.Texture, "tex_size", cfg.TexSize, "nats", publisher != nil)
 	worker.Start(ctx)
 	log.Info("融合 worker 退出")
 }

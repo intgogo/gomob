@@ -19,7 +19,8 @@ import time
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 
-from fusion_core import FusionConfig, fuse, mesh_stats, mesh_to_glb
+from fusion_core import (FusionConfig, bake_albedo, fuse, fuse_with_poses,
+                         mesh_stats, mesh_to_glb, textured_mesh_to_glb)
 from rgbd_bundle import unpack
 
 app = FastAPI(title="gomob-fusion-service", version="0.1.0")
@@ -44,6 +45,8 @@ async def fuse_endpoint(
     conf_threshold: int = Form(80),
     enable_confidence: bool = Form(True),
     voxel_size_mm: float = Form(6.0),
+    texture: bool = Form(False),
+    tex_size: int = Form(1024),
 ):
     data = await bundle.read()
     try:
@@ -56,8 +59,13 @@ async def fuse_endpoint(
                        conf_threshold=conf_threshold, voxel_size_mm=voxel_size_mm)
     t0 = time.perf_counter()
     try:
-        mesh = fuse(frames, cfg)
-        glb = mesh_to_glb(mesh)
+        if texture:
+            mesh, poses = fuse_with_poses(frames, cfg)
+            tm, albedo = bake_albedo(mesh, frames, poses, tex_size=tex_size)
+            glb = textured_mesh_to_glb(tm, albedo)
+        else:
+            mesh = fuse(frames, cfg)
+            glb = mesh_to_glb(mesh)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=f"融合/导出失败: {e}")
     ms = int((time.perf_counter() - t0) * 1000)
@@ -67,6 +75,7 @@ async def fuse_endpoint(
         "X-Triangles": str(st["triangles"]),
         "X-Frame-Count": str(len(frames)),
         "X-Fusion-Ms": str(ms),
+        "X-Textured": "1" if texture else "0",
     }
     return Response(content=glb, media_type="model/gltf-binary", headers=headers)
 

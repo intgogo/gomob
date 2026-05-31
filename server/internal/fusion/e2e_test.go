@@ -81,9 +81,10 @@ func TestFusionE2E(t *testing.T) {
 	// 4) worker 单步
 	w, err := NewWorker(pool, pub, Config{
 		ServiceURL: fusionURL, MinIOEndpoint: endpoint, Bucket: bucket,
-		MinIOAccessKey: env("GOMOB_MINIO_ACCESS_KEY", "gomob"),
-		MinIOSecretKey: env("GOMOB_MINIO_SECRET_KEY", "gomob_dev_minio"),
+		MinIOAccessKey:   env("GOMOB_MINIO_ACCESS_KEY", "gomob"),
+		MinIOSecretKey:   env("GOMOB_MINIO_SECRET_KEY", "gomob_dev_minio"),
 		EnableConfidence: false,
+		Texture:          true, TexSize: 512, // 端到端验证带纹理 GLB 路径
 	})
 	must(err, "建 worker")
 	// 排空队列直到本 session 终态:ClaimNext 是 FIFO,队列里可能有其它 pending(如 5a 真实上传遗留),

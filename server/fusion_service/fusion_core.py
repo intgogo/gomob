@@ -165,8 +165,9 @@ def integrate_tsdf(frames, poses_cam_to_world, cfg: FusionConfig) -> o3d.geometr
     return mesh
 
 
-def fuse(frames, cfg: Optional[FusionConfig] = None) -> o3d.geometry.TriangleMesh:
-    """端到端:N 帧 RgbdFrame → 融合 mesh。位姿由 multiway registration 自估(无需外部 pose)。"""
+def fuse_with_poses(frames, cfg: Optional[FusionConfig] = None):
+    """端到端:N 帧 RgbdFrame → (融合 mesh, 位姿列表)。位姿由 multiway registration 自估。
+    poses[i]=cam_i→world(=cam0 帧),供纹理烘焙复用(投影外参=inv(pose))。"""
     cfg = cfg or FusionConfig()
     if len(frames) < 2:
         raise ValueError("至少 2 帧")
@@ -178,7 +179,12 @@ def fuse(frames, cfg: Optional[FusionConfig] = None) -> o3d.geometry.TriangleMes
     # 显式左乘 inv(pose0) → 构造性保证 world==cam0(harness 用 inv(exts[0]) 对齐 GT 的前提)。
     t0_inv = np.linalg.inv(poses[0])
     poses = [t0_inv @ p for p in poses]
-    return integrate_tsdf(frames, poses, cfg)
+    return integrate_tsdf(frames, poses, cfg), poses
+
+
+def fuse(frames, cfg: Optional[FusionConfig] = None) -> o3d.geometry.TriangleMesh:
+    """端到端:N 帧 RgbdFrame → 融合 mesh(仅顶点色)。"""
+    return fuse_with_poses(frames, cfg)[0]
 
 
 def mesh_stats(mesh: o3d.geometry.TriangleMesh) -> dict:
@@ -199,3 +205,46 @@ def mesh_to_glb(mesh: o3d.geometry.TriangleMesh) -> bytes:
         kw["vertex_colors"] = c
     tm = trimesh.Trimesh(vertices=v, faces=f, process=False, **kw)
     return tm.export(file_type="glb")
+
+
+def bake_albedo(mesh: o3d.geometry.TriangleMesh, frames, poses, tex_size: int = 1024):
+    """对融合 mesh 做 UV 展开(iso-charts)+ 多视角 RGB 投影烘焙 albedo 纹理。
+    poses[i]=cam_i→world(=mesh 所在 cam0 帧);投影外参=world→cam=inv(pose)。
+    返回 (t_mesh 带 texture_uvs, albedo uint8 HxWx3)。可见性/重叠混合由 Open3D 内部用 mesh 几何处理。"""
+    m = o3d.geometry.TriangleMesh(mesh)
+    m.remove_degenerate_triangles()
+    m.remove_duplicated_vertices()
+    m.remove_duplicated_triangles()
+    m.remove_non_manifold_edges()
+    tm = o3d.t.geometry.TriangleMesh.from_legacy(m)
+    tm.compute_uvatlas(size=tex_size)
+    images, intrinsics, extrinsics = [], [], []
+    for f, pose in zip(frames, poses):
+        images.append(o3d.t.geometry.Image(
+            o3d.core.Tensor(np.ascontiguousarray(f.color.astype(np.uint8)))))
+        K = np.array([[f.intr.fx, 0, f.intr.cx], [0, f.intr.fy, f.intr.cy], [0, 0, 1]], np.float64)
+        intrinsics.append(o3d.core.Tensor(K))
+        extrinsics.append(o3d.core.Tensor(np.ascontiguousarray(np.linalg.inv(pose))))
+    albedo = tm.project_images_to_albedo(images, intrinsics, extrinsics, tex_size, True)
+    alb = albedo.as_tensor().numpy()
+    if alb.dtype != np.uint8:
+        alb = np.clip(alb * 255.0, 0, 255).astype(np.uint8) if alb.max() <= 1.0 + 1e-6 \
+            else np.clip(alb, 0, 255).astype(np.uint8)
+    return tm, alb[..., :3]
+
+
+def textured_mesh_to_glb(tm: o3d.t.geometry.TriangleMesh, albedo: np.ndarray) -> bytes:
+    """带 UV+albedo 的 t_mesh → GLB(trimesh)。Open3D texture_uvs 是三角属性 [n_tri,3,2],
+    去索引为每角一顶点(GLB 用逐顶点 UV);v 轴翻转适配 glTF(原点左上)。"""
+    import trimesh
+    from PIL import Image
+    V = tm.vertex.positions.numpy()
+    T = tm.triangle.indices.numpy().astype(np.int64)
+    UV = tm.triangle.texture_uvs.numpy().reshape(-1, 2).astype(np.float64)
+    verts = V[T].reshape(-1, 3)
+    faces = np.arange(len(verts), dtype=np.int64).reshape(-1, 3)
+    uv = UV.copy()
+    uv[:, 1] = 1.0 - uv[:, 1]                       # glTF v 轴翻转
+    vis = trimesh.visual.texture.TextureVisuals(uv=uv, image=Image.fromarray(albedo))
+    tri = trimesh.Trimesh(vertices=verts, faces=faces, visual=vis, process=False)
+    return tri.export(file_type="glb")

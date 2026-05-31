@@ -46,12 +46,28 @@ def _look_at_extrinsic(eye, center, up=(0, 1, 0)) -> np.ndarray:
     return ext
 
 
-def render_views(mesh, intr: Intrinsic, n_views=10, radius=0.45, elev_deg=18.0):
+def surface_color(pw: np.ndarray, freq: float = 70.0) -> np.ndarray:
+    """按世界坐标取正弦 RGB 纹理(默认波长 ~9cm)。入 (M,3) 世界点,出 (M,3) float [0,1]。
+
+    用于验证纹理烘焙:在低多边形网格(抽稀/粗 voxel)上,顶点色按稀疏顶点采样 + TSDF 均值,
+    分辨率受限;UV 纹理图集以**图像分辨率**回投影重建表面色,更准。频率取"远大于几何误差"区间
+    (波长≫重建误差 mm 级),避免几何误差解相关纹理(几何锁定色对几何误差敏感,见 scan_fusion_texture)。"""
+    return np.stack([0.5 + 0.5 * np.sin(pw[:, 0] * freq),
+                     0.5 + 0.5 * np.sin(pw[:, 1] * freq + 2.094),
+                     0.5 + 0.5 * np.sin(pw[:, 2] * freq + 4.189)], axis=1)
+
+
+# 兼容旧名
+high_freq_color = surface_color
+
+
+def render_views(mesh, intr: Intrinsic, n_views=10, radius=0.45, elev_deg=18.0, color_fn=None):
     """环绕 raycast → 每视角 (depth_mm float32 HxW, color uint8 HxWx3, extrinsic world→cam)。
 
     单环固定仰角:相邻视角仅差方位、重叠强且均匀,multiway 配准稳。
     (曾试仰角随方位振荡补顶/底覆盖,反把视角裂成顶/底两簇、簇间耦合弱致底簇整体翻转 120°+,
-    得不偿失;固定仰角下不可观测的底面由"仅观测面" chamfer 度量排除,见 fusion_bench。)"""
+    得不偿失;固定仰角下不可观测的底面由"仅观测面" chamfer 度量排除,见 fusion_bench。)
+    color_fn 不为 None 时按命中点世界坐标逐像素取色(高频 GT 纹理);否则重心插值顶点色。"""
     scene = o3d.t.geometry.RaycastingScene()
     scene.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(mesh))
     tris = np.asarray(mesh.triangles)
@@ -79,15 +95,18 @@ def render_views(mesh, intr: Intrinsic, n_views=10, radius=0.45, elev_deg=18.0):
         pc = (ext[:3, :3] @ pts_w.reshape(-1, 3).T + ext[:3, 3:4]).T.reshape(intr.height, intr.width, 3)
         depth_mm = np.where(hit, pc[..., 2] * 1000.0, 0.0).astype(np.float32)
         depth_mm[~hit] = 0.0
-        # 色:重心插值顶点色
+        # 色:高频 GT 纹理(逐像素)或重心插值顶点色
         color = np.zeros((intr.height, intr.width, 3), np.uint8)
         hi = np.where(hit)
         if hi[0].size:
-            tri = tris[prim[hi]]                         # (M,3) 顶点索引
-            w12 = uv[hi]                                 # (M,2)
-            w0 = 1.0 - w12[:, 0] - w12[:, 1]
-            c = (w0[:, None] * vcol[tri[:, 0]] + w12[:, 0:1] * vcol[tri[:, 1]]
-                 + w12[:, 1:2] * vcol[tri[:, 2]])
+            if color_fn is not None:
+                c = color_fn(pts_w[hi])                  # 逐像素世界坐标高频色
+            else:
+                tri = tris[prim[hi]]                     # (M,3) 顶点索引
+                w12 = uv[hi]                             # (M,2)
+                w0 = 1.0 - w12[:, 0] - w12[:, 1]
+                c = (w0[:, None] * vcol[tri[:, 0]] + w12[:, 0:1] * vcol[tri[:, 1]]
+                     + w12[:, 1:2] * vcol[tri[:, 2]])
             color[hi] = np.clip(c * 255.0, 0, 255).astype(np.uint8)
         out.append((depth_mm, color, ext))
     return out
@@ -134,10 +153,10 @@ def observed_surface(frames, exts, voxel_mm=2.0):
     return pc.voxel_down_sample(voxel_mm / 1000.0)
 
 
-def build_dataset(n_views=10, noisy=True, seed0=7000):
+def build_dataset(n_views=10, noisy=True, seed0=7000, color_fn=None):
     intr = Intrinsic(width=640, height=480, fx=525.0, fy=525.0, cx=320.0, cy=240.0)
     gt = make_gt_mesh()
-    views = render_views(gt, intr, n_views=n_views)
+    views = render_views(gt, intr, n_views=n_views, color_fn=color_fn)
     frames, exts = [], []
     for i, (depth_mm, color, ext) in enumerate(views):
         if noisy:

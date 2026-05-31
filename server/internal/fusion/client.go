@@ -31,6 +31,8 @@ type Config struct {
 	ConfThreshold    int
 	EnableConfidence bool
 	VoxelSizeMm      float64
+	Texture          bool // 烘焙 UV-atlas 纹理(否则仅顶点色 GLB)
+	TexSize          int
 }
 
 func (c Config) normalized() Config {
@@ -64,6 +66,9 @@ func (c Config) normalized() Config {
 	}
 	if c.VoxelSizeMm <= 0 {
 		c.VoxelSizeMm = 6.0
+	}
+	if c.TexSize <= 0 {
+		c.TexSize = 1024
 	}
 	return c
 }
@@ -137,6 +142,8 @@ func (c *ServiceClient) Fuse(ctx context.Context, bundle []byte) (FuseResult, er
 		"conf_threshold":    strconv.Itoa(c.cfg.ConfThreshold),
 		"enable_confidence": strconv.FormatBool(c.cfg.EnableConfidence),
 		"voxel_size_mm":     strconv.FormatFloat(c.cfg.VoxelSizeMm, 'f', -1, 64),
+		"texture":           strconv.FormatBool(c.cfg.Texture),
+		"tex_size":          strconv.Itoa(c.cfg.TexSize),
 	}
 	for k, v := range fields {
 		if err := mw.WriteField(k, v); err != nil {

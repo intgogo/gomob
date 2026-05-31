@@ -194,7 +194,7 @@ harness `tests/harness/scan_fusion` 实测:干净 chamfer ~1.3mm(全连接 multi
 
 - M3.12 端侧采集 UI（启发式 ROI 兜底分割）
 - M3.13 asset multipart upload 接入
-- M3.14 cv-engine `object_3d_fusion` worker（Open3D 现成库 + xatlas 纹理）
+- M3.14 fusion_service(Python/Open3D)+ fusionworker(Go)；UV 纹理用 Open3D `compute_uvatlas`+`project_images_to_albedo`(非 xatlas)。2026-05-31 算法核+垂直切片+纹理烘焙已落,合成 harness 全过；待真实 RGBD 端到端
 - M3.15 端侧 gallery GLB 拉回 Filament 渲染
 - M3.16 scan_multiview_quality harness（Stanford Bunny 合成 + 卡车真实数据）
 
