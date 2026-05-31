@@ -57,7 +57,7 @@ namespace reconstruction {
         ScanSession* s,
         const uint16_t* depth_mm, int width, int height,
         double fx, double fy, double cx, double cy,
-        const float* pose7);
+        const float* pose7, const uint8_t* conf = nullptr);
     bool SessionFinalize(ScanSession* s, const char* out_dir, int* out_stats3);
     void SessionClose(ScanSession* s);
     std::vector<float> SessionPeekVertices(ScanSession* s, int max_vertices);
@@ -218,7 +218,7 @@ JNIEXPORT jint JNICALL
 Java_io_gomob_nativebridge_NativeBridge_scanSessionIngest(
         JNIEnv* env, jobject /*thiz*/,
         jlong handle, jobject depthBuffer, jint width, jint height,
-        jdoubleArray intr, jfloatArray pose) {
+        jdoubleArray intr, jfloatArray pose, jobject confBuffer) {
     auto* s = reinterpret_cast<gomob::reconstruction::ScanSession*>(handle);
     if (!s) {
         ThrowNativeException(env, 102, "session handle invalid");
@@ -233,12 +233,22 @@ Java_io_gomob_nativebridge_NativeBridge_scanSessionIngest(
         ThrowNativeException(env, 2, "intr must be 4 doubles, pose must be 7 floats");
         return -1;
     }
+    // confBuffer 可选(null=均权)。零拷贝直读 DirectByteBuffer；尺寸需 >= width*height(uint8/像素),
+    // 不足则忽略当作均权(宁退化勿越界)。
+    const uint8_t* confPtr = nullptr;
+    if (confBuffer) {
+        auto* p = static_cast<uint8_t*>(env->GetDirectBufferAddress(confBuffer));
+        if (p && env->GetDirectBufferCapacity(confBuffer) >=
+                     static_cast<jlong>(width) * height) {
+            confPtr = p;
+        }
+    }
     jdouble* intrData = env->GetDoubleArrayElements(intr, nullptr);
     jfloat* poseData = env->GetFloatArrayElements(pose, nullptr);
     int kfCount = gomob::reconstruction::SessionIngest(
         s, depthPtr, width, height,
         intrData[0], intrData[1], intrData[2], intrData[3],
-        poseData);
+        poseData, confPtr);
     env->ReleaseDoubleArrayElements(intr, intrData, JNI_ABORT);
     env->ReleaseFloatArrayElements(pose, poseData, JNI_ABORT);
     return kfCount;

@@ -103,6 +103,9 @@ object NativeBridge {
      * @param height depth 高
      * @param intr [fx, fy, cx, cy]（depth 镜头内参）
      * @param pose 7 元素位姿 [tx,ty,tz,qx,qy,qz,qw]
+     * @param confidence 可选 per-pixel 置信 Direct ByteBuffer（uint8，与 depth 同 W×H）。
+     *   非 null 时 native 按 conf/255 软加权 TSDF 积分 + 加权 ICP（低置信弱回波/散斑弱像素降权）；
+     *   null 时退化为均权（旧行为）。来源 [io.gomob.model.DepthFrame.confidence]。
      * @return 累积的关键帧数
      */
     external fun scanSessionIngest(
@@ -111,6 +114,7 @@ object NativeBridge {
         width: Int, height: Int,
         intr: DoubleArray,
         pose: FloatArray,
+        confidence: ByteBuffer? = null,
     ): Int
 
     /**

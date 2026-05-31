@@ -1162,6 +1162,76 @@ bool process_p100r3_light_ir_frame(const uint8_t* transport_frame,
     return true;
 }
 
+std::vector<uint8_t> p100r3_ir_speckle_confidence(const std::vector<uint16_t>& active_ir_raw16,
+                                                  uint16_t width,
+                                                  uint16_t height,
+                                                  const P100R3IrConfidenceConfig& config) {
+    const size_t pixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+    if (pixels == 0 || active_ir_raw16.size() != pixels) return {};
+    const int W = width, H = height;
+
+    // 高字节 = IR 灰度散斑强度（低字节 phase code 不用）。
+    std::vector<int64_t> hi(pixels);
+    for (size_t i = 0; i < pixels; ++i) hi[i] = static_cast<int64_t>(active_ir_raw16[i] >> 8);
+
+    // 积分图（+1 padding）求 box 内 sum / sumsq → 局部 std（散斑可见度）。O(1)/像素。
+    const int IW = W + 1;
+    std::vector<int64_t> isum(static_cast<size_t>(IW) * (H + 1), 0);
+    std::vector<int64_t> isq(static_cast<size_t>(IW) * (H + 1), 0);
+    for (int y = 0; y < H; ++y) {
+        int64_t rs = 0, rq = 0;
+        for (int x = 0; x < W; ++x) {
+            const int64_t v = hi[static_cast<size_t>(y) * W + x];
+            rs += v; rq += v * v;
+            const size_t up = static_cast<size_t>(y) * IW + (x + 1);
+            isum[static_cast<size_t>(y + 1) * IW + (x + 1)] = isum[up] + rs;
+            isq[static_cast<size_t>(y + 1) * IW + (x + 1)] = isq[up] + rq;
+        }
+    }
+    auto box = [&](const std::vector<int64_t>& I, int x0, int y0, int x1, int y1) -> int64_t {
+        return I[static_cast<size_t>(y1) * IW + x1] - I[static_cast<size_t>(y0) * IW + x1] -
+               I[static_cast<size_t>(y1) * IW + x0] + I[static_cast<size_t>(y0) * IW + x0];
+    };
+
+    const int r = std::max(1, config.window / 2);
+    std::vector<float> lstd(pixels, 0.0f);
+    for (int y = 0; y < H; ++y) {
+        const int y0 = std::max(0, y - r), y1 = std::min(H, y + r + 1);
+        for (int x = 0; x < W; ++x) {
+            const int x0 = std::max(0, x - r), x1 = std::min(W, x + r + 1);
+            const int64_t n = static_cast<int64_t>(x1 - x0) * (y1 - y0);
+            if (n <= 0) continue;
+            const double mean = static_cast<double>(box(isum, x0, y0, x1, y1)) / n;
+            const double msq = static_cast<double>(box(isq, x0, y0, x1, y1)) / n;
+            const double var = msq - mean * mean;
+            lstd[static_cast<size_t>(y) * W + x] = static_cast<float>(std::sqrt(var > 0 ? var : 0.0));
+        }
+    }
+
+    // 帧内鲁棒尺度 = IR>0 像素 local-std 的中值（曝光自适应，避绝对阈值泛化陷阱）。
+    std::vector<float> nz;
+    nz.reserve(pixels);
+    for (size_t i = 0; i < pixels; ++i) if (hi[i] > 0) nz.push_back(lstd[i]);
+    float scale = 1.0f;
+    if (!nz.empty()) {
+        std::nth_element(nz.begin(), nz.begin() + nz.size() / 2, nz.end());
+        scale = std::max(1e-6f, nz[nz.size() / 2]);
+    }
+
+    const float lo = config.contrast_lo_rel;
+    const float hi_rel = std::max(lo + 1e-3f, config.contrast_hi_rel);
+    const int mn = config.min_conf;
+    std::vector<uint8_t> conf(pixels, 0);
+    for (size_t i = 0; i < pixels; ++i) {
+        if (hi[i] <= 0) continue;  // 无 IR 回波 = 无结构光信号 → 置信 0
+        const float norm = lstd[i] / scale;
+        float t = (norm - lo) / (hi_rel - lo);
+        t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+        conf[i] = static_cast<uint8_t>(mn + std::lround(t * (255 - mn)));
+    }
+    return conf;
+}
+
 bool p100r3_flying_spatial_evidence(const std::vector<uint16_t>& fused_raw16,
                                     uint16_t width,
                                     uint16_t height,
@@ -1245,6 +1315,7 @@ void P100R3TemporalFilter::reset() {
     std::fill(stable_run_.begin(), stable_run_.end(), 0);
     std::fill(frames_seen_.begin(), frames_seen_.end(), 0);
     noise_est_raw_ = 0.0f;  // 重新自适应（首帧用绝对底）
+    prior_conf_.clear();    // 新 burst/pose：旧 IR 先验作废
     // samples_ 不必清零：count_=0 时不会被读到。
 }
 
@@ -1402,6 +1473,17 @@ bool P100R3TemporalFilter::push(const std::vector<uint16_t>& active_raw16,
             else stab = (hi - span_mm) / (hi - lo);
             const int c = static_cast<int>(std::lround(static_cast<float>((*confidence)[i]) * stab));
             (*confidence)[i] = static_cast<uint8_t>(std::max<int>(config_.conf_min_valid, c));
+        }
+    }
+
+    // ── 融合 IR 散斑单帧先验置信（set_prior_confidence 喂入）：conf = min(时域, IR) ──
+    // 时域置信需积累窗口（首帧/暖机/运动场景给不出），IR 散斑对比度给【单帧零延迟】可信度，互补。
+    // min 语义：任一信号判不可信即降权；尤其救暖机像素（count<2 时上面跳过了时域降权，IR 仍能压）。
+    if (confidence && config_.fuse_prior_confidence &&
+        prior_conf_.size() == pixels) {
+        for (size_t i = 0; i < pixels; ++i) {
+            if ((*fused_raw16)[i] == 0 || (*confidence)[i] == 0) continue;
+            (*confidence)[i] = std::min((*confidence)[i], prior_conf_[i]);
         }
     }
 

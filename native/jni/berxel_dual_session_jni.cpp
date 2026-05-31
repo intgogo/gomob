@@ -277,10 +277,26 @@ void depth_parser_loop(DualSession* s) {
         for (UvcRawFrame& f : frames) {
             // 真深度帧进 latest_depth；IR/phase 帧转存 latest_ir（供「切 IR」预览），不混入 depth。
             if (!is_real_depth_frame(f.payload)) {
-                std::lock_guard<std::mutex> lk(s->frame_mu);
-                s->latest_ir_transport = f.payload;
-                s->latest_ir_info = f.info;
-                s->ir_skipped++;
+                {
+                    std::lock_guard<std::mutex> lk(s->frame_mu);
+                    s->latest_ir_transport = f.payload;
+                    s->latest_ir_info = f.info;
+                    s->ir_skipped++;
+                }
+                // IR 散斑局部对比度 → 单帧深度置信先验,喂时域滤波器(下一深度帧 push 融合 min)。
+                // 散斑弱/无回波处深度不可信(实证 AUC 0.82)；本线程是 filter 唯一消费者,IR/depth
+                // 顺序处理,set/consume 无并发,无需额外锁。在锁外算(积分图 ~256k px,不占 frame_mu)。
+                if (s->depth_temporal_enable) {
+                    const P100R3VideoMode active = p100r3_depth_active_mode(s->depth_mode);
+                    const size_t aw = active.width, ah = active.height;
+                    if (aw > 0 && ah > 0 && f.payload.size() >= aw * ah * 2) {
+                        const auto* src = reinterpret_cast<const uint16_t*>(f.payload.data());
+                        std::vector<uint16_t> active_ir(src, src + aw * ah);
+                        s->depth_temporal_filter.set_prior_confidence(
+                            p100r3_ir_speckle_confidence(active_ir,
+                                static_cast<uint16_t>(aw), static_cast<uint16_t>(ah)));
+                    }
+                }
                 continue;
             }
             // 时域融合：active raw16 = transport 前 aw×ah 个 uint16（状态行是最后一行）。

@@ -233,11 +233,14 @@ class Scan3dRecordingViewModel @Inject constructor(
                     val nativeStart = System.currentTimeMillis()
                     val kf = withContext(nativeDispatcher) {
                         if (sessionHandle == 0L) -1
+                        // 传 frame.confidence(可能 null):native 按置信软加权 TSDF + 加权 ICP,
+                        // 弱回波/散斑弱像素降权,density-first 稠密输入也收敛到干净表面(M1.6.19)
                         else NativeBridge.scanSessionIngest(
                             h,
                             frame.data, frame.width, frame.height,
                             doubleArrayOf(intr.fx, intr.fy, intr.cx, intr.cy),
                             pose,
+                            frame.confidence,
                         )
                     }
                     val nativeMs = System.currentTimeMillis() - nativeStart

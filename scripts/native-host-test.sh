@@ -23,12 +23,14 @@ build_and_run icp_test \
 
 build_and_run tsdf_test \
     tests/native_host/tsdf_test.cpp \
-    native/reconstruction/tsdf.cpp
+    native/reconstruction/tsdf.cpp \
+    native/depth/depth_projection.cpp
 
 build_and_run mc_test \
     tests/native_host/mc_test.cpp \
     native/reconstruction/marching_cubes.cpp \
-    native/reconstruction/tsdf.cpp
+    native/reconstruction/tsdf.cpp \
+    native/depth/depth_projection.cpp
 
 build_and_run scan_session_test \
     tests/native_host/scan_session_test.cpp \
@@ -37,4 +39,10 @@ build_and_run scan_session_test \
     native/reconstruction/tsdf.cpp \
     native/reconstruction/marching_cubes.cpp \
     native/reconstruction/mesh_export.cpp \
+    native/depth/depth_projection.cpp
+
+build_and_run conf_weight_test \
+    tests/native_host/conf_weight_test.cpp \
+    native/reconstruction/tsdf.cpp \
+    native/reconstruction/icp.cpp \
     native/depth/depth_projection.cpp

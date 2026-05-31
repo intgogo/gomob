@@ -158,6 +158,29 @@ mask × depth → 物体 depth → 反投影 → 物体点云
 - **失败回退**：扫描完成后 cv-engine 跑配准，某两张 pair 配不上时 → 端侧 UI 提示"角度 5 和 6 拼不上，请补拍这两个角度之间"
 - **目标锁定**（阶段 2 起）：第一张让用户点 prompt 点指定目标 → 后续帧 SAM 自动用该 prompt 跟踪
 
+### 5.5 深度置信加权（贯穿配准 / 融合）
+
+P100R3 在 density-first 稠密模式下，弱回波 / 散斑弱像素单帧误差可达 ~9%（弱像素静态时域 MAD ~40-60mm，
+见 [TODO M1.6.17](../../TODO.md)）。**策略：保稠密 + 按 per-pixel 置信加权**，而非退回 vendor 稀疏（仅 11% 密度）。
+置信来源已打通到 `core:model` 的 `DepthFrame.confidence`（uint8，0=无效/飞点，255=高置信）：
+时域稳定性置信（窗口 `window_span` 派生，M1.6.17）∧ IR 散斑局部对比度单帧置信（M1.6.19，AUC 0.72-0.82）取小融合 + 飞点清零。
+
+置信应贯穿**每个**重建阶段（设计原则，非全部已实现）：
+
+| 阶段 | 加权方式 | 状态 |
+|------|---------|------|
+| 端侧 TSDF 积分 | voxel 权重 `w += conf/255`（conf=0 不贡献），SDF 按权混合 | ✅ 端侧已落地（M1.6.20） |
+| 端侧 ICP | 加权 Kabsch 刚体拟合，低置信点降权防噪声拉偏位姿 | ✅ 端侧已落地（M1.6.20） |
+| 端侧 mesh 门 | `min_weight` 在加权模式下语义=累计置信（满置信观测为单位）；弱区靠多帧累计过门、不空洞 | ✅ 端侧已落地（M1.6.20，harness 系统性恒弱区实测无空洞） |
+| 云端 Color-ICP | RANSAC/Color-ICP correspondence 按 per-frame conf 降权（Huber 边权 / 外点阈值） | ⬜ 待（M3.14，Open3D Python API 无 per-point 权重 → 预过滤低 conf 点或自定义） |
+| 云端 TSDF/纹理 | `ScalableTSDFVolume` voxel 按 conf 加权；纹理选 visibility 优先高置信视角 | ⬜ 待（M3.14） |
+| SAM mask 边界 | 前景 logit 0.3-0.7 软权重，避免硬边界 TSDF 伪影 | ⬜ 待（阶段 2，M3.17） |
+
+**端侧验证**（harness `tests/harness/scan_conf_weighting/` + 单测 `tests/native_host/conf_weight_test.cpp`）：
+合成球面带 45% 弱回波，加权重建表面 RMS 14.3→0.81mm（降 94%）、内点 40→100%、覆盖真球冠 98%；
+真硬件 density-first depth + IR-conf chamfer 降 42%。即 **density-first + 置信加权 > 稀疏干净**，
+保稠密同时把弱像素拉回标称精度。云端把同一套加权语义复刻进 Open3D 是 M3.14 接口债。
+
 ## 6. 工程实施阶段（与 [TODO.md](../../TODO.md) M3.12–M3.20 对齐）
 
 ### 阶段 1：端拍照 + 云融合（业务闭环 MVP，1-2 周）

@@ -31,7 +31,7 @@ TsdfVolume::TsdfVolume(const TsdfConfig& cfg) : cfg_(cfg) {
 
 int TsdfVolume::Integrate(const uint16_t* depth_mm, int width, int height,
                           double fx, double fy, double cx, double cy,
-                          const float* pose7) {
+                          const float* pose7, const uint8_t* conf) {
     // 解相机位姿：相机在世界系，P_w = R*P_c + t；逆变换 P_c = R^T * (P_w - t)
     Eigen::Vector3f t(pose7[0], pose7[1], pose7[2]);
     Eigen::Quaternionf q(pose7[6], pose7[3], pose7[4], pose7[5]);
@@ -64,6 +64,13 @@ int TsdfVolume::Integrate(const uint16_t* depth_mm, int width, int height,
                 // 跳过无效深度 + 工作距离外的噪声（与 ProjectToPointCloud 同一窗口，
                 // 避免 ICP reference 与 TSDF 体素积分用了不同的"有效像素"集合，造成漂移）
                 if (!gomob::depth::IsDepthValid(static_cast<int16_t>(d))) continue;
+                // 置信加权：cw = conf/255 ∈[0,1]，缩放本观测对体素的贡献(Curless&Levoy 加权平均的"权重增量")。
+                // conf=nullptr 或关加权 → cw=1.0(均权,旧行为)；conf=0(无效/飞点) → 不贡献。
+                float cw = 1.0f;
+                if (conf && cfg_.confidence_weighting) {
+                    cw = static_cast<float>(conf[vi * width + ui]) / 255.0f;
+                    if (cw <= 0.0f) continue;
+                }
                 float z = static_cast<float>(d);
                 float sdf = z - Pc.z();
                 if (sdf < -trunc) continue;            // 远在表面后面（被遮挡 → 不更新）
@@ -73,8 +80,8 @@ int TsdfVolume::Integrate(const uint16_t* depth_mm, int width, int height,
                 std::size_t idx = Index(i, j, k);
                 float w0 = weight_[idx];
                 float s0 = sdf_[idx];
-                float w1 = std::min(w0 + 1.0f, wmax);
-                float s1 = (s0 * w0 + sdf_norm * 1.0f) / w1;
+                float w1 = std::min(w0 + cw, wmax);
+                float s1 = (s0 * w0 + sdf_norm * cw) / w1;
                 sdf_[idx] = s1;
                 weight_[idx] = w1;
                 ++updated;

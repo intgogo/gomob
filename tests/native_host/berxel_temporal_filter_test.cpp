@@ -141,6 +141,54 @@ void resizes_safely() {
     assert(!filter.push(big, 4, 4, &fused, nullptr, nullptr));
 }
 
+// IR 散斑置信:平坦区(std=0)→min_conf、强对比区→高置信、无回波(高字节=0)→0。
+void ir_speckle_confidence_maps_contrast() {
+    const int w = 32, h = 8;
+    std::vector<uint16_t> ir(static_cast<size_t>(w) * h, 0);
+    // 大部分平坦(低对比,贴真实重偏态分布:中值对比度低)+ 末 4 列强交替(高对比小patch)。
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const uint8_t hi = (x < 28) ? 100                         // 主区:平坦(低对比)
+                                        : ((x % 2 == 0) ? 40 : 220);  // 末 4 列:强交替(高对比)
+            ir[static_cast<size_t>(y) * w + x] = static_cast<uint16_t>(hi) << 8;
+        }
+    }
+    ir[static_cast<size_t>(3) * w + 20] = 0;  // 一个无 IR 回波像素(高字节=0)
+    auto conf = gomob::berxel::host::p100r3_ir_speckle_confidence(ir, w, h);
+    assert(conf.size() == static_cast<size_t>(w) * h);
+    const uint8_t left = conf[static_cast<size_t>(4) * w + 4];    // 平坦内部
+    const uint8_t right = conf[static_cast<size_t>(4) * w + 30];  // 强对比内部
+    const uint8_t hole = conf[static_cast<size_t>(3) * w + 20];   // 无回波
+    assert(hole == 0);                  // 无结构光信号 → 置信 0
+    assert(left == 40);                 // 平坦 std=0 → min_conf 默认 40
+    assert(right >= 200);               // 散斑强 → 高置信
+    assert(right > left);
+}
+
+// IR 先验融合:稳定平坦满置信的像素,被低 IR 先验经 min 拉低;其余不受影响。
+void prior_confidence_fuses_min() {
+    P100R3TemporalFilterConfig cfg;
+    cfg.spatial_denoise_enable = false;  // 隔离:不改 conf
+    P100R3TemporalFilter filter(cfg);
+    std::vector<uint16_t> fused;
+    std::vector<uint8_t> conf;
+    auto frame = flat_frame(500.0f);
+    for (int i = 0; i < 6; ++i) filter.push(frame, kW, kH, &fused, &conf, nullptr, nullptr);
+    assert(conf[0] == filter.config().full_confidence);  // 稳定平坦 → 满置信
+
+    std::vector<uint8_t> prior(kPx, 255);
+    prior[0] = 50;                       // 像素 0 IR 散斑弱
+    filter.set_prior_confidence(prior);
+    filter.push(frame, kW, kH, &fused, &conf, nullptr, nullptr);
+    assert(conf[0] == 50);                                // min(255, 50)
+    assert(conf[1] == filter.config().full_confidence);   // 其余先验=255,不降
+
+    // reset 清空先验:不再融合
+    filter.reset();
+    for (int i = 0; i < 6; ++i) filter.push(frame, kW, kH, &fused, &conf, nullptr, nullptr);
+    assert(conf[0] == filter.config().full_confidence);
+}
+
 }  // namespace
 
 int main() {
@@ -149,6 +197,8 @@ int main() {
     holds_estimate_on_dropout();
     reset_clears_state();
     resizes_safely();
+    ir_speckle_confidence_maps_contrast();
+    prior_confidence_fuses_min();
     std::cout << "berxel_temporal_filter_test PASS\n";
     return 0;
 }

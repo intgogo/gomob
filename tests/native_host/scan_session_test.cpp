@@ -31,7 +31,7 @@ ScanSession* SessionCreate(float voxel_size_mm, float grid_extent_mm, float grid
 int SessionIngest(ScanSession*,
                   const uint16_t* depth_mm, int width, int height,
                   double fx, double fy, double cx, double cy,
-                  const float* pose7);
+                  const float* pose7, const uint8_t* conf = nullptr);
 bool SessionFinalize(ScanSession*, const char* out_dir, int* out_stats3);
 void SessionClose(ScanSession*);
 }

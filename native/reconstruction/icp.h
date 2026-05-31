@@ -39,9 +39,14 @@ struct IcpResult {
 // ICP 增量配准 src → dst。
 // - src/dst 都是扁平 [x0,y0,z0, x1,y1,z1, ...]，单位 mm，深度=0 占位点会被自动跳过
 // - initial_pose7 同 IcpResult::pose7 格式；首帧调用方应给单位位姿 [0,0,0, 0,0,0,1]
+// - src_weights: 可选,长度=src_count 的 per-point 置信权重,**期望 [0,1](如 conf/255)**；nullptr=均权(等同旧行为)。
+//   负权 / 超大权未做内部校验(会拉反或数值放大),调用方须保证非负且量级合理。
+//   提供时改用加权刚体拟合(Kabsch with weights)：低置信点(弱回波/散斑弱)在位姿求解中被降权,
+//   避免噪声点把位姿拉偏(原 Umeyama 所有配对等权,边界/遮挡处噪声有同等杠杆)。
 IcpResult IcpRegister(const float* src, std::size_t src_count,
                       const float* dst, std::size_t dst_count,
                       const float* initial_pose7,
-                      const IcpConfig& cfg = {});
+                      const IcpConfig& cfg = {},
+                      const float* src_weights = nullptr);
 
 } // namespace gomob::reconstruction

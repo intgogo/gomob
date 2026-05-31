@@ -28,10 +28,45 @@
 
 namespace gomob::reconstruction {
 
+namespace {
+// 加权刚体拟合(Kabsch with weights)：求 R,t 使 Σ w_i ||R·src_i + t - dst_i||² 最小。
+// 退化(总权≈0)时返回单位变换。等价于 Eigen::umeyama(with_scaling=false) 的加权版。
+Eigen::Matrix4f WeightedRigidFit(const std::vector<Eigen::Vector3f>& src,
+                                 const std::vector<Eigen::Vector3f>& dst,
+                                 const std::vector<float>& w) {
+    Eigen::Matrix4f T = Eigen::Matrix4f::Identity();
+    double wsum = 0.0;
+    Eigen::Vector3d sc = Eigen::Vector3d::Zero(), dc = Eigen::Vector3d::Zero();
+    for (std::size_t i = 0; i < src.size(); ++i) {
+        wsum += w[i];
+        sc += w[i] * src[i].cast<double>();
+        dc += w[i] * dst[i].cast<double>();
+    }
+    if (wsum < 1e-6) return T;
+    sc /= wsum; dc /= wsum;
+    Eigen::Matrix3d H = Eigen::Matrix3d::Zero();
+    for (std::size_t i = 0; i < src.size(); ++i) {
+        H += static_cast<double>(w[i]) *
+             (src[i].cast<double>() - sc) * (dst[i].cast<double>() - dc).transpose();
+    }
+    Eigen::JacobiSVD<Eigen::Matrix3d> svd(H, Eigen::ComputeFullU | Eigen::ComputeFullV);
+    Eigen::Matrix3d U = svd.matrixU(), V = svd.matrixV();
+    double det = (V * U.transpose()).determinant();
+    Eigen::Matrix3d D = Eigen::Matrix3d::Identity();
+    D(2, 2) = det < 0 ? -1.0 : 1.0;          // 防反射(保证 R 是真旋转)
+    Eigen::Matrix3d R = V * D * U.transpose();
+    Eigen::Vector3d t = dc - R * sc;
+    T.block<3, 3>(0, 0) = R.cast<float>();
+    T.block<3, 1>(0, 3) = t.cast<float>();
+    return T;
+}
+}  // namespace
+
 IcpResult IcpRegister(const float* src, std::size_t src_count,
                       const float* dst, std::size_t dst_count,
                       const float* initial_pose7,
-                      const IcpConfig& cfg) {
+                      const IcpConfig& cfg,
+                      const float* src_weights) {
     IcpResult result{};
     result.status = IcpResultStatus::DegenerateInput;
     result.pose7 = {initial_pose7[0], initial_pose7[1], initial_pose7[2],
@@ -57,8 +92,10 @@ IcpResult IcpRegister(const float* src, std::size_t src_count,
     for (int iter = 0; iter < cfg.max_iter; ++iter) {
         std::vector<Eigen::Vector3f> src_warp;
         std::vector<Eigen::Vector3f> dst_match;
+        std::vector<float> pair_w;          // 仅 src_weights 提供时填充
         src_warp.reserve(src_count);
         dst_match.reserve(src_count);
+        if (src_weights) pair_w.reserve(src_count);
 
         for (std::size_t i = 0; i < src_count; ++i) {
             const float* p = src + i * 3;
@@ -72,6 +109,7 @@ IcpResult IcpRegister(const float* src, std::size_t src_count,
             src_warp.push_back(pw);
             const float* q = dst + nn_idx * 3;
             dst_match.emplace_back(q[0], q[1], q[2]);
+            if (src_weights) pair_w.push_back(src_weights[i]);
         }
 
         result.iterations = iter + 1;
@@ -83,15 +121,19 @@ IcpResult IcpRegister(const float* src, std::size_t src_count,
             break;
         }
 
-        // 装配 3×N 矩阵给 Umeyama
-        Eigen::Matrix3Xf src_mat(3, src_warp.size());
-        Eigen::Matrix3Xf dst_mat(3, dst_match.size());
-        for (std::size_t i = 0; i < src_warp.size(); ++i) {
-            src_mat.col(i) = src_warp[i];
-            dst_mat.col(i) = dst_match[i];
+        // 求增量刚体变换：有 per-point 权重走加权 Kabsch,否则 Eigen::umeyama(均权,保持旧行为)
+        Eigen::Matrix4f T;
+        if (src_weights) {
+            T = WeightedRigidFit(src_warp, dst_match, pair_w);
+        } else {
+            Eigen::Matrix3Xf src_mat(3, src_warp.size());
+            Eigen::Matrix3Xf dst_mat(3, dst_match.size());
+            for (std::size_t i = 0; i < src_warp.size(); ++i) {
+                src_mat.col(i) = src_warp[i];
+                dst_mat.col(i) = dst_match[i];
+            }
+            T = Eigen::umeyama(src_mat, dst_mat, false);  // with_scaling=false → 纯刚体
         }
-        // with_scaling=false → 纯刚体（不缩放）
-        Eigen::Matrix4f T = Eigen::umeyama(src_mat, dst_mat, false);
         Eigen::Matrix3f dR = T.block<3, 3>(0, 0);
         Eigen::Vector3f dt = T.block<3, 1>(0, 3);
 

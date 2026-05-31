@@ -30,6 +30,20 @@ struct TsdfConfig {
     float truncation_dist_mm = 8.0f;      // 通常 4×voxel
     float weight_clamp = 100.0f;          // 体素权重上限（避免老观测主导）
     std::array<float, 3> grid_origin_mm = {-200.0f, -200.0f, -200.0f}; // 网格 (0,0,0) 角的世界坐标
+    // 置信加权：Integrate 收到 per-pixel conf(uint8)时，按 conf/255 缩放该观测对体素的贡献权重。
+    //   conf=255→权重 1.0(等同旧行为)；conf=128→0.5；conf=0(无效/飞点)→不贡献。
+    //   多视角下高置信观测主导体素 SDF，弱回波/散斑弱像素被自然降权 →
+    //   density-first 稠密输入也能收敛到干净表面(验证见 finding_p100r3_depth_ir_interleaved / M1.6.19)。
+    //   conf=nullptr 时退化为均权(向后兼容,不破坏既有 streaming 调用)。
+    //
+    // ★ 权重单位语义(与下游 Marching Cubes / Peek 的 min_weight 门耦合,务必理解):
+    //   开加权后,voxel.weight = Σ(conf_i/255) = **累计置信(以"满置信观测"为单位)**,非观测计数。
+    //   均权时 weight=观测数,min_weight=1.0 即"≥1 次观测";加权时 min_weight=1.0 即
+    //   "≥1 次满置信观测的证据量"——单次 conf=200 观测(贡献 0.78)不过门,需再积累。
+    //   这是**有意的更严过滤**(弱证据区需更多帧佐证),不是 bug:连续扫描下 conf=40 区
+    //   12 帧累计 weight≈1.88>1 仍过门、不空洞(harness scan_conf_weighting 系统性恒弱区实测)。
+    //   若下游想保留单次中置信观测的覆盖,自行调小 MeshConfig.min_weight,不要改这里。
+    bool confidence_weighting = true;
 };
 
 struct TsdfStats {
@@ -44,10 +58,11 @@ public:
 
     // 用一帧 16bit mm 深度图 + 内参 + 相机位姿 (世界 → 相机) 积分一次
     // pose7: [tx,ty,tz,qx,qy,qz,qw]，含义"相机在世界系的位姿"，即 P_w = R*P_c + t
+    // conf: 可选 per-pixel 置信(uint8, 与 depth 同 W×H, nullptr=均权)；config.confidence_weighting 控制是否生效
     // 返回：本次实际更新的体素数（>0 → TSDF 在工作；==0 → 内参/grid 位置/位姿任一错位）
     int Integrate(const uint16_t* depth_mm, int width, int height,
                   double fx, double fy, double cx, double cy,
-                  const float* pose7);
+                  const float* pose7, const uint8_t* conf = nullptr);
 
     int dim() const { return grid_dim_; }
     float voxel_size() const { return cfg_.voxel_size_mm; }

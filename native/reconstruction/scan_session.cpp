@@ -296,6 +296,40 @@ static std::vector<float> DownsampleCloud(const std::vector<float>& cloud,
     return out;
 }
 
+// DownsampleCloud 的带属性版：在压实+子采样点云的同时,把每点的并行属性(conf,1 float/点)
+// 按同一次序压实+子采样到 out_attr。用于给 ICP 喂 per-point 置信权重(src_weights),
+// 保证权重与 icp_src 点严格对齐。conf.size() 必须 == cloud 点数。
+static std::vector<float> DownsampleCloudConf(const std::vector<float>& cloud,
+                                              const std::vector<float>& conf,
+                                              std::size_t max_points,
+                                              std::vector<float>* out_attr) {
+    std::vector<float> out;
+    if (out_attr) out_attr->clear();
+    std::size_t total = cloud.size() / 3;
+    if (total == 0 || max_points == 0 || conf.size() != total) return out;
+
+    std::vector<float> vxyz; vxyz.reserve(total * 3 / 2);
+    std::vector<float> vc;   vc.reserve(total / 2);
+    for (std::size_t i = 0; i < total; ++i) {
+        const float* p = cloud.data() + i * 3;
+        if (p[0] == 0.f && p[1] == 0.f && p[2] == 0.f) continue;
+        vxyz.push_back(p[0]); vxyz.push_back(p[1]); vxyz.push_back(p[2]);
+        vc.push_back(conf[i]);
+    }
+    std::size_t valid_total = vxyz.size() / 3;
+    if (valid_total == 0) return out;
+
+    std::size_t take = std::min(valid_total, max_points);
+    out.reserve(take * 3);
+    if (out_attr) out_attr->reserve(take);
+    for (std::size_t oi = 0; oi < take; ++oi) {
+        std::size_t i = oi * valid_total / take;
+        out.push_back(vxyz[i * 3]); out.push_back(vxyz[i * 3 + 1]); out.push_back(vxyz[i * 3 + 2]);
+        if (out_attr) out_attr->push_back(vc[i]);
+    }
+    return out;
+}
+
 // 用 pose7 把相机系点云变到世界系：P_w = R * P_c + t
 static std::vector<float> TransformCloud(const std::vector<float>& cam_cloud,
                                          const std::array<float, 7>& pose) {
@@ -366,9 +400,21 @@ ScanSession* SessionCreate(float voxel_size_mm, float grid_extent_mm, float grid
 int SessionIngest(ScanSession* s,
                   const uint16_t* depth_mm, int width, int height,
                   double fx, double fy, double cx, double cy,
-                  const float* pose7) {
+                  const float* pose7, const uint8_t* conf) {
     if (!s) return -1;
     s->total_frame_count++;
+
+    // 置信权重(可选)：conf 是 per-pixel uint8(与 depth 同 W×H, nullptr=均权)。
+    //   - TSDF::Integrate 直接吃 conf(按 conf/255 软加权累积);
+    //   - ICP 需要与 icp_src 对齐的 per-point 权重 → 先转成每像素 conf/255 的并行属性,
+    //     再经 DownsampleCloudConf 与点云同步压实/子采样。
+    //   conf=nullptr 时全链路退化为旧均权行为。
+    std::vector<float> point_conf;
+    if (conf) {
+        point_conf.resize(static_cast<std::size_t>(width) * height);
+        for (std::size_t i = 0; i < point_conf.size(); ++i)
+            point_conf[i] = static_cast<float>(conf[i]) / 255.0f;
+    }
 
     // 1) raw depth → 前景 depth → 点云（相机系，mm）
     //
@@ -388,7 +434,8 @@ int SessionIngest(ScanSession* s,
         for (int i = 0; i < 7; ++i) p0[i] = pose7[i];
         // reference_cloud_world 只服务 ICP，存降采样版避免后续每帧 ICP 重建 256K 点 hash 跑几秒
         s->reference_cloud_world = DownsampleCloud(TransformCloud(cloud, p0), kIcpMaxPoints);
-        int updated = s->tsdf.Integrate(filtered_depth.data(), width, height, fx, fy, cx, cy, p0.data());
+        int updated = s->tsdf.Integrate(filtered_depth.data(), width, height, fx, fy, cx, cy,
+                                        p0.data(), conf);
         s->last_pose = p0;
         s->keyframe_poses.push_back(p0);
         s->keyframe_count = 1;
@@ -464,11 +511,19 @@ int SessionIngest(ScanSession* s,
         for (int i = 0; i < 7; ++i) init[i] = pose7[i];
     }
     // ICP src 也降采样：256K → 8K，匹配 dst 的子采样密度，避免每帧几秒
-    auto icp_src = DownsampleCloud(cloud, kIcpMaxPoints);
+    // 有 conf 时同步降采样 per-point 权重,喂给加权 Umeyama(低置信点降权,防噪声拉偏位姿)
+    std::vector<float> icp_src;
+    std::vector<float> icp_weights;
+    if (conf) {
+        icp_src = DownsampleCloudConf(cloud, point_conf, kIcpMaxPoints, &icp_weights);
+    } else {
+        icp_src = DownsampleCloud(cloud, kIcpMaxPoints);
+    }
     auto icp_result = IcpRegister(
         icp_src.data(), icp_src.size() / 3,
         s->reference_cloud_world.data(), s->reference_cloud_world.size() / 3,
-        init.data());
+        init.data(), IcpConfig{},
+        conf ? icp_weights.data() : nullptr);
 
     if (icp_result.status == IcpResultStatus::DegenerateInput) {
         return s->keyframe_count;
@@ -499,8 +554,9 @@ int SessionIngest(ScanSession* s,
         return s->keyframe_count;
     }
 
-    // 4) TSDF 积分（用 ICP 输出位姿）
-    int updated = s->tsdf.Integrate(filtered_depth.data(), width, height, fx, fy, cx, cy, icp_result.pose7.data());
+    // 4) TSDF 积分（用 ICP 输出位姿，conf 软加权）
+    int updated = s->tsdf.Integrate(filtered_depth.data(), width, height, fx, fy, cx, cy,
+                                    icp_result.pose7.data(), conf);
     s->last_pose = icp_result.pose7;
     // 每 10 帧 log 一次，避免刷屏；第 1 帧已 log 过初次诊断
     if (s->total_frame_count % 10 == 0) {
@@ -523,7 +579,10 @@ int SessionIngest(ScanSession* s,
 bool SessionFinalize(ScanSession* s, const char* out_dir, int* out_stats3) {
     if (!s) return false;
     // 1) Marching Cubes 提 mesh —— 移到 session 字段，UI 端 Completed 状态可拉数据渲染实体面
-    s->last_mesh = ExtractMesh(s->tsdf);
+    // min_weight=1.0(默认):开置信加权后 weight=累计置信(满置信观测为单位),此门 = "≥1 满置信观测
+    // 的证据量"。配 TsdfConfig.weight_clamp=100 安全(门 << 上限);弱区需多帧累计过门(见 tsdf.h 语义说明)。
+    MeshConfig mesh_cfg;  // min_weight=1.0
+    s->last_mesh = ExtractMesh(s->tsdf, mesh_cfg);
     const Mesh& mesh = s->last_mesh;
 
     // 2) 写出

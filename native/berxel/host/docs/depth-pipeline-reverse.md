@@ -71,7 +71,7 @@ BerxelStreamImplDepth::processFrame()
 
 这些命名和调用形态都指向“已有深度图上的校正/补洞/滤波/配准/点云几何优化”，不是原始散斑相关、视差搜索或相位解算。
 
-库内还有 `inner_process_with_IR(cv::Mat, cv::Mat&, cv::Mat, cv::Mat, int)` 和 `BerxelIrProcessor::processIrStream()`，说明原厂 SDK 可能在某些模式下用 IR 图辅助后处理或抠图/配准，但这仍不能证明普通 DEPTH stream 的主深度求解在 host SDK。
+库内还有 `inner_process_with_IR(cv::Mat, cv::Mat&, cv::Mat, cv::Mat, int)` 和 `BerxelIrProcessor::processIrStream()`。2026-05-30 决定性反汇编已证：这套 IR 引导深度精修是**导出但运行时从不调用的死 API**，普通 DEPTH 流不经它。详见下节「交织 IR 帧不进 SDK 深度链」。
 
 ### 设备侧控制更像深度引擎参数
 
@@ -111,6 +111,43 @@ HV3/Sonix host protocol 里能看到设备侧命令：
 **散斑→深度确在设备 ASIC**：全库唯一带 disparity/NCC 的 Berxel 符号是 `Get/SetNCCThreshold`，反汇编只调 `ExecuteCMD2` 经 USB 把阈值下发给设备引擎；host 无任何块匹配/三角化代码；`processDepth` 每帧零文件 IO，全是对 16bit 深度图的后处理。
 
 **可导出的标定**（真机 `berxelGetProperty(propID=0x4a, 156B)` 或 adb pull `<SN>_params.bin` 解析）：156B = `_BerxelHawkIntrinsicInfo`，5 个连续块各 36B（末块 12B）：`[0:36]` color 内参、`[36:72]` ir 内参、`[72:108]` **liteIr 内参（深度流运行期实际用这块）**、`[108:144]` depth→color 旋转 R(3×3)、`[144:156]` 平移 T(tx,ty,tz mm，是配准平移**不是结构光基线**）；每块 = fx,fy,cx,cy,k1,k2,p1,p2,k3。分辨率缩放常量 0.5/0.25/0.125（全分辨率内参除 2/4/8）。
+
+## 交织 IR 帧不进 SDK 深度链（2026-05-30 决定性反汇编）
+
+回答"companion 交织的 0x0500 IR/phase 帧(占 ~40% 带宽)是否被 SDK 用来增强深度"。
+**结论：不进。** SDK 里**存在**一整套 IR 引导深度精修算法，但它是**导出却零调用者的死 API**，运行时深度管线完全不碰它。
+
+### SDK 里确实有 IR→深度精修算法（扁平 C 函数模块）
+
+`libBerxelUvcDriver.so`(及静态复制进 `libBerxelNetDriver.so`)含一组**非 `berxel::` 命名空间的扁平导出函数**，自包含调用图：
+
+```
+EdgeEnhance(depth)                       → inner_process        → region_fit
+EdgeEnhanceInfraRed*(depth, ir)          → inner_process        → region_fit
+inner_porcess_thread(...)                → inner_process        → region_fit
+EdgeEnhance_Anti_Alising(depth, ir)      → EdgeEnhance_inpaint
+inner_porcess_with_IR_thread(...)        → inner_process_with_IR → region_fit
+```
+
+算法语义(寄存器级追踪)：`inner_process_with_IR` 对 **IR 强度图**跑 `CannyEdge`(阈值 3/20/3)，把边缘作为约束掩码喂 `region_fit(depth, &out, ir_edges, mode)`——`region_fit @0x15e230` 在 Canny 边缘约束内对深度做**加权最小二乘平面拟合 / 补洞**。对照的无 IR 版 `inner_process` 则对 **depth 自身**跑 Canny。**IR 的增量 = 用 IR 的清晰边缘约束深度区域拟合，不依赖噪声大的深度梯度**。`_test` 变体(`EdgeEnhance_inpaint_Color_test`)暴露这是实验性模块。
+
+### 三重证明：这套模块运行时零调用
+
+1. **无 PLT JUMP_SLOT**：库内经 PLT 被调的算法函数只有 `inner_process` / `inner_process_with_IR` / `region_fit` / `EdgeEnhance_inpaint`(均为模块**内部**互调)；顶层入口 `EdgeEnhance*` / `EdgeEnhanceInfraRed*` / `inner_porcess_*thread` **无任何 JUMP_SLOT**(对照 `BerxelDepthAlgorithm::onNosieFilter`/`onTemperaTureCompensation*`/`BerxelDepthOptimizer::*` 都有 → PLT 假设成立)。
+2. **无 lea 引用**：全库无 `lea` 装载 `inner_porcess_with_IR_thread`(0x1799b0)/`inner_porcess_thread`(0x17ac90)地址 → **没人 `std::thread` 启动这些 worker**。
+3. **无跨库 import**：`libBerxelHawk` / `libBerxelCommonDriver` / `libBerxelInterface` / `libBerxelNetDriver` 的动态符号表里**没有一个 `U`(undefined)指向这套函数**；`libBerxelHawk` 虽 import `dlsym`，但其 `.rodata` 无这些 mangled 名字符串 → 无运行时按名解析路径。
+
+### 活的深度链路（不含 IR）
+
+`BerxelStreamImpl::newFrame → getFrameType() → 虚 processFrame()` 按帧类型**流级分流**：
+- 0x0600 → `BerxelStreamImplDepth::processFrame → BerxelDepthProcessor::addFrame → processDepth* → removeNoise/onNosieFilter/onDenoise/onFillHoleInpaintColor/onTemperaTureCompensation* + BerxelDepthOptimizer::*`（**全程不引用 IR 帧**）。
+- 0x0500 → `BerxelStreamImplIR::processFrame → BerxelIrProcessor::addFrame → processIrStream`(memcpy+rotate)→ `setNewFrameCallback` 注册的**上层 App 回调**；`setNewFrameCallback` 唯一调用者是 `BerxelStreamImplIR::startImpl`，即**只有 App 显式开 IR/LIGHT_IR 流时才有人消费**，否则 IR 帧丢弃。
+
+### 含义
+
+- 设备 ASIC 直出的 0x0600 metric 深度，SDK 只做**无 IR 的**温补/去噪/补洞/几何优化。交织 IR 对"原厂深度质量"零贡献。
+- IR 帧是**独立的一等输出流**(IR/LIGHT_IR，用于预览/瞄准/弱光/曝光检查)，被多路复用在同一 ep 上；纯 depth 消费方眼里它是额外带宽。
+- **复刻这套 `inner_process_with_IR`(CannyEdge(IR)+region_fit)做离线原型量化后，已证伪"IR 边缘引导有益"**(2026-05-30，harness `tests/harness/depth_ir_guided/`)：**0x0500 是结构光散斑帧**，Canny 检到的是投射散斑不是物体边界 → IR 边缘对真边界 F1 仅 0.25（去散斑后 recall 崩、F1 更低），远低于单帧深度边缘的 0.88；留一法补洞 RMS IR 引导 328mm vs depth-only 73mm。**结论：维持 depth-only 精修，不接 IR 边缘引导**，这也解释厂商为何把它留作死代码。IR 的潜在价值不在边缘而可能在**置信/有效性**(无回波/强光饱和=深度不可信)，属未验证的另一实验。见 [[finding_p100r3_depth_ir_interleaved_2026-05-29]]。
 
 ## 偏振判断
 

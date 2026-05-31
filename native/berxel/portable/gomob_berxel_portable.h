@@ -446,6 +446,28 @@ bool process_p100r3_light_ir_frame(const uint8_t* transport_frame,
                                    const P100R3VideoMode& transport_mode,
                                    std::vector<uint16_t>* active_ir10);
 
+// IR 散斑对比度 → 单帧深度置信(2026-05-30 实证 AUC 0.82)。
+// 结构光下散斑局部对比度 = 深度可信度的物理指标:散斑清晰 = 图案被良好接收 = 深度强约束;
+// 散斑被冲淡 / 无回波 → 深度靠设备 ASIC 猜 → 不可信。给【单帧零延迟】置信,补
+// P100R3TemporalFilter 时域稳定性置信(需积累窗口 + 静态场景)在首帧 / 运动场景的短板;
+// 只当权重,不碰几何(IR 当边缘已证伪:0x0500 散斑帧 Canny 检到散斑非物体边界,F1 0.25)。
+// 对比度按【帧内 local-std 中值归一化】(曝光自适应,避硬编码绝对阈值的泛化陷阱)。
+// 验证 tests/harness/depth_ir_guided/confidence_probe.py:AUC 0.82、控强度后仍 0.75、逐帧 0.76 稳。
+struct P100R3IrConfidenceConfig {
+    int window = 7;                  // 局部对比度窗口(box)边长(奇数)
+    float contrast_lo_rel = 0.4f;    // 归一化对比度 ≤ 此 → min_conf(散斑弱,不可信)
+    float contrast_hi_rel = 3.7f;    // 归一化对比度 ≥ 此 → 255(散斑强,可信)
+    uint8_t min_conf = 40;           // 置信下限(>0:散斑弱也不直接判废,留 0 给飞点 / 无效)
+};
+
+// 从 active IR 帧算逐像素单帧置信 [min_conf..255]。active_ir_raw16 = 状态行已裁的 active 区,
+// 内部取高字节(灰度散斑)算局部 std,按帧内 std 中值归一化后映射。IR 高字节=0 处置信 0(无信号)。
+// 返回长度 = width*height;尺寸不符返回空。
+std::vector<uint8_t> p100r3_ir_speckle_confidence(const std::vector<uint16_t>& active_ir_raw16,
+                                                  uint16_t width,
+                                                  uint16_t height,
+                                                  const P100R3IrConfidenceConfig& config = {});
+
 // 深度时域降噪：设备 temporal_denoise 关掉换来稠密(valid≈1.0)，代价是逐像素相邻帧
 // 抖动 ~38mm（远超 ≤1%@1-2m 规格）。grounding 仿真证实有界滑窗均值 N=8 能把抖动压到
 // ~11mm（3.5×）且密度不掉、无偏移；朴素小阈值 EMA 失效（噪声>阈值→每帧 reset→透传），
@@ -527,6 +549,11 @@ struct P100R3TemporalFilterConfig {
     bool spatial_denoise_enable = true;
     float spatial_sigma_r_mm = 40.0f;     // bilateral range σ（取 noise 谷底）
     float spatial_sigma_s = 2.0f;         // bilateral 空间 σ（px）
+    // ── 外部(IR 散斑)先验置信融合 ──
+    // 通过 set_prior_confidence() 喂入(如 p100r3_ir_speckle_confidence 的 IR 单帧置信)。
+    // push 在稳定性块后做 conf = min(conf_temporal, conf_prior):任一信号判不可信即降权。
+    // 物理:时域稳定但散斑弱 = 设备一致地"猜"出同一值,一致 ≠ 准确,IR 抓得到,故 min 合理。
+    bool fuse_prior_confidence = true;
 };
 
 struct P100R3TemporalFilterStats {
@@ -548,6 +575,10 @@ public:
 
     void reset();
     const P100R3TemporalFilterConfig& config() const { return config_; }
+
+    // 喂入外部单帧先验置信(IR 散斑置信),下次 push 融合(min);move 存,消费后保留供后续 depth 帧复用,
+    // reset() 清空。空 / 尺寸不符则该次 push 跳过融合。IR 与 depth 交织,IR 帧到达时算并 set。
+    void set_prior_confidence(std::vector<uint8_t> prior_conf) { prior_conf_ = std::move(prior_conf); }
 
     // 输入当前帧 active raw16（0=无效，长度 = width*height）。
     // 输出 fused raw16（0=仍无效）+ 可选 temporal confidence。尺寸变化自动 reset。
@@ -575,6 +606,7 @@ private:
     float noise_est_raw_ = 0.0f;             // 自适应噪声底估计（raw 单位，EMA）；运动门限随它走
     std::vector<int> diff_scratch_;          // 每帧 |cur-est| 暂存（求 median 估噪声底，复用免重分配）
     std::vector<uint16_t> denoise_scratch_;  // 空间降噪 ping-pong 暂存（复用免重分配）
+    std::vector<uint8_t> prior_conf_;        // 外部单帧先验置信(IR 散斑)，push 融合用；reset 清空
 
     // median3（去脉冲尖峰）→ bilateral5（保边平滑），原地作用于 fused（0 保持 0，不新填）。
     void apply_spatial_denoise(std::vector<uint16_t>* fused);
