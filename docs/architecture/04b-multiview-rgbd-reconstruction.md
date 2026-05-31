@@ -172,14 +172,21 @@ P100R3 在 density-first 稠密模式下，弱回波 / 散斑弱像素单帧误�
 | 端侧 TSDF 积分 | voxel 权重 `w += conf/255`（conf=0 不贡献），SDF 按权混合 | ✅ 端侧已落地（M1.6.20） |
 | 端侧 ICP | 加权 Kabsch 刚体拟合，低置信点降权防噪声拉偏位姿 | ✅ 端侧已落地（M1.6.20） |
 | 端侧 mesh 门 | `min_weight` 在加权模式下语义=累计置信（满置信观测为单位）；弱区靠多帧累计过门、不空洞 | ✅ 端侧已落地（M1.6.20，harness 系统性恒弱区实测无空洞） |
-| 云端 Color-ICP | RANSAC/Color-ICP correspondence 按 per-frame conf 降权（Huber 边权 / 外点阈值） | ⬜ 待（M3.14，Open3D Python API 无 per-point 权重 → 预过滤低 conf 点或自定义） |
-| 云端 TSDF/纹理 | `ScalableTSDFVolume` voxel 按 conf 加权；纹理选 visibility 优先高置信视角 | ⬜ 待（M3.14） |
+| 云端 Color-ICP | conf 阈值预掩码(conf<thr 深度置 0,不参与点云/配准/积分),= Open3D 无 per-point 权重下的加权等价 | 🟡 算法核已验（M3.14，`fusion_core.py`，harness `scan_fusion` 门②；服务管线待） |
+| 云端 TSDF/纹理 | 同一份 conf-masked 深度喂 `ScalableTSDFVolume`,位姿与体素来自同一可信像素集；纹理烘焙待 | 🟡 算法核已验（M3.14；纹理/GLB 导出待） |
 | SAM mask 边界 | 前景 logit 0.3-0.7 软权重，避免硬边界 TSDF 伪影 | ⬜ 待（阶段 2，M3.17） |
 
 **端侧验证**（harness `tests/harness/scan_conf_weighting/` + 单测 `tests/native_host/conf_weight_test.cpp`）：
 合成球面带 45% 弱回波，加权重建表面 RMS 14.3→0.81mm（降 94%）、内点 40→100%、覆盖真球冠 98%；
 真硬件 density-first depth + IR-conf chamfer 降 42%。即 **density-first + 置信加权 > 稀疏干净**，
-保稠密同时把弱像素拉回标称精度。云端把同一套加权语义复刻进 Open3D 是 M3.14 接口债。
+保稠密同时把弱像素拉回标称精度。
+
+**云端复刻(M3.14 算法核已验)**：`server/fusion_service/fusion_core.py` 把同一套加权语义落进 Open3D——
+因 Open3D Python 的 RGBDImage→PointCloud / TSDF.integrate 无 per-point 权重 API,用 **conf 阈值预掩码**
+(conf<thr 深度置 0,不参与点云/配准/积分)作可行等价,且配准与积分共用同一份 conf-masked 深度。
+harness `tests/harness/scan_fusion` 实测:干净 chamfer ~1.3mm(全连接 multiway 配准逼近真值);
+带噪 40% 弱回波+飞点下 conf 加权 ~1.6mm vs 不加权 ~35mm(**降 ~96%**),收益与端侧 mask_recovery 同源。
+服务管线(Go worker / NATS / 上传契约 / 纹理烘焙 / GLB)属 M3.14 后续增量。真"软加权"需自写 C++ TSDF 扩展,列后续。
 
 ## 6. 工程实施阶段（与 [TODO.md](../../TODO.md) M3.12–M3.20 对齐）
 
