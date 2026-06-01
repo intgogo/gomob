@@ -15,20 +15,31 @@
 → 真 HQ-SAM(`sam_core.segment`,box 提示)逐视角分割 → mask 填进 `RgbdFrame.mask`
 → `fusion_core.fuse_with_poses`(mask 外像素预掩,不入点云/配准/积分)→ 对比目标观测面。
 
-三路对照:
+对照组:
 - **masked(SAM)**:真 SAM mask 引导 —— 真实结果。
 - **gt_masked**:完美目标 mask —— 机制上界,分离「SAM 边界质量」与「机制/参考问题」。
 - **baseline**:不带 mask —— 背景全融进来,作价值证明。
+- **heuristic_box / heuristic_center**:M3.14 阶段1 启发式 ROI(忠实复刻 native `BuildForegroundDepth`,
+  见 `heuristic_roi.py`)—— 与 SAM 做 A/B。box 版给同一人工框(steelman),center 版忠实原生整图中心 ROI。
+
+A/B 与 erode_sweep 都用**固定位姿重积分**:三种 mask 共用 GT-mask 融合得到的同一组干净位姿
+(`integrate_tsdf`),隔离 Open3D RANSAC 非确定翻转,纯比"分割/腐蚀致的表面差异",不让"配准谁更稳"
+当伪因把门刷过。固定位姿后启发式 box 毛刺仍 ~35%(SAM ~2%)→ 证明毛刺是真实地面裙边。
 
 ## 判定门(analyze.py)
 
 硬门:① SAM IoU 均值 ≥ 0.95 ② masked chamfer ≤ 5mm ③ masked coverage@5mm ≥ 88%
 ④ masked 污染 ≤ 2% ⑤ **baseline 污染 ≥ 30%**(价值证明:无 mask 确被污染,否则场景无效)
-⑥ 污染对照 masked ≤ baseline/5。软报告:GT-mask 上界对照、精度/完整度分量、最差视角 IoU。
+⑥ 污染对照 masked ≤ baseline/5 ⑦ **A/B 边缘毛刺降 ≥ 80%**(SAM vs 启发式 ROI,04b §5.2 阶段2 验收)。
+软报告:GT-mask 上界对照、精度/完整度分量、最差视角 IoU、erode_sweep。
 
 实测(8 视角 voxel5mm):SAM IoU ~0.994、masked chamfer ~1.7mm / 污染 ~0.01% / cov@5mm ~94%、
 baseline 污染 ~87–97%(随机:floor 主导配准不稳但都远超 30% 价值门)、对照砍 ~9000×;
-masked 与 gt_masked 上界同噪声量级(都 ~1.7–1.8mm)→ SAM 已足够好。
+masked 与 gt_masked 上界同噪声量级(都 ~1.7–1.8mm)→ SAM 已足够好;
+**A/B 毛刺(>8mm 多余几何占比,固定位姿受控):SAM ~2% vs 启发式 box ~35% → 降 ~93–95%**。
+毛刺 = 重建点离目标观测面 >8mm 的占比(>voxel5+噪声~2,确属裙边/锯齿非边界)。
+τ_burr 灵敏度(实测):τ∈{5,6,8,10,12,15}mm 下降比 = 84.6 / 88.5 / 93.7 / 96.7 / 98.6 / 99.8% —— 全 ≥80%,
+门⑦ 不依赖某个 τ 取值的巧合(SAM 与启发式毛刺差 ~18×,阈值在合理区间怎么取都过)。
 
 ## 两个设计要点(踩坑记录)
 

@@ -27,14 +27,20 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "..", "scan_multiview_quality"))
 sys.path.insert(0, os.path.join(HERE, "..", "..", "..", "server", "fusion_service"))
 sys.path.insert(0, os.path.join(HERE, "..", "..", "..", "server", "sam_service"))
-from fusion_core import FusionConfig, RgbdFrame, fuse_with_poses  # noqa: E402
+from fusion_core import FusionConfig, RgbdFrame, fuse_with_poses, integrate_tsdf  # noqa: E402
 from quality_bench import accuracy_and_coverage                   # noqa: E402
 from sam_core import segment                                      # noqa: E402
 import clutter_dataset as cl                                      # noqa: E402
+import heuristic_roi as hr                                        # noqa: E402
 
 VOXEL_MM = 5.0
 N_VIEWS = 8
-TAU_CONTAM_MM = 20.0     # 重建点离目标观测面 >此 即判背景污染(远超 voxel/噪声,确属背景非边界毛刺)
+# 两个阈值同一度量(重建点离目标观测面的距离),不同尺度看不同问题:
+#   TAU_CONTAM=20mm:>此 = 远离目标的整块背景(地面/杂物),看"有没有把背景融进来"(门④⑤⑥)。
+#   TAU_BURR=8mm  :>此(>voxel5+噪声~2)= 紧贴目标外的多余几何(裙边/锯齿),看"边缘干不干净"(门⑦)。
+#   8mm 取值稳健性:SAM(~2%)与启发式(~36%)差 ~18×,τ∈[6,15]mm 下降比都远 ≥80%(见 README 灵敏度说明)。
+TAU_CONTAM_MM = 20.0
+TAU_BURR_MM = 8.0
 
 
 def _iou(a: np.ndarray, b: np.ndarray) -> float:
@@ -50,20 +56,24 @@ def contamination(fused: o3d.geometry.TriangleMesh, ref: o3d.geometry.PointCloud
     f.transform(np.linalg.inv(ext_world_to_cam0))
     if len(f.vertices) == 0:
         return 0.0
+    o3d.utility.random.seed(0)   # 锁定均匀采样 → burr/污染跨 run 确定(否则采样本身给门⑦带 ~0.04pp 噪声)
     fp = f.sample_points_uniformly(n_sample) if len(f.triangles) else o3d.geometry.PointCloud(f.vertices)
     d = np.asarray(fp.compute_point_cloud_distance(ref))
     return float((d > tau_mm / 1000.0).mean() * 100.0)
 
 
 def _metrics(mesh, ref, ext0) -> dict:
+    o3d.utility.random.seed(0)   # 锁定 accuracy_and_coverage 内部采样;contamination 各自再 seed
     chamfer, acc, comp, cov = accuracy_and_coverage(mesh, ref, ext0)
     contam = contamination(mesh, ref, ext0, TAU_CONTAM_MM)
+    burr = contamination(mesh, ref, ext0, TAU_BURR_MM)
     return {
         "vertices": len(mesh.vertices), "triangles": len(mesh.triangles),
         "chamfer_mm": round(chamfer, 3), "accuracy_mm": round(acc, 3),
         "completeness_mm": round(comp, 3),
         "coverage_pct": {k: round(v, 1) for k, v in cov.items()},
         "contamination_pct": round(contam, 2),
+        "burr_pct": round(burr, 2),       # 离真表面 >TAU_BURR 的多余几何占比(边缘毛刺/裙边)
     }
 
 
@@ -98,8 +108,8 @@ def main() -> int:
                                  conf=f.conf, mask=gt_masks[i]) for i, f in enumerate(frames_full)]
 
     cfg = FusionConfig(voxel_size_mm=VOXEL_MM)      # 默认带 conf 预掩(与生产一致)
-    mesh_masked, _ = fuse_with_poses(frames_masked, cfg)
-    mesh_gtmasked, _ = fuse_with_poses(frames_gtmasked, cfg)
+    mesh_masked, poses_masked = fuse_with_poses(frames_masked, cfg)
+    mesh_gtmasked, poses_gt = fuse_with_poses(frames_gtmasked, cfg)
     mesh_baseline, _ = fuse_with_poses(frames_full, cfg)
     masked = _metrics(mesh_masked, obj_ref, exts[0])
     gtmasked = _metrics(mesh_gtmasked, obj_ref, exts[0])
@@ -111,11 +121,34 @@ def main() -> int:
     print(f"  baseline 无mask: chamfer={baseline['chamfer_mm']}mm 污染={baseline['contamination_pct']}% "
           f"顶点={baseline['vertices']}")
 
-    # 腐蚀敏感性诊断(非门控):复用同一组 SAM mask,只变 mask_erode_px,使
-    # 「合成 clean 边界开腐蚀单调削覆盖、无污染收益 → 默认 0」这一参数选择可从本 harness 复现追溯。
+    # A/B:M3.14 阶段1 启发式 ROI(纯深度法)vs SAM,验收 04b §5.2 阶段2"毛刺降≥80%"。
+    # **受控对比**:三种 mask 共用同一组干净位姿(poses_gt,GT-mask 融合得到)重积分 → 隔离配准
+    # (Open3D RANSAC 非确定偶发翻转),纯比"分割致的边缘毛刺"。否则启发式含地面裙边的点云配准更易翻,
+    # 高毛刺会混入"配准谁更稳"的伪因(实测固定位姿后启发box 仍 36% → 毛刺确是真实裙边,非翻转)。
+    # box=同人工框(steelman,stage1 用户框补救路径)、center=忠实原生整图中心 ROI。
+    def _heur_mask(i, f, box_each):
+        return hr.foreground_depth(f.depth_mm, box=boxes[i] if box_each else None) > 0
+    def _fuse_fixed(maskfn):
+        fr = [RgbdFrame(color=f.color, depth_mm=f.depth_mm, intr=f.intr, conf=f.conf, mask=maskfn(i, f))
+              for i, f in enumerate(frames_full)]
+        return _metrics(integrate_tsdf(fr, poses_gt, cfg), obj_ref, exts[0])
+    sam_ab = _fuse_fixed(lambda i, f: frames_masked[i].mask)        # SAM mask,固定位姿
+    heur_box = _fuse_fixed(lambda i, f: _heur_mask(i, f, True))
+    heur_ctr = _fuse_fixed(lambda i, f: _heur_mask(i, f, False))
+    # 毛刺下降(steelman:对启发式 box 版算,其毛刺更低 → 对 SAM 更严苛)
+    burr_red = (100.0 * (heur_box["burr_pct"] - sam_ab["burr_pct"]) / heur_box["burr_pct"]
+                if heur_box["burr_pct"] > 0 else 0.0)
+    print(f"  [固定位姿受控 A/B] SAM 毛刺={sam_ab['burr_pct']}% / 启发box 毛刺={heur_box['burr_pct']}%"
+          f"(顶点 {heur_box['vertices']}) / 启发ctr 毛刺={heur_ctr['burr_pct']}% → 降 {round(burr_red, 1)}%")
+
+    # 腐蚀敏感性诊断(非门控):**固定 erode=0 的位姿**(poses_masked),只变 mask_erode_px 重积分 TSDF,
+    # 隔离"腐蚀对表面"与"配准抖动"(Open3D RANSAC 非确定偶发翻转,见 finding)→ 使
+    # 「合成 clean 边界开腐蚀单调削覆盖、无污染收益 → 默认 0」可干净复现追溯,不被配准噪声污染。
+    # 几何合理性:腐蚀只是把 mask 收成子集(少积分边界像素),位姿仍是这组帧对目标的正确解,
+    # 不产生"位姿-点云不自洽"偏差;只是覆盖随腐蚀略降,正是要观测的量。
     erode_sweep = []
     for e in (0, 1, 2, 3, 4):
-        msh, _ = fuse_with_poses(frames_masked, FusionConfig(voxel_size_mm=VOXEL_MM, mask_erode_px=e))
+        msh = integrate_tsdf(frames_masked, poses_masked, FusionConfig(voxel_size_mm=VOXEL_MM, mask_erode_px=e))
         mm = _metrics(msh, obj_ref, exts[0])
         erode_sweep.append({"erode_px": e, "cov5_pct": mm["coverage_pct"]["5.0mm"],
                             "contamination_pct": mm["contamination_pct"],
@@ -135,6 +168,10 @@ def main() -> int:
         "sam_iou_mean": round(sam_iou_mean, 4),
         "sam_iou_per_view": [round(x, 4) for x in ious],
         "masked": masked, "gt_masked": gtmasked, "baseline": baseline,
+        # A/B 受控对比(固定 poses_gt 重积分,隔离配准)
+        "ab_fixed_pose": {"note": "三种 mask 共用 GT-mask 干净位姿重积分,隔离配准纯比分割",
+                          "sam": sam_ab, "heuristic_box": heur_box, "heuristic_center": heur_ctr},
+        "ab_burr_reduction_pct": round(burr_red, 1),
         "erode_sweep": erode_sweep,
         "env": env,
     }

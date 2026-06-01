@@ -174,7 +174,17 @@ SAM IoU ~0.994、mask 引导 chamfer ~1.7mm / 背景污染 ~0.01% / cov@5mm ~94%
 对照砍 ~9000×,且贴齐 GT-mask 上界 → **证明 2D 高 IoU 经 mask 预掩能转成干净 3D 物体点云**。
 踩坑:目标若用周期纹理会让 FPFH/Color-ICP 特征混叠致 ~20% 位姿翻转(见
 `docs/agent-memory/finding_periodic_texture_registration_aliasing_2026-05-31.md`)。
-**后续增量**:与阶段 1 启发式 ROI 的 A/B(mesh 边缘毛刺下降)、端侧 MobileSAM/SAM2 轻量化、真实图像基准。
+
+**M3.17 第三增量(2026-05-31)已落 —— 与阶段 1 启发式 ROI 的 A/B,验收 §6 阶段 2 完成标准"毛刺降 ≥80%"**:
+`scan_mask_fusion` 忠实复刻 native `BuildForegroundDepth`(中心 ROI 取 P25 种子深度 → 动态深度带
+→ 4-连通中心加权块,见 `heuristic_roi.py`)作阶段 1 对照,给它和 SAM **同一人工框**(steelman,
+对应阶段 1"用户框补救"路径)。结论:启发式是**纯深度法**,目标坐在地面上、接触处深度连续时,
+基座一圈地面被同一连通块吃进来 → mesh 边缘裙边毛刺(顶点数约 SAM 的 1.7×);SAM 按外观切净。
+**A/B 与 erode_sweep 都改"固定位姿重积分"**(三种 mask 共用 GT-mask 融合得到的同一组干净位姿,
+用 `integrate_tsdf` 重积分)→ 隔离 Open3D RANSAC 多线程非确定翻转,纯比"分割致的毛刺",
+门稳定不被"配准谁更稳"的伪因刷过。验证:固定干净位姿后启发式 box 毛刺仍 ~35%(SAM ~2%)→ 毛刺
+确是真实地面裙边、非配准翻转。**A/B 边缘毛刺下降 ~93–95%(≥80% 验收过)**,多次跑稳健。
+量化:毛刺 = 重建点离目标观测面 > 8mm(>voxel5+噪声~2)的占比。**后续增量**:端侧 MobileSAM/SAM2 轻量化、真实图像基准。
 
 ### 5.3 RGB 与 Depth 像素对齐
 
@@ -252,6 +262,9 @@ harness `tests/harness/scan_fusion` 实测:干净 chamfer ~1.3mm(全连接 multi
 - M3.18 GPU worker 容器部署
 
 **完成标准**：mesh 边缘毛刺 vs 阶段 1 减少 ≥ 80%；SAM mask IoU vs 人工标注 ≥ 0.92。
+**进度(2026-05-31)**:M3.17 服务端 HQ-SAM + mask 投 depth + 与阶段 1 启发式 A/B 已落,
+`scan_mask_fusion` 合成 harness 两项均过(IoU 0.994 ≥0.92;毛刺降 ~93–95% ≥80%,固定位姿受控);
+真实图像/真机 RGBD 验收待 M3.14② 物理采集。M3.18 GPU worker 容器部署未起。
 
 ### 阶段 3：端侧实时拼接预览（体验升级，4-6 周后）
 

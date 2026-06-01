@@ -8,6 +8,9 @@
   ⑤ baseline.contamination ≥ 30%   **价值证明门**:不带 mask 时杂物确实大量污染(实测 ~87%)。
                                      否则场景无可去杂物 → "masked 干净"不成立,harness 退化为空操作。
   ⑥ contrast:masked.contam ≤ baseline.contam / 5   mask 须把污染砍 ≥5×(实测 ~8000×)
+  ⑦ A/B 边缘毛刺下降 ≥ 80%          SAM vs M3.14 阶段1 启发式 ROI(纯深度法)的 mesh 毛刺下降,
+                                     **固定位姿受控**(三 mask 共用 GT 干净位姿重积分,隔离配准翻转伪因);
+                                     实测 ~95%,启发式靠深度连通切不掉贴地裙边(固定位姿后仍 36% → 真裙边)
 
 软报告(只警告、不判异常):
   - GT-mask 上界对照:masked 污染比完美 mask 高 >3pp → SAM 边界质量先兆(考虑开 mask_erode_px)。
@@ -30,6 +33,7 @@ COV5_MIN_PCT = 88.0
 CONTAM_MAX_PCT = 2.0           # mask 引导后允许的残留背景污染上限
 BASELINE_CONTAM_MIN_PCT = 30.0  # 价值证明门:baseline 必须被杂物显著污染,否则场景无效
 CONTRAST_MIN_RATIO = 5.0        # mask 须把污染砍 ≥5×
+BURR_REDUCTION_MIN_PCT = 80.0   # A/B:SAM 相对启发式 ROI 的 mesh 毛刺下降(04b §5.2 阶段2 验收)
 GT_GAP_WARN_PCT = 3.0           # masked 比 GT-mask 上界多 >此 pp 污染 → SAM 边界先兆
 VIEW_IOU_WARN = 0.90
 
@@ -44,6 +48,13 @@ def main() -> int:
     with open(path) as fh:
         m = json.load(fh)
 
+    # A/B 字段(门⑦)由当前 bench 必产;缺失 = metrics 过时/损坏 → 判数据问题(exit 2),
+    # 不把"没测 A/B"混成"质量异常"(exit 1)。
+    if "ab_burr_reduction_pct" not in m or "ab_fixed_pose" not in m:
+        print(f"[analyze] metrics 缺 A/B 字段(ab_burr_reduction_pct/ab_fixed_pose):{path} 过时,重跑 mask_fusion_bench.py",
+              file=sys.stderr)
+        return 2
+
     iou_mean = m["sam_iou_mean"]
     iou_views = m.get("sam_iou_per_view", [])
     masked, gtm, base = m["masked"], m.get("gt_masked", {}), m["baseline"]
@@ -57,6 +68,11 @@ def main() -> int:
     ok_contam = mc <= CONTAM_MAX_PCT
     ok_baseline = bc >= BASELINE_CONTAM_MIN_PCT
     ok_contrast = (mc <= bc / CONTRAST_MIN_RATIO) if bc > 0 else False
+    burr_red = m["ab_burr_reduction_pct"]
+    ab = m["ab_fixed_pose"]
+    heur_box = ab.get("heuristic_box", {})
+    sam_ab = ab.get("sam", {})
+    ok_burr = burr_red >= BURR_REDUCTION_MIN_PCT
 
     gt_gap = (mc - gtm["contamination_pct"]) if "contamination_pct" in gtm else 0.0
     gt_warn = gt_gap > GT_GAP_WARN_PCT
@@ -77,16 +93,26 @@ def main() -> int:
     ratio = round(bc / mc, 1) if mc > 0 else float("inf")
     print(f"⑥ 污染对照 masked≤baseline/{CONTRAST_MIN_RATIO}: {'✓' if ok_contrast else '✗'}  "
           f"(实际砍 {ratio}×)")
+    print(f"⑦ A/B 边缘毛刺下降 {burr_red}% ≥ {BURR_REDUCTION_MIN_PCT}%(SAM vs 启发式 ROI,固定位姿受控): "
+          f"{'✓' if ok_burr else '✗'}  (SAM 毛刺 {sam_ab.get('burr_pct')}% / "
+          f"启发式box {heur_box.get('burr_pct')}%·顶点 {heur_box.get('vertices')})")
+    # 软诊断:固定位姿下启发式 box 的多余几何(顶点 / 完整度劣化)使"毛刺=真裙边非配准翻转"可见
+    sv, hv = sam_ab.get("vertices"), heur_box.get("vertices")
+    if sv and hv:
+        # 用 accuracy(fused→ref)与 chamfer:裙边几何离真表面远 → 抬高这两项(完整度反被裙边拉低,会反直觉)
+        print(f"[软] A/B 受控对比(同 GT 位姿):启发box 顶点 {hv} = SAM {sv} 的 {round(hv / sv, 2)}×、"
+              f"accuracy(离真表面){heur_box.get('accuracy_mm')}mm vs SAM {sam_ab.get('accuracy_mm')}mm、"
+              f"chamfer {heur_box.get('chamfer_mm')} vs {sam_ab.get('chamfer_mm')}mm → 毛刺源于多出的地面裙边")
     if "contamination_pct" in gtm:
         print(f"[软] GT-mask 上界:chamfer {gtm['chamfer_mm']}mm / 污染 {gtm['contamination_pct']}%"
               f"{'  ⚠ SAM 比上界多 ' + str(round(gt_gap, 2)) + 'pp 污染(边界先兆,可评估 mask_erode_px)' if gt_warn else '(SAM 贴齐上界)'}")
     if view_warn:
         print(f"[软] ⚠ 最差视角 IoU {round(worst_iou, 3)} < {VIEW_IOU_WARN}:查该视角框/分割偏差")
 
-    hard_ok = ok_iou and ok_cham and ok_cov5 and ok_contam and ok_baseline and ok_contrast
+    hard_ok = (ok_iou and ok_cham and ok_cov5 and ok_contam and ok_baseline and ok_contrast and ok_burr)
     verdict = "正常" if hard_ok else "异常"
     print(f"\n>>> {verdict}:SAM mask "
-          f"{'引导融合只重建目标、剔除背景,价值成立' if hard_ok else '引导融合未达标,查 SAM 分割/mask 预掩/配准'}")
+          f"{'引导融合只重建目标、剔背景且边缘毛刺远优于启发式 ROI,价值成立' if hard_ok else '引导融合未达标,查 SAM 分割/mask 预掩/配准/A-B'}")
     return 0 if hard_ok else 1
 
 
