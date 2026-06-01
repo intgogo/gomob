@@ -37,11 +37,18 @@ class Intrinsic:
 
 @dataclass
 class RgbdFrame:
-    """一视角 RGBD。color uint8 HxWx3;depth_mm uint16/float HxW(mm);conf 可选 uint8 HxW(0..255)。"""
+    """一视角 RGBD。color uint8 HxWx3;depth_mm uint16/float HxW(mm);conf 可选 uint8 HxW(0..255)。
+
+    mask 可选 bool HxW(True=目标):SAM 等在**已对齐 RGB**上算出的目标分割。RGB 与 depth 端侧已
+    对齐到同一内参/分辨率(见 rgbd_bundle 契约),故 mask 逐像素直接对应 depth,无需跨传感器外参。
+    与 conf 平行,作 depth 预掩码通道(见 _masked_depth):mask 外像素不入点云/配准/积分,
+    从而只融合目标、剔除地面/杂物背景(M3.17 ①)。
+    """
     color: np.ndarray
     depth_mm: np.ndarray
     intr: Intrinsic
     conf: Optional[np.ndarray] = None
+    mask: Optional[np.ndarray] = None
 
 
 @dataclass
@@ -60,6 +67,18 @@ class FusionConfig:
     reg_voxel_mm: Optional[float] = None    # 配准下采样体素(None→voxel_size)
     reg_corr_mm: Optional[float] = None     # Color-ICP / 全局优化最大对应距离(None→2.5×voxel_size)
     loop_closure: bool = True           # 末视角→首视角闭环边(04b 强制)
+    # 目标 mask 边界腐蚀(像素),仅作用于 mask:针对**真实深度传感器**在物体轮廓(深度不连续处)
+    #   产生的飞点/混合像素——这些边界像素深度在前景/背景间被插值,SAM mask 会把它们裹进来,
+    #   反投影成偏离真表面的点。腐蚀几像素只留"确信内部"深度;丢掉的边界条在邻视角是内部点,
+    #   多视角下不损真表面。默认 0:合成 raycast 边界是 GT 精确深度、无混合像素(scan_mask_fusion 的
+    #   metrics.erode_sweep 实测 erode 0→4px 在合成 clean 边界单调削覆盖、无污染收益),开腐蚀反而有害;
+    #   真机飞点的腐蚀收益待真实 P100R3 RGBD(TODO M3.14②)到位后据实标定再开。
+    mask_erode_px: int = 0
+
+    def __post_init__(self):
+        # 负腐蚀无意义:fail loud 而非 max(0,) 静默当 0(项目硬规"无假 fallback")。
+        if self.mask_erode_px < 0:
+            raise ValueError(f"mask_erode_px {self.mask_erode_px} 必须 ≥ 0")
 
     def reg_voxel_m(self) -> float:
         """配准下采样体素(m):特征/RANSAC 用。默认 = min(voxel_size, 12mm)。
@@ -80,12 +99,33 @@ class FusionConfig:
         return 2.5 * self.reg_voxel_m()
 
 
+def _erode_bool(mask: np.ndarray, iters: int) -> np.ndarray:
+    """4-连通二值腐蚀 iters 次(纯 numpy,外侧视作背景 → 边界一并收缩)。免引 scipy 依赖。
+    用 `!=0` 而非 astype(bool):对任意数值 dtype(uint8 0/255、float 0/1)语义一致 = 非零即目标,
+    与 rgbd_bundle 存读约定(`!= 0`)对齐。iters 由 FusionConfig.__post_init__ 保证 ≥0,此处再兜底。"""
+    m = np.asarray(mask) != 0
+    for _ in range(max(0, int(iters))):
+        p = np.pad(m, 1, mode="constant", constant_values=False)
+        m = p[1:-1, 1:-1] & p[:-2, 1:-1] & p[2:, 1:-1] & p[1:-1, :-2] & p[1:-1, 2:]
+    return m
+
+
 def _masked_depth(f: RgbdFrame, cfg: FusionConfig) -> np.ndarray:
-    """按 conf 阈值预掩码 + 工作距离裁剪,返回 float32 mm 深度(掩掉的置 0)。"""
+    """按工作距离裁剪 + conf 阈值 + 目标 mask 预掩码,返回 float32 mm 深度(掩掉的置 0)。
+
+    三道预掩码同作用于这一份深度,registration 与 integration 复用它 → 位姿与体素来自同一像素集。
+    目标 mask(SAM)外的像素一律置 0:背景/地面/杂物不入点云,只重建框选目标(M3.17 ①);
+    mask 先按 cfg.mask_erode_px 腐蚀去掉不可靠边界混合像素再预掩。"""
     d = f.depth_mm.astype(np.float32).copy()
     d[d > cfg.depth_trunc_mm] = 0.0
     if cfg.enable_confidence and f.conf is not None:
         d[f.conf < cfg.conf_threshold] = 0.0
+    if f.mask is not None:
+        m = np.asarray(f.mask)
+        if m.shape != d.shape:
+            raise ValueError(f"mask 形状 {m.shape} 与 depth {d.shape} 不一致(须同分辨率对齐 RGBD)")
+        m = _erode_bool(m, cfg.mask_erode_px)
+        d[~m] = 0.0
     return d
 
 
@@ -234,7 +274,12 @@ def mesh_to_glb(mesh: o3d.geometry.TriangleMesh) -> bytes:
 def bake_albedo(mesh: o3d.geometry.TriangleMesh, frames, poses, tex_size: int = 1024):
     """对融合 mesh 做 UV 展开(iso-charts)+ 多视角 RGB 投影烘焙 albedo 纹理。
     poses[i]=cam_i→world(=mesh 所在 cam0 帧);投影外参=world→cam=inv(pose)。
-    返回 (t_mesh 带 texture_uvs, albedo uint8 HxWx3)。可见性/重叠混合由 Open3D 内部用 mesh 几何处理。"""
+    返回 (t_mesh 带 texture_uvs, albedo uint8 HxWx3)。可见性/重叠混合由 Open3D 内部用 mesh 几何处理。
+
+    注:几何已是 mask 后的目标(_masked_depth 在积分时剔了背景深度),故 mesh 只含目标表面;
+    但本函数用整张 f.color 投影、不经 mask,目标边界 texel 可能轻微串入相邻背景色。裸把背景色置黑
+    反更糟(黑边 bleed),正解需 Open3D 级逐 texel 有效性掩码 → 列 M3.14 纹理烘焙后续。
+    默认顶点色路径(/fuse texture=False)无此问题:TSDF 只在 mask 后深度有效处积分,背景色随深度=0 被跳过。"""
     m = o3d.geometry.TriangleMesh(mesh)
     m.remove_degenerate_triangles()
     m.remove_duplicated_vertices()

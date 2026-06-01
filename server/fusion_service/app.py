@@ -5,7 +5,8 @@
 
 /fuse 契约:
   入:multipart,file 字段 `bundle`=RgbdShot zip(见 rgbd_bundle.py);
-     可选 form:conf_threshold(int,默认 80)、enable_confidence(bool,默认 true)、voxel_size_mm(float,默认 6)。
+     可选 form:conf_threshold(int,默认 80)、enable_confidence(bool,默认 true)、voxel_size_mm(float,默认 6)、
+     mask_erode_px(int,默认 0;bundle 带目标 mask 时的边界腐蚀,真机飞点用)、texture(bool)、tex_size(int)。
   出:body=GLB 字节(model/gltf-binary);stats 走响应头 X-Vertices/X-Triangles/X-Frame-Count/X-Fusion-Ms。
 
 端→云上传契约(端侧打包 bundle)、NATS scan.captured/fusion_done、入队、GLB 存 MinIO 在 Go 侧(fusionworker)。
@@ -45,6 +46,7 @@ async def fuse_endpoint(
     conf_threshold: int = Form(80),
     enable_confidence: bool = Form(True),
     voxel_size_mm: float = Form(6.0),
+    mask_erode_px: int = Form(0),
     texture: bool = Form(False),
     tex_size: int = Form(1024),
 ):
@@ -55,8 +57,11 @@ async def fuse_endpoint(
         raise HTTPException(status_code=400, detail=f"bundle 解包失败: {e}")
     if len(frames) < 2:
         raise HTTPException(status_code=400, detail="bundle 至少需 2 帧")
-    cfg = FusionConfig(enable_confidence=enable_confidence,
-                       conf_threshold=conf_threshold, voxel_size_mm=voxel_size_mm)
+    try:
+        cfg = FusionConfig(enable_confidence=enable_confidence, conf_threshold=conf_threshold,
+                           voxel_size_mm=voxel_size_mm, mask_erode_px=mask_erode_px)
+    except ValueError as e:   # __post_init__ 校验(如 mask_erode_px<0)
+        raise HTTPException(status_code=400, detail=str(e))
     t0 = time.perf_counter()
     try:
         if texture:

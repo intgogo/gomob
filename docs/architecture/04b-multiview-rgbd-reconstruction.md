@@ -161,8 +161,20 @@ iso-charts 与 xatlas(激进打包)UV 利用率都只 ~62–70%(小 chart 多、
 前端,但 LocateAnything 非商用许可对本产品是硬约束,暂不引入;Grounded-SAM/Semantic-SAM 留候选)。
 box 提示天然定尺度 → 单 mask,正好避开点提示的粒度歧义(点轮胎=轮胎还是整车)。
 质量门 `tests/harness/sam_segmentation`:合成星形(细尖)场景 + 人工松框 → IoU ≥ 0.92。
-**后续增量**:mask 借 iHawk RGB↔depth 像素对齐投到 depth(依赖 `05-calibration` 外参)、与阶段 1 启发式 ROI 的 A/B、
-端侧 MobileSAM/SAM2 轻量化。
+
+**M3.17 第二增量(2026-05-31)已落 —— mask 投 depth 接进融合主线**:RGB 与 depth 端侧已对齐(§5.3),
+故 mask 逐像素直接对应 depth,**无需跨传感器外参**。`RgbdFrame.mask` 作与 `conf` 平行的**深度预掩码通道**
+(`fusion_core._masked_depth`:mask 外像素一律置 0,不入点云 / 配准 / 积分,registration 与 integration
+用同一份 mask 后深度)。`rgbd_bundle` 加 `mask_{i}.u8` 通道(向后兼容);**masks 随 bundle 走,fusion 不回调
+sam_service**——分割是喂给几何层的感知步,上游(人工框→sam_service)算好 mask 冻进 bundle、可让用户先确认,
+fusion 只消费,服务解耦无运行时耦合。新增 `mask_erode_px` 旋钮(默认 0):针对真机深度边界飞点 / 混合像素,
+合成 raycast 无此类像素故默认关,待真实 P100R3 RGBD(M3.14②)标定再开。
+端到端验证 `tests/harness/scan_mask_fusion`(目标+地面+干扰 → 真 SAM 逐视角分割 → mask 引导融合):
+SAM IoU ~0.994、mask 引导 chamfer ~1.7mm / 背景污染 ~0.01% / cov@5mm ~94%,baseline(无 mask)污染 ~90%、
+对照砍 ~9000×,且贴齐 GT-mask 上界 → **证明 2D 高 IoU 经 mask 预掩能转成干净 3D 物体点云**。
+踩坑:目标若用周期纹理会让 FPFH/Color-ICP 特征混叠致 ~20% 位姿翻转(见
+`docs/agent-memory/finding_periodic_texture_registration_aliasing_2026-05-31.md`)。
+**后续增量**:与阶段 1 启发式 ROI 的 A/B(mesh 边缘毛刺下降)、端侧 MobileSAM/SAM2 轻量化、真实图像基准。
 
 ### 5.3 RGB 与 Depth 像素对齐
 
@@ -176,6 +188,11 @@ mask × depth → 物体 depth → 反投影 → 物体点云
 
 **不需要双摄外参标定**（这是相比"手机主摄 + 外接深度相机"方案的重大简化）。
 但要在 P100R3 SDK 启用 `setRegistrationEnable(true)` 让 SDK 出对齐版本的 RGB+Depth。
+
+> **M3.17 mask 机制对本节的硬依赖**:§5.2 第二增量把 SAM mask 当作逐像素对应 depth 的预掩码,
+> **前提正是本节"RGB 与 depth 已在端侧(M3.12)对齐到同一内参/分辨率"**。若端侧对齐未落地或失败
+> (未启 `setRegistrationEnable`、分辨率不一致),mask 投 depth 会整体错位 → 抠出的不是目标。
+> 故真机联调时,RGB↔depth 对齐是 M3.17 mask 链路的前置验收项,不是可选项。
 
 ### 5.4 用户引导（采集时）
 

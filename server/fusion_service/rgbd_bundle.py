@@ -8,14 +8,18 @@ fusion_service /fuse 解包)。格式:
       "frame_count": int,
       "depth_unit_mm": 1.0,            # depth 原始值 × 此系数 = 毫米(默认深度即以 mm 存 uint16)
       "intrinsics": {"width","height","fx","fy","cx","cy"},   # RGB 与 depth 已对齐,共用此内参
-      "shots": [{"index": i, "rgb": "rgb_0.png", "depth": "depth_0.u16", "conf": "conf_0.u8"|null}, ...]
+      "shots": [{"index": i, "rgb": "rgb_0.png", "depth": "depth_0.u16",
+                 "conf": "conf_0.u8"|null, "mask": "mask_0.u8"|null}, ...]
   }
   rgb_{i}.png    —— 彩色 PNG,H×W×3 uint8
   depth_{i}.u16  —— 深度裸字节,uint16 小端,H*W,单位由 depth_unit_mm 定(默认 mm)
   conf_{i}.u8    —— 置信裸字节,uint8,H*W,0..255(可选;无则该帧不带 conf)
+  mask_{i}.u8    —— 目标 mask 裸字节,uint8,H*W,0=背景 / 非0=目标(可选;无则整帧参与融合)
 
 约定:RGB 与 depth **已在端侧对齐**到同一分辨率/内参(对齐属 M3.12 采集端职责),
 本契约只承载对齐后的 RGBD。真 P100R3(RGB 1920×1080 / depth 1280×800)需上游对齐后再打包。
+mask 在**已对齐 RGB** 上由 SAM(人工框→sam_service)算得,故逐像素对齐 depth;上游可在打包前
+让用户确认 mask 再冻结进 bundle,fusion 只消费、不回调 sam_service(服务解耦,见 M3.17 ①)。
 """
 from __future__ import annotations
 
@@ -47,11 +51,24 @@ def pack(frames: List[RgbdFrame], session_key: str) -> bytes:
             z.writestr(rgb_name, png.getvalue())
             z.writestr(depth_name, np.ascontiguousarray(
                 np.rint(f.depth_mm).astype("<u2")).tobytes())
+            hw = (intr.height, intr.width)
             conf_name = None
             if f.conf is not None:
+                conf = np.asarray(f.conf)                  # 先归一成数组再校验(允许 list 等)
+                if conf.shape != hw:                       # 与 mask 对称的形状校验(否则 unpack reshape 才炸)
+                    raise ValueError(f"帧 {i} conf 形状 {conf.shape} 与内参 {hw} 不一致")
                 conf_name = f"conf_{i}.u8"
-                z.writestr(conf_name, np.ascontiguousarray(f.conf.astype(np.uint8)).tobytes())
-            shots.append({"index": i, "rgb": rgb_name, "depth": depth_name, "conf": conf_name})
+                z.writestr(conf_name, np.ascontiguousarray(conf.astype(np.uint8)).tobytes())
+            mask_name = None
+            if f.mask is not None:
+                mask = np.asarray(f.mask)                  # 先归一成数组再取 shape(允许 list 等非 ndarray)
+                if mask.shape != hw:
+                    raise ValueError(f"帧 {i} mask 形状 {mask.shape} 与内参 {hw} 不一致")
+                mask_name = f"mask_{i}.u8"
+                # bool/任意非零 → 0/255 uint8 存盘
+                z.writestr(mask_name, np.ascontiguousarray((mask != 0).astype(np.uint8) * 255).tobytes())
+            shots.append({"index": i, "rgb": rgb_name, "depth": depth_name,
+                          "conf": conf_name, "mask": mask_name})
         manifest = {
             "session_key": session_key,
             "frame_count": len(frames),
@@ -81,5 +98,8 @@ def unpack(data: bytes) -> List[RgbdFrame]:
             conf: Optional[np.ndarray] = None
             if shot.get("conf"):
                 conf = np.frombuffer(z.read(shot["conf"]), dtype=np.uint8).reshape(h, w).copy()
-            frames.append(RgbdFrame(color=color, depth_mm=depth, intr=intr, conf=conf))
+            mask: Optional[np.ndarray] = None
+            if shot.get("mask"):
+                mask = (np.frombuffer(z.read(shot["mask"]), dtype=np.uint8).reshape(h, w) != 0).copy()
+            frames.append(RgbdFrame(color=color, depth_mm=depth, intr=intr, conf=conf, mask=mask))
         return frames
