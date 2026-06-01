@@ -17,4 +17,8 @@
   (翻转会甩出一团远点),而非盯着下游(SAM/腐蚀/voxel)。
 - 真实带重复纹理的物体(瓷砖地、卡车铆钉阵列、栅栏)生产上同样有此风险 → 单列鲁棒性 TODO:
   评估 mutual/ratio-test 对应过滤、限制宽基线闭环边的角度跨度、或 RANSAC 确定化(降线程/固定 seed)。
+- **受控对比/参数扫描隔离配准**:harness 里比"分割/腐蚀等单一变量对重建表面的影响"时,别让各分支各自
+  `fuse_with_poses`(各跑一次 RANSAC,翻转噪声混进结果)。改用**一组干净位姿**(如 GT-mask 融合得到)
+  对所有分支 `integrate_tsdf` 重积分,只变被测变量 → 纯比该变量,门稳定不被配准抖动污染
+  (scan_mask_fusion 的 A/B 与 erode_sweep 都这么做;另在 metric 采样前 `o3d.utility.random.seed(0)` 锁采样)。
 - 相关:[[finding_multiview_rgbd_pivot_2026-05-07]] 是当前重建主线;配准尺度派生修复见 `fusion_core.reg_voxel_m`。
