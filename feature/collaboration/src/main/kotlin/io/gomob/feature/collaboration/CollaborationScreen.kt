@@ -339,7 +339,11 @@ private fun RecordingRow(r: Recording) {
                 .background(Gomob.colors.bg2),
             contentAlignment = Alignment.Center,
         ) {
-            Text(r.duration, style = Gomob.type.numInline, color = Gomob.colors.fg2)
+            Text(
+                r.duration,
+                style = Gomob.type.numInline.copy(fontSize = 14.sp),
+                color = Gomob.colors.fg0,
+            )
         }
         Column(
             Modifier.weight(1f),
@@ -349,7 +353,7 @@ private fun RecordingRow(r: Recording) {
             Text(
                 "${r.inspector} · ${r.time} · ${r.views} 次观看",
                 style = Gomob.type.caption,
-                color = Gomob.colors.fg3,
+                color = Gomob.colors.fg2,
             )
         }
     }

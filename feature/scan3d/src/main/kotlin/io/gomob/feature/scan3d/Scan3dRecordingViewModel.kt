@@ -8,8 +8,9 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.gomob.nativebridge.NativeBridge
-import io.gomob.nativebridge.berxel.BerxelDeviceState
-import io.gomob.nativebridge.berxel.BerxelService
+import io.gomob.nativebridge.camera.CameraSource
+import io.gomob.nativebridge.camera.CameraSourceProvider
+import io.gomob.nativebridge.camera.CameraSourceState
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -68,7 +69,7 @@ sealed interface ScanRecordingState {
  *     colorFrames/depthFrames 出 Bitmap 给 UI 预览
  *   - 用户点"开始" → start()：建 native session 并把 depthFrames 喂进去
  *   - 用户点"停止" → stop() → Finalizing → Marching Tetrahedra → Completed
- *   - VM cleared（退栈）→ onCleared() 关 native session + berxel.release() 引用计数 -1
+ *   - VM cleared（退栈）→ onCleared() 关 native session + source.release() 引用计数 -1
  *
  * 相机生命周期由 [BerxelService] 引用计数单一管控：本 VM 与 [DepthCameraViewModel] 都走
  * acquire/release，导航在两页间切换时计数全程 >0，相机不再被旧 VM 的 stop 抢关（修掉历史"双 VM
@@ -79,9 +80,13 @@ sealed interface ScanRecordingState {
  */
 @HiltViewModel
 class Scan3dRecordingViewModel @Inject constructor(
-    private val berxel: BerxelService,
+    provider: CameraSourceProvider,
     @ApplicationContext private val ctx: Context,
 ) : ViewModel() {
+
+    /** 进场时按当前插着的相机选活动取流源（eYs3D→Eys3dCameraService / 否则 Berxel，不退化）。
+     *  整段会话持有同一个 source；中途换相机是 device-gated 边缘场景，暂不处理。 */
+    private val source: CameraSource = provider.active()
 
     private val _state = MutableStateFlow<ScanRecordingState>(ScanRecordingState.Idle)
     val state: StateFlow<ScanRecordingState> = _state.asStateFlow()
@@ -102,9 +107,9 @@ class Scan3dRecordingViewModel @Inject constructor(
     private val _depthPreview = MutableStateFlow<Bitmap?>(null)
     val depthPreview: StateFlow<Bitmap?> = _depthPreview.asStateFlow()
 
-    /** SDK 设备状态 — UI 用来判定开始按钮是否可用 */
-    val deviceState: StateFlow<BerxelDeviceState> = berxel.state
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), BerxelDeviceState.Idle)
+    /** 相机设备状态（中性）— UI 用来判定开始按钮是否可用 */
+    val deviceState: StateFlow<CameraSourceState> = source.sourceState
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), CameraSourceState.Idle)
 
     @Volatile private var sessionHandle: Long = 0L
     private var ingestJob: Job? = null
@@ -127,11 +132,11 @@ class Scan3dRecordingViewModel @Inject constructor(
 
     init {
         // 进入扫描页：引用计数 acquire（单一 owner 管相机），+ collect Color/Depth 预览帧
-        berxel.acquire()
+        source.acquire()
 
         viewModelScope.launch {
             var counter = 0
-            berxel.colorFrames.collect { frame ->
+            source.colorFrames.collect { frame ->
                 counter++
                 if (counter % PREVIEW_DECIMATION != 0) return@collect
                 val bmp = withContext(Dispatchers.Default) { FrameRenderer.colorRgb24ToBitmap(frame) }
@@ -140,7 +145,7 @@ class Scan3dRecordingViewModel @Inject constructor(
         }
         viewModelScope.launch {
             var counter = 0
-            berxel.depthFrames.collect { frame ->
+            source.depthFrames.collect { frame ->
                 counter++
                 if (counter % PREVIEW_DECIMATION != 0) return@collect
                 val bmp = withContext(Dispatchers.Default) { FrameRenderer.depth16ToBitmap(frame) }
@@ -222,7 +227,7 @@ class Scan3dRecordingViewModel @Inject constructor(
 
         ingestJob = viewModelScope.launch {
             var collectCount = 0
-            berxel.depthFrames.collect { frame ->
+            source.depthFrames.collect { frame ->
                 collectCount++
                 // 每次进入 native 前 snapshot handle；stop() 把 handle 置 0 后这里跳过
                 val h = sessionHandle
@@ -383,7 +388,7 @@ class Scan3dRecordingViewModel @Inject constructor(
             }
             executor.shutdown()
         }
-        berxel.release()
+        source.release()
     }
 
     companion object {

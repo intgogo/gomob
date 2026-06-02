@@ -12,9 +12,21 @@
 //
 // 验证边界：编译进 gomob_native.so 通过即接口形状正确；真流 depth/同步必须在真机（vivo PD2324 +
 //           带电 hub）跑出连续帧 + raw/8 mm 合理值才算通，rc=0 不代表成功。
+//
+// ★ M6.8b ④（2026-06-02 收尾）：生产唯一路径 = berxel_open_dual + berxel_snap_* core +
+//   BerxelSessionAdapter/BerxelDriver。Kotlin BerxelNativeStack 经 cameraOpenByFds(0x0603:0x001f)
+//   → BerxelDriver → berxel_open_dual 走这里，与 eYs3D 同 ICameraSession 契约。
+//   历史 berxelDual* device-gated 回退 JNI 已在 color+depth 真机 PASS(2510DRK44C)后删除——
+//   无并发分叉。见 docs/agent-memory/finding_p100r3_mix_color_depth_2026-06-02.md。
 
+// ★ M6.8b ④ host 统一（2026-06-01）：本文件 host(Linux 开发服务器,libusb 枚举)与 Android(JNI,
+//   wrap_sys_device fd)双目标编译。Android 专属区(jni.h / android-log / LOGI-LOGE)用 #ifdef __ANDROID__
+//   守；core/adapter/driver/open_host 两端共用。host 经 BerxelDriver::open_host
+//   → berxel_open_dual_host 对真机做 ICameraSession 统一验证(对原厂 oracle)。
+#ifdef __ANDROID__
 #include <jni.h>
 #include <android/log.h>
+#endif
 
 #include <atomic>
 #include <condition_variable>
@@ -31,10 +43,18 @@
 #include <libusb-1.0/libusb.h>
 
 #include "gomob_berxel_portable.h"
+#include "camera/camera_session.h"        // M6.8b ④：ICameraSession/ICameraDriver 抽象
+#include "camera/host/usb_context.h"      // host 枚举打开(open_host)
+#include "berxel/host/berxel_camera_adapter.h"  // MakeBerxelDriver() 工厂声明
 
+#ifdef __ANDROID__
 #define LOG_TAG "gomob_berxel_dual"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#else
+#define LOGI(...) do { std::fprintf(stderr, __VA_ARGS__); std::fprintf(stderr, "\n"); } while (0)
+#define LOGE(...) do { std::fprintf(stderr, __VA_ARGS__); std::fprintf(stderr, "\n"); } while (0)
+#endif
 
 namespace {
 
@@ -493,7 +513,16 @@ bool setup_dual(DualSession* s,
     if (master_payloads.empty()) { LOGE("master xu payloads empty"); return false; }
     refresh_master_time_sync_payloads(&master_payloads);
     if (s->enable_color) {
-        patch_p100r3_master_color_open_stream_payloads(&master_payloads, s->color_mode);
+        // ★ 并发 color+depth = MIX 模式：master_xu_json 已是【原厂 MIX 序列】(Kotlin 按 enableColor
+        //   选 iHawkP100R3_master_mix_init.json)。MIX 序列里 StreamFlagMode(0x0030)=0x0000 写两次 +
+        //   cmd0x0007=01 + COLOR OpenStream(640x400@30) 中段，都是原厂抓包逐位还原——不再 patch
+        //   StreamFlagMode(旧 0x02 是反编译错推断,host MIX trace 证实线上值是 0x0000)。
+        //   COLOR OpenStream 仍按 color_mode 重写一遍保证与 UVC commit 参数一致(host 实测重写 == 原厂
+        //   hex 42580c00...011e00,no-op);color_mode 不同步时这里自动跟上。
+        std::string color_os_hex;
+        patch_p100r3_master_color_open_stream_payloads(&master_payloads, s->color_mode, &color_os_hex);
+        LOGI("master COLOR OpenStream(MIX 中段就位) %dx%d@%d hex=%s",
+             s->color_mode.width, s->color_mode.height, s->color_mode.fps, color_os_hex.c_str());
     }
     if (claim_with_detach(s->master, 0) != 0) return false;
     if (s->enable_color && claim_with_detach(s->master, 1) != 0) return false;
@@ -524,7 +553,7 @@ bool setup_dual(DualSession* s,
             LOGE("master color UVC commit failed");
             return false;
         }
-        // color 异步 bulk transfer 由 berxelDualStart 在 setup 成功后统一提交（与 depth 共用单事件线程）。
+        // color 异步 bulk transfer 由 berxel_setup_and_launch 在 setup 成功后统一提交（与 depth 共用单事件线程）。
         std::this_thread::sleep_for(std::chrono::milliseconds(200));  // 等 master color commit 落定
     }
 
@@ -588,8 +617,9 @@ void close_session(DualSession* s) {
     if (s->depth_parser_thread.joinable()) s->depth_parser_thread.join();
     if (s->color_parser_thread.joinable()) s->color_parser_thread.join();
     if (s->log_thread.joinable()) s->log_thread.join();
-    // event_thread 已退出；再排干 ≤500ms 确保取消回调跑完，transfer 不在途再 free（防 use-after-free）
-    if (s->ctx) {
+    // event_thread 已退出；再排干 ≤500ms 确保取消回调跑完，transfer 不在途再 free（防 use-after-free）。
+    // s->ctx 为 nullptr 时即默认 context（host open_host 路径），handle_events 仍排默认 context。
+    {
         timeval tv{0, 50 * 1000};
         for (int i = 0; i < 10; ++i) libusb_handle_events_timeout_completed(s->ctx, &tv, nullptr);
     }
@@ -597,78 +627,56 @@ void close_session(DualSession* s) {
     for (auto* x : s->color_xfers) if (x) libusb_free_transfer(x);
     s->depth_xfers.clear();
     s->color_xfers.clear();
+#ifndef __ANDROID__
+    // host(Linux)：释放接口 + 重附内核驱动，让原厂 SDK / kernel uvc 下次能正常枚举（best-effort，
+    // 忽略返回；不附回去会让 vendor SDK 在我们 detach 过的设备上枚举失败）。Android fd 无此问题，#ifndef 守。
+    for (auto* h : {s->master, s->companion}) {
+        if (!h) continue;
+        for (int i = 0; i <= 1; ++i) { libusb_release_interface(h, i); libusb_attach_kernel_driver(h, i); }
+    }
+#endif
     if (s->master) { libusb_close(s->master); s->master = nullptr; }
     if (s->companion) { libusb_close(s->companion); s->companion = nullptr; }
+    // s->ctx 仅 fd 路径自有（libusb_init(&ctx)）才 exit；host 默认 context 由 UsbContext 释放。
     if (s->ctx) { libusb_exit(s->ctx); s->ctx = nullptr; }
     delete s;
 }
 
-}  // namespace
+// ─────────────────────────────────────────────────────────────────────────────
+// M6.8b ④：Berxel → ICameraSession 适配。
+// 下面的 open/snapshot core 是双流取流逻辑的唯一真理源(纯函数化:JNI buffer 换裸指针),经
+// BerxelSessionAdapter/BerxelDriver 接 camera* 生产路径。历史 berxelDual* device-gated 回退 JNI
+// 已在 color+depth 真机 PASS 后删除,此 core 即生产唯一实现,无分叉。
+// ─────────────────────────────────────────────────────────────────────────────
 
-// config[]: [depthW, depthH, depthFps, depthFrameIndex, depthInterval100ns,
-//            colorW, colorH, colorFps, colorFrameIndex, colorInterval100ns,
-//            keepaliveMs, readLen, enableColor]
-extern "C" JNIEXPORT jlong JNICALL
-Java_io_gomob_nativebridge_NativeBridge_berxelDualStart(
-        JNIEnv* env, jobject /*thiz*/,
-        jint masterFd, jint companionFd,
-        jbyteArray masterXu, jbyteArray companionInit, jintArray config) {
-    if (masterFd < 0 || companionFd < 0 || !masterXu || !companionInit || !config) {
-        LOGE("dualStart bad args");
-        return 0L;
-    }
-    jint cfg[14] = {0};
-    const jsize cfgLen = env->GetArrayLength(config);
-    env->GetIntArrayRegion(config, 0, std::min<jsize>(cfgLen, 14), cfg);
-
-    auto* s = new (std::nothrow) DualSession();
-    if (!s) return 0L;
+// 从 14-int cfg 填 DualSession 的流模式/控制字段（fd 与 host 路径共用）。
+void berxel_set_modes_from_cfg(DualSession* s, const int32_t cfg[14]) {
     s->depth_mode = P100R3VideoMode{static_cast<uint8_t>(cfg[3]),
                                     static_cast<uint16_t>(cfg[0]), static_cast<uint16_t>(cfg[1]),
                                     static_cast<uint16_t>(cfg[2]), static_cast<uint32_t>(cfg[4])};
     s->color_mode = P100R3VideoMode{static_cast<uint8_t>(cfg[8]),
                                     static_cast<uint16_t>(cfg[5]), static_cast<uint16_t>(cfg[6]),
                                     static_cast<uint16_t>(cfg[7]), static_cast<uint32_t>(cfg[9])};
-    // cfg[10]：>0=保活间隔 ms；==0=【显式关闭 keepalive】（E1 实测 companion depth 不依赖它，
-    // 关掉用于隔离「keepalive 失败刷屏是否拖死 color+depth 共存」）；<0=用默认 50。
     s->keepalive_ms = cfg[10] >= 0 ? cfg[10] : 50;
     s->read_len = cfg[11] > 0 ? cfg[11] : 16384;
     s->enable_color = cfg[12] != 0;
-    // cfg[13]：>=0=启用时域降噪（默认，0 也算启用）；<0=关闭（A/B 对照原始 raw 透传）。
     s->depth_temporal_enable = cfg[13] >= 0;
     s->depth_frame_size = static_cast<int>(s->depth_mode.width) * static_cast<int>(s->depth_mode.height) * 2;
+}
 
-    // libusb wrap：单 ctx 包两个 fd（对齐 host SDK，host 用单 UsbContext 跑 keepalive+color+depth 全绿）。
-    // NO_DEVICE_DISCOVERY 下不能枚举，只能 wrap。
-    if (libusb_set_option(nullptr, LIBUSB_OPTION_NO_DEVICE_DISCOVERY) != 0) {
-        LOGE("set_option(NO_DEVICE_DISCOVERY) failed");
-        delete s; return 0L;
-    }
-    if (libusb_init(&s->ctx) != 0) { LOGE("libusb_init failed"); delete s; return 0L; }
-    if (libusb_wrap_sys_device(s->ctx, static_cast<intptr_t>(masterFd), &s->master) != 0 || !s->master) {
-        LOGE("wrap master fd failed"); close_session(s); return 0L;
-    }
-    if (libusb_wrap_sys_device(s->ctx, static_cast<intptr_t>(companionFd), &s->companion) != 0 || !s->companion) {
-        LOGE("wrap companion fd failed"); close_session(s); return 0L;
-    }
+// 公共尾：s->master/companion(+ctx) 已就绪 → setup_dual + assembler + 线程 + bulk pump。
+// fd(Android cameraOpenByFds)与 host(open_host)两开法共用此尾。失败返 false（调用方 close_session）。
+bool berxel_setup_and_launch(DualSession* s,
+                             const std::vector<uint8_t>& master_xu,
+                             const std::vector<uint8_t>& comp_init) {
     s->master_dev = std::make_unique<AndroidUvcDevice>(s->master);
     s->companion_dev = std::make_unique<AndroidUvcDevice>(s->companion);
-
-    std::vector<uint8_t> master_xu(static_cast<size_t>(env->GetArrayLength(masterXu)));
-    env->GetByteArrayRegion(masterXu, 0, static_cast<jsize>(master_xu.size()),
-                            reinterpret_cast<jbyte*>(master_xu.data()));
-    std::vector<uint8_t> comp_init(static_cast<size_t>(env->GetArrayLength(companionInit)));
-    env->GetByteArrayRegion(companionInit, 0, static_cast<jsize>(comp_init.size()),
-                            reinterpret_cast<jbyte*>(comp_init.data()));
 
     s->running.store(true);
     if (!setup_dual(s, master_xu, comp_init)) {
         LOGE("setup_dual failed");
-        close_session(s);
-        return 0L;
+        return false;
     }
-    // 异步双流：建 assembler → 起唯一事件线程 → 提交 color/depth 异步 bulk → 起 log。
-    // 修 libusb 单 context 多线程同步竞争：旧 sync pump 的 200ms bulk 读占事件锁饿死 keepalive set_cur。
     s->depth_assembler = std::make_unique<UvcRawFrameAssembler>(UvcRawFrameAssemblerConfig{
         0x82, s->depth_mode, static_cast<size_t>(s->depth_frame_size), true,
         static_cast<size_t>(s->depth_frame_size) * 3});
@@ -676,83 +684,80 @@ Java_io_gomob_nativebridge_NativeBridge_berxelDualStart(
         s->color_assembler = std::make_unique<UvcMjpegFrameAssembler>(
             UvcMjpegFrameAssemblerConfig{0x81, s->color_mode, 8 * 1024 * 1024});
     }
-    s->depth_parser_thread = std::thread(depth_parser_loop, s);  // 先起解析线程，再灌 bulk
+    s->depth_parser_thread = std::thread(depth_parser_loop, s);
     if (s->enable_color) s->color_parser_thread = std::thread(color_parser_loop, s);
     s->event_thread = std::thread(dual_event_loop, s);
-    // 在途异步 bulk 数：1280@45（~92MB/s，2MB/帧）下 8×16KB=128KB 只占一帧 6%，
-    // 单事件线程来不及持续重提交 → device 内部 frame buffer 累积 ~4s 后溢出 → NO_DEVICE。
-    // 拉到 48 个在途（配合 read_len 64KB → 48×64KB=3MB ≈ 1.5 帧），把 45fps 管子喂满，避免 device 端积压。
+    // 2026-06-02 真机证伪 rank2:master color 0x81 URB 48→8 不解决 2510DRK44C 上 color-on 整机死
+    //   (8 URB 照样 depth_chunks=0)。⇒ 不是 URB 数量,是【并发 master color 流本身】与 companion
+    //   depth 在该机 USB stack 上互斥(depth-only 稳出 302 帧,一开 color 整机 0 帧)。
+    //   真解走 04b 时间复用(depth/color 错峰单流,不并发),非 URB 调参。故此处保持对称 48。
     constexpr int kBulkXferCount = 48;
     if (!submit_async_bulk(s, s->companion, 0x82, kBulkXferCount, s->depth_xfers, s->depth_bufs, depth_xfer_cb)) {
         LOGE("submit depth async bulk failed");
-        close_session(s);
-        return 0L;
+        return false;
     }
     if (s->enable_color &&
         !submit_async_bulk(s, s->master, 0x81, kBulkXferCount, s->color_xfers, s->color_bufs, color_xfer_cb)) {
         LOGE("submit color async bulk failed");
-        close_session(s);
-        return 0L;
+        return false;
     }
     s->log_thread = std::thread(log_loop, s);
-    LOGI("berxelDualStart ok ptr=%p enable_color=%d temporal=%d depth=%dx%d@%d (async bulk + single event thread)",
+    LOGI("berxel_setup_and_launch ok ptr=%p enable_color=%d temporal=%d depth=%dx%d@%d",
          (void*)s, (int)s->enable_color, (int)s->depth_temporal_enable,
          s->depth_mode.width, s->depth_mode.height, s->depth_mode.fps);
-    return reinterpret_cast<jlong>(s);
+    return true;
 }
 
-extern "C" JNIEXPORT void JNICALL
-Java_io_gomob_nativebridge_NativeBridge_berxelDualStop(
-        JNIEnv* /*env*/, jobject /*thiz*/, jlong handle) {
-    auto* s = reinterpret_cast<DualSession*>(handle);
-    LOGI("berxelDualStop ptr=%p", (void*)s);
-    close_session(s);
-}
-
-// 返回 [depthFrames, depthChunks, depthBytes, depthErrors,
-//       colorFrames, colorChunks, colorBytes, colorErrors,
-//       pairs, lastDeltaNs, meanAbsDeltaNs, maxAbsDeltaNs,
-//       lastColorFrameNo, lastDepthFrameNo, keepaliveChunks, depthSeq]
-extern "C" JNIEXPORT jlongArray JNICALL
-Java_io_gomob_nativebridge_NativeBridge_berxelDualStats(
-        JNIEnv* env, jobject /*thiz*/, jlong handle) {
-    auto* s = reinterpret_cast<DualSession*>(handle);
-    jlong out[16] = {0};
-    if (s) {
-        RgbdPairingStats ps;
-        { std::lock_guard<std::mutex> lk(s->pairer_mu); ps = s->pairer.stats(); }
-        uint64_t seq = 0;
-        { std::lock_guard<std::mutex> lk(s->frame_mu); seq = s->depth_seq; }
-        out[0] = s->depth_stats.frames;  out[1] = s->depth_stats.chunks;
-        out[2] = s->depth_stats.bytes;   out[3] = s->depth_stats.errors;
-        out[4] = s->color_stats.frames;  out[5] = s->color_stats.chunks;
-        out[6] = s->color_stats.bytes;   out[7] = s->color_stats.errors;
-        out[8] = ps.pairs;               out[9] = ps.last_host_delta_ns;
-        out[10] = ps.mean_abs_host_delta_ns; out[11] = ps.max_abs_host_delta_ns;
-        out[12] = static_cast<jlong>(ps.last_color_frame_number);
-        out[13] = static_cast<jlong>(ps.last_depth_frame_number);
-        out[14] = s->keepalive_stats.chunks;
-        out[15] = static_cast<jlong>(seq);
+// Android fd 路径：NO_DEVICE_DISCOVERY + 自有 ctx + wrap_sys_device 接管 usbfs fd。失败返 nullptr。
+DualSession* berxel_open_dual(int masterFd, int companionFd,
+                              const std::vector<uint8_t>& master_xu,
+                              const std::vector<uint8_t>& comp_init,
+                              const int32_t cfg[14]) {
+    auto* s = new (std::nothrow) DualSession();
+    if (!s) return nullptr;
+    berxel_set_modes_from_cfg(s, cfg);
+    if (libusb_set_option(nullptr, LIBUSB_OPTION_NO_DEVICE_DISCOVERY) != 0) {
+        LOGE("set_option(NO_DEVICE_DISCOVERY) failed");
+        delete s; return nullptr;
     }
-    jlongArray arr = env->NewLongArray(16);
-    env->SetLongArrayRegion(arr, 0, 16, out);
-    return arr;
+    if (libusb_init(&s->ctx) != 0) { LOGE("libusb_init failed"); delete s; return nullptr; }
+    if (libusb_wrap_sys_device(s->ctx, static_cast<intptr_t>(masterFd), &s->master) != 0 || !s->master) {
+        LOGE("wrap master fd failed"); close_session(s); return nullptr;
+    }
+    if (libusb_wrap_sys_device(s->ctx, static_cast<intptr_t>(companionFd), &s->companion) != 0 || !s->companion) {
+        LOGE("wrap companion fd failed"); close_session(s); return nullptr;
+    }
+    if (!berxel_setup_and_launch(s, master_xu, comp_init)) { close_session(s); return nullptr; }
+    return s;
 }
 
-// 把最新 depth 帧转成 active 16bit mm 写进 directBuffer（容量需 >= activeW*activeH*2 字节）。
-// 返回写入的字节数；无帧返 0；buffer 不够返 -1。outInfo[](>=4)= [activeW, activeH, frameNumber, hostMidpointNs]。
-extern "C" JNIEXPORT jint JNICALL
-Java_io_gomob_nativebridge_NativeBridge_berxelDualPollDepthMm(
-        JNIEnv* env, jobject /*thiz*/, jlong handle, jobject directBuffer, jlongArray outInfo) {
-    auto* s = reinterpret_cast<DualSession*>(handle);
+// host(Linux 服务器)路径：libusb 默认 context 枚举打开 master 0x0603:0x001f + companion 0x3558:0x1012。
+// s->ctx 留 nullptr（默认 context 由 UsbContext 持有/释放），其余 setup 与 fd 路径完全一致。失败返 nullptr。
+DualSession* berxel_open_dual_host(gomob::camera::UsbContext& ctx,
+                                   const std::vector<uint8_t>& master_xu,
+                                   const std::vector<uint8_t>& comp_init,
+                                   const int32_t cfg[14]) {
+    auto* s = new (std::nothrow) DualSession();
+    if (!s) return nullptr;
+    berxel_set_modes_from_cfg(s, cfg);
+    s->ctx = nullptr;  // 默认 context（UsbContext 已 libusb_init(nullptr)）
+    s->master = ctx.open(0x0603, 0x001f);
+    if (!s->master) { LOGE("host open master 0603:001f 失败"); close_session(s); return nullptr; }
+    s->companion = ctx.open(0x3558, 0x1012);
+    if (!s->companion) { LOGE("host open companion 3558:1012 失败"); close_session(s); return nullptr; }
+    if (!berxel_setup_and_launch(s, master_xu, comp_init)) { close_session(s); return nullptr; }
+    return s;
+}
+
+// depth → active 16bit mm 写 dst(cap_px 个 u16)。返回字节数 / 0 无帧 / -1 cap 不足。meta=[aw,ah,frameNo,midNs]。
+int berxel_snap_depth_mm(DualSession* s, uint16_t* dst, size_t cap_px, int64_t meta[4]) {
     if (!s) return 0;
     std::vector<uint8_t> transport;
-    std::vector<uint16_t> fused;  // active raw16（时域融合后）
+    std::vector<uint16_t> fused;
     UvcFrameInfo info;
     {
         std::lock_guard<std::mutex> lk(s->frame_mu);
         if (s->latest_depth_transport.empty()) return 0;
-        // 默认取时域融合后的 active raw16（降噪 3.7×、零偏移）；未启用/暂无融合帧回退 raw 透传。
         if (s->depth_temporal_enable && !s->latest_depth_fused.empty()) {
             fused = s->latest_depth_fused;
         } else {
@@ -763,10 +768,7 @@ Java_io_gomob_nativebridge_NativeBridge_berxelDualPollDepthMm(
     const P100R3VideoMode active = p100r3_depth_active_mode(s->depth_mode);
     const size_t aw = active.width, ah = active.height;
     const size_t need = aw * ah * 2;
-    auto* dst = reinterpret_cast<uint16_t*>(env->GetDirectBufferAddress(directBuffer));
-    const jlong cap = env->GetDirectBufferCapacity(directBuffer);
-    if (!dst || cap < static_cast<jlong>(need)) return -1;
-    // 融合路径：fused 已是 active raw16（前 aw×ah 像素）；透传路径从 transport 取。
+    if (!dst || cap_px * 2 < need) return -1;
     const uint16_t* src = nullptr;
     if (!fused.empty()) {
         if (fused.size() < aw * ah) return 0;
@@ -779,53 +781,38 @@ Java_io_gomob_nativebridge_NativeBridge_berxelDualPollDepthMm(
         const float mm = p100r3_depth_raw_to_mm(src[i], P100R3DepthPixelFormat::k13I3D);
         dst[i] = static_cast<uint16_t>(mm < 0.0f ? 0.0f : (mm > 65535.0f ? 65535.0f : mm));
     }
-    if (outInfo && env->GetArrayLength(outInfo) >= 4) {
-        jlong meta[4] = {static_cast<jlong>(aw), static_cast<jlong>(ah),
-                         static_cast<jlong>(info.frame_number), uvc_frame_midpoint_ns(info)};
-        env->SetLongArrayRegion(outInfo, 0, 4, meta);
+    if (meta) {
+        meta[0] = static_cast<int64_t>(aw); meta[1] = static_cast<int64_t>(ah);
+        meta[2] = static_cast<int64_t>(info.frame_number); meta[3] = uvc_frame_midpoint_ns(info);
     }
-    return static_cast<jint>(need);
+    return static_cast<int>(need);
 }
 
-// 取最新 depth 帧的【逐像素 confidence】（uint8，0=无效/飞点，255=raw 高置信）写进 directBuffer
-// （容量需 >= activeW*activeH）。与 PollDepthMm 同帧（同一 frame_mu 快照）；下游按 conf 阈值取点
-// （飞点=conf 0 被天然跳过）。返回写入字节数；无 conf 返 0；buffer 不够返 -1。
-// outInfo(>=4)=[activeW,activeH,frameNumber,hostMidpointNs]。
-extern "C" JNIEXPORT jint JNICALL
-Java_io_gomob_nativebridge_NativeBridge_berxelDualPollDepthConf(
-        JNIEnv* env, jobject /*thiz*/, jlong handle, jobject directBuffer, jlongArray outInfo) {
-    auto* s = reinterpret_cast<DualSession*>(handle);
+// 逐像素 confidence(uint8) 写 dst。返回字节数 / 0 无 / -1 cap 不足。
+int berxel_snap_conf(DualSession* s, uint8_t* dst, size_t cap, int64_t meta[4]) {
     if (!s) return 0;
     std::vector<uint8_t> conf;
     UvcFrameInfo info;
     {
         std::lock_guard<std::mutex> lk(s->frame_mu);
-        if (s->latest_depth_conf.empty()) return 0;  // 未启用时域/暂无融合帧 → 无 conf
+        if (s->latest_depth_conf.empty()) return 0;
         conf = s->latest_depth_conf;
         info = s->latest_depth_info;
     }
     const P100R3VideoMode active = p100r3_depth_active_mode(s->depth_mode);
-    const size_t aw = active.width, ah = active.height;
-    const size_t need = aw * ah;
+    const size_t need = static_cast<size_t>(active.width) * active.height;
     if (conf.size() < need) return 0;
-    auto* dst = reinterpret_cast<uint8_t*>(env->GetDirectBufferAddress(directBuffer));
-    const jlong cap = env->GetDirectBufferCapacity(directBuffer);
-    if (!dst || cap < static_cast<jlong>(need)) return -1;
+    if (!dst || cap < need) return -1;
     std::memcpy(dst, conf.data(), need);
-    if (outInfo && env->GetArrayLength(outInfo) >= 4) {
-        jlong meta[4] = {static_cast<jlong>(aw), static_cast<jlong>(ah),
-                         static_cast<jlong>(info.frame_number), uvc_frame_midpoint_ns(info)};
-        env->SetLongArrayRegion(outInfo, 0, 4, meta);
+    if (meta) {
+        meta[0] = static_cast<int64_t>(active.width); meta[1] = static_cast<int64_t>(active.height);
+        meta[2] = static_cast<int64_t>(info.frame_number); meta[3] = uvc_frame_midpoint_ns(info);
     }
-    return static_cast<jint>(need);
+    return static_cast<int>(need);
 }
 
-// 取最新 IR/phase 帧的【IR 亮度】（每像素高字节）写进 directBuffer 当 8-bit 灰度（容量需 >= activeW*activeH）。
-// 供「切 IR」预览。返回写入字节数；无帧返 0；buffer 不够返 -1。outInfo(>=4)=[activeW,activeH,frameNumber,hostMidpointNs]。
-extern "C" JNIEXPORT jint JNICALL
-Java_io_gomob_nativebridge_NativeBridge_berxelDualPollIrGrey(
-        JNIEnv* env, jobject /*thiz*/, jlong handle, jobject directBuffer, jlongArray outInfo) {
-    auto* s = reinterpret_cast<DualSession*>(handle);
+// IR/phase 高字节 → 8bit 灰度写 dst。返回字节数 / 0 无 / -1 cap 不足。
+int berxel_snap_ir(DualSession* s, uint8_t* dst, size_t cap, int64_t meta[4]) {
     if (!s) return 0;
     std::vector<uint8_t> transport;
     UvcFrameInfo info;
@@ -836,48 +823,52 @@ Java_io_gomob_nativebridge_NativeBridge_berxelDualPollIrGrey(
         info = s->latest_ir_info;
     }
     const P100R3VideoMode active = p100r3_depth_active_mode(s->depth_mode);
-    const size_t aw = active.width, ah = active.height;
-    const size_t npix = aw * ah;
+    const size_t npix = static_cast<size_t>(active.width) * active.height;
     if (transport.size() < npix * 2) return 0;
-    auto* dst = reinterpret_cast<uint8_t*>(env->GetDirectBufferAddress(directBuffer));
-    const jlong cap = env->GetDirectBufferCapacity(directBuffer);
-    if (!dst || cap < static_cast<jlong>(npix)) return -1;
-    // 每像素高字节 = IR 灰度（低字节是 phase code，丢弃）
+    if (!dst || cap < npix) return -1;
     for (size_t i = 0; i < npix; ++i) dst[i] = transport[i * 2 + 1];
-    if (outInfo && env->GetArrayLength(outInfo) >= 4) {
-        jlong meta[4] = {static_cast<jlong>(aw), static_cast<jlong>(ah),
-                         static_cast<jlong>(info.frame_number), uvc_frame_midpoint_ns(info)};
-        env->SetLongArrayRegion(outInfo, 0, 4, meta);
+    if (meta) {
+        meta[0] = static_cast<int64_t>(active.width); meta[1] = static_cast<int64_t>(active.height);
+        meta[2] = static_cast<int64_t>(info.frame_number); meta[3] = uvc_frame_midpoint_ns(info);
     }
-    return static_cast<jint>(npix);
+    return static_cast<int>(npix);
 }
 
-// 取最新 master MJPEG color 帧字节（consume-once：取走即清，无新帧返 null）。Kotlin 侧 BitmapFactory 解码。
-extern "C" JNIEXPORT jbyteArray JNICALL
-Java_io_gomob_nativebridge_NativeBridge_berxelDualPollColorMjpeg(
-        JNIEnv* env, jobject /*thiz*/, jlong handle) {
-    auto* s = reinterpret_cast<DualSession*>(handle);
-    if (!s) return nullptr;
-    std::vector<uint8_t> mjpeg;
-    {
-        std::lock_guard<std::mutex> lk(s->color_mu);
-        if (s->latest_color_mjpeg.empty()) return nullptr;
-        mjpeg.swap(s->latest_color_mjpeg);  // 取走并清空（consume-once）
-    }
-    jbyteArray arr = env->NewByteArray(static_cast<jsize>(mjpeg.size()));
-    if (!arr) return nullptr;
-    env->SetByteArrayRegion(arr, 0, static_cast<jsize>(mjpeg.size()),
-                            reinterpret_cast<const jbyte*>(mjpeg.data()));
-    return arr;
+// 取走最新 master MJPEG color（consume-once，取走即清）。返回是否有帧。
+bool berxel_take_color(DualSession* s, std::vector<uint8_t>* out) {
+    if (!s || !out) return false;
+    std::lock_guard<std::mutex> lk(s->color_mu);
+    if (s->latest_color_mjpeg.empty()) return false;
+    out->swap(s->latest_color_mjpeg);
+    return true;
 }
 
-// 调试：把最新 depth transport 帧的【完整原始字节】（assembler 当前吐出的 frame，未做 raw/8 处理）
-// 写到 outPath，供逐字节分析 4B/px 结构 / 验证劈帧。返回写入字节数；无帧返 0。
-extern "C" JNIEXPORT jint JNICALL
-Java_io_gomob_nativebridge_NativeBridge_berxelDualDumpRawDepth(
-        JNIEnv* env, jobject /*thiz*/, jlong handle, jstring outPath) {
-    auto* s = reinterpret_cast<DualSession*>(handle);
-    if (!s || !outPath) return 0;
+// 富诊断 16-long 统计。字段顺序见 ICameraSession::extended_stats / NativeBridge.cameraExtendedStats:
+//   [0..3]depth frames/chunks/bytes/errors [4..7]color frames/chunks/bytes/errors
+//   [8..11]pairs/lastDeltaNs/meanAbsDeltaNs/maxAbsDeltaNs [12..13]lastColor/lastDepthFrameNo
+//   [14]keepaliveChunks [15]depthSeq。
+void berxel_get_stats(DualSession* s, int64_t out[16]) {
+    for (int i = 0; i < 16; ++i) out[i] = 0;
+    if (!s) return;
+    RgbdPairingStats ps;
+    { std::lock_guard<std::mutex> lk(s->pairer_mu); ps = s->pairer.stats(); }
+    uint64_t seq = 0;
+    { std::lock_guard<std::mutex> lk(s->frame_mu); seq = s->depth_seq; }
+    out[0] = s->depth_stats.frames;  out[1] = s->depth_stats.chunks;
+    out[2] = s->depth_stats.bytes;   out[3] = s->depth_stats.errors;
+    out[4] = s->color_stats.frames;  out[5] = s->color_stats.chunks;
+    out[6] = s->color_stats.bytes;   out[7] = s->color_stats.errors;
+    out[8] = ps.pairs;               out[9] = ps.last_host_delta_ns;
+    out[10] = ps.mean_abs_host_delta_ns; out[11] = ps.max_abs_host_delta_ns;
+    out[12] = static_cast<int64_t>(ps.last_color_frame_number);
+    out[13] = static_cast<int64_t>(ps.last_depth_frame_number);
+    out[14] = s->keepalive_stats.chunks;
+    out[15] = static_cast<int64_t>(seq);
+}
+
+// dump 最新 depth transport 原始字节到 path。返回写入字节数。
+int berxel_dump_depth(DualSession* s, const char* path) {
+    if (!s || !path) return 0;
     std::vector<uint8_t> transport;
     uint64_t frame_no = 0;
     {
@@ -886,7 +877,6 @@ Java_io_gomob_nativebridge_NativeBridge_berxelDualDumpRawDepth(
         transport = s->latest_depth_transport;
         frame_no = s->latest_depth_info.frame_number;
     }
-    const char* path = env->GetStringUTFChars(outPath, nullptr);
     int written = 0;
     FILE* f = std::fopen(path, "wb");
     if (f) {
@@ -897,6 +887,151 @@ Java_io_gomob_nativebridge_NativeBridge_berxelDualDumpRawDepth(
     } else {
         LOGE("dump fopen failed: %s", path);
     }
-    env->ReleaseStringUTFChars(outPath, path);
     return written;
 }
+
+// options_json 二进制布局(小端): [u32 xuLen][xu][u32 initLen][init][14×i32 cfg]。
+bool unpack_berxel_options(const std::string& blob,
+                           std::vector<uint8_t>* xu, std::vector<uint8_t>* init, int32_t cfg[14]) {
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(blob.data());
+    const size_t n = blob.size();
+    size_t off = 0;
+    auto rd_u32 = [&](uint32_t* v) -> bool {
+        if (off + 4 > n) return false;
+        std::memcpy(v, p + off, 4); off += 4; return true;
+    };
+    uint32_t xuLen = 0;
+    if (!rd_u32(&xuLen)) return false;
+    if (off + xuLen > n) return false;
+    xu->assign(p + off, p + off + xuLen);
+    off += xuLen;
+    uint32_t initLen = 0;
+    if (!rd_u32(&initLen)) return false;
+    if (off + initLen > n) return false;
+    init->assign(p + off, p + off + initLen);
+    off += initLen;
+    if (off + 14 * 4 > n) return false;
+    for (int i = 0; i < 14; ++i) { int32_t v; std::memcpy(&v, p + off, 4); cfg[i] = v; off += 4; }
+    return true;
+}
+
+// ICameraSession 适配：包一个已开流的 DualSession，snapshot/stats/dump 全走上面的 core。
+class BerxelSessionAdapter : public gomob::camera::ICameraSession {
+ public:
+    explicit BerxelSessionAdapter(DualSession* s) : s_(s) {}
+    ~BerxelSessionAdapter() override { if (s_) { close_session(s_); s_ = nullptr; } }
+
+    bool start(const gomob::camera::SessionCallbacks&) override {
+        // open_fd 里 berxel_open_dual 已起全部线程 + bulk;此处会话已在流。
+        state_ = s_ ? gomob::camera::SessionState::kStreaming : gomob::camera::SessionState::kError;
+        return s_ != nullptr;
+    }
+    int poll(gomob::camera::CameraFrame*, uint32_t) override { return 0; }  // Berxel 走 snapshot,不用 poll
+    bool set_controls(const gomob::camera::DepthControls&) override { return true; }  // dual 控制是 start-config
+    void stop() override {
+        if (s_) { close_session(s_); s_ = nullptr; }
+        state_ = gomob::camera::SessionState::kStopped;
+    }
+    void join() override {}  // close_session 已 join 线程
+    gomob::camera::SessionState state() const override { return state_; }
+    gomob::camera::SessionStats stats() const override {
+        gomob::camera::SessionStats st;
+        if (s_) {
+            int64_t e[16]; berxel_get_stats(s_, e);
+            st.depth_frames = e[0]; st.color_frames = e[4]; st.errors = e[3] + e[7];
+        }
+        return st;
+    }
+    int snapshot_depth_mm(uint16_t* dst, size_t cap_px, int64_t* meta) override {
+        int64_t m[4] = {0, 0, 0, 0};
+        const int r = berxel_snap_depth_mm(s_, dst, cap_px, m);
+        if (meta) for (int i = 0; i < 4; ++i) meta[i] = m[i];
+        return r;
+    }
+    bool snapshot_color(std::vector<uint8_t>* out, int64_t* meta) override {
+        const bool ok = berxel_take_color(s_, out);
+        if (meta) for (int i = 0; i < 4; ++i) meta[i] = 0;  // master MJPEG 无 per-frame meta
+        return ok;
+    }
+    int snapshot_confidence(uint8_t* dst, size_t cap, int64_t* meta) override {
+        int64_t m[4] = {0, 0, 0, 0};
+        const int r = berxel_snap_conf(s_, dst, cap, m);
+        if (meta) for (int i = 0; i < 4; ++i) meta[i] = m[i];
+        return r;
+    }
+    int snapshot_ir(uint8_t* dst, size_t cap, int64_t* meta) override {
+        int64_t m[4] = {0, 0, 0, 0};
+        const int r = berxel_snap_ir(s_, dst, cap, m);
+        if (meta) for (int i = 0; i < 4; ++i) meta[i] = m[i];
+        return r;
+    }
+    int extended_stats(int64_t* out, size_t cap) const override {
+        if (!s_ || !out) return 0;
+        int64_t e[16]; berxel_get_stats(s_, e);
+        const size_t n = cap < 16 ? cap : 16;
+        for (size_t i = 0; i < n; ++i) out[i] = e[i];
+        return static_cast<int>(n);
+    }
+    int dump_raw_depth(const char* path) override { return berxel_dump_depth(s_, path); }
+
+ private:
+    DualSession* s_ = nullptr;
+    gomob::camera::SessionState state_ = gomob::camera::SessionState::kStarting;
+};
+
+// ICameraDriver：无设备态工厂 + 枚举。open_fd 收 [masterFd, companionFd] + 打包 options_json。
+class BerxelDriver : public gomob::camera::ICameraDriver {
+ public:
+    gomob::camera::CameraCapabilities capabilities() const override {
+        gomob::camera::CameraCapabilities c;
+        c.vendor = "Berxel"; c.model = "iHawk P100R3";
+        c.has_color = true; c.has_depth = true; c.has_confidence = true; c.has_ir = true;
+        c.depth_is_metric_onchip = true;
+        c.depth_profiles.push_back(gomob::camera::StreamProfile{
+            1280, 800, 45, gomob::camera::StreamProfile::Format::kDepthU16, "1280x800@45"});
+        return c;
+    }
+    std::vector<gomob::camera::UsbId> match_usb_ids() const override {
+        return { gomob::camera::UsbId{0x0603, 0x001f} };  // master 节点;companion 0x3558 内部
+    }
+    std::unique_ptr<gomob::camera::ICameraSession> open_host(
+            gomob::camera::UsbContext& ctx, const gomob::camera::SessionConfig& cfg) override {
+        // host(Linux 服务器)统一路径：libusb 枚举打开 master+companion → berxel_open_dual_host。
+        // options_json 同 open_fd 打包 [masterXu|companionInit|14-int cfg]，与 fd 路径同一双流序列。
+        std::vector<uint8_t> master_xu, comp_init;
+        int32_t c14[14] = {0};
+        if (!unpack_berxel_options(cfg.options_json, &master_xu, &comp_init, c14)) {
+            LOGE("BerxelDriver open_host: options_json 解析失败 len=%zu", cfg.options_json.size());
+            return nullptr;
+        }
+        DualSession* s = berxel_open_dual_host(ctx, master_xu, comp_init, c14);
+        if (!s) { LOGE("BerxelDriver open_host: berxel_open_dual_host 失败"); return nullptr; }
+        return std::make_unique<BerxelSessionAdapter>(s);
+    }
+    std::unique_ptr<gomob::camera::ICameraSession> open_fd(
+            const std::vector<int>& fds, const gomob::camera::SessionConfig& cfg) override {
+        if (fds.size() < 2) {
+            LOGE("BerxelDriver open_fd 需 2 fd(master+companion),给了 %zu", fds.size());
+            return nullptr;
+        }
+        std::vector<uint8_t> master_xu, comp_init;
+        int32_t c14[14] = {0};
+        if (!unpack_berxel_options(cfg.options_json, &master_xu, &comp_init, c14)) {
+            LOGE("BerxelDriver open_fd: options_json 解析失败 len=%zu", cfg.options_json.size());
+            return nullptr;
+        }
+        DualSession* s = berxel_open_dual(fds[0], fds[1], master_xu, comp_init, c14);
+        if (!s) { LOGE("BerxelDriver open_fd: berxel_open_dual 失败"); return nullptr; }
+        return std::make_unique<BerxelSessionAdapter>(s);
+    }
+};
+
+}  // namespace
+
+// MakeBerxelDriver：在 camera_session_jni 注册。定义在 anon namespace 外,引用其中的 BerxelDriver
+// （同 TU 内可见）。
+namespace gomob::berxel::host {
+std::shared_ptr<gomob::camera::ICameraDriver> MakeBerxelDriver() {
+    return std::make_shared<BerxelDriver>();
+}
+}  // namespace gomob::berxel::host

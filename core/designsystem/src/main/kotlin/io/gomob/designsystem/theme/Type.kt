@@ -36,7 +36,7 @@ data class GomobType(
 internal val DefaultType = GomobType(
     display = TextStyle(
         fontFamily = Sans, fontSize = 22.sp, fontWeight = FontWeight.Medium,
-        lineHeight = 26.4.sp, letterSpacing = (-0.005).em,
+        lineHeight = 26.4.sp, letterSpacing = 0.em,
     ),
     title = TextStyle(
         fontFamily = Sans, fontSize = 17.sp, fontWeight = FontWeight.Medium,
@@ -47,31 +47,32 @@ internal val DefaultType = GomobType(
         lineHeight = 21.sp,
     ),
     bodySm = TextStyle(
-        fontFamily = Sans, fontSize = 13.sp, fontWeight = FontWeight.Normal,
-        lineHeight = 18.sp,
+        fontFamily = Sans, fontSize = 14.sp, fontWeight = FontWeight.Normal,
+        lineHeight = 20.sp,
     ),
     caption = TextStyle(
+        fontFamily = Sans, fontSize = 12.sp, fontWeight = FontWeight.Normal,
+        lineHeight = 16.sp,
+    ),
+    micro = TextStyle(
         fontFamily = Sans, fontSize = 11.sp, fontWeight = FontWeight.Normal,
         lineHeight = 14.sp,
     ),
-    micro = TextStyle(
-        fontFamily = Sans, fontSize = 10.sp, fontWeight = FontWeight.Normal,
-        lineHeight = 13.sp,
-    ),
     eyebrow = TextStyle(
-        fontFamily = Mono, fontSize = 10.sp, fontWeight = FontWeight.Normal,
-        letterSpacing = 0.14.em,
+        fontFamily = Mono, fontSize = 11.sp, fontWeight = FontWeight.Normal,
+        lineHeight = 14.sp,
+        letterSpacing = 0.em,
     ),
     metricLg = TextStyle(
         fontFamily = Mono, fontSize = 34.sp, fontWeight = FontWeight.Medium,
-        letterSpacing = (-0.01).em,
+        letterSpacing = 0.em,
     ),
     metricMd = TextStyle(
         fontFamily = Mono, fontSize = 20.sp, fontWeight = FontWeight.Medium,
-        letterSpacing = (-0.01).em,
+        letterSpacing = 0.em,
     ),
     numInline = TextStyle(
         fontFamily = Mono, fontSize = 13.sp, fontWeight = FontWeight.Normal,
-        letterSpacing = 0.04.em,
+        letterSpacing = 0.em,
     ),
 )

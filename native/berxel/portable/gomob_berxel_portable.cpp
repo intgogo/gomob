@@ -1771,9 +1771,20 @@ int patch_p100r3_master_color_open_stream_payloads(std::vector<XuPayload>* paylo
         if (payload_hex) *payload_hex = hex_bytes_compact(payload.data);
     }
     if (patched == 0) {
-        payloads->push_back(make_p100r3_master_color_open_stream_payload(mode));
+        // 防御性 fallback:若 master 序列里【没有】COLOR OpenStream(cmd 0x0006),在 StreamFlagMode
+        //   (SetProperty cmd 0x05 reg 0x0030)【之前】的中段插一条——原厂 MIX 序列把 OpenStream 放在
+        //   StreamFlagMode 前,放末尾会令设备 COLOR 流时序错位。正常路径(MIX 资产自带 OpenStream,见
+        //   iHawkP100R3_master_mix_init.json #14)走上面的就地重写分支,这里不触发。
+        XuPayload os = make_p100r3_master_color_open_stream_payload(mode);
+        size_t pos = payloads->size();
+        for (size_t i = 0; i < payloads->size(); ++i) {
+            const auto& d = (*payloads)[i].data;
+            if (d.size() >= 10 && d[0] == 0x42 && d[1] == 0x58 &&
+                d[4] == 0x05 && d[8] == 0x30 && d[9] == 0x00) { pos = i; break; }
+        }
+        payloads->insert(payloads->begin() + static_cast<long>(pos), os);
         patched = 1;
-        if (payload_hex) *payload_hex = hex_bytes_compact(payloads->back().data);
+        if (payload_hex) *payload_hex = hex_bytes_compact(os.data);
     }
     return patched;
 }

@@ -268,14 +268,14 @@ private fun TopBar(
             Text(
                 inspector,
                 color = Color.White,
-                fontSize = 16.sp,
+                fontSize = 18.sp,
                 fontWeight = FontWeight.SemiBold,
                 style = TextStyle(shadow = textShadow()),
             )
             Text(
                 "查验员 · $employeeId",
-                color = Color.White.copy(alpha = 0.78f),
-                fontSize = 11.sp,
+                color = Color.White.copy(alpha = 0.88f),
+                fontSize = 13.sp,
                 style = TextStyle(shadow = textShadow()),
             )
         }
@@ -288,13 +288,13 @@ private fun WatchersPill(count: Int, onClick: () -> Unit) {
     Row(
         Modifier
             .clip(RoundedCornerShape(14.dp))
-            .background(Color.Black.copy(alpha = 0.42f))
+            .background(Color.Black.copy(alpha = 0.56f))
             .clickable(onClick = onClick)
-            .padding(start = 10.dp, end = 6.dp, top = 5.dp, bottom = 5.dp),
+            .padding(start = 11.dp, end = 7.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Text("观看 $count", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+        Text("观看 $count", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
         Icon(
             Icons.Filled.KeyboardArrowDown,
             contentDescription = "查看观众",
@@ -348,7 +348,7 @@ private fun SideActionButton(
     tone: SideTone = SideTone.Default,
 ) {
     val bg = when (tone) {
-        SideTone.Default -> Color.Black.copy(alpha = 0.36f)
+        SideTone.Default -> Color.Black.copy(alpha = 0.52f)
         SideTone.Accent -> Color(0xFF2DD4BF).copy(alpha = 0.92f)
     }
     Column(
@@ -373,7 +373,8 @@ private fun SideActionButton(
         Text(
             label,
             color = Color.White,
-            fontSize = 11.sp,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
             style = TextStyle(shadow = textShadow()),
         )
     }
@@ -401,7 +402,7 @@ private fun CommentBar(
                 .weight(1f)
                 .height(40.dp)
                 .clip(RoundedCornerShape(20.dp))
-                .background(Color.Black.copy(alpha = 0.5f))
+                .background(Color.Black.copy(alpha = 0.62f))
                 .padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -412,7 +413,7 @@ private fun CommentBar(
                     singleLine = true,
                     textStyle = TextStyle(
                         color = Color.White,
-                        fontSize = 13.sp,
+                        fontSize = 14.sp,
                     ),
                     cursorBrush = SolidColor(Color(0xFF2DD4BF)),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
@@ -424,8 +425,8 @@ private fun CommentBar(
                 if (value.isEmpty()) {
                     Text(
                         "说点什么...",
-                        color = Color.White.copy(alpha = 0.55f),
-                        fontSize = 13.sp,
+                        color = Color.White.copy(alpha = 0.68f),
+                        fontSize = 14.sp,
                     )
                 }
             }
@@ -453,7 +454,7 @@ private fun CommentBar(
             Modifier
                 .size(40.dp)
                 .clip(CircleShape)
-                .background(Color.Black.copy(alpha = 0.5f))
+                .background(Color.Black.copy(alpha = 0.62f))
                 .clickable(onClick = onRecordVoice),
             contentAlignment = Alignment.Center,
         ) {
@@ -505,10 +506,10 @@ private fun WatchersSheetContent(total: Int) {
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(w.name, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                    Text(w.role, color = Color.White.copy(alpha = 0.62f), fontSize = 11.sp)
+                    Text(w.role, color = Color.White.copy(alpha = 0.72f), fontSize = 12.sp)
                 }
                 if (w.muted) {
-                    Text("已静默", color = Color.White.copy(alpha = 0.5f), fontSize = 11.sp)
+                    Text("已静默", color = Color.White.copy(alpha = 0.62f), fontSize = 12.sp)
                 }
             }
         }
@@ -556,8 +557,8 @@ private fun EmptyVideoStage(state: ViewerLiveState, fallbackTaskId: String) {
                 is ViewerLiveState.Error -> state.message
                 else -> fallbackTaskId
             }
-            Text(main, color = Color.White.copy(alpha = 0.86f), fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-            Text(sub, color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp)
+            Text(main, color = Color.White.copy(alpha = 0.9f), fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+            Text(sub, color = Color.White.copy(alpha = 0.68f), fontSize = 13.sp)
         }
     }
 }
@@ -695,8 +696,8 @@ private fun emulatorFriendlyConnectOptions(): ConnectOptions {
 // 小件
 // ============================================================================
 private fun textShadow() = Shadow(
-    color = Color.Black.copy(alpha = 0.55f),
-    blurRadius = 4f,
+    color = Color.Black.copy(alpha = 0.82f),
+    blurRadius = 2f,
 )
 
 // ============================================================================

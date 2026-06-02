@@ -42,6 +42,11 @@ constexpr const char* kDepthMasterPayloads =
     "core/native-bridge/src/main/assets/berxel/iHawkP100R3_master_xu5_init.json";
 constexpr const char* kColorMasterPayloads =
     "native/berxel/host/assets/iHawkP100R3_color_master_xu5_init.json";
+// 原厂 MIX 并发 color+depth 序列(berxel_mix_trace definitive 配方)。
+constexpr const char* kMixMasterPayloads =
+    "core/native-bridge/src/main/assets/berxel/iHawkP100R3_master_mix_init.json";
+constexpr const char* kMixCompanionInit =
+    "core/native-bridge/src/main/assets/berxel/iHawkP100R3_companion_mix_init.json";
 
 struct Args {
     bool list = false;
@@ -233,7 +238,19 @@ Args parse_args(int argc, char** argv) {
     }
     if (!args.list && !args.reset && !args.stop_only && !args.depth && !args.color) args.list = true;
     if (args.master_payloads.empty()) {
-        args.master_payloads = args.color && !args.depth ? kColorMasterPayloads : kDepthMasterPayloads;
+        if (args.color && args.depth) {
+            args.master_payloads = kMixMasterPayloads;                                    // MIX 并发
+            if (args.master_limit == 20) args.master_limit = 0;  // MIX 21 条全发(默认 20 会截掉末条)
+        } else if (args.color) {
+            args.master_payloads = kColorMasterPayloads;                                  // color-only
+        } else {
+            args.master_payloads = kDepthMasterPayloads;                                  // depth-only/默认
+        }
+    }
+    // color+depth 并发默认配 MIX companion 序列(用户未显式 --companion-init 时)。
+    if (args.color && args.depth && args.companion_init ==
+            "core/native-bridge/src/main/assets/berxel/iHawkP100R3_init_sequence.json") {
+        args.companion_init = kMixCompanionInit;
     }
     args.save_depth_frames = std::max(0, args.save_depth_frames);
     args.save_depth_skip = std::max(0, args.save_depth_skip);

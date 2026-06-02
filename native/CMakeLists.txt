@@ -87,6 +87,17 @@ file(GLOB BERXEL_SOURCES CONFIGURE_DEPENDS "berxel/src/*.cpp")
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/berxel/portable)
 file(GLOB BERXEL_PORTABLE_SOURCES CONFIGURE_DEPENDS "berxel/portable/*.cpp")
 
+# camera/ 厂商无关相机抽象 + eys3d/ 自研驱动（双相机统一契约，M6.x）
+# camera(抽象/注册表/host UsbContext header)+ eys3d/portable(纯逻辑) + eys3d/android(fd 会话)
+# + eys3d/host/eys3d_stream_loop.cpp(传输无关取流，host 与 Android 共用)。
+# ★ eys3d/host 下 replay_stream/probe/v4l2/xu_diag/host_session 是 host-only(libusb 枚举/demo)，
+#   绝不进 .so，故只【精确列】eys3d_stream_loop.cpp，不 glob 整个 eys3d/host。
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/camera ${CMAKE_CURRENT_SOURCE_DIR}/eys3d/portable)
+file(GLOB CAMERA_SOURCES CONFIGURE_DEPENDS "camera/*.cpp" "camera/berxel_adapter/*.cpp")
+file(GLOB EYS3D_PORTABLE_SOURCES CONFIGURE_DEPENDS "eys3d/portable/*.cpp")
+file(GLOB EYS3D_ANDROID_SOURCES CONFIGURE_DEPENDS "eys3d/android/*.cpp")
+set(EYS3D_STREAM_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/eys3d/host/eys3d_stream_loop.cpp)
+
 # depth/ 子模块（占位）
 file(GLOB DEPTH_SOURCES CONFIGURE_DEPENDS "depth/*.cpp")
 list(LENGTH DEPTH_SOURCES DEPTH_COUNT)
@@ -116,6 +127,10 @@ add_library(gomob_native SHARED
     ${CALIB_SOURCES}
     ${BERXEL_SOURCES}
     ${BERXEL_PORTABLE_SOURCES}
+    ${CAMERA_SOURCES}
+    ${EYS3D_PORTABLE_SOURCES}
+    ${EYS3D_ANDROID_SOURCES}
+    ${EYS3D_STREAM_SOURCES}
 )
 
 target_link_libraries(gomob_native

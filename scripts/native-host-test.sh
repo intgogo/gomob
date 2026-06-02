@@ -6,8 +6,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p .dev/native-host
 
-CXX_FLAGS=(-std=c++17 -O2 -Wall -Wextra -Wno-deprecated-copy
-           -Ithird_party/eigen-3.4.0 -Inative)
+CXX_FLAGS=(-std=c++17 -O2 -Wall -Wextra -Wno-deprecated-copy -pthread
+           -Ithird_party/eigen-3.4.0 -Inative -Inative/berxel/portable)
 
 build_and_run() {
     local name=$1; shift
@@ -46,3 +46,45 @@ build_and_run conf_weight_test \
     native/reconstruction/tsdf.cpp \
     native/reconstruction/icp.cpp \
     native/depth/depth_projection.cpp
+
+build_and_run eys3d_depth_test \
+    tests/native_host/eys3d_depth_test.cpp \
+    native/eys3d/portable/eys3d_depth.cpp
+
+build_and_run eys3d_protocol_test \
+    tests/native_host/eys3d_protocol_test.cpp \
+    native/eys3d/portable/eys3d_protocol.cpp \
+    native/berxel/portable/gomob_berxel_portable.cpp
+
+build_and_run camera_abstraction_test \
+    tests/native_host/camera_abstraction_test.cpp \
+    native/berxel/portable/gomob_berxel_portable.cpp
+
+build_and_run eys3d_driver_test \
+    tests/native_host/eys3d_driver_test.cpp \
+    native/eys3d/portable/eys3d_driver.cpp \
+    native/eys3d/portable/eys3d_depth.cpp \
+    native/berxel/portable/gomob_berxel_portable.cpp
+
+build_and_run eys3d_depth_router_test \
+    tests/native_host/eys3d_depth_router_test.cpp \
+    native/eys3d/portable/eys3d_depth_router.cpp \
+    native/eys3d/portable/eys3d_driver.cpp \
+    native/eys3d/portable/eys3d_depth.cpp \
+    native/berxel/portable/gomob_berxel_portable.cpp
+
+build_and_run eys3d_session_core_test \
+    tests/native_host/eys3d_session_core_test.cpp \
+    native/eys3d/portable/eys3d_session_core.cpp \
+    native/eys3d/portable/eys3d_depth_router.cpp \
+    native/eys3d/portable/eys3d_driver.cpp \
+    native/eys3d/portable/eys3d_depth.cpp \
+    native/eys3d/portable/eys3d_protocol.cpp \
+    native/berxel/portable/gomob_berxel_portable.cpp
+
+build_and_run eys3d_stereo_depth_test \
+    tests/native_host/eys3d_stereo_depth_test.cpp \
+    native/eys3d/portable/eys3d_stereo_depth.cpp \
+    native/eys3d/portable/eys3d_driver.cpp \
+    native/eys3d/portable/eys3d_depth.cpp \
+    native/berxel/portable/gomob_berxel_portable.cpp

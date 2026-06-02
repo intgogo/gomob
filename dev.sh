@@ -14,6 +14,8 @@
 #   ./dev.sh reverse      给当前 adb 设备配置本机 devserver / LiveKit 端口反向代理
 #   ./dev.sh log          实时跟 logcat（仅 gomob.* / gomob_native）
 #   ./dev.sh shot <name>  截图当前屏幕到 .dev/screenshots/<name>.png
+#   ./dev.sh record <name> [seconds]
+#                         高码率录屏到 .dev/app-recordings/<name>.mp4
 #   ./dev.sh adb-wifi ... 转发到 scripts/adb-wifi.sh
 #   ./dev.sh harness <名> 跑指定 harness（tests/harness/<名>/run.sh）
 #   ./dev.sh emu-start    启动 gomob_test AVD（默认带 GUI 窗口走 DISPLAY=:1, -gpu host;
@@ -396,6 +398,48 @@ case "$cmd" in
         out="$DEV_DIR/screenshots/${name}.png"
         adb_cmd exec-out screencap -p > "$out"
         echo "→ $out"
+        ;;
+    record)
+        name="${1:-screen-$(date +%Y%m%d-%H%M%S)}"
+        seconds="${2:-180}"
+        bitrate="${GOMOB_RECORD_BITRATE:-32M}"
+        size="${GOMOB_RECORD_SIZE:-}"
+        remote="/sdcard/gomob-${name%.mp4}.mp4"
+        out_dir="$DEV_DIR/app-recordings"
+        out="$out_dir/${name%.mp4}.mp4"
+        mkdir -p "$out_dir"
+        if [[ -z "$size" ]]; then
+            size="$(adb_cmd shell wm size | sed -n 's/Physical size: //p' | tr -d '\r')"
+        fi
+        if [[ -z "$size" ]]; then
+            echo "无法读取设备分辨率；可传 GOMOB_RECORD_SIZE=1080x2400"
+            exit 2
+        fi
+        echo "录屏: size=$size bit-rate=$bitrate time-limit=${seconds}s"
+        echo "目标: $out"
+        adb_cmd shell rm -f "$remote" >/dev/null 2>&1 || true
+        cleanup_recording() {
+            local stop_remote="${1:-0}"
+            if [[ "$stop_remote" == "1" ]]; then
+                adb_cmd shell pkill -2 screenrecord >/dev/null 2>&1 || true
+                sleep 1
+            fi
+            if adb_cmd shell ls "$remote" >/dev/null 2>&1; then
+                adb_cmd pull "$remote" "$out" >/dev/null
+                adb_cmd shell rm -f "$remote" >/dev/null 2>&1 || true
+                echo "→ $out"
+            else
+                echo "录屏文件未生成: $remote"
+            fi
+        }
+        trap 'echo; cleanup_recording 1; exit 130' INT TERM
+        if adb_cmd shell screenrecord --size "$size" --bit-rate "$bitrate" --time-limit "$seconds" "$remote"; then
+            cleanup_recording 0
+        else
+            status=$?
+            cleanup_recording 1
+            exit "$status"
+        fi
         ;;
     adb-wifi)
         exec "$PROJ_DIR/scripts/adb-wifi.sh" "$@"

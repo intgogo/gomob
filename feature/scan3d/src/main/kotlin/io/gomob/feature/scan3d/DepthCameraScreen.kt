@@ -274,7 +274,7 @@ private fun StreamProfileSelector(
                         }
                     }
                 }
-                Text(current.summaryLine(), fontSize = 10.sp, color = Gomob.colors.fg3)
+                Text(current.summaryLine(), fontSize = 11.sp, color = Gomob.colors.fg2)
             }
         }
     }
@@ -306,7 +306,7 @@ private fun NativeProfileCard(current: BerxelStreamProfile) {
                         color = Gomob.colors.fg2,
                     )
                 }
-                Text(current.summaryLine(), fontSize = 10.sp, color = Gomob.colors.fg3)
+                Text(current.summaryLine(), fontSize = 11.sp, color = Gomob.colors.fg2)
             }
         }
     }
@@ -359,15 +359,15 @@ private fun LargePreview(
                 bitmap = bitmap.asImageBitmap(),
                 contentDescription = "$label preview",
                 contentScale = ContentScale.Fit,  // 不裁切，保留全画面
-                filterQuality = FilterQuality.Low,
+                filterQuality = FilterQuality.Medium,
                 modifier = Modifier.fillMaxSize(),
             )
         } else {
             Text(
                 placeholder,
-                fontSize = 12.sp,
+                fontSize = 13.sp,
                 fontFamily = FontFamily.Monospace,
-                color = Gomob.colors.fg3,
+                color = Gomob.colors.fg2,
                 modifier = Modifier.align(Alignment.Center),
             )
         }
@@ -376,12 +376,12 @@ private fun LargePreview(
                 .align(Alignment.TopStart)
                 .padding(Gomob.spacing.s8)
                 .clip(Gomob.shapes.r1)
-                .background(Color.Black.copy(alpha = 0.55f))
-                .padding(horizontal = Gomob.spacing.s8, vertical = 2.dp),
+                .background(Color.Black.copy(alpha = 0.78f))
+                .padding(horizontal = Gomob.spacing.s8, vertical = 3.dp),
         ) {
             Text(
                 label,
-                fontSize = 10.sp,
+                fontSize = 12.sp,
                 fontFamily = FontFamily.Monospace,
                 color = Color.White,
             )
@@ -396,22 +396,22 @@ private fun LargePreview(
                 Box(
                     Modifier
                         .clip(Gomob.shapes.r1)
-                        .background(Color.Black.copy(alpha = 0.65f))
+                        .background(Color.Black.copy(alpha = 0.78f))
                         .clickable { onAction2() }
-                        .padding(horizontal = Gomob.spacing.s12, vertical = 4.dp),
+                        .padding(horizontal = Gomob.spacing.s12, vertical = 5.dp),
                 ) {
-                    Text(action2Label, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = Color.White)
+                    Text(action2Label, fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = Color.White)
                 }
             }
             if (actionLabel != null && onAction != null) {
                 Box(
                     Modifier
                         .clip(Gomob.shapes.r1)
-                        .background(Color.Black.copy(alpha = 0.65f))
+                        .background(Color.Black.copy(alpha = 0.78f))
                         .clickable { onAction() }
-                        .padding(horizontal = Gomob.spacing.s12, vertical = 4.dp),
+                        .padding(horizontal = Gomob.spacing.s12, vertical = 5.dp),
                 ) {
-                    Text(actionLabel, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = Color.White)
+                    Text(actionLabel, fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = Color.White)
                 }
             }
             if (action3Label != null && onAction3 != null) {
@@ -420,9 +420,9 @@ private fun LargePreview(
                         .clip(Gomob.shapes.r1)
                         .background(Color(0xFF8B0000).copy(alpha = 0.85f))
                         .clickable { onAction3() }
-                        .padding(horizontal = Gomob.spacing.s12, vertical = 4.dp),
+                        .padding(horizontal = Gomob.spacing.s12, vertical = 5.dp),
                 ) {
-                    Text(action3Label, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = Color.White)
+                    Text(action3Label, fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = Color.White)
                 }
             }
         }
@@ -465,9 +465,9 @@ private fun LiveStatusStrip(ui: DepthCameraUiState) {
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(fpsText, style = Gomob.type.numInline.copy(fontSize = 16.sp), color = tone)
-                        Text(frameText, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = Gomob.colors.fg2)
+                        Text(frameText, fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = Gomob.colors.fg1)
                     }
-                    Text(statusText, fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = statusColor)
+                    Text(statusText, fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = statusColor)
                 }
             }
         }

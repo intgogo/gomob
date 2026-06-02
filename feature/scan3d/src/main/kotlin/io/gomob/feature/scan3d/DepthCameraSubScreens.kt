@@ -26,6 +26,7 @@ import io.gomob.nativebridge.berxel.BerxelDeviceControls
 import io.gomob.nativebridge.berxel.BerxelDeviceState
 import io.gomob.nativebridge.berxel.BerxelStreamFlagProfile
 import io.gomob.nativebridge.berxel.BerxelStreamSpec
+import io.gomob.nativebridge.camera.CameraModel
 
 const val DEPTH_CAMERA_INFO_ROUTE = "scan3d/depth-camera/info"
 const val DEPTH_CAMERA_CONTROLS_ROUTE = "scan3d/depth-camera/controls"
@@ -69,6 +70,9 @@ private fun DeviceInfoSection(state: BerxelDeviceState) {
     val info = (state as? BerxelDeviceState.Streaming)?.info
     SectionTitle("设备信息")
     SectionList {
+        // 型号按 vid:pid 自动识别(Berxel iHawk P100R3 / eYs3D RS-D550),双相机统一展示。
+        InfoRow("型号", info?.let { CameraModel.fromUsbIds(it.vendorId, it.productId).deviceTypeLabel } ?: "—")
+        SettingRowDivider()
         InfoRow("序列号", info?.serialNumber.orDash())
         SettingRowDivider()
         InfoRow(

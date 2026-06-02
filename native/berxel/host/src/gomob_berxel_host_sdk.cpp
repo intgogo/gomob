@@ -35,6 +35,12 @@ constexpr const char* kColorMasterPayloads =
     "native/berxel/host/assets/iHawkP100R3_color_master_xu5_init.json";
 constexpr const char* kCompanionInit =
     "core/native-bridge/src/main/assets/berxel/iHawkP100R3_init_sequence.json";
+// 原厂 MIX 并发 color+depth 序列(berxel_mix_trace usbmon 抓 vendor SDK 的 definitive 配方):
+//   master 21 条 + companion 8 条。color+depth 同开时用,depth-only/color-only 仍用上面的 SINGULAR。
+constexpr const char* kMixMasterPayloads =
+    "core/native-bridge/src/main/assets/berxel/iHawkP100R3_master_mix_init.json";
+constexpr const char* kMixCompanionInit =
+    "core/native-bridge/src/main/assets/berxel/iHawkP100R3_companion_mix_init.json";
 
 std::string read_string_descriptor(libusb_device_handle* handle, uint8_t index) {
     if (!handle || index == 0) return {};
@@ -461,6 +467,8 @@ private:
 
     std::string master_payload_path() const {
         if (!config_.master_payloads.empty()) return config_.master_payloads;
+        // color+depth 并发 = MIX 模式,用原厂 MIX master 序列(host 实测 color 1003/depth 146/0 错)。
+        if (config_.enable_color && config_.enable_depth) return kMixMasterPayloads;
         if (config_.enable_color && !config_.enable_depth) return kColorMasterPayloads;
         return kDepthMasterPayloads;
     }
@@ -470,7 +478,10 @@ private:
     }
 
     std::string companion_init_path() const {
-        return config_.companion_init.empty() ? kCompanionInit : config_.companion_init;
+        if (!config_.companion_init.empty()) return config_.companion_init;
+        // MIX 模式 companion 序列(reg0x19=04 + 末尾 0102 00),配 kMixMasterPayloads。
+        if (config_.enable_color && config_.enable_depth) return kMixCompanionInit;
+        return kCompanionInit;
     }
 
     bool prepare_master(std::vector<XuPayload>* master_payloads) {

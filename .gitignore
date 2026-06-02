@@ -50,6 +50,11 @@ third_party/berxel-android/docs/*.pdf
 !third_party/berxel-android/jniLibs/.gitkeep
 !third_party/berxel-android/docs/.gitkeep
 
+# VINCreator(com.vin.uvc / eYs3D) APK 逆向参考资产：厂商二进制，体积大且可从 APK
+# 重新解压，不入库。保留 README.md + AndroidManifest.txt（小文本，记录出处与清单）。
+tests/vincreator-apk/*.apk
+tests/vincreator-apk/extracted/
+
 # Python（harness analyzer）
 __pycache__/
 *.pyc

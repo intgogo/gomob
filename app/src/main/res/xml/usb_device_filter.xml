@@ -18,4 +18,10 @@
     -->
     <usb-device vendor-id="1539" />
     <usb-device vendor-id="13656" product-id="4114" />
+    <!--
+        eYs3D / Etron RS-D550(ROSIE4)深度相机：vendor-id 13368(0x3438) product-id 518(0x0206)。
+        单节点 UVC 复合设备(IF0 XU / IF1 color / IF2 depth)。首次插入即自动授权，
+        走自研 libusb 取流(零厂商 SDK)。M6.8b 双相机自动识别。
+    -->
+    <usb-device vendor-id="13368" product-id="518" />
 </resources>

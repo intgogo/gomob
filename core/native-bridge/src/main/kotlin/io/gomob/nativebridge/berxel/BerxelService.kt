@@ -28,6 +28,9 @@ import io.gomob.model.CameraIntrinsics
 import io.gomob.model.ColorFrame
 import io.gomob.model.DepthFrame
 import io.gomob.model.RgbdFramePair
+import io.gomob.nativebridge.camera.CameraModel
+import io.gomob.nativebridge.camera.CameraSource
+import io.gomob.nativebridge.camera.CameraSourceState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -37,9 +40,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -71,10 +77,34 @@ class BerxelService @Inject constructor(
     @ApplicationContext private val appContext: Context,
     @BerxelStack private val backend: BerxelStackBackend,
     private val nativeStack: BerxelNativeStack,
-) {
+) : CameraSource {
 
     private val _state = MutableStateFlow<BerxelDeviceState>(BerxelDeviceState.Idle)
     val state: StateFlow<BerxelDeviceState> = _state.asStateFlow()
+
+    // ─── CameraSource 中性面（M6.8b ⑤，加性：不改任何既有 Berxel 行为，仅把 state 映射成中性状态） ───
+    override val deviceLabel: String get() = CameraModel.Berxel.deviceTypeLabel
+
+    /** 由 [state] 派生的厂商无关状态，供路由 / 跨相机 VM 订阅。lazy：首次订阅才起 map 收集
+     *  （此时 [scope] 已初始化，避免属性声明序 NPE），不影响既有流式行为。 */
+    override val sourceState: StateFlow<CameraSourceState> by lazy {
+        _state.map { it.toCameraSourceState() }
+            .stateIn(scope, SharingStarted.Eagerly, CameraSourceState.Idle)
+    }
+
+    private fun BerxelDeviceState.toCameraSourceState(): CameraSourceState = when (this) {
+        BerxelDeviceState.Idle -> CameraSourceState.Idle
+        BerxelDeviceState.Initializing -> CameraSourceState.Opening
+        BerxelDeviceState.NoDevice -> CameraSourceState.NoDevice
+        BerxelDeviceState.WaitingPermission -> CameraSourceState.WaitingPermission
+        BerxelDeviceState.Opening -> CameraSourceState.Opening
+        is BerxelDeviceState.Streaming -> CameraSourceState.Streaming(
+            label = CameraModel.Berxel.deviceTypeLabel,
+            depthWidth = info.depthMode?.width ?: 0,
+            depthHeight = info.depthMode?.height ?: 0,
+        )
+        is BerxelDeviceState.Error -> CameraSourceState.Error(reason)
+    }
 
     /**
      * 上一次 [BerxelDeviceState.Streaming] 时收集到的设备信息 — stop 之后**不清空**。
@@ -113,14 +143,14 @@ class BerxelService @Inject constructor(
         extraBufferCapacity = 1,
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
     )
-    val colorFrames: SharedFlow<ColorFrame> = _colorFrames.asSharedFlow()
+    override val colorFrames: SharedFlow<ColorFrame> = _colorFrames.asSharedFlow()
 
     private val _depthFrames = MutableSharedFlow<DepthFrame>(
         replay = 0,
         extraBufferCapacity = 1,
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
     )
-    val depthFrames: SharedFlow<DepthFrame> = _depthFrames.asSharedFlow()
+    override val depthFrames: SharedFlow<DepthFrame> = _depthFrames.asSharedFlow()
 
     /** IR/phase 帧预览流（companion 0x82 交织的 IR 帧，data=8-bit 灰度 w*h）。供「切 IR」渲染，
      *  与 depthFrames（真深度 16bit mm）分开。复用 DepthFrame 仅作 16/8bit 图像载体。 */
@@ -258,7 +288,7 @@ class BerxelService @Inject constructor(
      * 扫描页进场：引用计数 +1。0→1 时拉起相机；已有消费者时 start() 幂等无需重复。
      * 取消可能在途的 release 宽限停流，避免导航切换时刚 acquire 又被旧 VM 的延迟 stop 关掉。
      */
-    fun acquire() {
+    override fun acquire() {
         releaseStopJob?.cancel()
         releaseStopJob = null
         val n = acquireCount.incrementAndGet()
@@ -270,7 +300,7 @@ class BerxelService @Inject constructor(
      * 扫描页退场：引用计数 -1。归 0 后进 [CAMERA_RELEASE_GRACE_MS] 宽限期；期满仍无人 acquire
      * 才真正 stop。宽限期吸收导航切换时"旧 VM release 紧跟新 VM acquire"的瞬时归零，避免抖动。
      */
-    fun release() {
+    override fun release() {
         val n = acquireCount.decrementAndGet()
         Log.i(TAG, "release → count=$n")
         if (n > 0) return
@@ -381,11 +411,12 @@ class BerxelService @Inject constructor(
         Log.i(TAG, "NATIVE_REWRITE start coroutine launched token=$token active=${job.isActive}")
     }
 
-    // Step 4：native portable 双流 depth 生产路径（替代旧 startNativeRewriteInternal）。
+    // Step 4：native portable 双流生产路径（替代旧 startNativeRewriteInternal）。
     // XU replay / dense depth controls / UVC commit / bulk pump / 帧组装全在 C++ portable 层
-    // （NativeBridge.berxelDualStart），这里只 poll 出 active 16bit mm depth 直接 emit DepthFrame，
-    // 不再做 IR-grey 合成。已在小米 2510DRK44C 实机验证：valid=1.000 稠密 depth、center≈423mm、err=0。
-    // master-color 在该硬件输出全 0（旧路同样），单独排查，暂 enableColor=false。
+    // （NativeBridge.cameraOpenByFds → BerxelDriver），poll 出 active 16bit mm depth emit DepthFrame，
+    // color 帧经 cameraPollColor 解 MJPEG。已在 2510DRK44C 实机验证：depth-only valid=1.000 center≈423mm；
+    // color+depth 并发（enableColor=true，原厂 MIX 序列）depth_seq→272/pairs271/color/0 错（见
+    // finding_p100r3_mix_color_depth_2026-06-02）。enableColor 默认值见 NATIVE_REWRITE_MASTER_STREAM_DEFAULT。
     private suspend fun startNativeDualDepthInternal(token: Long) {
         Log.i(TAG, "NATIVE dual-depth startInternal token=$token running=$nativeRewriteRunning")
         if (token != startEpoch.get() || !nativeRewriteRunning) return

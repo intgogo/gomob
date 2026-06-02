@@ -376,61 +376,59 @@ object NativeBridge {
         timeoutMs: Int,
     ): ByteArray?
 
-    /**
-     * P100R3 双流会话（Android 迁移 Step 3，native 全流程）。
-     * native 侧用 portable 层（IUvcDevice 编排 + assembler + RgbdFramePairer）原样复用
-     * Linux host 已验证的 12 步启动序列：master XU5 replay → keepalive → companion XU3 replay →
-     * dense depth controls → UVC commit depth(0x82) + color(0x81) → bulk pump。
-     *
-     * @param masterFd 主控 0603:001f 的 usbfs fd（Java UsbDeviceConnection.fileDescriptor）
-     * @param companionFd companion 3558:1012 的 usbfs fd
-     * @param masterXu  master XU5 init JSON（asset iHawkP100R3_master_xu5_init.json）原始字节
-     * @param companionInit companion init JSON（asset iHawkP100R3_init_sequence.json）原始字节
-     * @param config [depthW, depthH, depthFps, depthFrameIndex, depthInterval100ns,
-     *                colorW, colorH, colorFps, colorFrameIndex, colorInterval100ns,
-     *                keepaliveMs, readLen, enableColor]
-     * @return 会话句柄（指针），失败返 0L
-     */
-    external fun berxelDualStart(
-        masterFd: Int, companionFd: Int,
-        masterXu: ByteArray, companionInit: ByteArray, config: IntArray,
-    ): Long
-
-    /** 停止并释放双流会话。 */
-    external fun berxelDualStop(handle: Long)
+    // ── 厂商无关相机统一入口（M6.8b，双相机自动识别）──
+    // 按 vid:pid 经 native CameraRegistry 分发到 driver，两相机出同一 depthMm 契约。
+    // eYs3D RS-D550(0x3438:0x0206) + Berxel P100R3(0x0603:0x001f,双节点 master+companion) 都经此入口
+    // （Berxel M6.8b ④ 已并入 BerxelDriver，color+depth 真机 PASS，旧 berxelDual* legacy 已删）。
 
     /**
-     * 双流运行态统计：[depthFrames, depthChunks, depthBytes, depthErrors,
-     * colorFrames, colorChunks, colorBytes, colorErrors, pairs, lastDeltaNs,
-     * meanAbsDeltaNs, maxAbsDeltaNs, lastColorFrameNo, lastDepthFrameNo, keepaliveChunks, depthSeq]。
+     * 按 vid:pid 打开相机（registry 选 driver → open_fd → start）。
+     * fds = usbfs fd 数组（eYs3D 单节点 1 个；Berxel 双节点 2 个 master+companion）。
+     * configJson = driver 特定配置字节（档位/控制覆盖），可空数组。返回会话句柄；失败 0L。
      */
-    external fun berxelDualStats(handle: Long): LongArray
+    external fun cameraOpenByFds(vid: Int, pid: Int, fds: IntArray, configJson: ByteArray): Long
+
+    /** 停止 + 释放会话（句柄 = ICameraSession*，cameraStop 是唯一释放点）。 */
+    external fun cameraStop(handle: Long)
 
     /**
-     * 取最新 depth 帧的 active 16bit mm，写入 directBuffer（容量需 >= activeW*activeH*2）。
-     * 返回写入字节数；无帧返 0；buffer 不足返 -1。outInfo(>=4)=[activeW, activeH, frameNumber, hostMidpointNs]。
+     * 取最新 metric depthMm 帧写进 directBuffer（容量需 >= w*h*2）。
+     * 返回写入字节数；无新帧 0；buffer 不足 -1。outInfo(>=4)=[width,height,serial,hostNs]。两相机同契约。
      */
-    external fun berxelDualPollDepthMm(handle: Long, directBuffer: java.nio.ByteBuffer, outInfo: LongArray): Int
+    external fun cameraPollDepthMm(handle: Long, directBuffer: java.nio.ByteBuffer, outInfo: LongArray): Int
 
-    /**
-     * 取最新 depth 帧逐像素 confidence（uint8，0=无效/飞点，255=raw 高置信）写入 directBuffer
-     * （容量需 >= activeW*activeH）。与 PollDepthMm 同帧；下游按 conf 阈值取点（飞点=0 天然跳过）。
-     * 返回写入字节数；无 conf（未启用时域降噪/暂无融合帧）返 0；buffer 不足返 -1。
-     * outInfo(>=4)=[activeW, activeH, frameNumber, hostMidpointNs]。
-     */
-    external fun berxelDualPollDepthConf(handle: Long, directBuffer: java.nio.ByteBuffer, outInfo: LongArray): Int
+    /** 取最新 color 帧字节（consume-once，无新帧 null）。eYs3D=YUYV/Berxel=MJPEG，按 capabilities 解码。 */
+    external fun cameraPollColor(handle: Long): ByteArray?
 
-    /**
-     * 取最新 IR/phase 帧的 IR 亮度（每像素高字节）写入 directBuffer 当 8-bit 灰度（容量 >= activeW*activeH）。
-     * 供「切 IR」预览。返回写入字节数；无帧返 0；buffer 不足返 -1。outInfo(>=4)=[activeW,activeH,frameNumber,hostNs]。
-     */
-    external fun berxelDualPollIrGrey(handle: Long, directBuffer: java.nio.ByteBuffer, outInfo: LongArray): Int
+    /** 会话统计 [colorFrames, depthFrames, dropped, errors, state]。 */
+    external fun cameraStats(handle: Long): LongArray
 
-    /** 取最新 master MJPEG color 帧字节（consume-once，无新帧返 null）。Kotlin 侧 BitmapFactory 解码。 */
-    external fun berxelDualPollColorMjpeg(handle: Long): ByteArray?
+    /** 取最新逐像素 confidence(uint8, W*H) 写 directBuffer。返回字节数 / 0 无 / -1 不足。
+     *  outInfo(>=4)=[w,h,serial,hostNs]。无 conf 的相机(eYs3D)恒返 0。 */
+    external fun cameraPollDepthConf(handle: Long, directBuffer: java.nio.ByteBuffer, outInfo: LongArray): Int
 
-    /** 调试：把最新 depth transport 帧的完整原始字节写到 outPath，供逐字节分析 4B/px 结构。返回写入字节数。 */
-    external fun berxelDualDumpRawDepth(handle: Long, outPath: String): Int
+    /** 取最新 IR/phase 灰度(uint8, W*H) 写 directBuffer。返回字节数 / 0 无 / -1 不足。 */
+    external fun cameraPollIrGrey(handle: Long, directBuffer: java.nio.ByteBuffer, outInfo: LongArray): Int
+
+    /** 厂商扩展诊断统计(driver 自定义 int64 序列;Berxel=16 项,eYs3D=空数组)。 */
+    external fun cameraExtendedStats(handle: Long): LongArray
+
+    /** 调试:dump 最新 depth transport 原始字节到 path。返回写入字节数。 */
+    external fun cameraDumpRawDepth(handle: Long, path: String): Int
+
+    /** 语义深度控制（负值=不改）→ 各 driver 内部翻 XU。返回是否生效。 */
+    external fun cameraSetControls(
+        handle: Long,
+        confThr: Float,
+        temporal: Int,
+        spatial: Int,
+        ae: Int,
+        gain: Int,
+        irCurrent: Int,
+    ): Boolean
+
+    /** 不开流即取设备能力 JSON（vendor、model、has_color/depth/ir、depth_is_metric_onchip、depth 档位），供 UI 显型号。 */
+    external fun cameraCapabilitiesJson(vid: Int, pid: Int): String
 }
 
 /**

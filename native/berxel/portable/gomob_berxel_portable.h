@@ -624,6 +624,11 @@ XuPayload make_p100r3_depth_temporal_denoise_payload(bool enabled);
 XuPayload make_p100r3_depth_spatial_denoise_payload(bool enabled);
 XuPayload make_p100r3_master_close_stream_payload(uint8_t stream_type);
 
+// 把 master 序列里的 COLOR OpenStream(BX cmd 0x0006)就地重写成指定分辨率/帧率。原厂 MIX 序列
+// (iHawkP100R3_master_mix_init.json)自带 COLOR OpenStream(640x400@30,#14),本函数重写它保证
+// 与 UVC commit 参数一致;序列缺失时才在 StreamFlagMode 前插入(防御 fallback)。StreamFlagMode
+// 本身(reg 0x0030=0x0000 写两次)已 baked 在 MIX 资产里,不再单独 patch(旧 0x02 推断经 host MIX
+// trace 证伪,线上值是 0x0000)。
 int patch_p100r3_master_color_open_stream_payloads(std::vector<XuPayload>* payloads,
                                                    const P100R3VideoMode& mode,
                                                    std::string* payload_hex = nullptr);

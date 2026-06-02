@@ -40,7 +40,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.HairlineCard
 import io.gomob.designsystem.theme.Gomob
-import io.gomob.nativebridge.berxel.BerxelDeviceState
+import io.gomob.nativebridge.camera.CameraSourceState
 
 const val SCAN3D_RECORDING_ROUTE = "scan3d/recording"
 
@@ -92,7 +92,7 @@ fun Scan3dRecordingRoute(
             )
             when (val s = state) {
                 is ScanRecordingState.Idle ->
-                    IdleStatePanel(deviceReady = device is BerxelDeviceState.Streaming, deviceText = deviceShortText(device), onStart = vm::start)
+                    IdleStatePanel(deviceReady = device is CameraSourceState.Streaming, deviceText = deviceShortText(device), onStart = vm::start)
                 is ScanRecordingState.Recording -> RecordingStatePanel(s, cloud.size / 3, onStop = vm::stop)
                 is ScanRecordingState.Finalizing -> FinalizingStatePanel(s)
                 is ScanRecordingState.Completed -> CompletedStatePanel(s, onAgain = vm::reset)
@@ -130,22 +130,22 @@ private fun StreamCell(label: String, bitmap: Bitmap?, modifier: Modifier = Modi
                 contentDescription = label,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Fit,
-                filterQuality = FilterQuality.Low,
+                filterQuality = FilterQuality.Medium,
             )
         } else {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("等待 $label", style = Gomob.type.caption, color = Gomob.colors.fg3)
+                Text("等待 $label", style = Gomob.type.bodySm, color = Gomob.colors.fg2)
             }
         }
         Text(
             label,
-            style = Gomob.type.eyebrow,
-            color = Gomob.colors.fg2,
+            style = Gomob.type.caption,
+            color = Gomob.colors.fg0,
             modifier = Modifier
                 .padding(Gomob.spacing.s6)
                 .clip(Gomob.shapes.r1)
-                .background(Gomob.colors.bg0.copy(alpha = 0.7f))
-                .padding(horizontal = 4.dp, vertical = 1.dp),
+                .background(Gomob.colors.bg0.copy(alpha = 0.82f))
+                .padding(horizontal = Gomob.spacing.s6, vertical = 2.dp),
         )
     }
 }
@@ -195,13 +195,13 @@ private fun PointCloudPreview(
                     is ScanRecordingState.Error -> "错误"
                     is ScanRecordingState.Idle -> "3D · 等待开始"
                 },
-                style = Gomob.type.eyebrow,
-                color = Gomob.colors.fg2,
+                style = Gomob.type.caption,
+                color = Gomob.colors.fg0,
                 modifier = Modifier
                     .padding(Gomob.spacing.s8)
                     .clip(Gomob.shapes.r1)
-                    .background(Gomob.colors.bg0.copy(alpha = 0.7f))
-                    .padding(horizontal = Gomob.spacing.s6, vertical = 2.dp),
+                    .background(Gomob.colors.bg0.copy(alpha = 0.82f))
+                    .padding(horizontal = Gomob.spacing.s8, vertical = 3.dp),
             )
             // 中心引导文案（点云 / mesh 为空时）
             if (!showFilament) {
@@ -215,7 +215,7 @@ private fun PointCloudPreview(
                             is ScanRecordingState.Error -> ""
                         },
                         style = Gomob.type.bodySm,
-                        color = Gomob.colors.fg3,
+                        color = Gomob.colors.fg2,
                     )
                 }
             }
@@ -225,14 +225,13 @@ private fun PointCloudPreview(
 
 // ─── 状态面板 ────────────────────────────────────────────────────────────────
 
-private fun deviceShortText(state: BerxelDeviceState): String = when (state) {
-    is BerxelDeviceState.Streaming -> "iHawk 在线"
-    is BerxelDeviceState.Initializing -> "SDK 初始化中..."
-    is BerxelDeviceState.Opening -> "打开 iHawk..."
-    is BerxelDeviceState.WaitingPermission -> "等待 USB 权限"
-    is BerxelDeviceState.NoDevice -> "未检测到 iHawk — 请插 USB-C OTG"
-    is BerxelDeviceState.Error -> "SDK 错误：${state.reason}"
-    BerxelDeviceState.Idle -> "等待设备..."
+private fun deviceShortText(state: CameraSourceState): String = when (state) {
+    is CameraSourceState.Streaming -> "${state.label} 在线"
+    is CameraSourceState.Opening -> "打开相机..."
+    is CameraSourceState.WaitingPermission -> "等待 USB 权限"
+    is CameraSourceState.NoDevice -> "未检测到相机 — 请插 USB-C OTG"
+    is CameraSourceState.Error -> "错误：${state.message}"
+    CameraSourceState.Idle -> "等待设备..."
 }
 
 @Composable
@@ -389,7 +388,7 @@ private fun PanelCard(content: @Composable () -> Unit) {
 @Composable
 private fun StatColumn(label: String, value: String) {
     Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2)) {
-        Text(label, style = Gomob.type.eyebrow, color = Gomob.colors.fg3)
+        Text(label, style = Gomob.type.caption, color = Gomob.colors.fg2)
         Text(value, style = Gomob.type.metricMd, color = Gomob.colors.fg0,
              fontFamily = FontFamily.Monospace)
     }
@@ -417,7 +416,7 @@ private fun BigCircleButton(
                 .background(color),
             contentAlignment = Alignment.Center,
         ) {
-            Text(label, style = Gomob.type.caption, color = Gomob.colors.bg0)
+            Text(label, style = Gomob.type.bodySm, color = Gomob.colors.bg0)
         }
     }
 }

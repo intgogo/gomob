@@ -205,8 +205,9 @@ class BerxelNativeStack @Inject constructor(
     }
 
     // ---- Android 迁移 Step 3：native 全流程双流（portable 层，替代上面的 Kotlin 编排） ----
-    // 取 master+companion 原始 fd 交给 NativeBridge.berxelDualStart，XU replay / dense depth controls /
-    // UVC 协商 / bulk pump / RGBD 配对全部在 C++ portable 层完成，复用 Linux host 已验证的 12 步序列。
+    // 取 master+companion 原始 fd 交给 NativeBridge.cameraOpenByFds(→ BerxelDriver → berxel_open_dual)，
+    // XU replay / dense depth controls / UVC 协商 / bulk pump / RGBD 配对全部在 C++ portable 层完成，
+    // 复用 Linux host 已验证的启动序列（enableColor 时走原厂 MIX 序列，color+depth 真机 PASS）。
     // 与上面单流路径互斥：不预先 berxelOpenDeviceByFd（那会 claim），dual session 自己 wrap+claim。
     @Volatile private var dualHandle: Long = 0L
     private var dualMasterConn: UsbDeviceConnection? = null
@@ -248,37 +249,54 @@ class BerxelNativeStack @Inject constructor(
         dualMasterConn = mConn
         dualCompanionConn = cConn
 
-        val masterXu = context.assets.open(MASTER_XU5_ASSET).use { it.readBytes() }
-        val companionInit = context.assets.open(COMPANION_INIT_ASSET).use { it.readBytes() }
+        // enable_color = MIX 并发：master/companion 都用【原厂 MIX 序列】（berxel_mix_trace usbmon
+        //   抓原厂 SDK setStreamFlagMode(MIX)+startStreams(COLOR|DEPTH) 的 definitive 配方）。
+        //   depth-only 用 SINGULAR 序列。MIX 序列让设备协调 master 彩色 + companion 深度并发——
+        //   host 实测 color 1003 帧 / depth 146 帧（metric 298mm）/ 0 错 / 145 RGBD 对。
+        //   关键差异：StreamFlagMode(0x0030)=0x0000 写两次 + cmd0x0007=01 + COLOR OpenStream 中段，
+        //   companion reg0x19=04（MIX）。这些都已 baked 在 MIX 资产里，native 不再 patch StreamFlagMode。
+        val masterXu = context.assets.open(
+            if (enableColor) MASTER_MIX_ASSET else MASTER_XU5_ASSET).use { it.readBytes() }
+        val companionInit = context.assets.open(
+            if (enableColor) COMPANION_MIX_ASSET else COMPANION_INIT_ASSET).use { it.readBytes() }
 
-        // 【depth-only 1280@45 测试配置，2026-05-29】
-        // E3 实测锁定：vivo 一时刻只能跑一路 bulk（两路并发 companion 立刻 NO_DEVICE，~393KB 墙）。
-        // 当前路线只跑 DEPTH 单流，把分辨率拉满：depth 1280x801（transport，active 1280x800）
-        //   frame_index=1，interval100ns=222222（45fps）。host SDK 已实机验证 1280x801@45（首帧 2,050,560B）。
-        //   mode_code 由 width>=1280→0x03 自动选（p100r3_depth_mode_code）。
-        // 单流 1280@45 ≈ 92MB/s，逼近/超 USB2 HS：靠带电 hub 协商高速链路撑；撑不住会 LIBUSB_ERROR_IO，
-        //   届时降 30fps（interval=333333）或查链路 bcdUSB。
-        // color 字段保留 640x400@15 但 enableColor=false 不起（终态 RGBD 走时间复用，单流交替）。
-        // depthFps 可调（45/30/15）：1280@45 喂不满会 device 积压 4s 溢出，30fps 作回退对照。interval=1e7/fps。
+        // 【depth 640x401@45 默认档 — USB2-safe，2026-06-01 真机定档】
+        // depth transport 640x401（active 640x400，native 自动裁状态行 p100r3_depth_active_height），
+        //   frame_index=2，interval100ns=222222（45fps）。mode_code 由 width>=640→0x08 自动派生
+        //   （p100r3_depth_mode_code），companion open-stream payload 由 patch_*_depth_open_stream 自动注入 0x08。
+        // 选 640 而非 1280 的第一性依据：
+        //   · 640x401@45 RAW16 ≈ 23MB/s，稳在 USB2 HS（~53MB/s）内；P100R3 理想工作距 0.25-2m，640 分辨率足够量测。
+        //   · 1280x801@45 ≈ 92MB/s 超 USB2 HS，物理上只有【带电 hub 协商高速链路】才撑得住——
+        //     2510DRK44C(USB2 直插无 hub) 实测 1280 档 set_cur rc=-7 TIMEOUT + depth_chunks=0（M1.6.18 饿死）。
+        //   · 当前测试机池（2510DRK44C/HONOR 等）都是 USB2-only OTG，640 是唯一普适稳定档。
+        // TODO（终态，待供电/USB3 链路探测模块就绪）：按 bcdUSB + 是否带电 hub 自动选 640/1280，
+        //   而非编译期定档；不在此造 fallback，模块就绪前固定 USB2-safe 640。
+        // color 档 640x400@30：原厂 MIX 抓包 master 彩色 UVC commit = fmt1 frame3 interval100ns=333333(30fps)，
+        //   与 master_mix_init 里 COLOR OpenStream(640x400@30) 一致。enableColor=false 时该档不起。
+        // depthFps 可调（45/30/15）：interval=1e7/fps。
         val depthInterval = (10_000_000 / depthFps.coerceIn(5, 60))
-        // 大单次读长（64KB）：1280@45 ~92MB/s 下减少 transfer/事件开销，配合 48 个在途把管子喂满。
+        // 大单次读长（64KB）：减少 transfer/事件开销，配合 48 个在途把管子喂满。
         // cfg[13]：时域降噪开关（0/正=启用，负=关闭做 A/B）。默认启用：滑窗均值 N=8 把
         // 相邻帧抖动 ~38mm 压到 ~10mm（harness depth_temporal_quality 实测 3.73×、零偏移、密度不掉）。
         val config = intArrayOf(
-            1280, 801, depthFps, 1, depthInterval,
-            640, 400, 15, 3, 666667,
+            640, 401, depthFps, 2, depthInterval,
+            640, 400, 30, 3, 333333,
             keepaliveMs,
             DUAL_ASYNC_READ_LEN,
             if (enableColor) 1 else 0,
             if (depthTemporal) 0 else -1,
         )
         Log.i(TAG, "startDualNative masterFd=${mConn.fileDescriptor} companionFd=${cConn.fileDescriptor} enableColor=$enableColor keepaliveMs=$keepaliveMs depthFps=$depthFps temporal=$depthTemporal interval=$depthInterval readLen=$DUAL_ASYNC_READ_LEN")
-        val h = NativeBridge.berxelDualStart(
-            mConn.fileDescriptor, cConn.fileDescriptor, masterXu, companionInit, config)
+        // M6.8b ④：经厂商无关 cameraOpenByFds 分发到 native BerxelDriver(0x0603:0x001f)。
+        // options 打包 [masterXu | companionInit | 14-int config]，BerxelDriver 解包后调 berxel_open_dual
+        // （与历史 berxelDualStart 同一双流序列，逐位不变）。句柄=ICameraSession*，poll/stop 走 camera*。
+        val options = packBerxelOptions(masterXu, companionInit, config)
+        val h = NativeBridge.cameraOpenByFds(
+            MASTER_VID, MASTER_PID, intArrayOf(mConn.fileDescriptor, cConn.fileDescriptor), options)
         if (h == 0L) {
             cConn.close(); mConn.close()
             dualCompanionConn = null; dualMasterConn = null
-            return failDual("berxelDualStart 返 0（看 gomob_berxel_dual logcat）")
+            return failDual("cameraOpenByFds(Berxel) 返 0（看 gomob_camera_jni / gomob_berxel_dual logcat）")
         }
         dualHandle = h
         Log.i(TAG, "✅ startDualNative handle=$h")
@@ -291,36 +309,50 @@ class BerxelNativeStack @Inject constructor(
         return 0L
     }
 
-    /** 双流运行态统计（见 NativeBridge.berxelDualStats 字段顺序）。无会话返全 0。 */
-    fun dualStats(): LongArray =
-        if (dualHandle != 0L) NativeBridge.berxelDualStats(dualHandle) else LongArray(16)
+    /** 把 masterXu/companionInit/14-int config 打包成 BerxelDriver 的 options_json 二进制
+     *  （小端：[u32 xuLen][xu][u32 initLen][init][14×i32 config]，与 native unpack_berxel_options 对称）。 */
+    private fun packBerxelOptions(masterXu: ByteArray, companionInit: ByteArray, config: IntArray): ByteArray {
+        val size = 4 + masterXu.size + 4 + companionInit.size + 14 * 4
+        val bb = java.nio.ByteBuffer.allocate(size).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        bb.putInt(masterXu.size); bb.put(masterXu)
+        bb.putInt(companionInit.size); bb.put(companionInit)
+        for (i in 0 until 14) bb.putInt(config.getOrElse(i) { 0 })
+        return bb.array()
+    }
+
+    /** 双流富诊断统计（16 项 keepalive/配对/seq，见 BerxelDriver extended_stats 顺序）。无会话返全 0。 */
+    fun dualStats(): LongArray {
+        if (dualHandle == 0L) return LongArray(16)
+        val s = NativeBridge.cameraExtendedStats(dualHandle)
+        return if (s.size >= 16) s else LongArray(16).also { s.copyInto(it) }
+    }
 
     fun isDualRunning(): Boolean = dualHandle != 0L
 
     /** 取最新 depth 帧 active 16bit mm 到 directBuffer；返回字节数 / 0 无帧 / -1 buffer 不足。 */
     fun dualPollDepthMm(buffer: java.nio.ByteBuffer, outInfo: LongArray): Int =
-        if (dualHandle != 0L) NativeBridge.berxelDualPollDepthMm(dualHandle, buffer, outInfo) else 0
+        if (dualHandle != 0L) NativeBridge.cameraPollDepthMm(dualHandle, buffer, outInfo) else 0
 
     /** 取最新 depth 帧逐像素 confidence(uint8) 到 directBuffer（飞点=0）；返回字节数 / 0 无 / -1 不足。 */
     fun dualPollDepthConf(buffer: java.nio.ByteBuffer, outInfo: LongArray): Int =
-        if (dualHandle != 0L) NativeBridge.berxelDualPollDepthConf(dualHandle, buffer, outInfo) else 0
+        if (dualHandle != 0L) NativeBridge.cameraPollDepthConf(dualHandle, buffer, outInfo) else 0
 
     /** 取最新 IR/phase 帧 IR 亮度到 directBuffer 当 8-bit 灰度；返回字节数(activeW*activeH) / 0 无帧 / -1 不足。 */
     fun dualPollIrGrey(buffer: java.nio.ByteBuffer, outInfo: LongArray): Int =
-        if (dualHandle != 0L) NativeBridge.berxelDualPollIrGrey(dualHandle, buffer, outInfo) else 0
+        if (dualHandle != 0L) NativeBridge.cameraPollIrGrey(dualHandle, buffer, outInfo) else 0
 
     /** 取最新 master MJPEG color 帧（consume-once，无新帧返 null）。 */
     fun dualPollColorMjpeg(): ByteArray? =
-        if (dualHandle != 0L) NativeBridge.berxelDualPollColorMjpeg(dualHandle) else null
+        if (dualHandle != 0L) NativeBridge.cameraPollColor(dualHandle) else null
 
     /** 调试：dump 最新 depth transport 完整原始字节到 path（native fopen）。返回写入字节数。 */
     fun dualDumpRawDepth(path: String): Int =
-        if (dualHandle != 0L) NativeBridge.berxelDualDumpRawDepth(dualHandle, path) else 0
+        if (dualHandle != 0L) NativeBridge.cameraDumpRawDepth(dualHandle, path) else 0
 
     fun stopDualNative() {
         val h = dualHandle
         dualHandle = 0L
-        if (h != 0L) NativeBridge.berxelDualStop(h)
+        if (h != 0L) NativeBridge.cameraStop(h)
         runCatching { dualCompanionConn?.close() }
         runCatching { dualMasterConn?.close() }
         dualCompanionConn = null
@@ -841,6 +873,10 @@ class BerxelNativeStack @Inject constructor(
         // 在彩色 UVC 前回放会让 master 只吐空 payload，完整回放甚至不吐 BULK。
         const val MASTER_RGB_INIT_COUNT = 19
         const val COMPANION_INIT_ASSET = "berxel/iHawkP100R3_init_sequence.json"
+        // 原厂 MIX 并发 color+depth 序列（berxel_mix_trace usbmon 抓 vendor SDK 的 definitive 配方）。
+        // enableColor=true 时替代上面的 SINGULAR 资产。master 21 条 / companion 8 条。
+        const val MASTER_MIX_ASSET = "berxel/iHawkP100R3_master_mix_init.json"
+        const val COMPANION_MIX_ASSET = "berxel/iHawkP100R3_companion_mix_init.json"
 
         /**
          * 从 156 字节 raw blob 加载 device params（测试 / 离线标定路径）。
