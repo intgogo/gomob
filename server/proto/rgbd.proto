@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+// RGBD 流契约: 手机(gomob + Berxel 深度相机)= 机器人眼睛, 把每帧 RGBD + VIO 位姿 + 内参 流给 gorob
+// 边缘做权威 TSDF 融合。源无关 (任何 RGBD 相机/手机可填); 传输无关 (WebSocket 二进制阶段 payload
+// 内联; 切 WebRTC 时此消息退化为元数据, payload 走媒体通道, 见 video.proto 同思路)。
+package gorob.v1;
+
+option go_package = "gorob/pkg/gorobpb;gorobpb";
+
+// 针孔相机内参 (像素) + OpenCV 畸变系数 [k1,k2,p1,p2,k3] (空=无畸变/已矫正)。
+message CameraIntrinsics {
+  double fx = 1;
+  double fy = 2;
+  double cx = 3;
+  double cy = 4;
+  int32 width = 5;
+  int32 height = 6;
+  repeated double distortion = 7;
+}
+
+// 相机→世界 6DoF (手机 ARCore/VIO 给; gorob ICP 据此为初值精修)。
+// 约定: CV 相机系 (看 +Z, +X 右, +Y 下); 四元数 (x,y,z,w); 平移单位米。
+message Pose6DoF {
+  double qx = 1;
+  double qy = 2;
+  double qz = 3;
+  double qw = 4;
+  double tx = 5;
+  double ty = 6;
+  double tz = 7;
+  bool tracking = 8; // VIO 是否在跟踪 (false=丢失, 边缘退到纯 ICP / 上一帧外推)
+}
+
+enum DepthFormat {
+  DEPTH_FORMAT_UNSPECIFIED = 0;
+  DEPTH_U16_MM = 1; // uint16 小端, 毫米, 0=无效 (Berxel / 多数结构光/ToF)
+  DEPTH_F32_M = 2;  // float32 小端, 米
+}
+
+enum ColorFormat {
+  COLOR_FORMAT_UNSPECIFIED = 0;
+  COLOR_NONE = 1;
+  COLOR_RGB8 = 2;
+  COLOR_BGR8 = 3; // Berxel SDK 经 NativeBridge 转 BGR888
+}
+
+// 一帧 RGBD。WebSocket 阶段: depth/color/conf 内联为 bytes; WebRTC 阶段退化为元数据。
+message RgbdFrame {
+  int64 frame_index = 1;
+  int64 timestamp_us = 2;
+  int32 width = 3;
+  int32 height = 4;
+  CameraIntrinsics intr = 5;
+  Pose6DoF pose = 6;
+  DepthFormat depth_format = 7;
+  ColorFormat color_format = 8;
+  bytes depth = 9;  // width*height 个像素, 按 depth_format 编码
+  bytes color = 10; // width*height*3 字节, 按 color_format (可空)
+  bytes conf = 11;  // width*height 个 uint8 [0..255], 0=无效 (可空)
+}
+
+// 流建立时的协商 (手机→边缘第一条 hello, 边缘可回确认)。
+message RgbdStreamConfig {
+  int32 width = 1;
+  int32 height = 2;
+  int32 fps = 3;
+  DepthFormat depth_format = 4;
+  ColorFormat color_format = 5;
+  bool has_color = 6;
+  bool has_conf = 7;
+  string device = 8; // 设备标识 (如 "berxel-p100r3")
+}
