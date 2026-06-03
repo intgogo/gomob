@@ -59,6 +59,7 @@ import io.gomob.designsystem.component.SettingRowDivider
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.nativebridge.berxel.BerxelDeviceState
 import io.gomob.nativebridge.berxel.BerxelFrameStat
+import io.gomob.nativebridge.berxel.BerxelStackBackend
 import io.gomob.nativebridge.berxel.BerxelStreamProfile
 import io.gomob.nativebridge.berxel.BerxelStreamProfiles
 import io.gomob.nativebridge.berxel.BerxelStreamTarget
@@ -118,16 +119,30 @@ fun DepthCameraRoute(
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
             item {
+                BackendSwitcher(
+                    current = ui.backend,
+                    onChange = { vm.setBackendMode(it) },
+                )
+            }
+            item {
                 StreamProfileSelector(
                     current = ui.streamProfile,
+                    backend = ui.backend,
                     onChange = { vm.setStreamProfile(it) },
                 )
             }
-            item { LargePreview(label = "COLOR", bitmap = colorBmp, placeholder = "等待彩色帧") }
+            item {
+                LargePreview(
+                    label = "COLOR${ui.color.fpsSuffix()}",
+                    bitmap = colorBmp,
+                    placeholder = "等待彩色帧",
+                )
+            }
             item {
                 LargePreview(
                     label = buildString {
                         append(if (irRenderMode) "DEPTH · IR-GREY" else "DEPTH · TURBO")
+                        append(ui.depth.fpsSuffix())
                         append(" · ")
                         append(if (strictFrameSize) "STRICT 401" else "RAW")
                     },
@@ -170,13 +185,55 @@ fun DepthCameraRoute(
     }
 }
 
+// ─── Native / 厂商 SDK 后端切换 ─────────────────────────────────────────────
+@Composable
+private fun BackendSwitcher(
+    current: BerxelStackBackend,
+    onChange: (BerxelStackBackend) -> Unit,
+) {
+    val selected = if (current == BerxelStackBackend.NATIVE_REWRITE) 0 else 1
+    Box(Modifier.padding(horizontal = Gomob.spacing.s16)) {
+        HairlineCard(padding = 0.dp) {
+            Column(
+                Modifier.fillMaxWidth().padding(Gomob.spacing.s12),
+                verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+            ) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("采集后端", fontSize = 13.sp, color = Gomob.colors.fg2)
+                    Text(
+                        if (current == BerxelStackBackend.NATIVE_REWRITE) "NATIVE" else "SDK",
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = Gomob.colors.accent,
+                    )
+                }
+                SegmentedTabs(
+                    items = listOf(
+                        SegmentedTabItem("NATIVE"),
+                        SegmentedTabItem("官方 SDK"),
+                    ),
+                    selectedIndex = selected,
+                    onSelect = { index ->
+                        onChange(if (index == 0) BerxelStackBackend.NATIVE_REWRITE else BerxelStackBackend.SDK)
+                    },
+                )
+            }
+        }
+    }
+}
+
 // ─── Berxel flag 模式 + 帧规格切换器 ─────────────────────────────────────────
 @Composable
 private fun StreamProfileSelector(
     current: BerxelStreamProfile,
+    backend: BerxelStackBackend,
     onChange: (BerxelStreamProfile) -> Unit,
 ) {
-    if (current.id.startsWith("native_rewrite")) {
+    if (backend == BerxelStackBackend.NATIVE_REWRITE) {
         NativeProfileCard(current = current)
         return
     }
@@ -504,3 +561,9 @@ private fun NavRow(title: String, subtitle: String, onClick: () -> Unit) {
 internal fun BerxelFrameStat?.shortLine(): String =
     if (this == null) "等待首帧"
     else "frame#$frameIndex · $measuredFps fps · t=${timestampUs}μs · ${width}×${height}"
+
+private fun BerxelFrameStat?.fpsSuffix(): String = when {
+    this == null -> ""
+    measuredFps > 0 -> " · ${measuredFps}fps"
+    else -> " · 测量中"
+}

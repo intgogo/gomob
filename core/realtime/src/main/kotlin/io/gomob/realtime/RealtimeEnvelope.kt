@@ -47,6 +47,15 @@ sealed interface RealtimeEvent {
         val recalledBy: Long,
         val deletedAt: String,
     ) : RealtimeEvent
+    /** 云端多视角融合完成（scan.fusion_done）。端侧据 [sessionKey] 关联本次扫描，拉 [resultObjectKey] 的 GLB 回看。 */
+    data class ScanFusionDone(
+        val jobId: Long?,
+        val sessionKey: String,
+        val resultObjectKey: String,
+        val vertices: Int,
+        val triangles: Int,
+        val frameCount: Int,
+    ) : RealtimeEvent
     data class Error(val code: Int, val message: String, val inReplyTo: String?) : RealtimeEvent
     data class Unknown(val envelope: RealtimeEnvelope) : RealtimeEvent
 }

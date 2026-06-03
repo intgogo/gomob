@@ -5,6 +5,8 @@ import io.gomob.model.ColorFrame
 import io.gomob.model.DepthFrame
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.max
+import kotlin.math.min
 
 /**
  * iHawk 帧字节流 → Android Bitmap 的转换工具。
@@ -28,15 +30,11 @@ internal object FrameRenderer {
         if (src.remaining() < total * 3) return null
 
         val pixels = IntArray(total)
-        val bytes = ByteArray(total * 3)
-        src.get(bytes, 0, total * 3)
-        var bi = 0
         for (i in 0 until total) {
-            val r = bytes[bi].toInt() and 0xFF
-            val g = bytes[bi + 1].toInt() and 0xFF
-            val b = bytes[bi + 2].toInt() and 0xFF
+            val r = src.get().toInt() and 0xFF
+            val g = src.get().toInt() and 0xFF
+            val b = src.get().toInt() and 0xFF
             pixels[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
-            bi += 3
         }
         return Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
     }
@@ -50,13 +48,14 @@ internal object FrameRenderer {
      * 颜色映射：[minMm, maxMm] 区间线性映射到 turbo 256-stop colormap；0/无效像素出黑。
      *
      * confidence：[DepthFrame.confidence] 非空且 [maskByConfidence] 时，逐像素 conf==0（无效/飞点）
-     * 一律出黑——飞点剔除在预览里直接可见；[data] 原 mm 不被改写（量测真值由下游另取）。
+     * 或低于 [confidenceMin] 的不可靠像素一律出黑；[data] 原 mm 不被改写（量测真值由下游另取）。
      */
     fun depth16ToBitmap(
         frame: DepthFrame,
-        minMm: Int = 200,
-        maxMm: Int = 1500,
+        minMm: Int? = null,
+        maxMm: Int? = null,
         maskByConfidence: Boolean = true,
+        confidenceMin: Int = PREVIEW_CONFIDENCE_MIN,
     ): Bitmap? {
         val w = frame.width
         val h = frame.height
@@ -65,21 +64,30 @@ internal object FrameRenderer {
         val total = w * h
         if (src.remaining() < total * 2) return null
 
-        // confidence（uint8，与 data 同尺寸；conf==0=无效/飞点）。尺寸不符则忽略，避免错配。
+        // confidence（uint8，与 data 同尺寸）。预览默认按低置信遮罩：
+        // depth mm 保持原始，不在渲染层补点；不可靠像素直接黑掉，避免假深度被伪彩强化。
         val conf: ByteArray? = frame.confidence?.let { cb ->
             val d = cb.duplicate(); d.rewind()
             if (d.remaining() >= total) ByteArray(total).also { d.get(it, 0, total) } else null
         }.takeIf { maskByConfidence }
 
+        val autoRange = if (minMm == null || maxMm == null) {
+            estimatePreviewRange(src, total, conf, confidenceMin)
+        } else {
+            minMm to maxMm
+        }
+        val lo = (minMm ?: autoRange.first).coerceIn(PREVIEW_MIN_MM, PREVIEW_MAX_MM - 1)
+        val hi = (maxMm ?: autoRange.second).coerceIn(lo + 1, PREVIEW_MAX_MM)
         val pixels = IntArray(total)
-        val span = (maxMm - minMm).coerceAtLeast(1)
+        val span = (hi - lo).coerceAtLeast(1)
+        src.rewind()
         for (i in 0 until total) {
             val mm = src.short.toInt() and 0xFFFF
-            val masked = conf != null && conf[i].toInt() == 0
-            pixels[i] = if (masked || mm == 0 || mm < minMm || mm > maxMm) {
+            val masked = conf != null && (conf[i].toInt() and 0xFF) < confidenceMin
+            pixels[i] = if (masked || mm == 0 || mm < lo || mm > hi) {
                 0xFF000000.toInt()
             } else {
-                val t = ((mm - minMm).toFloat() / span).coerceIn(0f, 1f)
+                val t = ((mm - lo).toFloat() / span).coerceIn(0f, 1f)
                 turboColor(t)
             }
         }
@@ -132,6 +140,64 @@ internal object FrameRenderer {
 
     private fun lerp(a: Int, b: Int, t: Float): Int =
         (a + (b - a) * t).toInt().coerceIn(0, 255)
+
+    private fun estimatePreviewRange(
+        src: ByteBuffer,
+        total: Int,
+        conf: ByteArray?,
+        confidenceMin: Int,
+    ): Pair<Int, Int> {
+        val hist = IntArray(PREVIEW_MAX_MM + 1)
+        val step = max(1, total / PREVIEW_SAMPLE_TARGET)
+        var valid = 0
+        var i = 0
+        while (i < total) {
+            val mm = src.getShort(i * 2).toInt() and 0xFFFF
+            val masked = conf != null && (conf[i].toInt() and 0xFF) < confidenceMin
+            if (!masked && mm in PREVIEW_MIN_MM..PREVIEW_MAX_MM) {
+                hist[mm]++
+                valid++
+            }
+            i += step
+        }
+        if (valid < PREVIEW_MIN_VALID_SAMPLES) return DEFAULT_MIN_MM to DEFAULT_MAX_MM
+
+        val lowRank = max(1, (valid * 0.02f).toInt())
+        val highRank = max(lowRank + 1, (valid * 0.98f).toInt())
+        var acc = 0
+        var low = DEFAULT_MIN_MM
+        var high = DEFAULT_MAX_MM
+        for (mm in PREVIEW_MIN_MM..PREVIEW_MAX_MM) {
+            acc += hist[mm]
+            if (acc >= lowRank) {
+                low = mm
+                break
+            }
+        }
+        acc = 0
+        for (mm in PREVIEW_MIN_MM..PREVIEW_MAX_MM) {
+            acc += hist[mm]
+            if (acc >= highRank) {
+                high = mm
+                break
+            }
+        }
+        if (high - low < PREVIEW_MIN_SPAN_MM) {
+            val mid = (low + high) / 2
+            low = max(PREVIEW_MIN_MM, mid - PREVIEW_MIN_SPAN_MM / 2)
+            high = min(PREVIEW_MAX_MM, low + PREVIEW_MIN_SPAN_MM)
+        }
+        return low to high
+    }
+
+    private const val PREVIEW_MIN_MM = 150
+    private const val PREVIEW_MAX_MM = 8_000
+    private const val DEFAULT_MIN_MM = 200
+    private const val DEFAULT_MAX_MM = 2_500
+    private const val PREVIEW_MIN_SPAN_MM = 350
+    private const val PREVIEW_SAMPLE_TARGET = 32_000
+    private const val PREVIEW_MIN_VALID_SAMPLES = 32
+    private const val PREVIEW_CONFIDENCE_MIN = 64
 }
 
 /** 把 [ByteBuffer] 当连续字节看时的 short 读取扩展（小端）。 */

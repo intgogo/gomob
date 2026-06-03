@@ -243,9 +243,10 @@ class BerxelNativeStack @Inject constructor(
         Log.i(TAG, "startDualNative open master=${master.deviceName}(authorized=${authorizedByName.containsKey(masterListed.deviceName)}) " +
             "companion=${companion.deviceName}(authorized=${authorizedByName.containsKey(companionListed.deviceName)})")
 
-        val mConn = usbManager.openDevice(master) ?: return failDual("master openDevice 失败(无权限?)")
-        val cConn = usbManager.openDevice(companion)
-            ?: run { mConn.close(); return failDual("companion openDevice 失败(无权限?)") }
+        val mConn = openDeviceWithTimeout(usbManager, master, "dual-master")
+            ?: return failDual("master openDevice 失败(无权限? stale node?)")
+        val cConn = openDeviceWithTimeout(usbManager, companion, "dual-companion")
+            ?: run { mConn.close(); return failDual("companion openDevice 失败(无权限? stale node?)") }
         dualMasterConn = mConn
         dualCompanionConn = cConn
 

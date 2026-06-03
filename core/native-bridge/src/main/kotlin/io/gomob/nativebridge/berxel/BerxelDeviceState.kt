@@ -132,11 +132,11 @@ object BerxelStreamProfiles {
     val HD_30: BerxelStreamProfile = HD.requireFps(30)
     val HD_45: BerxelStreamProfile = HD.requireFps(45)
 
-    val NATIVE_REWRITE_640_401_45 = BerxelStreamProfile(
-        id = "native_rewrite_640x401_45",
+    val NATIVE_REWRITE_640_400_45 = BerxelStreamProfile(
+        id = "native_rewrite_640x400_45",
         flagProfile = BerxelStreamFlagProfile.SINGULAR,
         color = null,
-        depth = BerxelStreamTarget(width = 640, height = 401, fps = 45),
+        depth = BerxelStreamTarget(width = 640, height = 400, fps = 45),
     )
 
     val DUAL: List<BerxelStreamProfile> = listOf(
@@ -145,7 +145,8 @@ object BerxelStreamProfiles {
         HD,
     ).flatten()
 
-    val DEFAULT: BerxelStreamProfile = HD_25
+    /** 手机 OTG / USB2 / 外置 HUB 默认用 MIX 640×400@25；HD 档保留给用户手动验证。 */
+    val DEFAULT: BerxelStreamProfile = STANDARD_25
 
     fun fromName(name: String): BerxelStreamProfile? {
         val normalized = name.lowercase().replace("_", "").replace("-", "")
@@ -197,7 +198,7 @@ data class BerxelStreamSpec(
 data class BerxelFrameStat(
     /** 累计接收的帧序号（来自 SDK Frame.getFrameIndex()） */
     val frameIndex: Int,
-    /** SDK 报的当前测量帧率（int fps，Frame.getFps()） */
+    /** 当前实际接收帧率；SDK getFps() 为 0 时由 service 按到帧间隔测量。 */
     val measuredFps: Int,
     /** 帧时间戳（SDK 内部时基，单位 us，仅用于比较两帧之间的同步性） */
     val timestampUs: Long,

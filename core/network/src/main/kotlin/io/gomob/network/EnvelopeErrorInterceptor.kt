@@ -22,6 +22,12 @@ internal class EnvelopeErrorInterceptor(
         val resp = chain.proceed(request)
         val body = resp.body ?: return resp
         val mt = body.contentType()
+        // 二进制/流式响应（如融合结果 GLB,model/gltf-binary;@Streaming 大文件）直接放过，
+        // 不调 body.bytes() 全量缓冲——否则数百 MB 模型会被读进内存致 OOM 且废掉 @Streaming。
+        // 仅 json / text / 未知类型(mt==null,保留 startsWith("{") 兜底)才 peek 解析错误信封。
+        if (mt != null && mt.subtype != "json" && mt.type != "text") {
+            return resp
+        }
         val raw = body.bytes()
         val text = raw.toString(Charsets.UTF_8)
 

@@ -18,6 +18,8 @@ import (
 	"net"
 	"log/slog"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -37,6 +39,7 @@ import (
 	"io.gomob/server/internal/gateway"
 	"io.gomob/server/internal/signaling"
 	"io.gomob/server/pkg/audit"
+	"io.gomob/server/pkg/hmacauth"
 	"io.gomob/server/pkg/httpx"
 	"io.gomob/server/pkg/logger"
 	"io.gomob/server/pkg/pubsub"
@@ -114,6 +117,12 @@ func main() {
 	protected.HandleFunc("POST /v1/auth/password", authH.ChangePassword)
 	protected.HandleFunc("GET /v1/me", authH.Me)
 	apiH.Mount(protected)
+	// cv-engine 反代：App 端 /cv/ocr/v1/* 走 JWT（auth.Required 已校 + 注 X-Gomob-User-Id/Roles），
+	// devserver 服务端用 GOMOB_HMAC_SECRET 给转发请求加 HMAC 签名（密钥不下发到 App）。
+	if cvProxy := newCVEngineProxy(envOr("GOMOB_CVENGINE_TARGET", "http://127.0.0.1:18810"),
+		os.Getenv("GOMOB_HMAC_SECRET"), log); cvProxy != nil {
+		protected.Handle("/cv/", cvProxy)
+	}
 	if assetH != nil {
 		assetH.Mount(protected)
 	} else {
@@ -134,6 +143,8 @@ func main() {
 	mux.Handle("/v1/contacts", protectedHandler)
 	mux.Handle("/v1/messages/", protectedHandler)
 	mux.Handle("/v1/assets/", protectedHandler)
+	mux.Handle("/v1/scans/", protectedHandler)
+	mux.Handle("/cv/", protectedHandler)
 	mux.Handle("/v1/media/", protectedHandler)
 	mux.Handle("/v1/live-sessions", protectedHandler)
 	mux.Handle("/v1/live-sessions/", protectedHandler)
@@ -183,6 +194,26 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// newCVEngineProxy 反向代理 /cv/* 到 cv-engine（默认 127.0.0.1:18810）。
+//
+// App 只用 JWT（base 已含 auth.Required 注入 X-Gomob-User-Id/Roles 头，cv-engine required 据此放行）；
+// HMAC 密钥仅服务端持有，由 [hmacauth.NewSigningTransport] 给转发请求加签——密钥绝不下发到客户端。
+// secret 为空（dev 默认）时签名 transport noop，cv-engine Verifier 同样 noop，链路照常通。
+func newCVEngineProxy(target, secret string, log *slog.Logger) http.Handler {
+	u, err := url.Parse(target)
+	if err != nil || u.Host == "" {
+		log.Warn("cv-engine 反代未启用：GOMOB_CVENGINE_TARGET 非法", "target", target, "err", err)
+		return nil
+	}
+	rp := httputil.NewSingleHostReverseProxy(u)
+	rp.Transport = hmacauth.NewSigningTransport(http.DefaultTransport, secret)
+	rp.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, e error) {
+		httpx.WriteError(w, httpx.NewError(50201, http.StatusBadGateway, "cv-engine 不可达: "+e.Error()))
+	}
+	log.Info("cv-engine 反代已启用", "target", u.String(), "hmac", secret != "")
+	return rp
 }
 
 func newDevAssetHandler(ctx context.Context, pool *pgxpool.Pool, log interface{ Warn(string, ...any) }) *asset.Handler {

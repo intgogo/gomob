@@ -164,8 +164,13 @@ struct DualSession {
     bool depth_temporal_enable = true;
     P100R3TemporalFilter depth_temporal_filter;
     std::vector<uint16_t> latest_depth_fused;  // active raw16（融合后，仍 fixed-point /8）
-    std::vector<uint8_t> latest_depth_conf;    // 逐像素 temporal confidence（飞点处=0）
+    std::vector<uint8_t> latest_depth_conf;    // 逐像素 confidence（低值=不可靠，0=无效/飞点）
     std::vector<uint8_t> latest_depth_flying;  // 逐像素飞点 mask（1=飞点；仅诊断/可视化）
+    // raw 预览遮罩状态：HUB 安全模式关闭 temporal 后，只做显示置信，不补/改真实 depth。
+    std::vector<uint16_t> raw_preview_prev_depth;
+    std::vector<uint8_t> raw_preview_stable_run;
+    int raw_preview_w = 0;
+    int raw_preview_h = 0;
     // companion 0x82 交织的 IR/phase 帧（非真深度）：不丢，存起来供「切 IR」预览。
     std::vector<uint8_t> latest_ir_transport;
     UvcFrameInfo latest_ir_info;
@@ -231,6 +236,75 @@ bool is_real_depth_frame(const std::vector<uint8_t>& f) {
     return marker == kP100R3DepthFrameMarker;
 }
 
+std::vector<uint8_t> make_raw_depth_preview_confidence(DualSession* s,
+                                                       const std::vector<uint8_t>& transport,
+                                                       const P100R3VideoMode& transport_mode) {
+    if (!s) return {};
+    const P100R3VideoMode active = p100r3_depth_active_mode(transport_mode);
+    const int w = active.width;
+    const int h = active.height;
+    const size_t pixels = static_cast<size_t>(w) * static_cast<size_t>(h);
+    if (w <= 0 || h <= 0 || transport.size() < pixels * 2) return {};
+    const auto* raw = reinterpret_cast<const uint16_t*>(transport.data());
+    std::vector<uint8_t> conf(pixels, 0);
+    if (s->raw_preview_w != w || s->raw_preview_h != h ||
+        s->raw_preview_prev_depth.size() != pixels ||
+        s->raw_preview_stable_run.size() != pixels) {
+        s->raw_preview_prev_depth.assign(pixels, 0);
+        s->raw_preview_stable_run.assign(pixels, 0);
+        s->raw_preview_w = w;
+        s->raw_preview_h = h;
+    }
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const size_t i = static_cast<size_t>(y) * w + x;
+            const uint16_t v = raw[i];
+            const float mm = p100r3_depth_raw_to_mm(v, P100R3DepthPixelFormat::k13I3D);
+            if (mm < 150.0f || mm > 8000.0f) {
+                s->raw_preview_prev_depth[i] = 0;
+                s->raw_preview_stable_run[i] = 0;
+                continue;
+            }
+            int observed = 0;
+            int similar = 0;
+            const int spatial_tolerance_raw = std::max(160, static_cast<int>(v) / 16); // max(20mm, ~6.25% depth)
+            for (int dy = -1; dy <= 1; ++dy) {
+                const int yy = y + dy;
+                if (yy < 0 || yy >= h) continue;
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const int xx = x + dx;
+                    if ((dx == 0 && dy == 0) || xx < 0 || xx >= w) continue;
+                    const uint16_t n = raw[static_cast<size_t>(yy) * w + xx];
+                    if (n == 0) continue;
+                    observed++;
+                    if (std::abs(static_cast<int>(n) - static_cast<int>(v)) <= spatial_tolerance_raw) {
+                        similar++;
+                    }
+                }
+            }
+            // 只做显示遮罩，不改 depth：弱支撑或跨帧跳动的点按不可靠处理，避免伪彩花点。
+            if (observed < 3 || similar < 2) {
+                s->raw_preview_prev_depth[i] = 0;
+                s->raw_preview_stable_run[i] = 0;
+                continue;
+            }
+
+            const uint16_t prev = s->raw_preview_prev_depth[i];
+            uint8_t& stable_run = s->raw_preview_stable_run[i];
+            const int temporal_tolerance_raw = std::max(240, static_cast<int>(v) / 24); // max(30mm, ~4.2% depth)
+            if (prev != 0 &&
+                std::abs(static_cast<int>(prev) - static_cast<int>(v)) <= temporal_tolerance_raw) {
+                if (stable_run < 255) stable_run++;
+            } else {
+                stable_run = 1;
+            }
+            s->raw_preview_prev_depth[i] = v;
+            if (stable_run >= 2) conf[i] = 255;
+        }
+    }
+    return conf;
+}
+
 // 解析队列上限：解析线程跟得上时队列恒小；满了才丢（丢 chunk 废掉该帧，但优先保证 event 线程不阻塞、
 // 持续吸干 USB，避免 device 内部 buffer 溢出掉线）。1024×64KB=64MB 上限，正常远到不了。
 constexpr size_t kDepthQMaxChunks = 1024;
@@ -248,15 +322,16 @@ void LIBUSB_CALL depth_xfer_cb(libusb_transfer* xfer) {
             bool notify = false;
             {
                 std::lock_guard<std::mutex> lk(s->depth_q_mu);
-                if (s->depth_q.size() < kDepthQMaxChunks) {
-                    s->depth_q.push_back(DualSession::DepthChunk{
-                        std::vector<uint8_t>(xfer->buffer, xfer->buffer + xfer->actual_length),
-                        static_cast<uint64_t>(detail::now_ns())});
-                    if (s->depth_q.size() > s->depth_q_hwm) s->depth_q_hwm = s->depth_q.size();
-                    notify = true;
-                } else {
+                if (s->depth_q.size() >= kDepthQMaxChunks) {
+                    // 预览/扫描优先低延迟：解析线程落后时丢最老 chunk，保留最新 USB 数据。
+                    s->depth_q.pop_front();
                     s->depth_q_drops++;
                 }
+                s->depth_q.push_back(DualSession::DepthChunk{
+                    std::vector<uint8_t>(xfer->buffer, xfer->buffer + xfer->actual_length),
+                    static_cast<uint64_t>(detail::now_ns())});
+                if (s->depth_q.size() > s->depth_q_hwm) s->depth_q_hwm = s->depth_q.size();
+                notify = true;
             }
             if (notify) s->depth_q_cv.notify_one();
         }
@@ -325,6 +400,7 @@ void depth_parser_loop(DualSession* s) {
             std::vector<uint8_t> conf;
             std::vector<uint8_t> flymask;
             bool have_fused = false;
+            std::vector<uint8_t> raw_conf;
             if (s->depth_temporal_enable) {
                 const P100R3VideoMode active = p100r3_depth_active_mode(s->depth_mode);
                 const size_t aw = active.width, ah = active.height;
@@ -336,6 +412,8 @@ void depth_parser_loop(DualSession* s) {
                         active_raw, static_cast<uint16_t>(aw), static_cast<uint16_t>(ah),
                         &fused, &conf, nullptr, &flymask);
                 }
+            } else {
+                raw_conf = make_raw_depth_preview_confidence(s, f.payload, s->depth_mode);
             }
             {
                 std::lock_guard<std::mutex> lk(s->frame_mu);
@@ -345,6 +423,14 @@ void depth_parser_loop(DualSession* s) {
                     s->latest_depth_fused = std::move(fused);
                     s->latest_depth_conf = std::move(conf);
                     s->latest_depth_flying = std::move(flymask);
+                } else if (!raw_conf.empty()) {
+                    s->latest_depth_fused.clear();
+                    s->latest_depth_conf = std::move(raw_conf);
+                    s->latest_depth_flying.clear();
+                } else {
+                    s->latest_depth_fused.clear();
+                    s->latest_depth_conf.clear();
+                    s->latest_depth_flying.clear();
                 }
                 s->depth_seq++;
             }
@@ -366,15 +452,16 @@ void LIBUSB_CALL color_xfer_cb(libusb_transfer* xfer) {
             bool notify = false;
             {
                 std::lock_guard<std::mutex> lk(s->color_q_mu);
-                if (s->color_q.size() < kDepthQMaxChunks) {
-                    s->color_q.push_back(DualSession::DepthChunk{
-                        std::vector<uint8_t>(xfer->buffer, xfer->buffer + xfer->actual_length),
-                        static_cast<uint64_t>(detail::now_ns())});
-                    if (s->color_q.size() > s->color_q_hwm) s->color_q_hwm = s->color_q.size();
-                    notify = true;
-                } else {
+                if (s->color_q.size() >= kDepthQMaxChunks) {
+                    // COLOR 只做预览：积压时保新丢旧，避免 UI 看到过期 MJPEG。
+                    s->color_q.pop_front();
                     s->color_q_drops++;
                 }
+                s->color_q.push_back(DualSession::DepthChunk{
+                    std::vector<uint8_t>(xfer->buffer, xfer->buffer + xfer->actual_length),
+                    static_cast<uint64_t>(detail::now_ns())});
+                if (s->color_q.size() > s->color_q_hwm) s->color_q_hwm = s->color_q.size();
+                notify = true;
             }
             if (notify) s->color_q_cv.notify_one();
         }
@@ -755,6 +842,7 @@ int berxel_snap_depth_mm(DualSession* s, uint16_t* dst, size_t cap_px, int64_t m
     std::vector<uint8_t> transport;
     std::vector<uint16_t> fused;
     UvcFrameInfo info;
+    uint64_t seq = 0;
     {
         std::lock_guard<std::mutex> lk(s->frame_mu);
         if (s->latest_depth_transport.empty()) return 0;
@@ -764,6 +852,7 @@ int berxel_snap_depth_mm(DualSession* s, uint16_t* dst, size_t cap_px, int64_t m
             transport = s->latest_depth_transport;
         }
         info = s->latest_depth_info;
+        seq = s->depth_seq;
     }
     const P100R3VideoMode active = p100r3_depth_active_mode(s->depth_mode);
     const size_t aw = active.width, ah = active.height;
@@ -783,7 +872,7 @@ int berxel_snap_depth_mm(DualSession* s, uint16_t* dst, size_t cap_px, int64_t m
     }
     if (meta) {
         meta[0] = static_cast<int64_t>(aw); meta[1] = static_cast<int64_t>(ah);
-        meta[2] = static_cast<int64_t>(info.frame_number); meta[3] = uvc_frame_midpoint_ns(info);
+        meta[2] = static_cast<int64_t>(seq); meta[3] = uvc_frame_midpoint_ns(info);
     }
     return static_cast<int>(need);
 }
@@ -793,11 +882,13 @@ int berxel_snap_conf(DualSession* s, uint8_t* dst, size_t cap, int64_t meta[4]) 
     if (!s) return 0;
     std::vector<uint8_t> conf;
     UvcFrameInfo info;
+    uint64_t seq = 0;
     {
         std::lock_guard<std::mutex> lk(s->frame_mu);
         if (s->latest_depth_conf.empty()) return 0;
         conf = s->latest_depth_conf;
         info = s->latest_depth_info;
+        seq = s->depth_seq;
     }
     const P100R3VideoMode active = p100r3_depth_active_mode(s->depth_mode);
     const size_t need = static_cast<size_t>(active.width) * active.height;
@@ -806,7 +897,7 @@ int berxel_snap_conf(DualSession* s, uint8_t* dst, size_t cap, int64_t meta[4]) 
     std::memcpy(dst, conf.data(), need);
     if (meta) {
         meta[0] = static_cast<int64_t>(active.width); meta[1] = static_cast<int64_t>(active.height);
-        meta[2] = static_cast<int64_t>(info.frame_number); meta[3] = uvc_frame_midpoint_ns(info);
+        meta[2] = static_cast<int64_t>(seq); meta[3] = uvc_frame_midpoint_ns(info);
     }
     return static_cast<int>(need);
 }
@@ -816,11 +907,13 @@ int berxel_snap_ir(DualSession* s, uint8_t* dst, size_t cap, int64_t meta[4]) {
     if (!s) return 0;
     std::vector<uint8_t> transport;
     UvcFrameInfo info;
+    uint64_t seq = 0;
     {
         std::lock_guard<std::mutex> lk(s->frame_mu);
         if (s->latest_ir_transport.empty()) return 0;
         transport = s->latest_ir_transport;
         info = s->latest_ir_info;
+        seq = s->ir_skipped;
     }
     const P100R3VideoMode active = p100r3_depth_active_mode(s->depth_mode);
     const size_t npix = static_cast<size_t>(active.width) * active.height;
@@ -829,7 +922,7 @@ int berxel_snap_ir(DualSession* s, uint8_t* dst, size_t cap, int64_t meta[4]) {
     for (size_t i = 0; i < npix; ++i) dst[i] = transport[i * 2 + 1];
     if (meta) {
         meta[0] = static_cast<int64_t>(active.width); meta[1] = static_cast<int64_t>(active.height);
-        meta[2] = static_cast<int64_t>(info.frame_number); meta[3] = uvc_frame_midpoint_ns(info);
+        meta[2] = static_cast<int64_t>(seq); meta[3] = uvc_frame_midpoint_ns(info);
     }
     return static_cast<int>(npix);
 }

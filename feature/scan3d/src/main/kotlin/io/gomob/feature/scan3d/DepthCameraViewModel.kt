@@ -1,6 +1,7 @@
 package io.gomob.feature.scan3d
 
 import android.graphics.Bitmap
+import android.os.SystemClock
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -8,6 +9,7 @@ import io.gomob.nativebridge.berxel.BerxelDeviceControls
 import io.gomob.nativebridge.berxel.BerxelDeviceState
 import io.gomob.nativebridge.berxel.BerxelFrameStat
 import io.gomob.nativebridge.berxel.BerxelService
+import io.gomob.nativebridge.berxel.BerxelStackBackend
 import io.gomob.nativebridge.berxel.BerxelStreamProfile
 import io.gomob.nativebridge.berxel.BerxelStreamProfiles
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +29,7 @@ data class DepthCameraUiState(
     val depth: BerxelFrameStat? = null,
     val controls: BerxelDeviceControls = BerxelDeviceControls(),
     val streamProfile: BerxelStreamProfile = BerxelStreamProfiles.DEFAULT,
+    val backend: BerxelStackBackend = BerxelStackBackend.NATIVE_REWRITE,
 )
 
 /**
@@ -47,6 +50,7 @@ class DepthCameraViewModel @Inject constructor(
         berxel.depthStat,
         berxel.controls,
         berxel.streamProfile,
+        berxel.backendMode,
     ) { values ->
         DepthCameraUiState(
             device = values[0] as BerxelDeviceState,
@@ -54,6 +58,7 @@ class DepthCameraViewModel @Inject constructor(
             depth = values[2] as BerxelFrameStat?,
             controls = values[3] as BerxelDeviceControls,
             streamProfile = values[4] as BerxelStreamProfile,
+            backend = values[5] as BerxelStackBackend,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DepthCameraUiState())
 
@@ -69,21 +74,23 @@ class DepthCameraViewModel @Inject constructor(
         berxel.acquire()
 
         viewModelScope.launch {
-            var counter = 0
+            // color 已在 BerxelService 侧限速 ~10fps（COLOR_PREVIEW_DECODE_INTERVAL_MS），这里不再二次抽帧，
+            // 渲染每帧 → 预览稳定，且总解码量已在源头压住，不会饿死 native depth 解析。
             berxel.colorFrames.collect { frame ->
-                counter++
-                if (counter % PREVIEW_DECIMATION != 0) return@collect
                 val bmp = withContext(Dispatchers.Default) { FrameRenderer.colorRgb24ToBitmap(frame) }
                 _colorPreview.value = bmp
             }
         }
         // 真深度（16bit mm）→ turbo 伪彩，仅非 IR 模式渲染
         viewModelScope.launch {
-            var counter = 0
+            var lastRenderMs = 0L
             berxel.depthFrames.collect { frame ->
                 if (_irRenderMode.value) return@collect
-                counter++
-                if (counter % PREVIEW_DECIMATION != 0) return@collect
+                val nowMs = SystemClock.elapsedRealtime()
+                if (lastRenderMs != 0L && nowMs - lastRenderMs < DEPTH_PREVIEW_MIN_INTERVAL_MS) {
+                    return@collect
+                }
+                lastRenderMs = nowMs
                 val bmp = withContext(Dispatchers.Default) { FrameRenderer.depth16ToBitmap(frame) }
                 _depthPreview.value = bmp
             }
@@ -92,11 +99,14 @@ class DepthCameraViewModel @Inject constructor(
         // Step 4（2026-05-29）：companion 0x82 交织真深度与 IR 帧，native 分流；depth 走 depthFrames，
         // IR 走 irFrames。「切 IR」看精细 IR 图，默认看真深度。
         viewModelScope.launch {
-            var counter = 0
+            var lastRenderMs = 0L
             berxel.irFrames.collect { frame ->
                 if (!_irRenderMode.value) return@collect
-                counter++
-                if (counter % PREVIEW_DECIMATION != 0) return@collect
+                val nowMs = SystemClock.elapsedRealtime()
+                if (lastRenderMs != 0L && nowMs - lastRenderMs < DEPTH_PREVIEW_MIN_INTERVAL_MS) {
+                    return@collect
+                }
+                lastRenderMs = nowMs
                 val bmp = withContext(Dispatchers.Default) { FrameRenderer.depthRawAsGrey(frame) }
                 _depthPreview.value = bmp
             }
@@ -104,6 +114,7 @@ class DepthCameraViewModel @Inject constructor(
     }
 
     // ─── 控制命令（直接转发到 BerxelService） ───
+    fun setBackendMode(backend: BerxelStackBackend) = berxel.setBackendModeForDebug(backend)
     fun setStreamProfile(profile: BerxelStreamProfile) = berxel.setStreamProfile(profile)
     fun setRegistrationEnable(on: Boolean) = berxel.setRegistrationEnable(on)
     fun setStreamMirror(on: Boolean) = berxel.setStreamMirror(on)
@@ -139,6 +150,6 @@ class DepthCameraViewModel @Inject constructor(
     }
 
     private companion object {
-        const val PREVIEW_DECIMATION = 5
+        const val DEPTH_PREVIEW_MIN_INTERVAL_MS = 120L
     }
 }

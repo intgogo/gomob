@@ -22,6 +22,10 @@ data class AssetUploadInitResponse(
 @Serializable
 data class AssetUploadCompleteRequest(
     @SerialName("total_chunks") val totalChunks: Int,
+    /** scan3d_bundle 专用：端侧扫描会话 ID，贯通到 scan.fusion_done 供端侧关联回看。 */
+    @SerialName("scan_session_id") val scanSessionId: String? = null,
+    /** scan3d_bundle 专用：bundle 内 RGBD 帧数。 */
+    @SerialName("frame_count") val frameCount: Int? = null,
 )
 
 @Serializable

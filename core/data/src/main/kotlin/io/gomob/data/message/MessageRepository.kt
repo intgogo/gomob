@@ -893,6 +893,8 @@ class MessageRepository @Inject constructor(
             is RealtimeEvent.Error -> logWarn(
                 "实时通道业务错误 code=${event.code} message=${event.message}",
             )
+            // 扫描融合完成事件由 scan3d 侧（ScanFusionRepository）消费，消息仓库忽略。
+            is RealtimeEvent.ScanFusionDone -> Unit
             is RealtimeEvent.Unknown -> logWarn("未知实时事件 type=${event.envelope.type}")
         }
     }

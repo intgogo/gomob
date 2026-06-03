@@ -64,6 +64,16 @@ class RealtimeEnvelopeParser @Inject constructor(
                 deletedAt = it.deletedAt,
             )
         } ?: RealtimeEvent.Unknown(envelope)
+        "scan.fusion_done" -> envelope.payload?.decode<FusionDonePayload>()?.let {
+            RealtimeEvent.ScanFusionDone(
+                jobId = it.jobId,
+                sessionKey = it.sessionKey,
+                resultObjectKey = it.resultObjectKey,
+                vertices = it.vertices,
+                triangles = it.triangles,
+                frameCount = it.frameCount,
+            )
+        } ?: RealtimeEvent.Unknown(envelope)
         "error" -> RealtimeEvent.Error(
             code = envelope.code ?: 50001,
             message = envelope.message ?: "实时通道错误",
@@ -125,4 +135,14 @@ private data class RecallPayload(
 @Serializable
 private data class ErrorPayload(
     @SerialName("in_reply_to") val inReplyTo: String? = null,
+)
+
+@Serializable
+private data class FusionDonePayload(
+    @SerialName("job_id") val jobId: Long? = null,
+    @SerialName("session_key") val sessionKey: String,
+    @SerialName("result_object_key") val resultObjectKey: String,
+    val vertices: Int = 0,
+    val triangles: Int = 0,
+    @SerialName("frame_count") val frameCount: Int = 0,
 )

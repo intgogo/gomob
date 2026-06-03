@@ -2,6 +2,7 @@ package io.gomob.feature.scan3d
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,13 +23,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,82 +37,121 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
+import io.gomob.nativebridge.camera.CameraSourceState
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 
 const val SCAN_VEHICLE_ROUTE = "scan3d/vehicle"
 
-private data class ScanAngle(
-    val label: String,
-    val name: String,
-    val deg: Float,
-)
-
-private val VehicleAngles = listOf(
-    ScanAngle("前", "正前", 0f),
-    ScanAngle("右前", "右前 45°", 45f),
-    ScanAngle("右", "正右", 90f),
-    ScanAngle("右后", "右后 45°", 135f),
-    ScanAngle("后", "正后", 180f),
-    ScanAngle("左后", "左后 45°", 225f),
-    ScanAngle("左", "正左", 270f),
-    ScanAngle("左前", "左前 45°", 315f),
-)
-
 @Composable
-fun VehicleContourScanRoute(onBack: () -> Unit) {
-    var active by remember { mutableIntStateOf(2) }
-    val shots = remember { listOf(2, 1, 1, 0, 1, 0, 1, 0) }
-    val captured = shots.count { it > 0 }
-    val totalShots = shots.sum()
+fun VehicleContourScanRoute(
+    onBack: () -> Unit,
+    vm: VehicleContourScanViewModel = hiltViewModel(),
+) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    val shotCounts by vm.shotCounts.collectAsStateWithLifecycle()
+    val active by vm.activeAngle.collectAsStateWithLifecycle()
+    val colorBmp by vm.colorPreview.collectAsStateWithLifecycle()
+    val depthBmp by vm.depthPreview.collectAsStateWithLifecycle()
+    val cloud by vm.pointCloudPreview.collectAsStateWithLifecycle()
+    val capturing by vm.capturing.collectAsStateWithLifecycle()
+    val deviceState by vm.deviceState.collectAsStateWithLifecycle()
+
+    val capturedAngles = shotCounts.count { it > 0 }
+    val totalShots = shotCounts.sum()
 
     Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
         BackHeader(
             title = "车辆外廓扫描",
             eyebrow = "三维扫描",
             onBack = onBack,
-            trailing = {
-                VehicleHeaderProgress(captured = captured, totalShots = totalShots)
-            },
+            trailing = { VehicleHeaderProgress(captured = capturedAngles, totalShots = totalShots) },
         )
-        Column(Modifier.weight(1f).fillMaxWidth()) {
-            BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
-                val contentSize = vehicleContentSize(maxWidth = maxWidth, maxHeight = maxHeight)
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 8.dp),
-                ) {
-                    item { FusedCloudPanel(shots = shots, totalShots = totalShots, height = contentSize.cloudHeight) }
-                    item { DualPreviewRow(height = contentSize.previewHeight) }
-                    item {
-                        AngleRing(
-                            active = active,
-                            shots = shots,
-                            height = contentSize.ringHeight,
-                            ringSize = contentSize.ringSize,
-                            onSelect = { active = it },
-                        )
-                    }
-                    item { Spacer(Modifier.height(8.dp)) }
-                }
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            when (val s = state) {
+                is VehicleScanState.Completed -> CompletedPanel(state = s, onRestart = vm::restart)
+                VehicleScanState.Uploading, VehicleScanState.Fusing ->
+                    ProcessingPanel(uploading = s == VehicleScanState.Uploading)
+                is VehicleScanState.Error -> ErrorPanel(msg = s.msg, onRestart = vm::restart)
+                VehicleScanState.Capturing -> CaptureBody(
+                    shotCounts = shotCounts,
+                    active = active,
+                    colorBmp = colorBmp,
+                    depthBmp = depthBmp,
+                    cloud = cloud,
+                    capturing = capturing,
+                    deviceState = deviceState,
+                    onSelect = vm::selectAngle,
+                    onCapture = vm::capture,
+                    onUndo = vm::undo,
+                    onFinish = vm::finishAndUpload,
+                )
             }
-            VehicleCaptureBar(
-                active = active,
-                shots = shots,
-                captured = captured,
-                onNext = { active = nextUncapturedAngle(active, shots) },
-            )
         }
+    }
+}
+
+@Composable
+private fun CaptureBody(
+    shotCounts: List<Int>,
+    active: Int,
+    colorBmp: android.graphics.Bitmap?,
+    depthBmp: android.graphics.Bitmap?,
+    cloud: FloatArray,
+    capturing: Boolean,
+    deviceState: CameraSourceState,
+    onSelect: (Int) -> Unit,
+    onCapture: () -> Unit,
+    onUndo: () -> Unit,
+    onFinish: () -> Unit,
+) {
+    val capturedAngles = shotCounts.count { it > 0 }
+    Column(Modifier.fillMaxSize()) {
+        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+            val contentSize = vehicleContentSize(maxWidth = maxWidth, maxHeight = maxHeight)
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 8.dp),
+            ) {
+                item { LiveCloudPanel(cloud = cloud, totalShots = shotCounts.sum(), height = contentSize.cloudHeight) }
+                item { DualPreviewRow(colorBmp = colorBmp, depthBmp = depthBmp, height = contentSize.previewHeight) }
+                item {
+                    AngleRing(
+                        active = active,
+                        shots = shotCounts,
+                        height = contentSize.ringHeight,
+                        ringSize = contentSize.ringSize,
+                        onSelect = onSelect,
+                    )
+                }
+                item { Spacer(Modifier.height(8.dp)) }
+            }
+        }
+        VehicleCaptureBar(
+            active = active,
+            shots = shotCounts,
+            capturedAngles = capturedAngles,
+            capturing = capturing,
+            deviceReady = deviceState is CameraSourceState.Streaming,
+            onCapture = onCapture,
+            onUndo = onUndo,
+            onFinish = onFinish,
+        )
     }
 }
 
@@ -143,14 +181,6 @@ private fun vehicleContentSize(
         ringHeight = (naturalRing * scale).coerceIn(148.dp, naturalRing),
         ringSize = (156.dp * scale).coerceIn(128.dp, 156.dp),
     )
-}
-
-private fun nextUncapturedAngle(active: Int, shots: List<Int>): Int {
-    for (step in 1..8) {
-        val next = (active + step) % 8
-        if (shots[next] == 0) return next
-    }
-    return active
 }
 
 @Composable
@@ -199,9 +229,10 @@ private fun MiniProgress(captured: Int) {
     }
 }
 
+/** 实时点云面板：用当前方位采集的真深度反投影点云（[cloud] 为空时提示对准）。 */
 @Composable
-private fun FusedCloudPanel(
-    shots: List<Int>,
+private fun LiveCloudPanel(
+    cloud: FloatArray,
     totalShots: Int,
     height: Dp,
 ) {
@@ -213,92 +244,30 @@ private fun FusedCloudPanel(
             .clip(Gomob.shapes.r3)
             .background(Color(0xFF060912)),
     ) {
-        FusedCloudCanvas(shots = shots)
+        if (cloud.isNotEmpty()) {
+            PointCloud3dView(points = cloud, modifier = Modifier.fillMaxSize())
+        } else {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    "对准车辆按快门采集\n每个方位的真实点云会在此显示",
+                    style = Gomob.type.numInline.copy(fontSize = 11.sp),
+                    color = Gomob.colors.fg3,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
         Column(
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(start = 12.dp, top = 10.dp),
+            modifier = Modifier.align(Alignment.TopStart).padding(start = 12.dp, top = 10.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            Text("融合点云", style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.1.em), color = Gomob.colors.accent)
+            Text("当前方位点云", style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.1.em), color = Gomob.colors.accent)
             Text(
-                "$totalShots 帧 · ${(0.7f + totalShots * 0.18f).formatOne()}M 点",
+                "已采 $totalShots 帧 · ${cloud.size / 3} 点",
                 style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.08.em),
                 color = Gomob.colors.fg2,
             )
         }
         AxisBadge(Modifier.align(Alignment.TopEnd).padding(8.dp))
-    }
-}
-
-private fun Float.formatOne(): String = String.format(java.util.Locale.US, "%.1f", this)
-
-@Composable
-private fun FusedCloudCanvas(shots: List<Int>) {
-    val acc = Gomob.colors.accent
-    val accentStrong = Gomob.colors.accentStrong
-    val fg3 = Gomob.colors.fg3
-    Canvas(Modifier.fillMaxSize()) {
-        drawRect(
-            brush = Brush.verticalGradient(listOf(Color(0xFF060912), Color(0xFF0A0E16), Color(0xFF050810))),
-            size = size,
-        )
-        drawOval(
-            color = acc.copy(alpha = 0.06f),
-            topLeft = Offset(size.width * 0.08f, size.height * 0.86f),
-            size = Size(size.width * 0.84f, size.height * 0.05f),
-        )
-        repeat(7) { i ->
-            val x1 = size.width * (0.20f + i * 0.10f)
-            val x2 = size.width * (i / 6f)
-            drawLine(
-                color = Color(0xFF78A0C8).copy(alpha = 0.06f),
-                start = Offset(x1, size.height * 0.96f),
-                end = Offset(x2, size.height * 0.78f),
-                strokeWidth = 0.4.dp.toPx(),
-            )
-        }
-        drawLine(Color(0xFF78A0C8).copy(alpha = 0.10f), Offset(0f, size.height * 0.92f), Offset(size.width, size.height * 0.92f), strokeWidth = 0.5.dp.toPx())
-        drawLine(Color(0xFF78A0C8).copy(alpha = 0.05f), Offset(0f, size.height * 0.82f), Offset(size.width, size.height * 0.82f), strokeWidth = 0.4.dp.toPx())
-
-        VehicleAngles.forEachIndexed { angleIndex, angle ->
-            val n = shots[angleIndex]
-            if (n == 0) return@forEachIndexed
-            repeat(20 * n) { k ->
-                val t = ((k * 9.7f + angleIndex * 17f) % 100f) / 100f
-                val r = ((k * 13 + angleIndex * 7) % 100) / 100f
-                val cx = size.width * (0.12f + t * 0.76f)
-                val cy = size.height * (0.58f + sin(t * PI).toFloat() * -0.25f)
-                val jx = sin(k * 1.7f + angleIndex).toFloat() * size.width * 0.04f + (r - 0.5f) * size.width * 0.06f
-                val jy = cos(k * 2.1f + angleIndex).toFloat() * size.height * 0.02f + (r - 0.5f) * size.height * 0.03f
-                val y = cy + jy
-                val depth = ((y - size.height * 0.42f) / (size.height * 0.50f)).coerceIn(0f, 1f)
-                drawCircle(
-                    color = accentStrong.copy(alpha = 0.45f + (1f - depth) * 0.40f),
-                    radius = (0.7f + (k % 3) * 0.25f).dp.toPx(),
-                    center = Offset(cx + jx, y),
-                )
-            }
-            val labelX = size.width * (0.5f + 0.38f * sin(angle.deg * PI.toFloat() / 180f))
-            val labelY = size.height * (0.54f - 0.30f * cos(angle.deg * PI.toFloat() / 180f))
-            if (n == 0) {
-                drawCircle(fg3.copy(alpha = 0.3f), radius = 2.dp.toPx(), center = Offset(labelX, labelY))
-            }
-        }
-        drawRect(
-            color = acc.copy(alpha = 0.45f),
-            topLeft = Offset(size.width * 0.10f, size.height * 0.54f),
-            size = Size(size.width * 0.80f, size.height * 0.36f),
-            style = Stroke(width = 0.6.dp.toPx()),
-        )
-        shots.forEachIndexed { i, count ->
-            if (count == 0) {
-                val angle = VehicleAngles[i]
-                val x = size.width * (0.5f + 0.38f * sin(angle.deg * PI.toFloat() / 180f))
-                val y = size.height * (0.54f - 0.28f * cos(angle.deg * PI.toFloat() / 180f))
-                drawCircle(fg3.copy(alpha = 0.25f), radius = 1.3.dp.toPx(), center = Offset(x, y))
-            }
-        }
     }
 }
 
@@ -316,7 +285,11 @@ private fun AxisBadge(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun DualPreviewRow(height: Dp) {
+private fun DualPreviewRow(
+    colorBmp: android.graphics.Bitmap?,
+    depthBmp: android.graphics.Bitmap?,
+    height: Dp,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -325,8 +298,8 @@ private fun DualPreviewRow(height: Dp) {
             .clip(Gomob.shapes.r3),
         horizontalArrangement = Arrangement.spacedBy(1.dp),
     ) {
-        PreviewPane(kind = "彩色", isDepth = false, modifier = Modifier.weight(1f))
-        PreviewPane(kind = "深度", isDepth = true, modifier = Modifier.weight(1f))
+        PreviewPane(kind = "彩色", isDepth = false, bitmap = colorBmp, modifier = Modifier.weight(1f))
+        PreviewPane(kind = "深度", isDepth = true, bitmap = depthBmp, modifier = Modifier.weight(1f))
     }
 }
 
@@ -334,6 +307,7 @@ private fun DualPreviewRow(height: Dp) {
 private fun PreviewPane(
     kind: String,
     isDepth: Boolean,
+    bitmap: android.graphics.Bitmap?,
     modifier: Modifier = Modifier,
 ) {
     Box(
@@ -341,9 +315,18 @@ private fun PreviewPane(
             .fillMaxHeight()
             .background(if (isDepth) Color(0xFF0A1218) else Color(0xFF0F1117)),
     ) {
-        if (isDepth) DepthPreviewCanvas() else RgbPreviewCanvas()
-        SegmentationOverlay()
-        CrossHair()
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = kind,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+        } else {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("等待相机…", style = Gomob.type.numInline.copy(fontSize = 10.sp), color = Gomob.colors.fg3)
+            }
+        }
         Text(
             kind,
             modifier = Modifier
@@ -355,84 +338,6 @@ private fun PreviewPane(
             style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.14.em),
             color = if (isDepth) Gomob.colors.ok else Gomob.colors.accent,
         )
-    }
-}
-
-@Composable
-private fun RgbPreviewCanvas() {
-    Canvas(Modifier.fillMaxSize()) {
-        drawRect(Brush.verticalGradient(listOf(Color(0xFF1A2230), Color(0xFF0F1219), Color(0xFF070A10))), size = size)
-        drawLine(Color(0xFF7890AA).copy(alpha = 0.15f), Offset(0f, size.height * 0.78f), Offset(size.width, size.height * 0.78f), strokeWidth = 0.5.dp.toPx())
-        val car = vehicleSidePath(size)
-        drawPath(car, Brush.verticalGradient(listOf(Color(0xFF5A6677), Color(0xFF262D39))))
-        drawPath(car, Color(0xFFB4C8DC).copy(alpha = 0.25f), style = Stroke(width = 0.6.dp.toPx()))
-        val glass = Path().apply {
-            moveTo(size.width * 0.28f, size.height * 0.53f)
-            lineTo(size.width * 0.36f, size.height * 0.49f)
-            lineTo(size.width * 0.52f, size.height * 0.43f)
-            quadraticBezierTo(size.width * 0.64f, size.height * 0.43f, size.width * 0.74f, size.height * 0.49f)
-            lineTo(size.width * 0.78f, size.height * 0.52f)
-            close()
-        }
-        drawPath(glass, Color(0xFF8CB4DC).copy(alpha = 0.18f))
-        listOf(0.28f, 0.76f).forEach { x ->
-            drawCircle(Color(0xFF0A0C12), radius = size.minDimension * 0.06f, center = Offset(size.width * x, size.height * 0.71f))
-            drawCircle(Color(0xFF96AAC8).copy(alpha = 0.40f), radius = size.minDimension * 0.06f, center = Offset(size.width * x, size.height * 0.71f), style = Stroke(width = 0.6.dp.toPx()))
-        }
-    }
-}
-
-@Composable
-private fun DepthPreviewCanvas() {
-    val accentStrong = Gomob.colors.accentStrong
-    Canvas(Modifier.fillMaxSize()) {
-        drawRect(Brush.verticalGradient(listOf(Color(0xFF0A1018), Color(0xFF06080D))), size = size)
-        repeat(10) { i ->
-            val y = size.height * i / 10f
-            drawLine(Color(0xFF50B4DC).copy(alpha = 0.05f), Offset(0f, y), Offset(size.width, y), strokeWidth = 0.3.dp.toPx())
-        }
-        val car = vehicleSidePath(size)
-        drawPath(car, Brush.radialGradient(listOf(accentStrong, Color(0xFF5177D8), Color(0xFF352659)), center = Offset(size.width * 0.5f, size.height * 0.55f), radius = size.minDimension * 0.7f))
-        drawRect(Color(0xFF140A28).copy(alpha = 0.4f), size = Size(size.width, size.height * 0.40f))
-        repeat(60) { i ->
-            drawCircle(
-                Color(0xFFB4DCFF).copy(alpha = 0.35f),
-                radius = 0.5.dp.toPx(),
-                center = Offset(size.width * ((i * 17) % 100) / 100f, size.height * ((i * 11) % 100) / 100f),
-            )
-        }
-    }
-}
-
-private fun vehicleSidePath(size: Size): Path = Path().apply {
-    moveTo(size.width * 0.10f, size.height * 0.70f)
-    lineTo(size.width * 0.14f, size.height * 0.56f)
-    quadraticBezierTo(size.width * 0.22f, size.height * 0.48f, size.width * 0.36f, size.height * 0.47f)
-    lineTo(size.width * 0.52f, size.height * 0.39f)
-    quadraticBezierTo(size.width * 0.66f, size.height * 0.38f, size.width * 0.78f, size.height * 0.47f)
-    lineTo(size.width * 0.86f, size.height * 0.50f)
-    quadraticBezierTo(size.width * 0.92f, size.height * 0.52f, size.width * 0.92f, size.height * 0.60f)
-    lineTo(size.width * 0.92f, size.height * 0.70f)
-    close()
-}
-
-@Composable
-private fun SegmentationOverlay() {
-    val acc = Gomob.colors.accent
-    Canvas(Modifier.fillMaxSize()) {
-        drawPath(
-            vehicleSidePath(size),
-            acc.copy(alpha = 0.85f),
-            style = Stroke(width = 0.8.dp.toPx()),
-        )
-    }
-}
-
-@Composable
-private fun CrossHair() {
-    Canvas(Modifier.fillMaxSize()) {
-        drawLine(Color.White.copy(alpha = 0.06f), Offset(0f, size.height / 2f), Offset(size.width, size.height / 2f), strokeWidth = 1f)
-        drawLine(Color.White.copy(alpha = 0.06f), Offset(size.width / 2f, 0f), Offset(size.width / 2f, size.height), strokeWidth = 1f)
     }
 }
 
@@ -463,7 +368,7 @@ private fun AngleRing(
                 .align(Alignment.Center),
         ) {
             AngleRingCanvas(active = active)
-            VehicleAngles.forEachIndexed { i, angle ->
+            VehicleAngleDefs.forEachIndexed { i, angle ->
                 val rad = angle.deg * PI.toFloat() / 180f
                 val x = center + radius * sin(rad) - dotHalf
                 val y = center - radius * cos(rad) - dotHalf
@@ -530,7 +435,7 @@ private fun AngleRing(
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text("${(active + 1).toString().padStart(2, '0')} / 08", style = Gomob.type.numInline.copy(fontSize = 10.sp, letterSpacing = 0.06.em), color = Gomob.colors.fg3)
-            Text(VehicleAngles[active].name, style = Gomob.type.numInline.copy(fontSize = 10.sp, letterSpacing = 0.06.em), color = Gomob.colors.accent)
+            Text(VehicleAngleDefs[active].name, style = Gomob.type.numInline.copy(fontSize = 10.sp, letterSpacing = 0.06.em), color = Gomob.colors.accent)
         }
         Column(
             modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 12.dp),
@@ -538,7 +443,7 @@ private fun AngleRing(
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text("已拍 ${shots[active]} 次", style = Gomob.type.numInline.copy(fontSize = 10.sp, letterSpacing = 0.06.em), color = Gomob.colors.fg3)
-            Text("方位 ${VehicleAngles[active].deg.toInt()}°", style = Gomob.type.numInline.copy(fontSize = 10.sp, letterSpacing = 0.06.em), color = Gomob.colors.fg3)
+            Text("方位 ${VehicleAngleDefs[active].deg.toInt()}°", style = Gomob.type.numInline.copy(fontSize = 10.sp, letterSpacing = 0.06.em), color = Gomob.colors.fg3)
         }
     }
 }
@@ -557,7 +462,7 @@ private fun AngleRingCanvas(active: Int) {
         drawCircle(Color.Transparent, radius = r, center = c, style = Stroke(width = 1.dp.toPx()))
         drawCircle(line1, radius = r, center = c, style = Stroke(width = 1.dp.toPx()))
         drawCircle(line1, radius = r - 30.dp.toPx(), center = c, style = Stroke(width = 1.dp.toPx()))
-        VehicleAngles.forEach { angle ->
+        VehicleAngleDefs.forEach { angle ->
             val rad = angle.deg * PI.toFloat() / 180f
             drawLine(
                 line1,
@@ -566,7 +471,7 @@ private fun AngleRingCanvas(active: Int) {
                 strokeWidth = 0.5.dp.toPx(),
             )
         }
-        val activeAngle = VehicleAngles[active]
+        val activeAngle = VehicleAngleDefs[active]
         val activeRad = activeAngle.deg * PI.toFloat() / 180f
         val activePoint = Offset(c.x + r * sin(activeRad), c.y - r * cos(activeRad))
         drawLine(accent.copy(alpha = 0.65f), activePoint, c, strokeWidth = 1.dp.toPx())
@@ -610,8 +515,12 @@ private fun VehicleCaptureBar(
     modifier: Modifier = Modifier,
     active: Int,
     shots: List<Int>,
-    captured: Int,
-    onNext: () -> Unit,
+    capturedAngles: Int,
+    capturing: Boolean,
+    deviceReady: Boolean,
+    onCapture: () -> Unit,
+    onUndo: () -> Unit,
+    onFinish: () -> Unit,
 ) {
     Box(
         modifier = modifier
@@ -624,9 +533,15 @@ private fun VehicleCaptureBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            RoundSideButton(icon = GomobIcons.Refresh, label = "撤销", disabled = shots[active] == 0)
-            ShutterButton()
-            RoundSideButton(icon = GomobIcons.Check, label = if (captured == 8) "完成" else "下一步", primary = true, onClick = onNext)
+            RoundSideButton(icon = GomobIcons.Refresh, label = "撤销", disabled = shots[active] == 0, onClick = onUndo)
+            ShutterButton(enabled = deviceReady && !capturing, onClick = onCapture)
+            RoundSideButton(
+                icon = GomobIcons.Check,
+                label = "完成融合",
+                primary = true,
+                disabled = shots.sum() < 2,
+                onClick = onFinish,
+            )
         }
     }
 }
@@ -673,13 +588,18 @@ private fun RoundSideButton(
 }
 
 @Composable
-private fun ShutterButton() {
+private fun ShutterButton(
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val ring = if (enabled) Gomob.colors.accent else Gomob.colors.line2
     Box(
         modifier = Modifier
             .size(68.dp)
             .clip(CircleShape)
             .background(Gomob.colors.bg0)
-            .border(BorderStroke(2.dp, Gomob.colors.accent), CircleShape)
+            .border(BorderStroke(2.dp, ring), CircleShape)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(4.dp),
         contentAlignment = Alignment.Center,
     ) {
@@ -687,11 +607,78 @@ private fun ShutterButton() {
             modifier = Modifier
                 .fillMaxSize()
                 .clip(CircleShape)
-                .border(BorderStroke(2.dp, Gomob.colors.accent), CircleShape)
+                .border(BorderStroke(2.dp, ring), CircleShape)
                 .padding(6.dp),
             contentAlignment = Alignment.Center,
         ) {
-            Box(Modifier.fillMaxSize().clip(CircleShape).background(Gomob.colors.accent))
+            Box(Modifier.fillMaxSize().clip(CircleShape).background(ring))
+        }
+    }
+}
+
+@Composable
+private fun ProcessingPanel(uploading: Boolean) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            CircularProgressIndicator(color = Gomob.colors.accent)
+            Text(
+                if (uploading) "正在上传多视角 RGBD…" else "云端多视角融合中…\n生成高精度 3D 网格",
+                style = Gomob.type.numInline.copy(fontSize = 13.sp),
+                color = Gomob.colors.fg1,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+@Composable
+private fun CompletedPanel(
+    state: VehicleScanState.Completed,
+    onRestart: () -> Unit,
+) {
+    Column(Modifier.fillMaxSize()) {
+        Box(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .clip(Gomob.shapes.r3)
+                .background(Color(0xFF060912)),
+        ) {
+            GlbModelView(glbFile = state.glbFile, modifier = Modifier.fillMaxSize())
+            Column(
+                modifier = Modifier.align(Alignment.TopStart).padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text("融合 3D 模型", style = Gomob.type.numInline.copy(fontSize = 10.sp, letterSpacing = 0.1.em), color = Gomob.colors.accent)
+                Text(
+                    "${state.vertices} 顶点 · ${state.triangles} 面 · ${state.frameCount} 视角",
+                    style = Gomob.type.numInline.copy(fontSize = 9.sp),
+                    color = Gomob.colors.fg2,
+                )
+            }
+        }
+        Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+            RoundSideButton(icon = GomobIcons.Refresh, label = "重新扫描", primary = true, onClick = onRestart)
+        }
+    }
+}
+
+@Composable
+private fun ErrorPanel(
+    msg: String,
+    onRestart: () -> Unit,
+) {
+    Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(msg, style = Gomob.type.numInline.copy(fontSize = 13.sp), color = Gomob.colors.danger, textAlign = TextAlign.Center)
+            RoundSideButton(icon = GomobIcons.Refresh, label = "重新扫描", primary = true, onClick = onRestart)
         }
     }
 }

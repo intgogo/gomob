@@ -82,6 +82,12 @@ class BerxelService @Inject constructor(
     private val _state = MutableStateFlow<BerxelDeviceState>(BerxelDeviceState.Idle)
     val state: StateFlow<BerxelDeviceState> = _state.asStateFlow()
 
+    @Volatile private var runtimeBackendOverride: BerxelStackBackend? = null
+    private val _backendMode = MutableStateFlow(backend)
+    val backendMode: StateFlow<BerxelStackBackend> = _backendMode.asStateFlow()
+
+    private fun effectiveBackend(): BerxelStackBackend = runtimeBackendOverride ?: backend
+
     // ─── CameraSource 中性面（M6.8b ⑤，加性：不改任何既有 Berxel 行为，仅把 state 映射成中性状态） ───
     override val deviceLabel: String get() = CameraModel.Berxel.deviceTypeLabel
 
@@ -198,6 +204,8 @@ class BerxelService @Inject constructor(
     @Volatile private var readerRunning = false
     @Volatile private var loggedFirstColorFrame = false
     @Volatile private var loggedFirstDepthFrame = false
+    private val sdkColorFpsMeter = FrameRateMeter()
+    private val sdkDepthFpsMeter = FrameRateMeter()
     private var mixReader: Thread? = null
     private var colorReader: Thread? = null
     private var depthReader: Thread? = null
@@ -324,7 +332,7 @@ class BerxelService @Inject constructor(
     fun start() {
         // M1.6.6 feature flag — backend = NATIVE_REWRITE 时改走 BerxelNativeStack 路径，
         // 不进 SDK BerxelHawkContext。runtime override > buildConfig。
-        if (backend == BerxelStackBackend.NATIVE_REWRITE) {
+        if (effectiveBackend() == BerxelStackBackend.NATIVE_REWRITE) {
             startNativeRewrite()
             return
         }
@@ -340,6 +348,56 @@ class BerxelService @Inject constructor(
         start(StartupStreamMode.DUAL)
     }
 
+    /** Debug / A-B 对照：运行中切换 NativeStack 与厂商 SDK 后端。 */
+    fun setBackendModeForDebug(target: BerxelStackBackend) {
+        val current = effectiveBackend()
+        if (current == target) {
+            Log.d(TAG, "setBackendModeForDebug ignored, already $target")
+            return
+        }
+        Log.i(TAG, "setBackendModeForDebug $current → $target")
+        runtimeBackendOverride = target
+        _backendMode.value = target
+        streamStartBlockedReason = null
+        lastStreamStartAtMs = 0L
+        lastFirstFrameAtMs = 0L
+        nativeRewriteRestartCount = 0
+        nativeMasterColorSuppressedByNoDepth = false
+        if (target == BerxelStackBackend.SDK && activeStreamProfile.id.startsWith("native_rewrite")) {
+            activeStreamProfile = BerxelStreamProfiles.DEFAULT
+            _streamProfile.value = activeStreamProfile
+        }
+
+        val shouldRestart = acquireCount.get() > 0 ||
+            nativeRewriteRunning ||
+            device != null ||
+            readerRunning ||
+            _state.value is BerxelDeviceState.Opening ||
+            _state.value is BerxelDeviceState.Initializing ||
+            _state.value is BerxelDeviceState.WaitingPermission ||
+            _state.value is BerxelDeviceState.Streaming
+
+        startEpoch.incrementAndGet()
+        pendingStartJob?.cancel()
+        companionRetryJob?.cancel()
+        companionRetryJob = null
+        permissionWatchdogJob?.cancel()
+        scope.launch {
+            if (nativeRewriteRunning) {
+                stopNativeRewrite()
+            } else {
+                stopInternal(reason = null)
+                _state.value = BerxelDeviceState.Idle
+            }
+            _colorStat.value = null
+            _depthStat.value = null
+            delay(700)
+            if (shouldRestart && acquireCount.get() > 0) {
+                start()
+            }
+        }
+    }
+
     // ─── NATIVE_REWRITE 路径 ───────────────────────────────────────────────────
     // BerxelNativeStack 是端到端自实现的 libusb-1.0 stack，绕开 SDK 的 libuvc-0.0.7 + 自家 libusb。
     // 目前实测（2026-05-27 sweep）vivo PD2324 上拉不到持续流（≤100ms 内 host kill），但 DI
@@ -351,6 +409,8 @@ class BerxelService @Inject constructor(
     @Volatile private var nativeRewriteWatchdogJob: Job? = null
     @Volatile private var nativeRewriteRestartCount: Int = 0
     @Volatile private var nativeMasterStreamDebugOverride: Boolean? = null
+    @Volatile private var nativeMasterColorSuppressedByNoDepth: Boolean = false
+    @Volatile private var nativeLastStartEnableColor: Boolean = false
     /** Debug：keepalive 间隔 ms override（null=默认 50；0=关闭 keepalive，验证它对 depth/color 共存的影响）。 */
     @Volatile private var nativeKeepaliveMsDebugOverride: Int? = null
     /** Debug：depth fps override（null=默认 45；可切 30/15 对照 1280 高帧率下 device 积压掉线）。 */
@@ -383,7 +443,8 @@ class BerxelService @Inject constructor(
             else -> Unit
         }
         val enableMasterStreamForThisStart =
-            nativeMasterStreamDebugOverride ?: NATIVE_REWRITE_MASTER_STREAM_DEFAULT
+            (nativeMasterStreamDebugOverride ?: NATIVE_REWRITE_MASTER_STREAM_DEFAULT) &&
+                !nativeMasterColorSuppressedByNoDepth
         nativeStack.enableMasterStream = enableMasterStreamForThisStart
         Log.i(
             TAG,
@@ -427,6 +488,37 @@ class BerxelService @Inject constructor(
             nativeRewriteRunning = false
             return
         }
+        val liveUsbDevices = usbManager.deviceList.values.filter { isBerxelUsbDevice(it) }
+        val hasLiveMaster = liveUsbDevices.any { it.vendorId == BERXEL_VID && it.productId == P100R3_PRIMARY_PID }
+        val hasLiveCompanion = liveUsbDevices.any {
+            it.vendorId == P100R3_COMPANION_VID && it.productId == P100R3_COMPANION_PID
+        }
+        if (!hasLiveMaster || !hasLiveCompanion) {
+            partialNodeRetryCount++
+            Log.i(
+                TAG,
+                "NATIVE dual-depth wait full USB nodes retry=$partialNodeRetryCount " +
+                    "live=${liveUsbDevices.joinToString { usbLabel(it) }}",
+            )
+            if (partialNodeRetryCount > NATIVE_REWRITE_NODE_PAIR_RETRY_LIMIT) {
+                _state.value = BerxelDeviceState.Error(
+                    "只看到 ${p100r3VisibleNodeLabel(hasLiveMaster, hasLiveCompanion)}，master/companion USB 节点未同时可见；" +
+                        "请重新插拔 iHawk 或检查 OTG/Hub 供电",
+                )
+                nativeRewriteRunning = false
+                return
+            }
+            _state.value = BerxelDeviceState.Opening
+            companionRetryJob?.cancel()
+            companionRetryJob = scope.launch {
+                delay(COMPANION_ONLY_RETRY_DELAY_MS)
+                if (token == startEpoch.get() && nativeRewriteRunning && acquireCount.get() > 0) {
+                    startNativeDualDepthInternal(token)
+                }
+            }
+            return
+        }
+        partialNodeRetryCount = 0
         // USB 权限预检：startDualNative 内部直接 openDevice 拿 fd，未授权会 SecurityException。
         // 重装 / 首次启动 / 用户拒过一次后，主动 requestPermission 弹系统框；master/companion 任一缺权限
         // 都先请求，granted 后 receiver 以新 token 重进本路径，逐个补齐（保持 nativeRewriteRunning=true）。
@@ -451,16 +543,31 @@ class BerxelService @Inject constructor(
         // 不开 color 时 master 立刻 NO_DEVICE；HONOR 真正卡点是 master keepalive set_cur 跑不通（设备/BSP 级）。
         // enableColor 接 debug override（setNativeMasterStreamForDebug）：默认 true=RGBD 双流；
         // 诊断时可 broadcast master_rgb=false 切 depth-only，隔离「color 是否破坏 master keepalive」根因。
-        val enableColor = nativeMasterStreamDebugOverride ?: NATIVE_REWRITE_MASTER_STREAM_DEFAULT
-        val keepaliveMs = nativeKeepaliveMsDebugOverride ?: 50
-        val depthFps = nativeDepthFpsDebugOverride ?: 45
-        Log.i(TAG, "NATIVE dual-depth enableColor=$enableColor (override=$nativeMasterStreamDebugOverride) keepaliveMs=$keepaliveMs depthFps=$depthFps")
+        val requestedEnableColor = nativeMasterStreamDebugOverride ?: NATIVE_REWRITE_MASTER_STREAM_DEFAULT
+        val suppressColorForTopology = requestedEnableColor &&
+            shouldSuppressNativeColorForUsbTopology(usbManager.deviceList.values)
+        val enableColor = requestedEnableColor &&
+            !nativeMasterColorSuppressedByNoDepth &&
+            !suppressColorForTopology
+        nativeLastStartEnableColor = enableColor
+        val topologySafeMode = suppressColorForTopology || nativeMasterColorSuppressedByNoDepth
+        val keepaliveMs = nativeKeepaliveMsDebugOverride ?: if (topologySafeMode) 0 else 50
+        val depthFps = nativeDepthFpsDebugOverride ?: if (topologySafeMode) NATIVE_DUAL_HUB_DEPTH_FPS else 45
+        val depthTemporal = !topologySafeMode
+        Log.i(
+            TAG,
+            "NATIVE dual-depth enableColor=$enableColor requestedColor=$requestedEnableColor " +
+                "override=$nativeMasterStreamDebugOverride topologySuppress=$suppressColorForTopology " +
+                "fallbackSuppress=$nativeMasterColorSuppressedByNoDepth topologySafeMode=$topologySafeMode " +
+                "keepaliveMs=$keepaliveMs depthFps=$depthFps depthTemporal=$depthTemporal",
+        )
         val handle = nativeStack.startDualNative(
             usbManager,
             enableColor = enableColor,
             authorizedByName = authorizedDevicesByName,
             keepaliveMs = keepaliveMs,
             depthFps = depthFps,
+            depthTemporal = depthTemporal,
         )
         if (handle == 0L) {
             _state.value = BerxelDeviceState.Error("startDualNative 失败: ${nativeStack.lastError()}")
@@ -471,7 +578,7 @@ class BerxelService @Inject constructor(
             nativeStack.stopDualNative()
             return
         }
-        val nativeProfile = nativeRewriteProfile(enableMasterStream = false)
+        val nativeProfile = nativeRewriteProfile(enableMasterStream = enableColor)
         val depthTarget = nativeProfile.depth ?: BerxelStreamTarget(width = 640, height = 400, fps = 45)
         activeStreamProfile = nativeProfile
         _streamProfile.value = nativeProfile
@@ -485,23 +592,30 @@ class BerxelService @Inject constructor(
                 deviceAddress = "",
                 firmwareVersion = "",
                 sdkVersion = "NATIVE_REWRITE",
-                streamFlagMode = BerxelStreamFlagProfile.SINGULAR,
+                streamFlagMode = if (enableColor) BerxelStreamFlagProfile.MIX else BerxelStreamFlagProfile.SINGULAR,
                 requestedProfileId = nativeProfile.id,
-                colorMode = null,
+                colorMode = nativeProfile.color?.let { target ->
+                    BerxelStreamSpec(
+                        width = target.width,
+                        height = target.height,
+                        fps = target.fps,
+                        pixelType = "BERXEL_HAWK_PIXEL_TYPE_IMAGE_MJPEG",
+                    )
+                },
                 depthMode = BerxelStreamSpec(
-                    width = 1280,
-                    height = 800,
-                    fps = 45,
-                    pixelType = "BERXEL_HAWK_PIXEL_TYPE_DEP_16BIT_13I_3D",
+                    width = depthTarget.width,
+                    height = depthTarget.height,
+                    fps = depthTarget.fps,
+                    pixelType = "BERXEL_HAWK_PIXEL_TYPE_DEP_16BIT_MM",
                 ),
             ),
         )
 
         nativeRewritePullJob = scope.launch {
-            // buffer 按设备【最大】depth（1280x800）分配，分辨率无关：poll 实际写 active*2 字节，
-            // DepthFrame 用 outInfo 回报的真实 w/h。这样 640/1280 切换都不会出现 buffer 不够（poll 返 -1）。
-            val activeW = 1280
-            val activeH = 800
+            // native portable 当前生产档固定为 transport 640x401 / active 640x400；poll 只返回 active mm。
+            // 按真实 active 尺寸分配，避免每帧 1280x800 direct buffer 造成无意义内存压力。
+            val activeW = NATIVE_DEPTH_ACTIVE_WIDTH
+            val activeH = NATIVE_DEPTH_ACTIVE_HEIGHT
             val bytes = activeW * activeH * 2
             var buffer = ByteBuffer.allocateDirect(bytes).order(ByteOrder.LITTLE_ENDIAN)
             val outInfo = LongArray(4)
@@ -566,6 +680,10 @@ class BerxelService @Inject constructor(
                     distortion = DoubleArray(5), width = w, height = h,
                 )
                 val outFrameIdx = ++frameIdx
+                if (outFrameIdx == 1 && nativeRewriteRestartCount > 0) {
+                    Log.i(TAG, "NATIVE dual-depth 首帧恢复，清零自动重连计数 old=$nativeRewriteRestartCount")
+                    nativeRewriteRestartCount = 0
+                }
                 val nowMs = SystemClock.elapsedRealtime()
                 lastFrameMs = nowMs
                 val elapsedMs = nowMs - statWindowStartMs
@@ -639,22 +757,28 @@ class BerxelService @Inject constructor(
             // session 死（pump IO 掉线、poll 长时间 0 帧）→ 复位，让 re-attach / 重进本页能重连。
             // 不靠 token 失配退出的正常 stop 不走这里（nativeRewriteRunning 已被 stop 置 false）。
             if (sessionDead && nativeRewriteRunning && token == startEpoch.get()) {
-                Log.e(TAG, "NATIVE dual-depth ${NATIVE_DUAL_FRAME_TIMEOUT_MS}ms 无帧，判定 session 死，复位")
-                runCatching { nativeStack.stopDualNative() }
-                nativeRewriteRunning = false
-                nativeRewritePullJob = null
-                _depthStat.value = null
-                _state.value = BerxelDeviceState.Error("双流 session 掉线（USB IO）— 重新插拔相机或重进本页重连")
+                resetDeadNativeDualSessionAndMaybeRestart(token, frameIdx)
             }
         }
 
         // master color pull job：poll 最新 MJPEG → BitmapFactory 解码 → RGB24 → _colorFrames（UI「COLOR」框）。
+        // ★ 预览解码限速 ~10fps（COLOR_PREVIEW_DECODE_INTERVAL_MS）：color 仅供预览，若全速（master 实测
+        //   ~100-300fps）对【每帧】做 BitmapFactory 解码 + 256k getPixels + 256k ARGB→RGB24 + 768KB
+        //   DirectByteBuffer 分配，CPU/GC 会被打爆 → 饿死 native depth 解析线程（实测 q_now 堆到 1024 上限、
+        //   q_drops 持续涨、depth 帧被丢块退化）+ UI 卡死。MJPEG 是 consume-once：隔 100ms poll 只取最新一帧，
+        //   中间帧在 native 侧自然丢弃；native RGBD 配对独立于此 Kotlin 解码，不受影响。
         nativeRewriteColorJob = scope.launch {
             var colorIdx = 0
             var pixelsScratch: IntArray? = null
+            var lastColorDecodeMs = 0L
             while (isActive && nativeRewriteRunning) {
+                val sinceMs = SystemClock.elapsedRealtime() - lastColorDecodeMs
+                if (sinceMs < COLOR_PREVIEW_DECODE_INTERVAL_MS) {
+                    delay(COLOR_PREVIEW_DECODE_INTERVAL_MS - sinceMs); continue
+                }
                 val mjpeg = nativeStack.dualPollColorMjpeg()
                 if (mjpeg == null) { delay(8); continue }
+                lastColorDecodeMs = SystemClock.elapsedRealtime()
                 val bmp = runCatching { BitmapFactory.decodeByteArray(mjpeg, 0, mjpeg.size) }.getOrNull()
                 if (bmp == null) {
                     if (colorIdx < 3) Log.w(TAG, "dual color MJPEG#${colorIdx + 1} decode null size=${mjpeg.size}")
@@ -703,6 +827,64 @@ class BerxelService @Inject constructor(
             }
             Log.i(TAG, "NATIVE dual-depth color pull exit frames=$colorIdx")
         }
+    }
+
+    private suspend fun resetDeadNativeDualSessionAndMaybeRestart(token: Long, frameCount: Int) {
+        if (token != startEpoch.get()) return
+        if (frameCount == 0 && nativeLastStartEnableColor && !nativeMasterColorSuppressedByNoDepth) {
+            nativeMasterColorSuppressedByNoDepth = true
+            Log.w(TAG, "NATIVE dual-depth COLOR 启动后无 depth 帧，后续自动降级 depth-only")
+        }
+        nativeRewriteRestartCount++
+        val restartCount = nativeRewriteRestartCount
+        Log.e(
+            TAG,
+            "NATIVE dual-depth ${NATIVE_DUAL_FRAME_TIMEOUT_MS}ms 无 depth 帧，" +
+                "frames=$frameCount，判定 session 死；第 $restartCount 次自动重连",
+        )
+        // 先退出假 Streaming，避免 USB re-attach intent 在 stopDualNative() 阻塞期间被 already-running 吞掉。
+        nativeRewriteRunning = false
+        nativeRewritePullJob = null
+        nativeRewriteColorJob?.cancel()
+        nativeRewriteColorJob = null
+        _colorStat.value = null
+        _depthStat.value = null
+        _state.value = BerxelDeviceState.Opening
+        runCatching { nativeStack.stopDualNative() }
+            .onFailure { Log.w(TAG, "NativeStack.stopDualNative 异常", it) }
+        runCatching { nativeStack.invalidateCachedConns() }
+            .onFailure { Log.w(TAG, "NativeStack.invalidateCachedConns 异常", it) }
+        if (token != startEpoch.get()) return
+        if (acquireCount.get() <= 0) {
+            Log.i(TAG, "NATIVE dual-depth dead reset 完成，但无活动消费者，不自动重连")
+            _state.value = BerxelDeviceState.Idle
+            return
+        }
+        if (restartCount >= NATIVE_REWRITE_MAX_RESTARTS) {
+            Log.e(TAG, "NATIVE dual-depth 已连续自动重连 $restartCount 次，放弃")
+            _state.value = BerxelDeviceState.Error("双流 session 反复掉线，请重新插拔相机或检查 OTG/Hub 供电")
+            return
+        }
+        delay(NATIVE_DUAL_RESTART_DELAY_MS)
+        if (token != startEpoch.get() || acquireCount.get() <= 0) return
+        _state.value = BerxelDeviceState.Idle
+        startNativeRewrite()
+    }
+
+    private fun shouldSuppressNativeColorForUsbTopology(usbDevices: Collection<UsbDevice>): Boolean {
+        val hubLike = usbDevices.firstOrNull { device ->
+            val product = device.productName.orEmpty()
+            val manufacturer = device.manufacturerName.orEmpty()
+            device.vendorId == DELL_DOCK_VID ||
+                product.contains("dock", ignoreCase = true) ||
+                product.contains("hub", ignoreCase = true) ||
+                manufacturer.contains("Dell", ignoreCase = true)
+        }
+        if (hubLike != null) {
+            Log.w(TAG, "检测到 HUB/dock 拓扑 ${usbLabel(hubLike)}，本轮禁用 master COLOR，优先恢复 DEPTH")
+            return true
+        }
+        return false
     }
 
     private suspend fun startNativeRewriteInternal(token: Long) {
@@ -1028,10 +1210,10 @@ class BerxelService @Inject constructor(
     }
 
     private fun nativeRewriteProfile(enableMasterStream: Boolean): BerxelStreamProfile {
-        val base = BerxelStreamProfiles.NATIVE_REWRITE_640_401_45
+        val base = BerxelStreamProfiles.NATIVE_REWRITE_640_400_45
         return base.copy(
             id = if (enableMasterStream) {
-                "native_rewrite_color_640x400_15_depth_640x401_45"
+                "native_rewrite_color_640x400_30_depth_640x400_45"
             } else {
                 base.id
             },
@@ -1378,7 +1560,7 @@ class BerxelService @Inject constructor(
      * 幂等：profile 没变直接 noop。
      */
     fun setStreamProfile(profile: BerxelStreamProfile) {
-        if (backend == BerxelStackBackend.NATIVE_REWRITE || nativeRewriteRunning) {
+        if (effectiveBackend() == BerxelStackBackend.NATIVE_REWRITE || nativeRewriteRunning) {
             val nativeProfile = nativeRewriteProfile(enableMasterStream = nativeStack.enableMasterStream)
             activeStreamProfile = nativeProfile
             _streamProfile.value = nativeProfile
@@ -1441,7 +1623,7 @@ class BerxelService @Inject constructor(
         lastStreamStartAtMs = 0L
         lastFirstFrameAtMs = 0L
         // NATIVE_REWRITE 路径独立 stop（不走 SDK stopInternal）
-        if (backend == BerxelStackBackend.NATIVE_REWRITE || nativeRewriteRunning) {
+        if (effectiveBackend() == BerxelStackBackend.NATIVE_REWRITE || nativeRewriteRunning) {
             if (nativeRewriteRunning) {
                 stopNativeRewrite()
             } else {
@@ -1745,6 +1927,7 @@ class BerxelService @Inject constructor(
 
             loggedFirstColorFrame = false
             loggedFirstDepthFrame = false
+            resetSdkFpsMeters()
             readerRunning = true
             if (mode == StartupStreamMode.DUAL) {
                 mixReader = Thread({ readDualLoop() }, "berxel-mix-reader").also { it.start() }
@@ -1996,11 +2179,16 @@ class BerxelService @Inject constructor(
      * 不变量：emit 出去的 ByteBuffer 与 SDK Frame 完全脱钩，订阅方可任意时机持有。
      */
     private fun processFrame(kind: StreamKind, frame: BerxelHawkFrame) {
+        val receivedAtMs = SystemClock.elapsedRealtime()
+        val measuredFps = when (kind) {
+            StreamKind.COLOR -> sdkColorFpsMeter.onFrame(receivedAtMs, frame.fps)
+            StreamKind.DEPTH -> sdkDepthFpsMeter.onFrame(receivedAtMs, frame.fps)
+        }
         val stat = BerxelFrameStat(
             frameIndex = frame.frameIndex,
-            measuredFps = frame.fps,
+            measuredFps = measuredFps,
             timestampUs = frame.timeStamp,
-            receivedAtElapsedMs = SystemClock.elapsedRealtime(),
+            receivedAtElapsedMs = receivedAtMs,
             width = frame.width,
             height = frame.height,
         )
@@ -2153,12 +2341,18 @@ class BerxelService @Inject constructor(
         width = w, height = h,
     )
 
+    private fun resetSdkFpsMeters() {
+        sdkColorFpsMeter.reset()
+        sdkDepthFpsMeter.reset()
+    }
+
     private fun stopInternal(reason: String?) {
         companionRetryJob?.cancel()
         companionRetryJob = null
         readerRunning = false
         loggedFirstColorFrame = false
         loggedFirstDepthFrame = false
+        resetSdkFpsMeters()
         joinReaderThread(mixReader, 500)
         joinReaderThread(colorReader, 500)
         joinReaderThread(depthReader, 500)
@@ -2190,7 +2384,7 @@ class BerxelService @Inject constructor(
     }
 
     private fun handlePhysicalDisconnect() {
-        if (backend == BerxelStackBackend.NATIVE_REWRITE || nativeRewriteRunning) {
+        if (effectiveBackend() == BerxelStackBackend.NATIVE_REWRITE || nativeRewriteRunning) {
             val token = startEpoch.incrementAndGet()
             val now = SystemClock.elapsedRealtime()
             lastPhysicalDisconnectAtMs = now
@@ -2246,6 +2440,7 @@ class BerxelService @Inject constructor(
         readerRunning = false
         loggedFirstColorFrame = false
         loggedFirstDepthFrame = false
+        resetSdkFpsMeters()
         joinReaderThread(mixReader, 200)
         joinReaderThread(colorReader, 200)
         joinReaderThread(depthReader, 200)
@@ -2585,7 +2780,7 @@ class BerxelService @Inject constructor(
      */
     private fun resumeStartAfterPermission() {
         val token = startEpoch.incrementAndGet()
-        if (backend == BerxelStackBackend.NATIVE_REWRITE) {
+        if (effectiveBackend() == BerxelStackBackend.NATIVE_REWRITE) {
             nativeRewriteRunning = true
             scope.launch { startNativeDualDepthInternal(token) }
         } else {
@@ -2638,31 +2833,80 @@ class BerxelService @Inject constructor(
             "sn=${info.serialNumber.orEmpty()} addr=${info.deviceAddress.orEmpty()}"
     }
 
+    private class FrameRateMeter {
+        private var windowStartMs = 0L
+        private var windowFrames = 0
+        private var lastFrameMs = 0L
+        private var measuredFps = 0
+
+        @Synchronized
+        fun onFrame(nowMs: Long, sdkReportedFps: Int): Int {
+            if (windowStartMs == 0L) {
+                windowStartMs = nowMs
+                lastFrameMs = nowMs
+                measuredFps = sdkReportedFps.coerceAtLeast(0)
+                return measuredFps
+            }
+
+            val intervalMs = nowMs - lastFrameMs
+            lastFrameMs = nowMs
+            if (measuredFps == 0 && intervalMs in 1..1_000) {
+                measuredFps = (1_000L / intervalMs).toInt().coerceAtLeast(1)
+            }
+
+            windowFrames += 1
+            val elapsedMs = nowMs - windowStartMs
+            if (elapsedMs >= SDK_FPS_MEASURE_WINDOW_MS) {
+                measuredFps = ((windowFrames * 1_000L) / elapsedMs).toInt().coerceAtLeast(0)
+                windowStartMs = nowMs
+                windowFrames = 0
+            }
+            return measuredFps
+        }
+
+        @Synchronized
+        fun reset() {
+            windowStartMs = 0L
+            windowFrames = 0
+            lastFrameMs = 0L
+            measuredFps = 0
+        }
+    }
+
     private companion object {
         const val TAG = "BerxelService"
         const val READ_TIMEOUT_MS = 100
+        const val SDK_FPS_MEASURE_WINDOW_MS = 1_000L
         /** 引用计数归 0 后的停流宽限期：吸收导航切换瞬时归零，期满仍无消费者才 stop。 */
         const val CAMERA_RELEASE_GRACE_MS = 600L
         const val BERXEL_VID = 1539  // 0x603 — Berxel 厂商 ID
         const val P100R3_PRIMARY_PID = 31       // 0x001f — iHawk100RS 主节点
         const val P100R3_COMPANION_VID = 13656  // 0x3558 — iHawk100RS 伴随 UVC 节点
         const val P100R3_COMPANION_PID = 4114   // 0x1012
+        const val DELL_DOCK_VID = 16700
         const val COMPANION_ONLY_RETRY_DELAY_MS = 800L
         const val NATIVE_REWRITE_NODE_PAIR_RETRY_LIMIT = 15
         /** vivo+hub NO_DEVICE 自动重启上限；超过算硬故障，需要用户拔插。 */
         const val NATIVE_REWRITE_MAX_RESTARTS = 20
         /** 进入深度相机页默认拉 master RGB；debug extra master_rgb=false 可临时关掉。 */
         const val NATIVE_REWRITE_MASTER_STREAM_DEFAULT = true
+        /** color 预览解码限速间隔（ms）：~10fps。color 仅供预览，全速解码每帧（768KB/帧分配）会饿死
+         *  native depth 解析线程并卡 UI；MJPEG consume-once，隔此间隔 poll 只取最新帧。 */
+        const val COLOR_PREVIEW_DECODE_INTERVAL_MS = 100L
         /** 双流 pull job 多久没拿到新 depth 帧就判定 native session 死（pump IO 掉线）→ 复位。
          *  健康设备首帧 <1s 到，3s 足够宽容；超时即 USB 掉线，必须复位否则卡假 Streaming。 */
         const val NATIVE_DUAL_FRAME_TIMEOUT_MS = 3_000L
+        const val NATIVE_DUAL_RESTART_DELAY_MS = 1_200L
+        const val NATIVE_DUAL_HUB_DEPTH_FPS = 15
         const val PHYSICAL_DISCONNECT_RESTART_BACKOFF_MS = 5_000L
         const val STREAM_START_DISCONNECT_WINDOW_MS = 2_500L
         const val USB_PERMISSION_ACTION = "io.gomob.nativebridge.berxel.USB_PERMISSION"
         // M1.6.8 NATIVE_REWRITE master MJPEG profile（跟 BerxelNativeStack.MASTER_FRAME_INDEX 对齐）
+        const val NATIVE_DEPTH_ACTIVE_WIDTH = 640
+        const val NATIVE_DEPTH_ACTIVE_HEIGHT = 400
         const val MASTER_MJPEG_WIDTH = 640
         const val MASTER_MJPEG_HEIGHT = 400
-        const val MASTER_MJPEG_FPS = 15
+        const val MASTER_MJPEG_FPS = 30
         /** USB 权限脏缓存 watchdog 轮询间隔；HONOR/HyperOS broadcast-deny + system_server-grant 异步的 race。 */
         const val PERMISSION_WATCHDOG_INTERVAL_MS = 8_000L
     }

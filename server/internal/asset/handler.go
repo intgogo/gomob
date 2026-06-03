@@ -113,6 +113,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/assets/upload/{upload_id}/complete", h.UploadComplete)
 	mux.HandleFunc("POST /v1/assets/upload/{upload_id}/abort", h.UploadAbort)
 	mux.HandleFunc("GET /v1/assets/{id}/url", h.PresignDownload)
+	// 端侧融合回看：按 session_key 取本次扫描的融合结果 GLB（owner 鉴权）。
+	mux.HandleFunc("GET /v1/scans/{session_key}/result", h.StreamFusionResult)
 }
 
 // ---------- helpers ----------
@@ -584,4 +586,53 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 	defer obj.Close()
 	w.Header().Set("Content-Type", a.MIME)
 	_, _ = io.Copy(w, obj)
+}
+
+// StreamFusionResult 按 session_key 把多视角融合结果 GLB 经 server 流式中转给端侧回看。
+//
+// 为什么 server 中转而非签名 URL：融合结果对象未登记为 asset（无 asset_id 走不了
+// PresignDownload），且端侧（手机）常无法直连 MinIO 内网 endpoint；server 中转最稳，
+// 与 [Download] 同思路。生产可改为 CDN/presign。owner 鉴权防越权拉他人扫描结果。
+func (h *Handler) StreamFusionResult(w http.ResponseWriter, r *http.Request) {
+	sessionKey := r.PathValue("session_key")
+	if sessionKey == "" {
+		httpx.WriteError(w, httpx.ErrBadParam)
+		return
+	}
+	job, err := h.fusion.FindBySessionKey(r.Context(), sessionKey)
+	if err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			httpx.WriteError(w, httpx.ErrNotFound)
+			return
+		}
+		httpx.WriteError(w, httpx.ErrInternal)
+		return
+	}
+	if job.Status != repo.ScanFusionStatusDone || job.ResultObjectKey == nil || *job.ResultObjectKey == "" {
+		// 融合未完成：端侧应继续等 scan.fusion_done 事件，不该轮询到这里。
+		httpx.WriteError(w, httpx.NewError(40901, http.StatusConflict, "融合结果尚未就绪"))
+		return
+	}
+	// owner 鉴权：仅扫描发起者本人或 supervisor/reviewer/admin 可拉。
+	// 注意 owner 为 nil（理论上不该发生：app 上传都带 owner）时**拒绝非特权用户**，
+	// 不能短路放行（旧 `owner!=nil && ...` 写法会让 nil owner 对所有登录用户开放）。
+	uid := callerUserID(r)
+	role := r.Header.Get("X-Gomob-Roles")
+	privileged := role == "supervisor" || role == "reviewer" || role == "admin"
+	if !privileged && (job.OwnerUserID == nil || *job.OwnerUserID != uid) {
+		httpx.WriteError(w, httpx.ErrPermDenied)
+		return
+	}
+
+	obj, err := h.mc.GetObject(r.Context(), h.cfg.Bucket, *job.ResultObjectKey, minio.GetObjectOptions{})
+	if err != nil {
+		httpx.WriteError(w, httpx.ErrInternal)
+		return
+	}
+	defer obj.Close()
+	w.Header().Set("Content-Type", "model/gltf-binary")
+	if _, err := io.Copy(w, obj); err != nil {
+		// 已经开始写 body，无法再改状态码；记成内部错误由客户端按 EOF 处理。
+		return
+	}
 }

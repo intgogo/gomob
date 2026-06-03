@@ -81,4 +81,12 @@ object NetworkModule {
     @Provides
     @Singleton
     fun provideMediaApi(retrofit: Retrofit): MediaApi = retrofit.create(MediaApi::class.java)
+
+    @Provides
+    @Singleton
+    fun provideScanApi(retrofit: Retrofit): ScanApi = retrofit.create(ScanApi::class.java)
+
+    @Provides
+    @Singleton
+    fun provideCVEngineApi(retrofit: Retrofit): CVEngineApi = retrofit.create(CVEngineApi::class.java)
 }
