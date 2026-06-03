@@ -29,6 +29,7 @@
 
 - [**重建主线 2026-05-07 重大方向变更**](finding_multiview_rgbd_pivot_2026-05-07.md) — 实时 SLAM → 多视角 RGBD 配准 + 端云融合；权威设计在 04b；既有 native 沉淀阶段 3 复用。**新工作不要扩 04 路线**。
 - [**车辆外廓+VIN 端到端拉通 2026-06-02**](finding_scan_vin_wiring_2026-06-02.md) — 两 mock 屏重写接真底座；bundle 契约=rgbd_bundle.py；新增 /v1/scans GLB 流端点;cvengine 经 devserver 反代+服务端 HMAC(密钥不下发);雷点:Kotlin 注释嵌套/拦截器缓冲二进制 OOM。
+- [**激光扫描设备集成 2026-06-03**](finding_laser_scanner_integration_2026-06-03.md) — 车辆外廓页加激光设备(切 berxel/激光);两网络单元 .101/.102 迁 /root/lilw/lidar 几何;Kotlin 网络+native 几何+端侧融合,不引 PCL(复用 IcpRegister);M8.1 已提交 worktree feat/laser-scan-integration。
 - [模拟器在本机的稳定配置 2026-05-08](finding_emulator_setup_2026-05-04.md) — emulator 36.x 必须 `DISPLAY=:1 -gpu host`，并禁 netsim/虚拟 WiFi。
 - [Android 实时 WS 与 devserver 注意点](finding_android_realtime_ws_devserver_2026-05-09.md) — App WS 用 http scheme；devserver 包装器需透传 Hijacker。
 - [KSP2 + Hilt 2.53.x 不兼容](finding_ksp1_required_for_hilt_2_53.md) — `ksp.useKSP2=false` 是当前唯一解。
