@@ -187,3 +187,20 @@
 | M7.5 | VIN 业务链路：`core:network` 加 `CVEngineApi`（multipart `cv/ocr/v1/vin_pipeline`）+ `VinPipelineResp` DTO + 双轨鉴权 interceptor（JWT + `X-Gomob-AppId/Sign/Ts/Nonce` HMAC，§14.1）；devserver 挂 `/cv/ocr/` 反代/直挂 cvengine。 | `cv_vin_pipeline` harness 仍过；devserver 起 cvengine 后端侧多 part 请求拿真 verdict；签名校验通过。 | `core/network/.../CVEngineApi.kt`、`server/cmd/devserver/main.go`、`docs/architecture/server/02-api-contract.md` §14.1 |
 | M7.6 | `VinCaptureViewModel` + 重写 `ScanCaptureScreen`：删硬编码 `VinValue`，接 `CameraSource` 单帧 RGB 拍照 → `CVEngineApi.vinPipeline(vehicleModelId,image)` → 真 verdict/reasons/字符相似度渲染；`vehicle_model_id` 本期可设/默认值（文档化，待接 catalog 客户端）。 | instrumentation + 真 server 回真 verdict；logcat 见上传；无硬编码 VIN。 | `feature/scan3d/.../VinCaptureViewModel.kt`、`ScanCaptureScreen.kt` |
 | M7.7 | 收尾：真机门控（2510DRK44C 直插出帧 + bundle e2e + VIN verdict）；新建/补 `scan_bundle_roundtrip` harness（端打包 → `fusion_service.unpack` → `/fuse` 出 GLB）；更新 finding/registry。 | harness 可判定；真机两功能跑出真实结果（独立门控，受 M6.8b/M1.6 device-gating）。 | `tests/harness/scan_bundle_roundtrip/`、`docs/agent-memory/`、`docs/architecture/registry/` |
+
+## M8 激光扫描设备集成（车辆外廓双单元 LIDAR-PTZ）
+
+> 顶栏切设备：激光 = 融合点云（复用 PointCloud3dView）+ 两单元各自点云 + 操作键；Berxel 保持现状。
+> 架构（用户拍板 2026-06-03）：Kotlin 网络 + native 几何 + 端侧融合（不上云）+ site-extrinsic 优先/ICP 兜底 + 子网扫描发现。
+> docs: docs/architecture/15-laser-scanner-integration.md。设备端点 .101/.102，HTTP :4000，PTS :4010。
+
+| ID | 任务 | 验收 | 文档 |
+|----|------|------|------|
+| M8.1 | ✅ native `lidar/` 去 PCL 几何内核（Eigen-only）：`lidar_types`(Cloud=`vector<Vector3f>`)、`cloud_build`(lineToWorld 端)、`fusion`(union/randomKeep/cropBox 重写)、`registration`(4-yaw 粗初值，复用 `reconstruction/IcpRegister`)、`scan_vehicle`(reconstructVehicle 编排)、`io_pcd`(最小 PCD writer)；全程 mm；进 `libgomob_native.so`，不引 PCL。 | ✅ `scripts/lidar-host-test.sh` 过：union/keep/crop 计数精确、ICP 复原 180° yaw(误差 0.07mm)、reconstructVehicle ICP/site 双路、lineToWorld 前向链正确，零 PCL 链接通过。 | docs/architecture/15-laser-scanner-integration.md §3-4 |
+| M8.2 | native 解帧：端 `scan_stream`(CA FE+CRC-16/MODBUS+zstd 解压)，vendor `third_party/zstd-android`；`NativeBridge.lidarParseFrames(raw,frameType)→FloatArray`(PTS/LDR)。 | host 单测：喂录制原始字节，CRC-OK 帧数、解出点数、首点坐标与 lidar 桌面 `decodePTS`/`decodeLDR` 一致(byte-verified)；`.so` 含 zstd 静态符号、无动态 libzstd 依赖。 | §4 |
+| M8.3 | Kotlin `LaserScanner`(core:native-bridge)：子网扫描发现(探 `/api/device_info` 匹配 LTS-T1)、OkHttp 调 `device_status`/`control_scan`(SCAN_START/STOP)、`java.net.Socket` 抓 `:4010` PTS、协程轮询状态门控(SCAN→READY)。 | `tests/harness/laser_capture_sweep/`(真机或回放)：发现两台→触发→Connecting/Scanning/Completed，unitA/B 各拿非空点云；断网 `LaserScanState.Error` 不崩。 | §3,§5 |
+| M8.4 | JNI 契约：`NativeBridge.lidarReconstructVehicle`/`lidarLastResult` + `jni/lidar_jni.cpp`(零拷贝 FloatArray)；`core:model` `LidarScanResult`/`LaserStreamFrame`/`LaserScanState`。 | 单测：`lidarReconstructVehicle` 返 FloatArray 长度=3×融合点数，`lidarLastResult().alignMethod` 与传入一致；大数据零拷贝。 | §4 |
+| M8.5 | VM 集成：`VehicleContourScanViewModel` 加 `deviceMode`/`laserState`/`switchDevice` + `LaserScanController` 委托；切设备正确 release/acquire/reset。 | instrumentation：切激光→激光体出现、berxel 8 方位环消失；切回恢复；无双源同时持有。 | §5 |
+| M8.6 | UI：`DeviceSwitcher`(分段)入 `BackHeader.trailing`；`LaserCaptureBody`(`FusedCloudPanel` 复用 `PointCloud3dView` + `DualUnitCloudRow` + `LaserCaptureBar` 复用 Shutter/RoundSide)。 | `./dev.sh run` + uiautomator：激光/Berxel 分段、融合云 SurfaceView、开始扫描/融合/重来可点；扫一遍融合云非空渲染。 | §5 |
+| M8.7 | 端到端真机：.101+.102 双单元扫一台车→native 融合→端侧点云回看；site-extrinsic JSON 从 `core:database`/asset 读，ICP 兜底。 | `tests/harness/laser_scan_vehicle/`：融合点数>单单元和×0.8，alignMethod 命中 site 或 icp 收敛(fitness 达阈)；端侧云可 orbit/zoom。 | §3,§8 |
+| M8.8 | 观测闭环：激光链路日志带 unitA/B_ip/frames/align_method/fitness/points_fused/sweep_ms；registry 增 `native/lidar` 模块与 `LaserScanner` 依赖。 | `analyze.py` 输出正常/警告/异常+原因；`registry/modules.yaml`/`dependencies.yaml` 与实际一致。 | §8 |

@@ -108,6 +108,9 @@ file(GLOB FUSION_SOURCES CONFIGURE_DEPENDS "fusion/*.cpp")
 # reconstruction/ 子模块（占位）
 file(GLOB RECON_SOURCES CONFIGURE_DEPENDS "reconstruction/*.cpp")
 
+# lidar/ 子模块（激光双单元车辆外廓几何内核，Eigen-only，复用 reconstruction/icp）
+file(GLOB LIDAR_SOURCES CONFIGURE_DEPENDS "lidar/*.cpp")
+
 # vin/ 子模块（占位）
 file(GLOB VIN_SOURCES CONFIGURE_DEPENDS "vin/*.cpp")
 
@@ -123,6 +126,7 @@ add_library(gomob_native SHARED
     ${DEPTH_SOURCES}
     ${FUSION_SOURCES}
     ${RECON_SOURCES}
+    ${LIDAR_SOURCES}
     ${VIN_SOURCES}
     ${CALIB_SOURCES}
     ${BERXEL_SOURCES}
