@@ -128,9 +128,19 @@ int lidar_scan_live(const char* ipA, const char* ipB, const char* align, const c
                     void* user, LidarScanResult* out);
 void lidar_scan_cancel(void);   // 协作取消（SCAN_STOP + 停抓流）
 ```
-构建：`lidar` CMake 出 `lidar_core`(STATIC，已有) + `liblidar_scan.a`；gomob server 经 cgo `#cgo LDFLAGS`
-链入（PCL/Ceres/OpenCV/zstd 在服务端容器随便链，无 NDK 约束）。Dockerfile 对照 `Dockerfile.cvengine` 多阶段。
+构建：`lidar` CMake 出 `liblidar_scan.a`（精简 STATIC，仅激光子集）；gomob server 经 cgo `#cgo LDFLAGS`
+链入。Dockerfile 对照 `Dockerfile.cvengine` 多阶段。
 > 终态钩子已就位：流式逐帧进度即靠 `on_points` 回调（capture 循环每解一批 PTS 帧即回调 unit=0/1，融合后回调 unit=2）。
+
+**✅ cgo 链路已端到端验证（2026-06-03，真机录制数据）**：`liblidar_scan.a`（含 device/cloud(fusion/registration/cloud_build/io_pcd)/config/lib，**仅 PCL 核心**：common/io/kdtree/search/octree/filters/registration/sample_consensus/features + flann + yaml-cpp + zstd + boost_system/filesystem — **无 OpenCV/Ceres/VTK/Qt**）。Go cgo PoC（C trampoline 转 Go `//export`）调 `lidar_scan_replay`，**流式点穿过 cgo 进 Go**：a=1642122 b=2497893 fused=4140015（与 result 精确一致），状态 scanning→fusing→done。M8'-G3 直接照此 cgo pattern + LDFLAGS 实现。
+```
+// 验证过的 cgo LDFLAGS（M8'-G3 用）：
+#cgo CFLAGS: -I<lidar>/src
+#cgo LDFLAGS: -L<libdir> -llidar_scan -lpcl_common -lpcl_io -lpcl_kdtree -lpcl_search -lpcl_octree \
+  -lpcl_filters -lpcl_registration -lpcl_sample_consensus -lpcl_features -lflann_cpp -lyaml-cpp -lzstd \
+  -lboost_system -lboost_filesystem -lstdc++ -lpthread -lm
+// 回调：C trampoline(精确匹配 const float*) → goPointCB/goStatusCB(//export)；//export 形参名须唯一(不能全 _)。
+```
 
 ### 9.3 融合 job 流（半复用）
 ```

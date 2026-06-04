@@ -213,10 +213,10 @@
 
 | ID | 任务 | 验收 | 文档 |
 |----|------|------|------|
-| M8'-C1 | lidar 仓新增 `src/lib/lidar_scan.{h,cpp}`（C-ABI extern "C"，包 captureSweep+reconstructVehicle，逐帧点回调 on_points/on_status + lidar_scan_cancel）；CMake 出 `liblidar_scan.a`。 | host 单测 `tests/test_capi.cpp`：用录制 `.bin` 回放驱动 `lidar_scan_live`（离线模式），on_points 累计点数=融合点数、out.align 正确、cancel 可中断；零内存错（asan）。 | §9.2 |
+| M8'-C1 | ✅ lidar 仓新增 `src/lib/lidar_scan.{h,cpp}`（C-ABI extern "C"，包 captureSweep+reconstructVehicle，逐帧点回调 on_points/on_status + lidar_scan_cancel）；CMake 出 `liblidar_scan.a`。 | ✅ host 单测 `tests/test_capi.cpp` 过（真机 bin 回放：流式 a=164万/b=250万/fused=414万 与 out 精确一致、status 序列、keep 降采样、cancel 返 2）；✅ **cgo 端到端验证**：Go 经 cgo 链精简 `liblidar_scan.a`(仅 PCL 核心，无 OpenCV/Ceres/VTK/Qt) 调 lidar_scan_replay，流式点穿过 cgo 进 Go。`liblidar_scan.a` CMake 目标已建。 | §9.2 |
 | M8'-G1 | migration `0018_laser_scans`：建 `laser_scan_jobs`（session_key uniq、status、unit_a/b_ip、align、fused/unitA/unitB object_key、points、owner_user_id、error）。 | `migrate up/down` 幂等；`go test ./pkg/repo -run LaserScan` Enqueue(ON CONFLICT)/ClaimNext(SKIP LOCKED)。 | §9.3 |
 | M8'-G2 | `internal/laser/devctl.go`：Go net/http 探活 `.101/.102:4000`(/api/device_info,/device_status)。 | harness `tests/harness/laser_devctl/` 对 mock :4000，超时/不可达返回可解释错误（非 panic/非假成功）。 | §9.1 |
-| M8'-G3 | cgo 绑定 `internal/laser/cgo.go`（`#cgo` 链 liblidar_scan.a + PCL/Eigen/zstd）+ on_points 回调经 channel 转 Go；`runner.go` 编排扫描→三 PCD 落 MinIO。 | host：cgo 调 lidar_scan_live 回放 `.bin`，Go 侧收齐流式点 + 三 object_key 入对象存储（minio test 容器或 fake）。 | §9.2-9.3 |
+| M8'-G3 | cgo 绑定 `internal/laser/cgo.go`（照设计文档 §9.2 已验证的 cgo pattern+LDFLAGS：C trampoline→Go //export）+ on_points 回调经 channel 转 Go；`runner.go` 编排扫描→三 PCD 落 MinIO。**承重接缝已 PoC 验证，仅余形式化**。 | host：cgo 调 lidar_scan_live 回放 `.bin`，Go 侧收齐流式点 + 三 object_key 入对象存储（minio test 容器或 fake）。 | §9.2-9.3 |
 | M8'-G4 | `cmd/laserworker/main.go`（:18087）+ 轮询 worker（同构 fusionworker）+ 完成发 NATS `scan.fusion_done`(kind:laser)。 | 单测 fake NATS：capturing→done 后发出 payload 含 kind:"laser"+三 object_key+owner_user_id。 | §9.1 |
 | M8'-G5 | REST handler（§9.4：POST /v1/scans/laser、/stop、GET 状态）+ ws 流式推点（laser.points 帧经 signaling）+ gateway 路由 + presign。 | `go test ./internal/laser` httptest：POST→201、stop→SCAN_STOP、ws 收 laser.points + scan.fusion_done；越权 403。 | §9.4 |
 | M8'-A1 | App `DeviceSwitcher`（段控）+ `VehicleContourScanScreen` deviceMode 分支（LASER 隐藏 DualPreviewRow/AngleRing/GLB CompletedPanel）。 | Compose/instrumentation：切 LASER 显 LaserCaptureBody、隐 RGBD 专属。 | §9.5 |
