@@ -895,6 +895,10 @@ class MessageRepository @Inject constructor(
             )
             // 扫描融合完成事件由 scan3d 侧（ScanFusionRepository）消费，消息仓库忽略。
             is RealtimeEvent.ScanFusionDone -> Unit
+            // 激光扫描事件（M8'）由 scan3d 侧（LaserScanRepository）消费，消息仓库忽略。
+            is RealtimeEvent.LaserPoints -> Unit
+            is RealtimeEvent.LaserStatus -> Unit
+            is RealtimeEvent.LaserScanDone -> Unit
             is RealtimeEvent.Unknown -> logWarn("未知实时事件 type=${event.envelope.type}")
         }
     }
