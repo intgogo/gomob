@@ -172,3 +172,50 @@ App POST /v1/scans/laser → laserworker 建 laser_scan_jobs(capturing) 返回 s
 ### 9.6 复用 vs 新建（M8'）
 复用零改：`PointCloud3dView`、`fusion_bridge.go`、asset presign、gateway 反代、`/v1/ws` signaling、`lidar_core`(STATIC)。
 新建：lidar `lib/lidar_scan.*`(C-ABI)；server `cmd/laserworker`、`internal/laser/*`、migration 0018、proto/laser.proto、gateway 路由；App `DeviceSwitcher`/`LaserCaptureBody`/`LaserScanViewModel`/`LaserScanService`。
+
+### 9.7 设备控制面 —— 原厂功能键（M8'-F，commit 230c986 + c2bdf5f）
+原厂 GUI 有一排功能键：激光/相机参数设置、扫描设置、状态信息、开始/停止、零位校准、软件复位。M8' 把这些
+接进 App 的 ⚙ 设备面板（齿轮按钮唤起 `LaserDeviceControlSheet` ModalBottomSheet）。
+
+**LTS-T1 fw v1.4 控制面协议**（`:4000` REST）：
+- `GET /api/device_status` → 状态（`scan.state` READY/SCAN/BUSY/WATCH/ALIGN/ERROR、`encoder.*` 角度、`control.error_code` 位掩码）。
+- `GET /api/device_info` → 顶层带 `control`（ControlSettings：scan 速度/相机 fps/滤波区等）+ `parameters`（CalibParams：lidar/camera 外参内参畸变、body2world）两节点。
+- `POST /api/control_scan {"cmd":...}` → ScanCmd：SCAN_START/SCAN_STOP/SCAN_WATCH/ALIGN_ZERO/CLEAR_ERROR/SOFT_REBOOT。
+- `POST /api/update_control {"control":{...}}` → 写扫描/相机设置。
+- `POST /api/update_calib_parameters {"parameters":{...}}` → 写标定参数。
+
+**服务端**（`internal/laser/devctl.go`+`handler.go`）：`DeviceInfo` 扩 `Control ControlSettings`+`Calib CalibParams`；
+`UpdateControl`/`UpdateCalib`/`postJSON`；`ParseDeviceInfo` 解析两节点（camera_fps←camera.capture_fps、filter_zone 默认←lidar.valid_zone）。
+`DeviceAPI` 接口（GetStatus/GetInfo/ControlScan/UpdateControl/UpdateCalib）+ `resolveUnit(r)`（`?unit=a|A|101`→.101、`b|B|102`→.102），
+注册 **5 条 literal 子资源路由**（避开 wildcard `{id}/cloud/{name}` 路由冲突，literal 比 wildcard 更具体）：
+```
+GET  /v1/scans/laser/device-status?unit=a        # 状态
+GET  /v1/scans/laser/device-info?unit=a          # 全量信息（含 control+parameters）
+POST /v1/scans/laser/device-command  {unit, cmd} # 命令（白名单见下）
+POST /v1/scans/laser/device-scan-settings?unit=a # 写扫描设置
+POST /v1/scans/laser/device-calib?unit=a         # 写标定
+```
+> **DeviceCommand 白名单 = ScanStop / ScanWatch / AlignZero / ClearError / SoftReboot**。**不含 SCAN_START** —— 起扫只走
+> 正式 job（`POST /v1/scans/laser`），不让控制面旁路起扫绕过 job 记账。
+
+**App**（`LaserDeviceControl.kt`）：`LaserDeviceViewModel`（ui StateFlow{unit,loading,busy,status,info,error,toast}；
+selectUnit/refresh/command/saveScanSettings/saveCalib）+ `LaserDeviceControlSheet`（UnitTabs / StatusSection /
+控制 FlowRow / ScanSettingsSection / CalibSection 可折叠·逗号分隔数组 parseArr / DeviceInfoSection）。
+`LaserScanApi`/`LaserScanRepository` 各加对应端点 + 领域类型 DeviceStatusInfo/DeviceFullInfo/ScanSettings/DeviceCalib（toDomain/toNetwork 重映射，feature 不见 network DTO）。
+
+> **⚠️ 安全约束（用户拍板 + auto-mode classifier 规则）**：对共享物理设备的**破坏性操作**（SOFT_REBOOT/软件复位、
+> 标定写入 update_calib、IP 配置）**不得由 agent 自主执行** —— 必须走 App 的**二次确认弹窗**（`ConfirmDialog`：「断连重启约 40 秒」等），
+> 或由用户显式批准。SCAN_START/SCAN_STOP/ALIGN_ZERO 等非破坏性运行命令在已授权安全隔离下可触发。
+
+### 9.8 激光页交互打磨（M8'-A5，commit 2635cd7）+ 已知硬件状态
+用户三条反馈，已落地：
+1. **切镜头不收缩**：`selectUnit` 不再清空旧 `status/info`（保留当占位、新数据 ~40ms 原地替换），避免加载态页面塌缩。
+2. **镜头 A/B 直渲真实点云**：两镜头开 `autoFit`，`PointCloud3dView` 改为**每帧重拟合**（相机随点云生长扩展取景、
+   把全部真实点纳入视野、只缩放跟随保留旋转）；**纯原始点直渲不融合不处理**；`EMIT_EVERY` 8→2 更贴近实时。
+3. **相机式三键底栏**：**撤销｜开始扫描｜完成**（`LaserSideButton` 镜像相机 RoundSideButton）。**撤销**=`undo()`
+   （停扫 + 清空两镜头/融合云 + 复位 Idle + 两单元 ALIGN_ZERO 镜头归零）；**完成**=`onBack` 离场（结果已落服务端）。
+
+**已知硬件状态（2026-06-04）**：`.102` 正常（READY，全链含纹理已真机验证）。**`.101` 控制板掉线**（scan.state=ERROR
+「control board offline」，ctrl=False；`CLEAR_ERROR` 返 403「控制板离线无法清错」）—— 这是**硬件级故障**（.101 相机本就
+IMX415 物理坏），起扫探活失败返 502。恢复须**软件复位（设备面板按钮，带二次确认）或现场断电重启**。镜头 autoFit 实时直渲的
+真扫可视验证待 .101 恢复后补做。
