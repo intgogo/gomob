@@ -81,6 +81,8 @@ fun LaserScanScreen(
                     onStart = vm::start,
                     onStop = vm::stop,
                     onRestart = vm::restart,
+                    onUndo = vm::undo,
+                    onFinish = onBack,
                 )
             }
         }
@@ -115,6 +117,8 @@ private fun LaserCaptureBody(
     onStart: () -> Unit,
     onStop: () -> Unit,
     onRestart: () -> Unit,
+    onUndo: () -> Unit,
+    onFinish: () -> Unit,
 ) {
     Column(Modifier.fillMaxSize()) {
         // 融合点云（上 ~60%）。完成前为空，提示在采集/融合。
@@ -132,15 +136,23 @@ private fun LaserCaptureBody(
             autoFit = true,
             modifier = Modifier.weight(0.58f).fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 6.dp),
         )
-        // 两镜头各自点云（下 ~40%）。
+        // 两镜头各自点云（下 ~40%）。autoFit=true：把真机实时扫描点云直接渲染出来，相机随点云
+        // 生长自动取景，确保整片真实点都在视野内（不做融合/变换处理，纯原始点直渲）。
         Row(
             modifier = Modifier.weight(0.42f).fillMaxWidth().padding(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            LaserCloudPanel("镜头 A · .101", Gomob.colors.accent, unitA, "等待 A 点云…", Modifier.weight(1f).fillMaxSize())
-            LaserCloudPanel("镜头 B · .102", Gomob.colors.ok, unitB, "等待 B 点云…", Modifier.weight(1f).fillMaxSize())
+            LaserCloudPanel("镜头 A · .101", Gomob.colors.accent, unitA, "等待 A 点云…", Modifier.weight(1f).fillMaxSize(), autoFit = true)
+            LaserCloudPanel("镜头 B · .102", Gomob.colors.ok, unitB, "等待 B 点云…", Modifier.weight(1f).fillMaxSize(), autoFit = true)
         }
-        LaserControlBar(state = state, onStart = onStart, onStop = onStop, onRestart = onRestart)
+        LaserControlBar(
+            state = state,
+            onStart = onStart,
+            onStop = onStop,
+            onRestart = onRestart,
+            onUndo = onUndo,
+            onFinish = onFinish,
+        )
     }
 }
 
@@ -192,32 +204,75 @@ private fun LaserControlBar(
     onStart: () -> Unit,
     onStop: () -> Unit,
     onRestart: () -> Unit,
+    onUndo: () -> Unit,
+    onFinish: () -> Unit,
 ) {
-    Box(
-        modifier = Modifier.fillMaxWidth().padding(start = 24.dp, top = 12.dp, end = 24.dp, bottom = 22.dp),
-        contentAlignment = Alignment.Center,
+    // 相机式三键：左=撤销（清空+镜头归零）｜中=主控（开始/停止/融合中/重新扫描）｜右=完成。
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(start = 20.dp, top = 10.dp, end = 20.dp, bottom = 20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        when (state) {
-            LaserScanState.Idle -> PillButton("开始扫描", GomobIcons.Check, primary = true, onClick = onStart)
-            LaserScanState.Connecting -> PillStatus("连接设备中…", spinner = true)
-            LaserScanState.Scanning -> Row(
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                LiveDot()
-                PillButton("停止扫描", GomobIcons.Refresh, primary = false, danger = true, onClick = onStop)
-            }
-            LaserScanState.Processing -> PillStatus("云端融合中…", spinner = true)
-            is LaserScanState.Completed -> Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    "融合 ${state.points} 点 · A ${state.ptsA} / B ${state.ptsB} · ${state.alignMethod}",
-                    style = Gomob.type.numInline.copy(fontSize = 11.sp),
-                    color = Gomob.colors.fg2,
-                )
-                PillButton("重新扫描", GomobIcons.Refresh, primary = true, onClick = onRestart)
-            }
-            is LaserScanState.Error -> PillButton("重新扫描", GomobIcons.Refresh, primary = true, onClick = onRestart)
+        if (state is LaserScanState.Completed) {
+            Text(
+                "融合 ${state.points} 点 · A ${state.ptsA} / B ${state.ptsB} · ${state.alignMethod}",
+                style = Gomob.type.numInline.copy(fontSize = 11.sp),
+                color = Gomob.colors.fg2,
+            )
         }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            LaserSideButton(GomobIcons.Refresh, "撤销", onClick = onUndo)
+            Box(contentAlignment = Alignment.Center) {
+                when (state) {
+                    LaserScanState.Idle -> PillButton("开始扫描", GomobIcons.Check, primary = true, onClick = onStart)
+                    LaserScanState.Connecting -> PillStatus("连接设备中…", spinner = true)
+                    LaserScanState.Scanning -> Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        LiveDot()
+                        PillButton("停止扫描", GomobIcons.Refresh, primary = false, danger = true, onClick = onStop)
+                    }
+                    LaserScanState.Processing -> PillStatus("云端融合中…", spinner = true)
+                    is LaserScanState.Completed -> PillButton("重新扫描", GomobIcons.Refresh, primary = true, onClick = onRestart)
+                    is LaserScanState.Error -> PillButton("重新扫描", GomobIcons.Refresh, primary = true, onClick = onRestart)
+                }
+            }
+            LaserSideButton(GomobIcons.Check, "完成", primary = true, onClick = onFinish)
+        }
+    }
+}
+
+/** 控制栏两侧圆形图标键（撤销 / 完成），对照相机页 RoundSideButton。 */
+@Composable
+private fun LaserSideButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    primary: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val tint = if (primary) Gomob.colors.accent else Gomob.colors.fg1
+    val line = if (primary) Gomob.colors.accent else Gomob.colors.line2
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Box(
+            Modifier
+                .size(46.dp)
+                .clip(CircleShape)
+                .background(if (primary) Gomob.colors.accentSoft else Gomob.colors.bg1)
+                .border(BorderStroke(1.dp, line), CircleShape)
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(icon, label, tint = tint, modifier = Modifier.size(18.dp))
+        }
+        Text(label, fontSize = 11.sp, color = tint)
     }
 }
 

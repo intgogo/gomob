@@ -389,8 +389,10 @@ internal class PointCloudSurfaceView(
                              vertexBuffer, indexBuffer, 0, n)
         }
 
-        // autoFit：按整云包围球拟合相机（仅在尚未拟合时做一次，避免重复整云时镜头跳动）。
-        if (autoFit && !hasFit) fitTo(cloud, n)
+        // autoFit：按整云包围球拟合相机。每次 setPoints 都重拟合 —— 流式镜头点云持续生长时，
+        // 相机随之扩展取景把全部真实点纳入视野（target=质心/distance/far 跟着变；yaw/pitch 保留，
+        // 故用户已有旋转角不受影响，只是缩放跟随）。一次性整云（融合）只 setPoints 一次，等价于拟合一次。
+        if (autoFit) fitTo(cloud, n)
     }
 
     /** 远裁剪面：autoFit 后取 distance + 2R 余量覆盖整云深度；否则沿用默认 6000mm。 */

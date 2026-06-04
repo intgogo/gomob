@@ -130,6 +130,23 @@ class LaserScanViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 撤销本次扫描：停掉进行中的采集 → 清空两镜头/融合点云 + 复位状态 → 两单元镜头归零（ALIGN_ZERO）。
+     * 对照相机页「撤销」语义，但激光是整次扫描级撤销（非单帧）。
+     */
+    fun undo() {
+        val id = scanId
+        viewModelScope.launch {
+            if (id != null) {
+                try { repo.stop(id) } catch (e: Throwable) { Log.w(TAG, "撤销-停止失败: ${e.message}") }
+            }
+            resetToIdle() // 清空点云 + 回 Idle
+            // 镜头归零：两单元各发 ALIGN_ZERO（电机回零）。失败不阻断（仅记日志）。
+            try { repo.deviceCommand("a", "ALIGN_ZERO") } catch (e: Throwable) { Log.w(TAG, "镜头A归零失败: ${e.message}") }
+            try { repo.deviceCommand("b", "ALIGN_ZERO") } catch (e: Throwable) { Log.w(TAG, "镜头B归零失败: ${e.message}") }
+        }
+    }
+
     /** 重新开始（完成/出错后）。 */
     fun restart() = resetToIdle()
 
@@ -150,7 +167,7 @@ class LaserScanViewModel @Inject constructor(
 
     private companion object {
         const val TAG = "LaserScanVM"
-        const val EMIT_EVERY = 8 // 实时预览推送节流：每 8 帧 snapshot 一次
+        const val EMIT_EVERY = 2 // 实时预览推送节流：每 2 帧 snapshot 一次（更贴近实时直渲）
     }
 }
 

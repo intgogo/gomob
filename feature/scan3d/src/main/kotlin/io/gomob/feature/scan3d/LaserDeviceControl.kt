@@ -88,7 +88,9 @@ class LaserDeviceViewModel @Inject constructor(
 
     fun selectUnit(u: String) {
         if (u == _ui.value.unit) return
-        _ui.update { it.copy(unit = u, status = null, info = null, error = null) }
+        // 不清空旧 status/info —— 切换时保留上一单元数据当占位，避免面板因等待新数据而收缩；
+        // 新数据 ~40ms 到达后原地替换。
+        _ui.update { it.copy(unit = u, error = null) }
         refresh()
     }
 
