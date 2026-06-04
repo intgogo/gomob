@@ -1,7 +1,12 @@
 # 15 — 激光扫描设备集成（车辆外廓 · 双单元 LIDAR-PTZ）
 
 > 在「3D 车辆外廓扫描」页新增**激光设备**：顶栏切换设备，激光页 = 融合点云（复用）+ 两单元各自点云 + 操作键；Berxel 页保持现状。
-> 设计文档（为什么）。实施进度见 `TODO.md` M8 章；几何逆向真理源见 `/root/lilw/lidar/re/`。
+> 设计文档（为什么）。实施进度见 `TODO.md` M8' 章；几何逆向真理源见 `/root/lilw/lidar/re/`。
+>
+> ⚠️ **架构变更（2026-06-03，M8'）：激光连接 / 采集 / 融合全部下沉服务端，App 退化为瘦客户端（只显示 + 操作）。**
+> **下面 §1–§7 为已被取代的端侧 native 方案**（保留作几何/单位/逆向背景）；**现行权威方案见 §9「M8' 服务端版」**。
+> 用户拍板（M8'）：①C++ 管线 **cgo 链 `lidar_core.a`**（带逐帧点回调）；②融合 **半复用**（新 `laser_scan_jobs` 表 + 复用
+> `scan.fusion_done` 实时桥）；③点云 **ws/gRPC 流式推点**（采集中实时预览）；④laserworker **同网段**直连 `.101/.102`。
 
 ## 1. 背景与目标
 
@@ -94,3 +99,66 @@ external fun lidarLastResult(): LidarScanResult                                 
 
 M8.1 host 单测 `scripts/lidar-host-test.sh`：union/keep/crop 计数精确、ICP 复原 180° yaw（误差 0.07mm）、
 reconstructVehicle ICP/site 双路、lineToWorld 前向链正确，**零 PCL 链接通过**。后续 harness 见 TODO M8.7/8.8。
+
+---
+
+## 9. M8' 服务端版（现行权威，2026-06-03）
+
+激光「连接 + 采集 + 融合」全部在服务端；App = 瘦客户端（设备切换 + 三朵点云显示 + 操作键）。
+
+### 9.1 服务端：新服务 `cmd/laserworker`（不扩 cmd/device）
+`cmd/device` 语义=用户绑定的物理传感器（Berxel SN + 版本化标定）；激光是网络采集基础设施（`.101/.102`，
+按需扫描会话）。两者生命周期/伸缩/依赖不同 ⇒ 新建 `cmd/laserworker`（:18087，env `GOMOB_LASERWORKER_HTTP_ADDR`），
+同构 `cmd/fusionworker`。职责：HTTP 探活 `.101/.102:4000` → **cgo 调 C++ 管线**采集+融合 → 三朵 PCD（fused+unitA+unitB）+
+calib 落 MinIO → `laser_scan_jobs` 表（自有，`FOR UPDATE SKIP LOCKED` 同 ScanFusionRepo 范式）→ 完成发 NATS。
+
+**到达激光 LAN**：laserworker 与 `.101/.102` 同网段（dev `--network host`，本机已在 192.168.9.0/24）。控制面 Go
+`net/http` 打 `:4000`；采集面 **不在 Go 手写 TCP CA-FE/CRC/zstd** —— 交 C++（已 byte 验证）。
+
+### 9.2 C++ 托管：cgo 链 `lidar_core.a` + 新 C-ABI（带逐帧点回调）
+在 `/root/lilw/lidar` 新增 `src/lib/lidar_scan.{h,cpp}`（纯 C-ABI，extern "C"），包装现有
+`captureSweep`+`reconstructVehicle`，关键是**逐帧/逐批点回调**支撑流式：
+```c
+typedef void (*LidarPointCB)(void* user, int unit, const float* xyz_mm, int n, float h_angle_deg);
+typedef void (*LidarStatusCB)(void* user, const char* state, int frames_a, int frames_b);
+typedef struct { int pts_a, pts_b, fused, after_crop; float b_to_a[16]; char align[16]; } LidarScanResult;
+// 起一次实时扫描（连接+采集+融合）。align: "icp"|"none"|"site"。阻塞至完成/错误。0=成功。
+int lidar_scan_live(const char* ipA, const char* ipB, const char* align, const char* site_json,
+                    float keep_ratio, LidarPointCB on_points, LidarStatusCB on_status,
+                    void* user, LidarScanResult* out);
+void lidar_scan_cancel(void);   // 协作取消（SCAN_STOP + 停抓流）
+```
+构建：`lidar` CMake 出 `lidar_core`(STATIC，已有) + `liblidar_scan.a`；gomob server 经 cgo `#cgo LDFLAGS`
+链入（PCL/Ceres/OpenCV/zstd 在服务端容器随便链，无 NDK 约束）。Dockerfile 对照 `Dockerfile.cvengine` 多阶段。
+> 终态钩子已就位：流式逐帧进度即靠 `on_points` 回调（capture 循环每解一批 PTS 帧即回调 unit=0/1，融合后回调 unit=2）。
+
+### 9.3 融合 job 流（半复用）
+```
+App POST /v1/scans/laser → laserworker 建 laser_scan_jobs(capturing) 返回 scan_id/session_key
+  → 后台: HTTP 探活 → cgo lidar_scan_live(on_points 流式 → ws 推点) → 三 PCD 落 MinIO
+  → UPDATE done → NATS publish "scan.fusion_done" {owner_user_id, session_key, kind:"laser", object_keys, points}
+  → 复用 internal/signaling/fusion_bridge.go(按 owner_user_id 路由 ws) → App 收事件
+```
+复用零改：`fusion_bridge.go`（NATS→ws，领域无关）、asset presign / MinIO `gomob-assets`。**不复用** RGBD `/fuse`
+（RgbdShot→Open3D TSDF→GLB，与激光 PCD/ICP 语义不兼容），**新建 `laser_scan_jobs` 表**（migration 0018）。
+
+### 9.4 App⇄server 契约（经 gateway :18808）
+新增 1 条 gateway 路由 `{Prefix:"/v1/scans/laser", Target:targetLaserWorker="http://127.0.0.1:18087"}`；
+`/v1/ws`、`/v1/assets/` 复用不动。
+- `POST /v1/scans/laser {inspection_id?, unit_a_ip?, unit_b_ip?, align, keep_ratio}` → 201 {scan_id, session_key, status:"capturing"}。状态机 capturing→fusing→done|failed。
+- `POST /v1/scans/laser/{scan_id}/stop` → SCAN 停止（cgo `lidar_scan_cancel`）。
+- **流式推点（选定）**：`WS /v1/ws?token=` 复用 signaling，采集中推增量点帧
+  `{type:"laser.points", payload:{session_key, unit:0|1|2, points:[...mm], h_angle_deg}}`；完成发
+  `{type:"scan.fusion_done", payload:{kind:"laser", session_key, result_object_key, unit_a/b_object_key, points, align_method}}`。
+  断线兜底 `GET /v1/scans/laser/{scan_id}` 拉状态 + presign 取最终三朵 PCD。
+> proto/laser.proto（新建）定义 NATS payload + 流帧；服务间 REST（与 fusionworker/asset 一致）。
+
+### 9.5 App 瘦客户端
+- 顶栏 `DeviceSwitcher`（段控 激光/Berxel）；`VehicleContourScanScreen` 加 deviceMode 分支。
+- `LaserCaptureBody`：fused `PointCloud3dView`（上 60%）+ unitA/unitB `PointCloud3dView` 并排（下 40%）+ `LaserControlBar`（开始/停止）。LASER 模式隐藏 `DualPreviewRow`/`AngleRing`/`CompletedPanel`(GLB)。
+- `LaserScanViewModel`/`LaserScanState`（Idle→Connecting→Scanning→Processing→Completed|Error，无 Uploading）：调 §9.4 路由，ws 收 `laser.points` 增量喂三朵云、收 `scan.fusion_done` 终态。`LaserScanService`(OkHttp REST + ws)。
+- **端侧 native/lidar（M8.1）处置：保留休眠 + DEPRECATED 标注 + 从 .so 构建剔除**（作服务端 cgo 的已验证参照与 debug 退路；显式禁用即非运行时假 fallback；休眠码≠stub）。稳定一里程碑后再评估删除。
+
+### 9.6 复用 vs 新建（M8'）
+复用零改：`PointCloud3dView`、`fusion_bridge.go`、asset presign、gateway 反代、`/v1/ws` signaling、`lidar_core`(STATIC)。
+新建：lidar `lib/lidar_scan.*`(C-ABI)；server `cmd/laserworker`、`internal/laser/*`、migration 0018、proto/laser.proto、gateway 路由；App `DeviceSwitcher`/`LaserCaptureBody`/`LaserScanViewModel`/`LaserScanService`。

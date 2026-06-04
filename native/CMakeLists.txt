@@ -108,7 +108,9 @@ file(GLOB FUSION_SOURCES CONFIGURE_DEPENDS "fusion/*.cpp")
 # reconstruction/ 子模块（占位）
 file(GLOB RECON_SOURCES CONFIGURE_DEPENDS "reconstruction/*.cpp")
 
-# lidar/ 子模块（激光双单元车辆外廓几何内核，Eigen-only，复用 reconstruction/icp）
+# lidar/ 子模块 — ⚠️ DEPRECATED（M8'）：激光采集/融合已下沉服务端 cmd/laserworker（cgo 链 lidar_core.a）。
+# 端侧 native/lidar 保留休眠作服务端 C++ 的已验证参照与 debug 退路，但【不进 .so】（运行链路 100% 走服务端，无端侧伪路径）。
+# host 单测仍可独立编（scripts/lidar-host-test.sh）。稳定一里程碑后再评估彻底删除。
 file(GLOB LIDAR_SOURCES CONFIGURE_DEPENDS "lidar/*.cpp")
 
 # vin/ 子模块（占位）
@@ -126,7 +128,6 @@ add_library(gomob_native SHARED
     ${DEPTH_SOURCES}
     ${FUSION_SOURCES}
     ${RECON_SOURCES}
-    ${LIDAR_SOURCES}
     ${VIN_SOURCES}
     ${CALIB_SOURCES}
     ${BERXEL_SOURCES}

@@ -188,7 +188,7 @@
 | M7.6 | `VinCaptureViewModel` + 重写 `ScanCaptureScreen`：删硬编码 `VinValue`，接 `CameraSource` 单帧 RGB 拍照 → `CVEngineApi.vinPipeline(vehicleModelId,image)` → 真 verdict/reasons/字符相似度渲染；`vehicle_model_id` 本期可设/默认值（文档化，待接 catalog 客户端）。 | instrumentation + 真 server 回真 verdict；logcat 见上传；无硬编码 VIN。 | `feature/scan3d/.../VinCaptureViewModel.kt`、`ScanCaptureScreen.kt` |
 | M7.7 | 收尾：真机门控（2510DRK44C 直插出帧 + bundle e2e + VIN verdict）；新建/补 `scan_bundle_roundtrip` harness（端打包 → `fusion_service.unpack` → `/fuse` 出 GLB）；更新 finding/registry。 | harness 可判定；真机两功能跑出真实结果（独立门控，受 M6.8b/M1.6 device-gating）。 | `tests/harness/scan_bundle_roundtrip/`、`docs/agent-memory/`、`docs/architecture/registry/` |
 
-## M8 激光扫描设备集成（车辆外廓双单元 LIDAR-PTZ）
+## M8 激光扫描设备集成（车辆外廓双单元 LIDAR-PTZ）— ⚠️ 端侧方案已被 M8' 服务端版取代（M8.1 保留休眠）
 
 > 顶栏切设备：激光 = 融合点云（复用 PointCloud3dView）+ 两单元各自点云 + 操作键；Berxel 保持现状。
 > 架构（用户拍板 2026-06-03）：Kotlin 网络 + native 几何 + 端侧融合（不上云）+ site-extrinsic 优先/ICP 兜底 + 子网扫描发现。
@@ -204,3 +204,22 @@
 | M8.6 | UI：`DeviceSwitcher`(分段)入 `BackHeader.trailing`；`LaserCaptureBody`(`FusedCloudPanel` 复用 `PointCloud3dView` + `DualUnitCloudRow` + `LaserCaptureBar` 复用 Shutter/RoundSide)。 | `./dev.sh run` + uiautomator：激光/Berxel 分段、融合云 SurfaceView、开始扫描/融合/重来可点；扫一遍融合云非空渲染。 | §5 |
 | M8.7 | 端到端真机：.101+.102 双单元扫一台车→native 融合→端侧点云回看；site-extrinsic JSON 从 `core:database`/asset 读，ICP 兜底。 | `tests/harness/laser_scan_vehicle/`：融合点数>单单元和×0.8，alignMethod 命中 site 或 icp 收敛(fitness 达阈)；端侧云可 orbit/zoom。 | §3,§8 |
 | M8.8 | 观测闭环：激光链路日志带 unitA/B_ip/frames/align_method/fitness/points_fused/sweep_ms；registry 增 `native/lidar` 模块与 `LaserScanner` 依赖。 | `analyze.py` 输出正常/警告/异常+原因；`registry/modules.yaml`/`dependencies.yaml` 与实际一致。 | §8 |
+
+## M8' 激光扫描下沉服务端（App 瘦客户端）
+
+> 架构变更（用户拍板 2026-06-03）：激光连接/采集/融合全部在服务端；App 只显示+操作。
+> 决策：cgo 链 lidar_core.a（带逐帧点回调）+ 半复用（laser_scan_jobs 表 + scan.fusion_done 桥）+ ws 流式推点 + laserworker 同网段。
+> docs: docs/architecture/15-laser-scanner-integration.md §9。M8.1 端侧 native/lidar 保留休眠（从 .so 剔除 + DEPRECATED）。
+
+| ID | 任务 | 验收 | 文档 |
+|----|------|------|------|
+| M8'-C1 | lidar 仓新增 `src/lib/lidar_scan.{h,cpp}`（C-ABI extern "C"，包 captureSweep+reconstructVehicle，逐帧点回调 on_points/on_status + lidar_scan_cancel）；CMake 出 `liblidar_scan.a`。 | host 单测 `tests/test_capi.cpp`：用录制 `.bin` 回放驱动 `lidar_scan_live`（离线模式），on_points 累计点数=融合点数、out.align 正确、cancel 可中断；零内存错（asan）。 | §9.2 |
+| M8'-G1 | migration `0018_laser_scans`：建 `laser_scan_jobs`（session_key uniq、status、unit_a/b_ip、align、fused/unitA/unitB object_key、points、owner_user_id、error）。 | `migrate up/down` 幂等；`go test ./pkg/repo -run LaserScan` Enqueue(ON CONFLICT)/ClaimNext(SKIP LOCKED)。 | §9.3 |
+| M8'-G2 | `internal/laser/devctl.go`：Go net/http 探活 `.101/.102:4000`(/api/device_info,/device_status)。 | harness `tests/harness/laser_devctl/` 对 mock :4000，超时/不可达返回可解释错误（非 panic/非假成功）。 | §9.1 |
+| M8'-G3 | cgo 绑定 `internal/laser/cgo.go`（`#cgo` 链 liblidar_scan.a + PCL/Eigen/zstd）+ on_points 回调经 channel 转 Go；`runner.go` 编排扫描→三 PCD 落 MinIO。 | host：cgo 调 lidar_scan_live 回放 `.bin`，Go 侧收齐流式点 + 三 object_key 入对象存储（minio test 容器或 fake）。 | §9.2-9.3 |
+| M8'-G4 | `cmd/laserworker/main.go`（:18087）+ 轮询 worker（同构 fusionworker）+ 完成发 NATS `scan.fusion_done`(kind:laser)。 | 单测 fake NATS：capturing→done 后发出 payload 含 kind:"laser"+三 object_key+owner_user_id。 | §9.1 |
+| M8'-G5 | REST handler（§9.4：POST /v1/scans/laser、/stop、GET 状态）+ ws 流式推点（laser.points 帧经 signaling）+ gateway 路由 + presign。 | `go test ./internal/laser` httptest：POST→201、stop→SCAN_STOP、ws 收 laser.points + scan.fusion_done；越权 403。 | §9.4 |
+| M8'-A1 | App `DeviceSwitcher`（段控）+ `VehicleContourScanScreen` deviceMode 分支（LASER 隐藏 DualPreviewRow/AngleRing/GLB CompletedPanel）。 | Compose/instrumentation：切 LASER 显 LaserCaptureBody、隐 RGBD 专属。 | §9.5 |
+| M8'-A2 | `LaserScanService`(OkHttp REST + ws 客户端) + `LaserScanViewModel/State`（Idle→Connecting→Scanning→Processing→Completed|Error）。 | 单测 mock OkHttp/ws：startScan→session_key；收 laser.points 增量喂三朵云；收 scan.fusion_done→Completed。 | §9.5 |
+| M8'-A3 | `LaserCaptureBody` ×3 `PointCloud3dView`（fused 上 + unitA/B 下并排）+ `LaserControlBar`（开始/停止）。 | `./dev.sh install` 真机/模拟器 + uiautomator：三视图渲染、流式点实时刷新、按钮态随 state。 | §9.5 |
+| M8'-E1 | 端到端真机：App→POST /v1/scans/laser→laserworker cgo 打 .101/.102→流式推点→三 PCD→ws 完成→App 渲染。 | `.dev/laser_e2e/` 全链路日志 + 三 PCD 点数报告；融合点数>单单元和×0.8、align 命中。 | §9 |
