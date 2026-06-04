@@ -1,0 +1,1 @@
+{"uptime":96161.729392,"encoder":{"online":true,"msg":"","latest_angle":0.035555555555555556,"zero_degs":-0.035833333333357587},"lidar":{"online":true,"msg":""},"camera":{"online":true,"msg":""},"control":{"online":true,"msg":"","angle_degs":0,"error_code":32,"tempre":46.900001525878906},"scan":{"state":"READY","busyfor":"","msg":"ready for everything"},"code":0,"msg":"OK"}
