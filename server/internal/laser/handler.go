@@ -77,6 +77,16 @@ type Handler struct {
 	probe   Prober
 	newGate func(ipA, ipB string) DeviceGate
 	launch  func(func()) // 后台执行扫描；默认 go f()，测试可改同步
+	newDev  func(ip string) DeviceAPI // 单元设备客户端工厂（设备控制面板用）
+}
+
+// DeviceAPI = handler 设备控制所需的单元客户端能力（*DeviceClient 满足；测试可 mock）。
+type DeviceAPI interface {
+	GetStatus(ctx context.Context) (*DeviceStatus, error)
+	GetInfo(ctx context.Context) (*DeviceInfo, error)
+	ControlScan(ctx context.Context, cmd ScanCmd) error
+	UpdateControl(ctx context.Context, s ControlSettings) error
+	UpdateCalib(ctx context.Context, p CalibParams) error
 }
 
 // SetCloudReader 注入 PCD 下载读取器（laserworker 用同一 MinIOCloudStore 实例）。
@@ -98,6 +108,7 @@ func NewHandler(cfg Config, lr LaserRepo, runner *Runner, pub Publisher, log *sl
 		probe:    NewDeviceProber(cfg.ProbeTimeout),
 		newGate:  func(a, b string) DeviceGate { return NewDevctlGate(a, b, log) },
 		launch:   func(f func()) { go f() },
+		newDev:   func(ip string) DeviceAPI { return NewDeviceClient(ip, cfg.ProbeTimeout) },
 	}
 }
 
@@ -108,6 +119,28 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/scans/laser/{id}", h.GetScan)
 	// PCD 下载（融合 414万点不走 ws，经此流式取；name 白名单从 job 取 object key，零路径穿越）。
 	mux.HandleFunc("GET /v1/scans/laser/{id}/cloud/{name}", h.DownloadCloud)
+
+	// 设备控制面板（原厂功能键）。用 literal 子资源 + ?unit=a|b 查询参，避开与 {id}/cloud/{name}
+	// 通配的路由歧义（literal 段比 {id} 更具体，不 panic）。
+	mux.HandleFunc("GET /v1/scans/laser/device-status", h.DeviceStatus)             // 状态信息
+	mux.HandleFunc("GET /v1/scans/laser/device-info", h.DeviceInfo)                 // 设备信息+当前设置/标定
+	mux.HandleFunc("POST /v1/scans/laser/device-command", h.DeviceCommand)         // 零位校准/守望/停止/清错/软复位
+	mux.HandleFunc("POST /v1/scans/laser/device-scan-settings", h.DeviceScanSettings) // 扫描设置
+	mux.HandleFunc("POST /v1/scans/laser/device-calib", h.DeviceCalib)             // 标定参数（破坏性）
+}
+
+// resolveUnit 从 ?unit=a|b（兼容 101|102）解析出该单元的设备客户端 + IP。
+func (h *Handler) resolveUnit(r *http.Request) (DeviceAPI, string, bool) {
+	var ip string
+	switch r.URL.Query().Get("unit") {
+	case "a", "A", "101":
+		ip = h.cfg.DefaultUnitAIP
+	case "b", "B", "102":
+		ip = h.cfg.DefaultUnitBIP
+	default:
+		return nil, "", false
+	}
+	return h.newDev(ip), ip, true
 }
 
 // --- 请求/响应体 ---
@@ -338,6 +371,140 @@ func (h *Handler) DownloadCloud(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Disposition", `attachment; filename="`+r.PathValue("name")+`.pcd"`)
 	_, _ = io.Copy(w, rc)
+}
+
+// --- 设备控制面板端点（直接打单元 :4000，不经扫描任务）---
+
+// DeviceStatus GET /v1/scans/laser/device-status?unit=a|b。实时状态（状态机/角度/温度/错误位/在线）。
+func (h *Handler) DeviceStatus(w http.ResponseWriter, r *http.Request) {
+	if callerUserID(r) == 0 {
+		writeErr(w, http.StatusUnauthorized, "需要鉴权")
+		return
+	}
+	dev, ip, ok := h.resolveUnit(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "unit 须为 a|b")
+		return
+	}
+	st, err := dev.GetStatus(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "查状态失败("+ip+"): "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ip":             ip,
+		"online":         st.Online(),
+		"state":          st.State,
+		"scan_msg":       st.ScanMsg,
+		"uptime":         st.Uptime,
+		"encoder_online": st.EncoderOnline,
+		"lidar_online":   st.LidarOnline,
+		"camera_online":  st.CameraOnline,
+		"control_online": st.ControlOnline,
+		"latest_angle":   st.LatestAngle,
+		"zero_degs":      st.ZeroDegs,
+		"angle_degs":     st.AngleDegs,
+		"error_code":     st.ErrorCode,
+		"tempre":         st.Tempre,
+	})
+}
+
+// DeviceInfo GET /v1/scans/laser/device-info?unit=a|b。型号/SN/固件/规格 + 当前扫描设置 + 当前标定。
+func (h *Handler) DeviceInfo(w http.ResponseWriter, r *http.Request) {
+	if callerUserID(r) == 0 {
+		writeErr(w, http.StatusUnauthorized, "需要鉴权")
+		return
+	}
+	dev, ip, ok := h.resolveUnit(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "unit 须为 a|b")
+		return
+	}
+	info, err := dev.GetInfo(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "查设备信息失败("+ip+"): "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+// DeviceCommand POST /v1/scans/laser/device-command?unit=a|b  body {"cmd":"ALIGN_ZERO"}。
+// 直接设备控制（零位校准/守望/停止/清错/软复位）。SCAN_START 不在此（走扫描任务流 POST /v1/scans/laser）。
+func (h *Handler) DeviceCommand(w http.ResponseWriter, r *http.Request) {
+	if callerUserID(r) == 0 {
+		writeErr(w, http.StatusUnauthorized, "需要鉴权")
+		return
+	}
+	dev, ip, ok := h.resolveUnit(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "unit 须为 a|b")
+		return
+	}
+	var body struct {
+		Cmd string `json:"cmd"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	cmd := ScanCmd(body.Cmd)
+	switch cmd {
+	case ScanStop, ScanWatch, AlignZero, ClearError, SoftReboot:
+		// 允许
+	default:
+		writeErr(w, http.StatusBadRequest, "cmd 须为 SCAN_STOP|SCAN_WATCH|ALIGN_ZERO|CLEAR_ERROR|SOFT_REBOOT")
+		return
+	}
+	if err := dev.ControlScan(r.Context(), cmd); err != nil {
+		writeErr(w, http.StatusBadGateway, "命令失败("+ip+"): "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "unit_ip": ip, "cmd": string(cmd)})
+}
+
+// DeviceScanSettings POST /v1/scans/laser/device-scan-settings?unit=a|b  body ControlSettings。
+func (h *Handler) DeviceScanSettings(w http.ResponseWriter, r *http.Request) {
+	if callerUserID(r) == 0 {
+		writeErr(w, http.StatusUnauthorized, "需要鉴权")
+		return
+	}
+	dev, ip, ok := h.resolveUnit(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "unit 须为 a|b")
+		return
+	}
+	var s ControlSettings
+	if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
+		writeErr(w, http.StatusBadRequest, "解析扫描设置失败: "+err.Error())
+		return
+	}
+	if err := dev.UpdateControl(r.Context(), s); err != nil {
+		writeErr(w, http.StatusBadGateway, "下发扫描设置失败("+ip+"): "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "unit_ip": ip})
+}
+
+// DeviceCalib POST /v1/scans/laser/device-calib?unit=a|b  body CalibParams（破坏性：覆写设备存储标定）。
+func (h *Handler) DeviceCalib(w http.ResponseWriter, r *http.Request) {
+	if callerUserID(r) == 0 {
+		writeErr(w, http.StatusUnauthorized, "需要鉴权")
+		return
+	}
+	dev, ip, ok := h.resolveUnit(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "unit 须为 a|b")
+		return
+	}
+	var p CalibParams
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		writeErr(w, http.StatusBadRequest, "解析标定参数失败: "+err.Error())
+		return
+	}
+	if err := dev.UpdateCalib(r.Context(), p); err != nil {
+		writeErr(w, http.StatusBadGateway, "下发标定失败("+ip+"): "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "unit_ip": ip})
 }
 
 // jobView 转端侧可见视图（object key 供 presign 下载；不外泄内部字段）。

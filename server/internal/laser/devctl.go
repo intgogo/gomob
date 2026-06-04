@@ -60,7 +60,8 @@ func (s DeviceStatus) Online() bool {
 	return s.EncoderOnline && s.LidarOnline && s.ControlOnline
 }
 
-// DeviceInfo = device_info 关键标识（用于探活校验是不是 LTS-T1）。
+// DeviceInfo = device_info 关键标识 + 规格 + 当前扫描设置(control) + 当前标定(parameters)。
+// 探活只看 Model/SN；App 设备面板用其余字段做信息展示 + 扫描设置/标定的回显与编辑底本。
 type DeviceInfo struct {
 	Model       string `json:"model"`        // device.model，应为 "LTS-T1"
 	SN          string `json:"sn"`           // device.sn
@@ -70,6 +71,58 @@ type DeviceInfo struct {
 	Network     string `json:"network"`      // device.network (ip/cidr)
 	LidarModel  string `json:"lidar_model"`  // lidar.model
 	CameraModel string `json:"camera_model"` // camera.model
+
+	// 规格（只读展示）
+	EncoderResolution int        `json:"encoder_resolution"`
+	LidarPort         int        `json:"lidar_port"`
+	LidarValidZone    [2]float64 `json:"lidar_valid_zone"`
+	CameraWidth       int        `json:"camera_width"`
+	CameraHeight      int        `json:"camera_height"`
+	CameraCaptureFPS  float64    `json:"camera_capture_fps"`
+
+	Control ControlSettings `json:"control"` // 当前扫描运动设置（device_info.control）
+	Calib   CalibParams     `json:"calib"`   // 当前标定（device_info.parameters）
+}
+
+// ControlSettings = 扫描运动参数（device_info.control 读 / update_control 写）。
+// 字段名对齐 lidar http_client ControlParams 与 /api/update_control body。
+type ControlSettings struct {
+	ScanSpeed        float64    `json:"scan_speed"`         // 扫描速度 °/s
+	ZeroSpeed        float64    `json:"zero_speed"`         // 回零速度 °/s
+	ScanStartAngle   float64    `json:"scan_start_angle"`   // 扫描起始角 °（绝对）
+	ScanStopAngle    float64    `json:"scan_stop_angle"`    // 扫描停止角 °
+	WatchingAngle    float64    `json:"watching_angle"`     // 守望停泊角 °
+	LidarFilterGhost float64    `json:"lidar_filter_ghost"` // 幽灵点过滤阈值
+	LidarFilterZone  [2]float64 `json:"lidar_filter_zone"`  // 激光竖直角过滤范围 [min,max] °
+	CameraFPS        float64    `json:"camera_fps"`         // 相机 FPS
+}
+
+// CalibParams = 设备标定（device_info.parameters 读 / update_calib_parameters 写）。
+// 三套：激光→轴、相机→轴+内参畸变、身体→世界。JSON 形状与设备一致，可原样回写。
+type CalibParams struct {
+	Lidar      LidarCalib      `json:"lidar"`
+	Camera     CameraCalib     `json:"camera"`
+	Body2World Body2WorldCalib `json:"body2world"`
+}
+
+type LidarCalib struct {
+	RotQuat    [4]float64 `json:"lidar_rot_quat"`    // [w,x,y,z]
+	CorrQuat   [4]float64 `json:"lidar_corr_quat"`   // [w,x,y,z]
+	CorrOffset [3]float64 `json:"lidar_corr_offset"` // [x,y,z] 米
+}
+
+type CameraCalib struct {
+	RotQuat    [4]float64 `json:"camera_rot_quat"`   // [w,x,y,z]
+	CorrQuat   [4]float64 `json:"camera_corr_quat"`  // [w,x,y,z]
+	CorrOffset [3]float64 `json:"camera_corr_offset"`// [x,y,z] 米
+	Intrinsic  [4]float64 `json:"camera_intrinsic"`  // [fx,fy,cx,cy] px
+	Distortion [5]float64 `json:"camera_distortion"` // [k1,k2,p1,p2,k3]
+}
+
+type Body2WorldCalib struct {
+	Quat   [4]float64 `json:"b2w_quat"`   // [w,x,y,z]
+	Offset [3]float64 `json:"b2w_offset"` // [x,y,z] 米
+	Scale  float64    `json:"b2w_scale"`
 }
 
 // --- 纯解析（无网络，可对真机样本单测）---
@@ -131,29 +184,61 @@ type rawInfo struct {
 		NetworkType string `json:"network_type"`
 		Network     string `json:"network"`
 	} `json:"device"`
+	Encoder struct {
+		Resolution int `json:"resolution"`
+	} `json:"encoder"`
 	Lidar struct {
-		Model string `json:"model"`
+		Model     string     `json:"model"`
+		Port      int        `json:"port"`
+		ValidZone [2]float64 `json:"valid_zone"`
 	} `json:"lidar"`
 	Camera struct {
-		Model string `json:"model"`
+		Model      string  `json:"model"`
+		Width      int     `json:"width"`
+		Height     int     `json:"height"`
+		CaptureFPS float64 `json:"capture_fps"`
 	} `json:"camera"`
+	Control struct {
+		ScanSpeed      float64 `json:"scan_speed"`
+		ZeroSpeed      float64 `json:"zero_speed"`
+		ScanStartAngle float64 `json:"scan_start_angle"`
+		ScanStopAngle  float64 `json:"scan_stop_angle"`
+		WatchingAngle  float64 `json:"watching_angle"`
+	} `json:"control"`
+	Parameters CalibParams `json:"parameters"`
 }
 
-// ParseDeviceInfo 解析 device_info JSON 为关键标识。
+// ParseDeviceInfo 解析 device_info JSON 为关键标识 + 规格 + 当前扫描设置/标定。
 func ParseDeviceInfo(body []byte) (DeviceInfo, error) {
 	var r rawInfo
 	if err := json.Unmarshal(body, &r); err != nil {
 		return DeviceInfo{}, fmt.Errorf("device_info 解析失败: %w", err)
 	}
 	return DeviceInfo{
-		Model:       r.Device.Model,
-		SN:          r.Device.SN,
-		HWVer:       r.Device.HWVer,
-		SWVer:       r.Device.SWVer,
-		NetworkType: r.Device.NetworkType,
-		Network:     r.Device.Network,
-		LidarModel:  r.Lidar.Model,
-		CameraModel: r.Camera.Model,
+		Model:             r.Device.Model,
+		SN:                r.Device.SN,
+		HWVer:             r.Device.HWVer,
+		SWVer:             r.Device.SWVer,
+		NetworkType:       r.Device.NetworkType,
+		Network:           r.Device.Network,
+		LidarModel:        r.Lidar.Model,
+		CameraModel:       r.Camera.Model,
+		EncoderResolution: r.Encoder.Resolution,
+		LidarPort:         r.Lidar.Port,
+		LidarValidZone:    r.Lidar.ValidZone,
+		CameraWidth:       r.Camera.Width,
+		CameraHeight:      r.Camera.Height,
+		CameraCaptureFPS:  r.Camera.CaptureFPS,
+		Control: ControlSettings{
+			ScanSpeed:       r.Control.ScanSpeed,
+			ZeroSpeed:       r.Control.ZeroSpeed,
+			ScanStartAngle:  r.Control.ScanStartAngle,
+			ScanStopAngle:   r.Control.ScanStopAngle,
+			WatchingAngle:   r.Control.WatchingAngle,
+			CameraFPS:       r.Camera.CaptureFPS, // device_info 把相机帧率放 camera.capture_fps
+			LidarFilterZone: r.Lidar.ValidZone,   // 缺省过滤范围取激光有效竖直角
+		},
+		Calib: r.Parameters,
 	}, nil
 }
 
@@ -222,6 +307,38 @@ func (c *DeviceClient) ControlScan(ctx context.Context, cmd ScanCmd) error {
 	if resp.StatusCode/100 != 2 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return fmt.Errorf("control_scan(%s) %s 返回 %d: %s", cmd, c.ip, resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return nil
+}
+
+// UpdateControl POST /api/update_control {"control":{…}}（扫描运动参数）。
+func (c *DeviceClient) UpdateControl(ctx context.Context, s ControlSettings) error {
+	return c.postJSON(ctx, "/api/update_control", map[string]any{"control": s})
+}
+
+// UpdateCalib POST /api/update_calib_parameters {"parameters":{…}}（标定参数，破坏性：覆写设备存储标定）。
+func (c *DeviceClient) UpdateCalib(ctx context.Context, p CalibParams) error {
+	return c.postJSON(ctx, "/api/update_calib_parameters", map[string]any{"parameters": p})
+}
+
+func (c *DeviceClient) postJSON(ctx context.Context, path string, payload any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url(path), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("POST %s%s 失败: %w", c.ip, path, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("POST %s%s 返回 %d: %s", c.ip, path, resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 	return nil
 }
