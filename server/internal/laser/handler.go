@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -70,11 +71,16 @@ type Handler struct {
 	log      *slog.Logger
 	sessions *sessionRegistry
 
+	reader CloudReader // PCD 下载（可空 → 下载端点 501）
+
 	// 可注入点（默认指向真实现）。
 	probe   Prober
 	newGate func(ipA, ipB string) DeviceGate
 	launch  func(func()) // 后台执行扫描；默认 go f()，测试可改同步
 }
+
+// SetCloudReader 注入 PCD 下载读取器（laserworker 用同一 MinIOCloudStore 实例）。
+func (h *Handler) SetCloudReader(r CloudReader) { h.reader = r }
 
 // NewHandler 建生产 handler。pub 可空（不发 NATS）。
 func NewHandler(cfg Config, lr LaserRepo, runner *Runner, pub Publisher, log *slog.Logger) *Handler {
@@ -100,6 +106,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/scans/laser", h.StartScan)
 	mux.HandleFunc("POST /v1/scans/laser/{id}/stop", h.StopScan)
 	mux.HandleFunc("GET /v1/scans/laser/{id}", h.GetScan)
+	// PCD 下载（融合 414万点不走 ws，经此流式取；name 白名单从 job 取 object key，零路径穿越）。
+	mux.HandleFunc("GET /v1/scans/laser/{id}/cloud/{name}", h.DownloadCloud)
 }
 
 // --- 请求/响应体 ---
@@ -274,6 +282,62 @@ func (h *Handler) GetScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, jobView(job))
+}
+
+// DownloadCloud GET /v1/scans/laser/{id}/cloud/{name}（name ∈ fused|unit_a|unit_b）。
+// 流式回传 PCD。object key 从 job 白名单字段取（非客户端传入），杜绝路径穿越/越权取任意对象。
+func (h *Handler) DownloadCloud(w http.ResponseWriter, r *http.Request) {
+	uid := callerUserID(r)
+	if uid == 0 {
+		writeErr(w, http.StatusUnauthorized, "需要鉴权")
+		return
+	}
+	if h.reader == nil {
+		writeErr(w, http.StatusNotImplemented, "未配置点云存储读取器")
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "无效 scan id")
+		return
+	}
+	job, err := h.repo.FindByID(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "扫描不存在")
+		return
+	}
+	if !ownsOrAdmin(r, job, uid) {
+		writeErr(w, http.StatusForbidden, "无权下载该扫描")
+		return
+	}
+	var key *string
+	switch r.PathValue("name") {
+	case "fused":
+		key = job.FusedObjectKey
+	case "unit_a":
+		key = job.UnitAObjectKey
+	case "unit_b":
+		key = job.UnitBObjectKey
+	default:
+		writeErr(w, http.StatusBadRequest, "name 须为 fused|unit_a|unit_b")
+		return
+	}
+	if key == nil || *key == "" {
+		writeErr(w, http.StatusNotFound, "该点云尚未就绪（扫描未完成？）")
+		return
+	}
+	rc, size, gerr := h.reader.GetObject(r.Context(), *key)
+	if gerr != nil {
+		writeErr(w, http.StatusBadGateway, "取点云失败: "+gerr.Error())
+		return
+	}
+	defer rc.Close()
+	w.Header().Set("Content-Type", "application/octet-stream")
+	if size > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	}
+	w.Header().Set("Content-Disposition", `attachment; filename="`+r.PathValue("name")+`.pcd"`)
+	_, _ = io.Copy(w, rc)
 }
 
 // jobView 转端侧可见视图（object key 供 presign 下载；不外泄内部字段）。

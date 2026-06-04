@@ -1,8 +1,11 @@
 package laser
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -245,6 +248,53 @@ func TestGetScan(t *testing.T) {
 	// 不存在 → 404。
 	if rec := do(h, "GET", "/v1/scans/laser/999999", "", "7"); rec.Code != http.StatusNotFound {
 		t.Errorf("不存在应 404，得 %d", rec.Code)
+	}
+}
+
+type memReader struct{ blobs map[string][]byte }
+
+func (m memReader) GetObject(_ context.Context, key string) (io.ReadCloser, int64, error) {
+	b, ok := m.blobs[key]
+	if !ok {
+		return nil, 0, errors.New("not found")
+	}
+	return io.NopCloser(bytes.NewReader(b)), int64(len(b)), nil
+}
+
+func TestDownloadCloud(t *testing.T) {
+	h, fr, _, _ := newTestHandler(t, true)
+	owner := int64(7)
+	j, _ := fr.Create(context.Background(), "sk", "a", "b", "icp", 1.0, nil, &owner)
+	// 标记完成 + 写 object key。
+	fusedKey := LaserObjectKey("sk", "fused")
+	pcd, _ := EncodePCDBinary([]float32{1, 2, 3})
+	_, _ = fr.Complete(context.Background(), j.ID, repo.LaserScanCompletion{
+		AlignMethod: "icp", Fused: 1, FusedObjectKey: fusedKey,
+		UnitAObjectKey: LaserObjectKey("sk", "unit_a"), UnitBObjectKey: LaserObjectKey("sk", "unit_b"),
+	})
+	h.SetCloudReader(memReader{blobs: map[string][]byte{fusedKey: pcd}})
+
+	// owner 下载 fused → 200 + PCD 字节。
+	rec := do(h, "GET", "/v1/scans/laser/"+itoa(j.ID)+"/cloud/fused", "", "7")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("期望 200，得 %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "DATA binary") {
+		t.Error("响应体应为 PCD")
+	}
+	// 非法 name → 400。
+	if rec := do(h, "GET", "/v1/scans/laser/"+itoa(j.ID)+"/cloud/bogus", "", "7"); rec.Code != http.StatusBadRequest {
+		t.Errorf("非法 name 应 400，得 %d", rec.Code)
+	}
+	// 他人 → 403。
+	if rec := do(h, "GET", "/v1/scans/laser/"+itoa(j.ID)+"/cloud/fused", "", "99"); rec.Code != http.StatusForbidden {
+		t.Errorf("他人下载应 403，得 %d", rec.Code)
+	}
+	// 未就绪的 unit（object key 为空，因 Complete 写了 unit_a/b 但 reader 无该 blob → 502；
+	// 这里测真正未就绪：新建未完成 job 的 fused）。
+	j2, _ := fr.Create(context.Background(), "sk2", "a", "b", "icp", 1.0, nil, &owner)
+	if rec := do(h, "GET", "/v1/scans/laser/"+itoa(j2.ID)+"/cloud/fused", "", "7"); rec.Code != http.StatusNotFound {
+		t.Errorf("未就绪应 404，得 %d", rec.Code)
 	}
 }
 

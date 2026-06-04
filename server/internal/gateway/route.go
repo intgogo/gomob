@@ -87,6 +87,11 @@ func DefaultRoutes() []Route {
 		// 资产
 		{Prefix: "/v1/assets/", Target: targetAsset},
 
+		// 激光车辆外廓扫描（M8'，laserworker 请求驱动）。当前 gateway 下 /v1/scans 仅此一条路由
+		// （asset 的 GET /v1/scans/{sk}/result 不经 gateway 此前缀，RGBD session_key 亦非 "laser-" 前缀，
+		// 无冲突）。实时点云走 /v1/ws 信令；最终三朵 PCD 经 /v1/assets presign 下载。
+		{Prefix: "/v1/scans/laser", Target: targetLaserWorker},
+
 		// 端侧日志同步（M3 调试期；要 JWT，不公开）
 		{Prefix: "/v1/logs/", Target: targetAPI},
 
@@ -105,11 +110,12 @@ func DefaultRoutes() []Route {
 // 默认目标（开发 / 本机）。统一用 18000 段，避免与 gogame / 其它项目的 80xx 段冲突。
 // 后续放 configs/gateway.yaml。
 const (
-	targetAuth      = "http://127.0.0.1:18082"
-	targetAPI       = "http://127.0.0.1:18080"
-	targetAsset     = "http://127.0.0.1:18083"
-	targetSignaling = "http://127.0.0.1:18084"
-	targetDevice    = "http://127.0.0.1:18086"
-	targetCvengine  = "http://127.0.0.1:18810"
-	targetLLM       = "http://127.0.0.1:18811"
+	targetAuth        = "http://127.0.0.1:18082"
+	targetAPI         = "http://127.0.0.1:18080"
+	targetAsset       = "http://127.0.0.1:18083"
+	targetSignaling   = "http://127.0.0.1:18084"
+	targetDevice      = "http://127.0.0.1:18086"
+	targetCvengine    = "http://127.0.0.1:18810"
+	targetLLM         = "http://127.0.0.1:18811"
+	targetLaserWorker = "http://127.0.0.1:18087"
 )

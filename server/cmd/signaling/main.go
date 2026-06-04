@@ -59,6 +59,13 @@ func main() {
 			} else {
 				defer bridge.Close()
 			}
+			// M8' 激光实时预览：laser.points/status → ws，按 owner 路由。同样只降级不拖垮核心。
+			laserBridge, err := signaling.StartLaserBridge(pub.Conn(), hub, log)
+			if err != nil {
+				log.Error("laser.points/status 桥接启动失败", "err", err)
+			} else {
+				defer laserBridge.Close()
+			}
 		}
 	} else {
 		log.Info("GOMOB_NATS_URL 未配置,scan.fusion_done 实时推送关闭(端侧可轮询)")

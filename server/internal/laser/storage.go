@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -61,6 +62,25 @@ func NewMinIOCloudStore(cfg MinIOConfig) (*MinIOCloudStore, error) {
 // LaserObjectKey 返回一朵云的对象键。
 func LaserObjectKey(sessionKey, name string) string {
 	return fmt.Sprintf("laser-scans/%s/%s.pcd", sessionKey, name)
+}
+
+// CloudReader = 按对象键流式取回点云（供 handler 下载端点；可注入 fake）。
+type CloudReader interface {
+	GetObject(ctx context.Context, objectKey string) (io.ReadCloser, int64, error)
+}
+
+// GetObject 流式取一个对象，返回读取器 + 字节数。调用方负责 Close。
+func (s *MinIOCloudStore) GetObject(ctx context.Context, objectKey string) (io.ReadCloser, int64, error) {
+	obj, err := s.mc.GetObject(ctx, s.bucket, objectKey, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, 0, err
+	}
+	st, err := obj.Stat() // 校验存在 + 取大小
+	if err != nil {
+		_ = obj.Close()
+		return nil, 0, fmt.Errorf("取对象 %s 失败: %w", objectKey, err)
+	}
+	return obj, st.Size, nil
 }
 
 // PutCloud 编码 PCD 并上传，返回对象键。

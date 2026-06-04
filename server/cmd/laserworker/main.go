@@ -84,6 +84,7 @@ func main() {
 		DefaultKeep:    float32(parseFloat("GOMOB_LASER_KEEP_RATIO", 1.0)),
 	}
 	h := laser.NewHandler(cfg, jobs, runner, publisher, log)
+	h.SetCloudReader(clouds) // 同一 MinIO 实例兼作 PCD 下载读取器
 
 	mux := http.NewServeMux()
 	h.Mount(mux)
