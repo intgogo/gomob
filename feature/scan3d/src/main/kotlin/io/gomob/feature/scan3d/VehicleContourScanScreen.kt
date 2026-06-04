@@ -90,23 +90,13 @@ private fun BerxelScanScreen(
     val capturing by vm.capturing.collectAsStateWithLifecycle()
     val deviceState by vm.deviceState.collectAsStateWithLifecycle()
 
-    val capturedAngles = shotCounts.count { it > 0 }
-    val totalShots = shotCounts.sum()
-
     Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
         BackHeader(
             title = "车辆外廓扫描",
             eyebrow = "三维扫描",
             onBack = onBack,
-            trailing = {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-                ) {
-                    switcher()
-                    VehicleHeaderProgress(captured = capturedAngles, totalShots = totalShots)
-                }
-            },
+            // 右上角固定为设备切换段控（激光/相机一致）；相机模式不再叠加 0/8 拍照计数。
+            trailing = { switcher() },
         )
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when (val s = state) {
@@ -207,52 +197,6 @@ private fun vehicleContentSize(
         ringHeight = (naturalRing * scale).coerceIn(148.dp, naturalRing),
         ringSize = (156.dp * scale).coerceIn(128.dp, 156.dp),
     )
-}
-
-@Composable
-private fun VehicleHeaderProgress(
-    captured: Int,
-    totalShots: Int,
-) {
-    Row(
-        modifier = Modifier.padding(start = Gomob.spacing.s12),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
-    ) {
-        MiniProgress(captured = captured)
-        Text(
-            "$captured",
-            style = Gomob.type.numInline.copy(fontSize = 13.sp),
-            color = Gomob.colors.accentStrong,
-        )
-        Text(
-            "/8 · ${totalShots}张",
-            style = Gomob.type.numInline.copy(fontSize = 11.sp),
-            color = Gomob.colors.fg2,
-        )
-    }
-}
-
-@Composable
-private fun MiniProgress(captured: Int) {
-    Row(
-        modifier = Modifier.width(96.dp).height(6.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-    ) {
-        repeat(8) { index ->
-            Box(
-                Modifier
-                    .weight(1f)
-                    .height(6.dp)
-                    .clip(Gomob.shapes.r1)
-                    .background(if (index < captured) Gomob.colors.accent else Gomob.colors.bg3)
-                    .border(
-                        BorderStroke(1.dp, if (index < captured) Gomob.colors.accentLine else Gomob.colors.line1),
-                        Gomob.shapes.r1,
-                    ),
-            )
-        }
-    }
 }
 
 /** 实时点云面板：用当前方位采集的真深度反投影点云（[cloud] 为空时提示对准）。 */
