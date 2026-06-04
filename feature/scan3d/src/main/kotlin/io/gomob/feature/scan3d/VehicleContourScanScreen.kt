@@ -28,6 +28,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -61,6 +64,21 @@ const val SCAN_VEHICLE_ROUTE = "scan3d/vehicle"
 @Composable
 fun VehicleContourScanRoute(
     onBack: () -> Unit,
+) {
+    // 设备模式（M8'）：顶栏右上角段控切换。激光 = 服务端瘦客户端三云页；相机 = 现有 Berxel 界面。
+    // 各自子屏独立持有自己的 ViewModel（berxel 相机仅在相机模式才初始化，避免无谓连相机）。
+    var mode by rememberSaveable { mutableStateOf(ScanDeviceMode.Berxel) }
+    val switcher = @Composable { DeviceSwitcher(mode = mode, onSelect = { mode = it }) }
+    when (mode) {
+        ScanDeviceMode.Berxel -> BerxelScanScreen(onBack = onBack, switcher = switcher)
+        ScanDeviceMode.Laser -> LaserScanScreen(onBack = onBack, switcher = switcher)
+    }
+}
+
+@Composable
+private fun BerxelScanScreen(
+    onBack: () -> Unit,
+    switcher: @Composable () -> Unit,
     vm: VehicleContourScanViewModel = hiltViewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
@@ -80,7 +98,15 @@ fun VehicleContourScanRoute(
             title = "车辆外廓扫描",
             eyebrow = "三维扫描",
             onBack = onBack,
-            trailing = { VehicleHeaderProgress(captured = capturedAngles, totalShots = totalShots) },
+            trailing = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+                ) {
+                    switcher()
+                    VehicleHeaderProgress(captured = capturedAngles, totalShots = totalShots)
+                }
+            },
         )
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when (val s = state) {

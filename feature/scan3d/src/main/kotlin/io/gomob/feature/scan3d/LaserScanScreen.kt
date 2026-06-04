@@ -1,0 +1,266 @@
+package io.gomob.feature.scan3d
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
+import androidx.compose.ui.unit.sp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.gomob.designsystem.component.BackHeader
+import io.gomob.designsystem.icons.GomobIcons
+import io.gomob.designsystem.theme.Gomob
+
+const val SCAN_LASER_ROUTE = "scan3d/laser"
+
+/**
+ * 激光双单元车辆外廓扫描屏（M8' 瘦客户端）：融合点云（上）+ 两镜头点云（下）+ 操作键。
+ * [switcher] 为顶栏右上角设备切换段控（由外层 [VehicleContourScanRoute] 注入，激光/相机共用）。
+ */
+@Composable
+fun LaserScanScreen(
+    onBack: () -> Unit,
+    switcher: @Composable () -> Unit,
+    vm: LaserScanViewModel = hiltViewModel(),
+) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    val fused by vm.fusedCloud.collectAsStateWithLifecycle()
+    val unitA by vm.unitACloud.collectAsStateWithLifecycle()
+    val unitB by vm.unitBCloud.collectAsStateWithLifecycle()
+
+    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
+        BackHeader(
+            title = "车辆外廓扫描",
+            eyebrow = "激光扫描",
+            onBack = onBack,
+            trailing = { switcher() },
+        )
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            when (val s = state) {
+                is LaserScanState.Error -> LaserErrorPanel(msg = s.msg, onRestart = vm::restart)
+                else -> LaserCaptureBody(
+                    state = s,
+                    fused = fused,
+                    unitA = unitA,
+                    unitB = unitB,
+                    onStart = vm::start,
+                    onStop = vm::stop,
+                    onRestart = vm::restart,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LaserCaptureBody(
+    state: LaserScanState,
+    fused: FloatArray,
+    unitA: FloatArray,
+    unitB: FloatArray,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+    onRestart: () -> Unit,
+) {
+    Column(Modifier.fillMaxSize()) {
+        // 融合点云（上 ~60%）。完成前为空，提示在采集/融合。
+        LaserCloudPanel(
+            title = "融合点云",
+            accent = Gomob.colors.accent,
+            cloud = fused,
+            emptyHint = when (state) {
+                is LaserScanState.Completed -> "无融合点"
+                LaserScanState.Scanning, LaserScanState.Processing -> "采集完成后在此显示融合外廓"
+                else -> "开始扫描以采集车辆外廓"
+            },
+            modifier = Modifier.weight(0.58f).fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 6.dp),
+        )
+        // 两镜头各自点云（下 ~40%）。
+        Row(
+            modifier = Modifier.weight(0.42f).fillMaxWidth().padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            LaserCloudPanel("镜头 A · .101", Gomob.colors.accent, unitA, "等待 A 点云…", Modifier.weight(1f).fillMaxSize())
+            LaserCloudPanel("镜头 B · .102", Gomob.colors.ok, unitB, "等待 B 点云…", Modifier.weight(1f).fillMaxSize())
+        }
+        LaserControlBar(state = state, onStart = onStart, onStop = onStop, onRestart = onRestart)
+    }
+}
+
+@Composable
+private fun LaserCloudPanel(
+    title: String,
+    accent: Color,
+    cloud: FloatArray,
+    emptyHint: String,
+    modifier: Modifier = Modifier,
+) {
+    // 车辆尺度点云在数千 mm 量级；按点云均值 z 居中以改善取景（按 cloud 实例 memo，避免每帧 O(n)）。
+    val centerZ = remember(cloud) { meanZ(cloud) }
+    Box(
+        modifier = modifier
+            .clip(Gomob.shapes.r3)
+            .background(Color(0xFF060912)),
+    ) {
+        if (cloud.isNotEmpty()) {
+            PointCloud3dView(points = cloud, modifier = Modifier.fillMaxSize(), gridCenterZmm = centerZ)
+        } else {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    emptyHint,
+                    style = Gomob.type.numInline.copy(fontSize = 11.sp),
+                    color = Gomob.colors.fg3,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
+        Column(
+            modifier = Modifier.align(Alignment.TopStart).padding(start = 10.dp, top = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(title, style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.1.em), color = accent)
+            Text(
+                "${cloud.size / 3} 点",
+                style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.08.em),
+                color = Gomob.colors.fg2,
+            )
+        }
+    }
+}
+
+@Composable
+private fun LaserControlBar(
+    state: LaserScanState,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+    onRestart: () -> Unit,
+) {
+    Box(
+        modifier = Modifier.fillMaxWidth().padding(start = 24.dp, top = 12.dp, end = 24.dp, bottom = 22.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        when (state) {
+            LaserScanState.Idle -> PillButton("开始扫描", GomobIcons.Check, primary = true, onClick = onStart)
+            LaserScanState.Connecting -> PillStatus("连接设备中…", spinner = true)
+            LaserScanState.Scanning -> Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                LiveDot()
+                PillButton("停止扫描", GomobIcons.Refresh, primary = false, danger = true, onClick = onStop)
+            }
+            LaserScanState.Processing -> PillStatus("云端融合中…", spinner = true)
+            is LaserScanState.Completed -> Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "融合 ${state.points} 点 · A ${state.ptsA} / B ${state.ptsB} · ${state.alignMethod}",
+                    style = Gomob.type.numInline.copy(fontSize = 11.sp),
+                    color = Gomob.colors.fg2,
+                )
+                PillButton("重新扫描", GomobIcons.Refresh, primary = true, onClick = onRestart)
+            }
+            is LaserScanState.Error -> PillButton("重新扫描", GomobIcons.Refresh, primary = true, onClick = onRestart)
+        }
+    }
+}
+
+@Composable
+private fun PillButton(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    primary: Boolean,
+    danger: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val tint = when {
+        danger -> Gomob.colors.danger
+        primary -> Gomob.colors.accent
+        else -> Gomob.colors.fg1
+    }
+    val line = when {
+        danger -> Gomob.colors.danger
+        primary -> Gomob.colors.accent
+        else -> Gomob.colors.line2
+    }
+    Row(
+        modifier = Modifier
+            .height(46.dp)
+            .clip(CircleShape)
+            .background(if (primary) Gomob.colors.accentSoft else Gomob.colors.bg1)
+            .border(BorderStroke(1.dp, line), CircleShape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 22.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(16.dp))
+        Text(label, fontSize = 14.sp, color = tint)
+    }
+}
+
+@Composable
+private fun PillStatus(label: String, spinner: Boolean) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        if (spinner) CircularProgressIndicator(color = Gomob.colors.accent, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+        Text(label, style = Gomob.type.numInline.copy(fontSize = 13.sp), color = Gomob.colors.fg1)
+    }
+}
+
+@Composable
+private fun LiveDot() {
+    Box(
+        Modifier.size(10.dp).clip(CircleShape).background(Gomob.colors.danger),
+    )
+}
+
+@Composable
+private fun LaserErrorPanel(msg: String, onRestart: () -> Unit) {
+    Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(msg, style = Gomob.type.numInline.copy(fontSize = 13.sp), color = Gomob.colors.danger, textAlign = TextAlign.Center)
+            PillButton("重新扫描", GomobIcons.Refresh, primary = true, onClick = onRestart)
+        }
+    }
+}
+
+/** 点云均值 z（mm）。空云回退 750（与 PointCloud3dView 默认一致）。 */
+private fun meanZ(cloud: FloatArray): Float {
+    if (cloud.size < 3) return 750f
+    var sum = 0.0
+    var i = 2
+    var count = 0
+    while (i < cloud.size) {
+        sum += cloud[i]
+        count++
+        i += 3
+    }
+    return if (count == 0) 750f else (sum / count).toFloat()
+}
