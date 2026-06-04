@@ -19,7 +19,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -50,13 +52,23 @@ fun LaserScanScreen(
     val fused by vm.fusedCloud.collectAsStateWithLifecycle()
     val unitA by vm.unitACloud.collectAsStateWithLifecycle()
     val unitB by vm.unitBCloud.collectAsStateWithLifecycle()
+    var showDevice by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
         BackHeader(
             title = "车辆外廓扫描",
             eyebrow = "激光扫描",
             onBack = onBack,
-            trailing = { switcher() },
+            // 右上角：设备控制（原厂功能键）+ 激光/相机段控。
+            trailing = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    DeviceCtlButton(onClick = { showDevice = true })
+                    switcher()
+                }
+            },
         )
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when (val s = state) {
@@ -72,6 +84,25 @@ fun LaserScanScreen(
                 )
             }
         }
+    }
+    if (showDevice) {
+        LaserDeviceControlSheet(onDismiss = { showDevice = false })
+    }
+}
+
+/** 顶栏「设备控制」入口键（齿轮图标）。 */
+@Composable
+private fun DeviceCtlButton(onClick: () -> Unit) {
+    Box(
+        Modifier
+            .size(34.dp)
+            .clip(Gomob.shapes.r2)
+            .background(Gomob.colors.bg1)
+            .border(BorderStroke(1.dp, Gomob.colors.line2), Gomob.shapes.r2)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(GomobIcons.Settings, "设备控制", tint = Gomob.colors.fg1, modifier = Modifier.size(17.dp))
     }
 }
 

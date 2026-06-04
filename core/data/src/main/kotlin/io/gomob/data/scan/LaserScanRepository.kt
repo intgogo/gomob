@@ -3,6 +3,11 @@ package io.gomob.data.scan
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.gomob.network.ApiException
+import io.gomob.network.LaserCalibParams
+import io.gomob.network.LaserControlSettings
+import io.gomob.network.LaserDeviceCommandRequest
+import io.gomob.network.LaserDeviceInfo
+import io.gomob.network.LaserDeviceStatus
 import io.gomob.network.LaserScanApi
 import io.gomob.network.LaserScanStartRequest
 import io.gomob.realtime.RealtimeEvent
@@ -137,7 +142,138 @@ class LaserScanRepository @Inject constructor(
     /** 下载一朵 PCD 并解析为扁平 [x,y,z,...] mm，直接喂 PointCloud3dView。 */
     suspend fun downloadCloudPoints(scanId: Long, name: String): FloatArray =
         parsePcdBinary(downloadCloudFile(scanId, name).readBytes())
+
+    // --- 设备控制面板（原厂功能键；unit="a"|"b"）---
+
+    /** 单元实时状态。 */
+    suspend fun deviceStatus(unit: String): DeviceStatusInfo = api.deviceStatus(unit).toDomain()
+
+    /** 单元设备信息 + 当前扫描设置 + 当前标定。 */
+    suspend fun deviceInfo(unit: String): DeviceFullInfo = api.deviceInfo(unit).toDomain()
+
+    /** 直接设备命令：ALIGN_ZERO|SCAN_WATCH|SCAN_STOP|CLEAR_ERROR|SOFT_REBOOT。 */
+    suspend fun deviceCommand(unit: String, cmd: String) {
+        api.deviceCommand(unit, LaserDeviceCommandRequest(cmd))
+    }
+
+    /** 下发扫描运动设置。 */
+    suspend fun updateScanSettings(unit: String, s: ScanSettings) {
+        api.deviceScanSettings(unit, s.toNetwork())
+    }
+
+    /** 下发标定参数（破坏性：覆写设备存储标定）。 */
+    suspend fun updateCalib(unit: String, c: DeviceCalib) {
+        api.deviceCalib(unit, c.toNetwork())
+    }
 }
+
+// --- feature 层可见设备控制类型（剥离 core:network）---
+
+/** 单元实时状态（错误码 [errorCode] 是位掩码，UI 自行解位）。 */
+data class DeviceStatusInfo(
+    val ip: String,
+    val online: Boolean,
+    val state: String,
+    val scanMsg: String,
+    val uptimeSec: Double,
+    val encoderOnline: Boolean,
+    val lidarOnline: Boolean,
+    val cameraOnline: Boolean,
+    val controlOnline: Boolean,
+    val latestAngle: Double,
+    val zeroDegs: Double,
+    val angleDegs: Double,
+    val errorCode: Long,
+    val tempre: Double,
+)
+
+/** 单元设备信息 + 当前扫描设置 + 当前标定（设备信息只读；后两者可编辑回写）。 */
+data class DeviceFullInfo(
+    val model: String,
+    val sn: String,
+    val hwver: String,
+    val swver: String,
+    val networkType: String,
+    val network: String,
+    val lidarModel: String,
+    val lidarPort: Int,
+    val lidarValidZone: List<Double>,
+    val cameraModel: String,
+    val cameraWidth: Int,
+    val cameraHeight: Int,
+    val cameraCaptureFps: Double,
+    val encoderResolution: Int,
+    val scanSettings: ScanSettings,
+    val calib: DeviceCalib,
+)
+
+/** 扫描运动设置（可编辑）。 */
+data class ScanSettings(
+    val scanSpeed: Double,
+    val zeroSpeed: Double,
+    val scanStartAngle: Double,
+    val scanStopAngle: Double,
+    val watchingAngle: Double,
+    val lidarFilterGhost: Double,
+    val lidarFilterZone: List<Double>,
+    val cameraFps: Double,
+)
+
+/** 标定参数（可编辑；quat=[w,x,y,z]、offset=[x,y,z] 米、intrinsic=[fx,fy,cx,cy]、distortion=[k1,k2,p1,p2,k3]）。 */
+data class DeviceCalib(
+    val lidarRotQuat: List<Double>,
+    val lidarCorrQuat: List<Double>,
+    val lidarCorrOffset: List<Double>,
+    val cameraRotQuat: List<Double>,
+    val cameraCorrQuat: List<Double>,
+    val cameraCorrOffset: List<Double>,
+    val cameraIntrinsic: List<Double>,
+    val cameraDistortion: List<Double>,
+    val b2wQuat: List<Double>,
+    val b2wOffset: List<Double>,
+    val b2wScale: Double,
+)
+
+private fun LaserDeviceStatus.toDomain() = DeviceStatusInfo(
+    ip = ip, online = online, state = state, scanMsg = scanMsg, uptimeSec = uptime,
+    encoderOnline = encoderOnline, lidarOnline = lidarOnline, cameraOnline = cameraOnline,
+    controlOnline = controlOnline, latestAngle = latestAngle, zeroDegs = zeroDegs,
+    angleDegs = angleDegs, errorCode = errorCode, tempre = tempre,
+)
+
+private fun LaserDeviceInfo.toDomain() = DeviceFullInfo(
+    model = model, sn = sn, hwver = hwver, swver = swver, networkType = networkType, network = network,
+    lidarModel = lidarModel, lidarPort = lidarPort, lidarValidZone = lidarValidZone,
+    cameraModel = cameraModel, cameraWidth = cameraWidth, cameraHeight = cameraHeight,
+    cameraCaptureFps = cameraCaptureFps, encoderResolution = encoderResolution,
+    scanSettings = ScanSettings(
+        scanSpeed = control.scanSpeed, zeroSpeed = control.zeroSpeed,
+        scanStartAngle = control.scanStartAngle, scanStopAngle = control.scanStopAngle,
+        watchingAngle = control.watchingAngle, lidarFilterGhost = control.lidarFilterGhost,
+        lidarFilterZone = control.lidarFilterZone, cameraFps = control.cameraFps,
+    ),
+    calib = DeviceCalib(
+        lidarRotQuat = calib.lidar.rotQuat, lidarCorrQuat = calib.lidar.corrQuat, lidarCorrOffset = calib.lidar.corrOffset,
+        cameraRotQuat = calib.camera.rotQuat, cameraCorrQuat = calib.camera.corrQuat, cameraCorrOffset = calib.camera.corrOffset,
+        cameraIntrinsic = calib.camera.intrinsic, cameraDistortion = calib.camera.distortion,
+        b2wQuat = calib.body2world.quat, b2wOffset = calib.body2world.offset, b2wScale = calib.body2world.scale,
+    ),
+)
+
+private fun ScanSettings.toNetwork() = LaserControlSettings(
+    scanSpeed = scanSpeed, zeroSpeed = zeroSpeed, scanStartAngle = scanStartAngle,
+    scanStopAngle = scanStopAngle, watchingAngle = watchingAngle, lidarFilterGhost = lidarFilterGhost,
+    lidarFilterZone = lidarFilterZone, cameraFps = cameraFps,
+)
+
+private fun DeviceCalib.toNetwork() = LaserCalibParams(
+    lidar = io.gomob.network.LaserLidarCalib(rotQuat = lidarRotQuat, corrQuat = lidarCorrQuat, corrOffset = lidarCorrOffset),
+    camera = io.gomob.network.LaserCameraCalib(
+        rotQuat = cameraRotQuat, corrQuat = cameraCorrQuat, corrOffset = cameraCorrOffset,
+        intrinsic = cameraIntrinsic, distortion = cameraDistortion,
+    ),
+    body2world = io.gomob.network.LaserBody2World(quat = b2wQuat, offset = b2wOffset, scale = b2wScale),
+)
 
 /** 扫描状态视图（断线重连兜底用）。 */
 data class LaserScanInfo(
