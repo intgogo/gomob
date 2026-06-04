@@ -87,6 +87,8 @@ private fun LaserCaptureBody(
 ) {
     Column(Modifier.fillMaxSize()) {
         // 融合点云（上 ~60%）。完成前为空，提示在采集/融合。
+        // autoFit=true：融合整云是一次性结果，坐标 X/Y 可能远离原点、Z 跨数十米（双单元配准后），
+        // 需按包围球自动取景，否则固定取景会整云出锥全黑。
         LaserCloudPanel(
             title = "融合点云",
             accent = Gomob.colors.accent,
@@ -96,6 +98,7 @@ private fun LaserCaptureBody(
                 LaserScanState.Scanning, LaserScanState.Processing -> "采集完成后在此显示融合外廓"
                 else -> "开始扫描以采集车辆外廓"
             },
+            autoFit = true,
             modifier = Modifier.weight(0.58f).fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 6.dp),
         )
         // 两镜头各自点云（下 ~40%）。
@@ -117,6 +120,7 @@ private fun LaserCloudPanel(
     cloud: FloatArray,
     emptyHint: String,
     modifier: Modifier = Modifier,
+    autoFit: Boolean = false,
 ) {
     // 车辆尺度点云在数千 mm 量级；按点云均值 z 居中以改善取景（按 cloud 实例 memo，避免每帧 O(n)）。
     val centerZ = remember(cloud) { meanZ(cloud) }
@@ -126,7 +130,7 @@ private fun LaserCloudPanel(
             .background(Color(0xFF060912)),
     ) {
         if (cloud.isNotEmpty()) {
-            PointCloud3dView(points = cloud, modifier = Modifier.fillMaxSize(), gridCenterZmm = centerZ)
+            PointCloud3dView(points = cloud, modifier = Modifier.fillMaxSize(), gridCenterZmm = centerZ, autoFit = autoFit)
         } else {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(

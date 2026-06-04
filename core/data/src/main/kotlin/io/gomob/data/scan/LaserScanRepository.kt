@@ -93,7 +93,7 @@ class LaserScanRepository @Inject constructor(
     fun ensureRealtimeConnected() = socket.connect()
 
     /** 起一次扫描（请求驱动；服务端探活两单元后开始采集，立即返回 capturing）。 */
-    suspend fun start(align: String = "icp", keepRatio: Float? = null, inspectionId: Long? = null): LaserStartResult {
+    suspend fun start(align: String = "none", keepRatio: Float? = null, inspectionId: Long? = null): LaserStartResult {
         val resp = api.start(LaserScanStartRequest(align = align, keepRatio = keepRatio, inspectionId = inspectionId))
         return LaserStartResult(resp.scanId, resp.sessionKey, resp.status)
     }

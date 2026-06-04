@@ -40,7 +40,10 @@ data class LaserScanStartRequest(
     @SerialName("inspection_id") val inspectionId: Long? = null,
     @SerialName("unit_a_ip") val unitAIp: String? = null,
     @SerialName("unit_b_ip") val unitBIp: String? = null,
-    val align: String = "icp", // icp|none|site
+    // 默认 none(纯 union)：ICP 跨单元配准对固定双机位不稳，无强共同结构(空场/少特征)即发散，
+    // 把 B 甩出数十米。固定基线的正解是 site 标定外参(待 laserworker 接线 SiteJSON);在此之前
+    // none 给有界可渲染的 union 结果。
+    val align: String = "none", // icp|none|site
     @SerialName("keep_ratio") val keepRatio: Float? = null,
 )
 

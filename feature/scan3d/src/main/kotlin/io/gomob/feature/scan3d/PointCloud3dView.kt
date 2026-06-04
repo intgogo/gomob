@@ -63,9 +63,14 @@ fun PointCloud3dView(
     modifier: Modifier = Modifier,
     gridCenterZmm: Float = 750f,  // 默认值与 Scan3dRecordingScreen / SessionCreate 对齐 (grid z[0,1500]mm)
     mesh: ScanMeshData? = null,
+    // autoFit=true：按点云包围球自动取景（target=质心、distance 由半径推、far 随之扩）。
+    // 用于一次性整云（如激光融合结果），其坐标 X/Y 可能远离原点、Z 跨度可达数十米 —— 固定
+    // target(0,0,gridCenterZmm)+far=6000 会把整云切出视锥而全黑。流式增量面板保持 autoFit=false
+    // （固定取景），避免每帧重拟合导致镜头跳动。
+    autoFit: Boolean = false,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val view = remember { PointCloudSurfaceView(context, gridCenterZmm) }
+    val view = remember { PointCloudSurfaceView(context, gridCenterZmm, autoFit) }
 
     LaunchedEffect(mesh) {
         if (mesh != null) {
@@ -128,6 +133,7 @@ data class ScanMeshData(
 internal class PointCloudSurfaceView(
     context: Context,
     private val gridCenterZmm: Float,
+    private val autoFit: Boolean = false,
 ) : SurfaceView(context) {
 
     companion object {
@@ -177,8 +183,8 @@ internal class PointCloudSurfaceView(
             }
             override fun onResized(width: Int, height: Int) {
                 view.viewport = Viewport(0, 0, width, height)
-                val aspect = width.toDouble() / height.coerceAtLeast(1)
-                camera.setProjection(45.0, aspect, 50.0, 6000.0, Camera.Fov.VERTICAL)
+                lastAspect = width.toDouble() / height.coerceAtLeast(1)
+                camera.setProjection(45.0, lastAspect, 50.0, currentFar(), Camera.Fov.VERTICAL)
                     }
         }
         attachTo(this@PointCloudSurfaceView)
@@ -251,10 +257,19 @@ internal class PointCloudSurfaceView(
     // directional light — lit material 没 IBL 时唯一光源；从右上前方照下来给 mesh 立体感
     private val lightEntity: Int = EntityManager.get().create()
 
-    // 相机轨道参数（围绕 grid 中心 (0, 0, gridCenterZmm)）
+    // 相机轨道参数（围绕 grid 中心 (0, 0, gridCenterZmm)，或 autoFit 时围绕点云质心）
     private var yaw: Float = 0f               // 绕世界 +y 轴
     private var pitch: Float = 0.35f          // 绕世界 +x 轴（俯角；正值=从上方看）
     private var distance: Float = 1500f       // 相机到 target 距离（mm）
+
+    // autoFit 取景状态：首次拿到非空点云时按包围球拟合一次（target=质心、distance/far 由半径推），
+    // 之后用户手势 orbit/zoom 在此基础上微调，不再重拟合。
+    private var hasFit = false
+    private var fitTargetX = 0f
+    private var fitTargetY = 0f
+    private var fitTargetZ = gridCenterZmm
+    private var fitRadius = 500f
+    private var lastAspect = 1.0
 
     init {
         view.camera = camera
@@ -373,6 +388,42 @@ internal class PointCloudSurfaceView(
             rm.setGeometryAt(instance, 0, RenderableManager.PrimitiveType.POINTS,
                              vertexBuffer, indexBuffer, 0, n)
         }
+
+        // autoFit：按整云包围球拟合相机（仅在尚未拟合时做一次，避免重复整云时镜头跳动）。
+        if (autoFit && !hasFit) fitTo(cloud, n)
+    }
+
+    /** 远裁剪面：autoFit 后取 distance + 2R 余量覆盖整云深度；否则沿用默认 6000mm。 */
+    private fun currentFar(): Double =
+        if (hasFit) (distance + 2f * fitRadius + 200f).toDouble() else 6000.0
+
+    /**
+     * 按点云包围球拟合相机一次：target=质心，distance=R/sin(22.5°)·余量（让半径 R 球恰好入 45° 垂直
+     * FOV），并据此扩远裁剪面。整云坐标可能 X/Y 远离原点、Z 跨数十米，固定取景会整云出锥；此法保证可见。
+     */
+    private fun fitTo(cloud: FloatArray, n: Int) {
+        if (n <= 0) return
+        var cx = 0.0; var cy = 0.0; var cz = 0.0
+        var i = 0
+        val lim = n * 3
+        while (i < lim) { cx += cloud[i]; cy += cloud[i + 1]; cz += cloud[i + 2]; i += 3 }
+        val inv = 1.0 / n
+        cx *= inv; cy *= inv; cz *= inv
+        var maxR2 = 0.0
+        i = 0
+        while (i < lim) {
+            val dx = cloud[i] - cx; val dy = cloud[i + 1] - cy; val dz = cloud[i + 2] - cz
+            val r2 = dx * dx + dy * dy + dz * dz
+            if (r2 > maxR2) maxR2 = r2
+            i += 3
+        }
+        fitTargetX = cx.toFloat(); fitTargetY = cy.toFloat(); fitTargetZ = cz.toFloat()
+        fitRadius = kotlin.math.sqrt(maxR2).toFloat().coerceIn(100f, 100_000f)
+        // d = R / sin(fov/2)，fov=45° → sin22.5°≈0.3827；×1.2 留边距。
+        distance = (fitRadius / 0.3827f * 1.2f).coerceIn(300f, 80_000f)
+        hasFit = true
+        camera.setProjection(45.0, lastAspect, 50.0, currentFar(), Camera.Fov.VERTICAL)
+        applyCamera()
     }
 
     /**
@@ -480,7 +531,9 @@ internal class PointCloudSurfaceView(
     }
 
     private fun applyCamera() {
-        val tx = 0.0; val ty = 0.0; val tz = gridCenterZmm.toDouble()
+        val tx = if (hasFit) fitTargetX.toDouble() else 0.0
+        val ty = if (hasFit) fitTargetY.toDouble() else 0.0
+        val tz = if (hasFit) fitTargetZ.toDouble() else gridCenterZmm.toDouble()
         val sinP = sin(pitch.toDouble()); val cosP = cos(pitch.toDouble())
         val sinY = sin(yaw.toDouble());   val cosY = cos(yaw.toDouble())
         val ex = tx + distance * cosP * sinY
@@ -550,7 +603,9 @@ internal class PointCloudSurfaceView(
                     val span = pointerSpan(ev)
                     if (lastSpan > 0f) {
                         val ratio = lastSpan / span
-                        distance = (distance * ratio).coerceIn(300f, 5000f)
+                        val maxD = if (hasFit) (fitRadius * 8f).coerceAtLeast(5000f) else 5000f
+                        distance = (distance * ratio).coerceIn(300f, maxD)
+                        if (hasFit) camera.setProjection(45.0, lastAspect, 50.0, currentFar(), Camera.Fov.VERTICAL)
                         applyCamera()
                     }
                     lastSpan = span
