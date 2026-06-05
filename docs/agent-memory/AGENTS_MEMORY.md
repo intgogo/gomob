@@ -32,6 +32,7 @@
 - [**激光扫描设备集成 2026-06-03**](finding_laser_scanner_integration_2026-06-03.md) — 车辆外廓页加激光设备(切 berxel/激光);两网络单元 .101/.102 迁 /root/lilw/lidar 几何;Kotlin 网络+native 几何+端侧融合,不引 PCL(复用 IcpRegister);M8.1 已提交 worktree feat/laser-scan-integration。
 - [**JCHY 测量/建模层逆向 2026-06-04**](finding_jchy_measurement_layer_re_2026-06-04.md) — 漏掉的「应用软件」逆向(JCHY_simple_3.0.0,带完整 PDB):采集层之上的测量/建模。26 车型+carType 表已解密+8 阶段管线(PCL 聚类+OBB+局部 PointSIFT)+测量字典(LWH/轴距/罐体三段/栏板/护栏/容积)。gomob 全缺此层。完整架构 docs/architecture/16。
 - [**激光缩扫描角隔离不了目标→唯一解 3D 框裁剪 2026-06-05**](finding_laser_scan_angle_cannot_depth_isolate_2026-06-05.md) — 真机 scan24 实测:设备只有 pan+俯仰角度闸门、无深度闸门，限到目标立体角后背景仍留 99.3%(藏同一视线)。"圈范围→反算扫描角"物理做不到；唯一能按深度隔离的是 3D 框软件裁剪(M9.11 持久车位框,世界系定向,不依赖自动地面)。自动地面 RANSAC 又拟到天花=不可靠。
+- [**激光车位框按镜头独立框 + 第一视角漫游标注 M10 2026-06-05**](finding_laser_roam_percamera_cropbox_2026-06-05.md) — A/B/融合三窗统一轨道;服务端 migration 0020 按 (bay_key,unit) 存框、双框各单元去背景经 BToA 并集测量(纯 Go);第一视角漫游(摇杆+look-pad)走一圈→凸包最小面积矩形拟合 OBB→编辑器微调存。路径(u,v)须与 projectTopView/worldBox 同源;真机流畅度待复核。
 - [模拟器在本机的稳定配置 2026-05-08](finding_emulator_setup_2026-05-04.md) — emulator 36.x 必须 `DISPLAY=:1 -gpu host`，并禁 netsim/虚拟 WiFi。
 - [Android 实时 WS 与 devserver 注意点](finding_android_realtime_ws_devserver_2026-05-09.md) — App WS 用 http scheme；devserver 包装器需透传 Hijacker。
 - [**本地 dev 全栈启动配方 2026-06-04**](finding_dev_stack_local_startup_2026-06-04.md) — devserver(:18808) 手动起易挂→App 全链 unexpected end of stream；附一键 build+env 拉起、dev seed shenhm/shenhm123、症状诊断。
