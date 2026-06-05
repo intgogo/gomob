@@ -1,0 +1,3 @@
+BEGIN;
+DROP TABLE IF EXISTS laser_scan_jobs;
+COMMIT;

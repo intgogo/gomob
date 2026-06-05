@@ -81,6 +81,7 @@ func main() {
 	apiH.SetRealtimeMessageNotifier(signalingRouter)
 	startASRWorker(ctx, pool, signalingRouter, transcriptCfg, log)
 	startFusionBridge(ctx, signalingHub, log)
+	startLaserBridge(ctx, signalingHub, log)
 	assetH := newDevAssetHandler(ctx, pool, log)
 	logRoot := envOr("GOMOB_LOG_UPLOAD_DIR", ".dev/server-logs")
 	logsH, err := api.NewLogsHandler(logRoot, 0)
@@ -144,6 +145,15 @@ func main() {
 	mux.Handle("/v1/messages/", protectedHandler)
 	mux.Handle("/v1/assets/", protectedHandler)
 	mux.Handle("/v1/scans/", protectedHandler)
+	// 激光车辆外廓扫描（M8'）：必须在 top-level mux 单独拦截 /v1/scans/laser[/*]，先于 /v1/scans/ 子树。
+	// 不能放进 protected mux —— 其 asset 路由 GET /v1/scans/{session_key}/result 会与 /v1/scans/laser/
+	// 在同一 mux 于 "/v1/scans/laser/result" 处歧义 panic。这里自包 auth.Required（注入 X-Gomob-User-Id
+	// 供 laser handler 鉴权 + 写 owner_user_id），反代到 laserworker（独立进程，cgo 采集）。
+	if laserProxy := newLaserProxy(envOr("GOMOB_LASERWORKER_TARGET", "http://127.0.0.1:18087"), log); laserProxy != nil {
+		laserProtected := auth.Required(laserProxy)
+		mux.Handle("/v1/scans/laser", laserProtected)
+		mux.Handle("/v1/scans/laser/", laserProtected)
+	}
 	mux.Handle("/cv/", protectedHandler)
 	mux.Handle("/v1/media/", protectedHandler)
 	mux.Handle("/v1/live-sessions", protectedHandler)
@@ -213,6 +223,25 @@ func newCVEngineProxy(target, secret string, log *slog.Logger) http.Handler {
 		httpx.WriteError(w, httpx.NewError(50201, http.StatusBadGateway, "cv-engine 不可达: "+e.Error()))
 	}
 	log.Info("cv-engine 反代已启用", "target", u.String(), "hmac", secret != "")
+	return rp
+}
+
+// newLaserProxy 反向代理 /v1/scans/laser[/*] 到 laserworker（默认 127.0.0.1:18087）。
+//
+// 与 cv-engine 反代同范式但不加 HMAC：laser handler 仅凭 auth.Required 注入的 X-Gomob-User-Id 鉴权
+// （callerUserID），密钥边界由同机/同网段信任承担。target 非法（空 host）则返回 nil → 路由不挂载，
+// 端侧调激光接口得 404（与“未实现路由”一致），不影响 devserver 其余路由。
+func newLaserProxy(target string, log *slog.Logger) http.Handler {
+	u, err := url.Parse(target)
+	if err != nil || u.Host == "" {
+		log.Warn("laserworker 反代未启用：GOMOB_LASERWORKER_TARGET 非法", "target", target, "err", err)
+		return nil
+	}
+	rp := httputil.NewSingleHostReverseProxy(u)
+	rp.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, e error) {
+		httpx.WriteError(w, httpx.NewError(50202, http.StatusBadGateway, "laserworker 不可达: "+e.Error()))
+	}
+	log.Info("laserworker 反代已启用", "target", u.String())
 	return rp
 }
 
@@ -412,6 +441,33 @@ func startFusionBridge(ctx context.Context, hub *signaling.Hub, log *slog.Logger
 	bridge, err := signaling.StartFusionBridge(pub.Conn(), hub, log)
 	if err != nil {
 		log.Error("scan.fusion_done 桥接启动失败", "err", err)
+		pub.Close()
+		return
+	}
+	go func() {
+		<-ctx.Done()
+		bridge.Close()
+		pub.Close()
+	}()
+}
+
+// startLaserBridge 把 NATS laser.points / laser.status 桥接到 ws（M8' 端侧实时点云预览）。
+// 与 startFusionBridge 同范式：未配 GOMOB_NATS_URL 或 NATS 不可用只降级关实时推送，不拖垮 devserver。
+// 三朵最终 PCD 仍走 scan.fusion_done(kind:laser) 经 startFusionBridge 推送，本桥只管增量点 / 状态。
+func startLaserBridge(ctx context.Context, hub *signaling.Hub, log *slog.Logger) {
+	natsURL := strings.TrimSpace(os.Getenv("GOMOB_NATS_URL"))
+	if natsURL == "" {
+		log.Info("laser.points/status 实时推送未启动", "reason", "GOMOB_NATS_URL 未配置")
+		return
+	}
+	pub, err := pubsub.NewNATS(natsURL)
+	if err != nil {
+		log.Error("NATS 连接失败,laser 实时推送关闭", "err", err)
+		return
+	}
+	bridge, err := signaling.StartLaserBridge(pub.Conn(), hub, log)
+	if err != nil {
+		log.Error("laser.points/status 桥接启动失败", "err", err)
 		pub.Close()
 		return
 	}

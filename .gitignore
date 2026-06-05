@@ -69,3 +69,6 @@ __pycache__/
 
 # 本地 agent 状态/设置（不入库）
 .claude/
+
+# Go 编译产物（laserworker 可执行）
+/server/laserworker

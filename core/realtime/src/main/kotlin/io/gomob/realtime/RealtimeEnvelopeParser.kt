@@ -65,13 +65,55 @@ class RealtimeEnvelopeParser @Inject constructor(
             )
         } ?: RealtimeEvent.Unknown(envelope)
         "scan.fusion_done" -> envelope.payload?.decode<FusionDonePayload>()?.let {
-            RealtimeEvent.ScanFusionDone(
-                jobId = it.jobId,
+            // 同 topic 按 kind 区分激光/RGBD（M8'）。
+            if (it.kind == "laser") {
+                RealtimeEvent.LaserScanDone(
+                    jobId = it.jobId,
+                    sessionKey = it.sessionKey,
+                    fusedObjectKey = it.resultObjectKey,
+                    unitAObjectKey = it.unitAObjectKey ?: "",
+                    unitBObjectKey = it.unitBObjectKey ?: "",
+                    points = it.points,
+                    ptsA = it.ptsA,
+                    ptsB = it.ptsB,
+                    alignMethod = it.alignMethod ?: "",
+                    lengthMm = it.lengthMm,
+                    widthMm = it.widthMm,
+                    heightMm = it.heightMm,
+                    measureValid = it.measureValid,
+                    compliant = it.compliant,
+                    violations = it.violations,
+                    groundNx = it.groundNx,
+                    groundNy = it.groundNy,
+                    groundNz = it.groundNz,
+                    groundD = it.groundD,
+                    groundValid = it.groundValid,
+                )
+            } else {
+                RealtimeEvent.ScanFusionDone(
+                    jobId = it.jobId,
+                    sessionKey = it.sessionKey,
+                    resultObjectKey = it.resultObjectKey,
+                    vertices = it.vertices,
+                    triangles = it.triangles,
+                    frameCount = it.frameCount,
+                )
+            }
+        } ?: RealtimeEvent.Unknown(envelope)
+        "laser.points" -> envelope.payload?.decode<LaserPointsPayload>()?.let {
+            RealtimeEvent.LaserPoints(
                 sessionKey = it.sessionKey,
-                resultObjectKey = it.resultObjectKey,
-                vertices = it.vertices,
-                triangles = it.triangles,
-                frameCount = it.frameCount,
+                unit = it.unit,
+                points = it.points,
+                hAngleDeg = it.hAngleDeg,
+            )
+        } ?: RealtimeEvent.Unknown(envelope)
+        "laser.status" -> envelope.payload?.decode<LaserStatusPayload>()?.let {
+            RealtimeEvent.LaserStatus(
+                sessionKey = it.sessionKey,
+                state = it.state,
+                framesA = it.framesA,
+                framesB = it.framesB,
             )
         } ?: RealtimeEvent.Unknown(envelope)
         "error" -> RealtimeEvent.Error(
@@ -145,4 +187,55 @@ private data class FusionDonePayload(
     val vertices: Int = 0,
     val triangles: Int = 0,
     @SerialName("frame_count") val frameCount: Int = 0,
+    // --- M8' 激光扩展字段（kind=laser 时填，RGBD 缺省）---
+    val kind: String = "",
+    @SerialName("unit_a_object_key") val unitAObjectKey: String? = null,
+    @SerialName("unit_b_object_key") val unitBObjectKey: String? = null,
+    val points: Int = 0,
+    @SerialName("pts_a") val ptsA: Int = 0,
+    @SerialName("pts_b") val ptsB: Int = 0,
+    @SerialName("align_method") val alignMethod: String? = null,
+    // --- M9.6 测量 + 合规（kind=laser 时填）---
+    @SerialName("length_mm") val lengthMm: Float = 0f,
+    @SerialName("width_mm") val widthMm: Float = 0f,
+    @SerialName("height_mm") val heightMm: Float = 0f,
+    @SerialName("measure_valid") val measureValid: Boolean = false,
+    val compliant: Boolean = false,
+    val violations: List<String> = emptyList(),
+    // 地面平面（端侧视角预设的"上"方向；nx*x+ny*y+nz*z+d=0）。
+    @SerialName("ground_nx") val groundNx: Float = 0f,
+    @SerialName("ground_ny") val groundNy: Float = 0f,
+    @SerialName("ground_nz") val groundNz: Float = 0f,
+    @SerialName("ground_d") val groundD: Float = 0f,
+    @SerialName("ground_valid") val groundValid: Boolean = false,
+)
+
+@Serializable
+private data class LaserPointsPayload(
+    @SerialName("session_key") val sessionKey: String,
+    val unit: Int = 0,
+    val points: FloatArray = FloatArray(0),
+    @SerialName("h_angle_deg") val hAngleDeg: Float = 0f,
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is LaserPointsPayload) return false
+        return sessionKey == other.sessionKey && unit == other.unit &&
+            hAngleDeg == other.hAngleDeg && points.contentEquals(other.points)
+    }
+    override fun hashCode(): Int {
+        var r = sessionKey.hashCode()
+        r = 31 * r + unit
+        r = 31 * r + hAngleDeg.hashCode()
+        r = 31 * r + points.contentHashCode()
+        return r
+    }
+}
+
+@Serializable
+private data class LaserStatusPayload(
+    @SerialName("session_key") val sessionKey: String,
+    val state: String = "",
+    @SerialName("frames_a") val framesA: Int = 0,
+    @SerialName("frames_b") val framesB: Int = 0,
 )

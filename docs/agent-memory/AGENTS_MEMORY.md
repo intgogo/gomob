@@ -29,8 +29,12 @@
 
 - [**重建主线 2026-05-07 重大方向变更**](finding_multiview_rgbd_pivot_2026-05-07.md) — 实时 SLAM → 多视角 RGBD 配准 + 端云融合；权威设计在 04b；既有 native 沉淀阶段 3 复用。**新工作不要扩 04 路线**。
 - [**车辆外廓+VIN 端到端拉通 2026-06-02**](finding_scan_vin_wiring_2026-06-02.md) — 两 mock 屏重写接真底座；bundle 契约=rgbd_bundle.py；新增 /v1/scans GLB 流端点;cvengine 经 devserver 反代+服务端 HMAC(密钥不下发);雷点:Kotlin 注释嵌套/拦截器缓冲二进制 OOM。
+- [**激光扫描设备集成 2026-06-03**](finding_laser_scanner_integration_2026-06-03.md) — 车辆外廓页加激光设备(切 berxel/激光);两网络单元 .101/.102 迁 /root/lilw/lidar 几何;Kotlin 网络+native 几何+端侧融合,不引 PCL(复用 IcpRegister);M8.1 已提交 worktree feat/laser-scan-integration。
+- [**JCHY 测量/建模层逆向 2026-06-04**](finding_jchy_measurement_layer_re_2026-06-04.md) — 漏掉的「应用软件」逆向(JCHY_simple_3.0.0,带完整 PDB):采集层之上的测量/建模。26 车型+carType 表已解密+8 阶段管线(PCL 聚类+OBB+局部 PointSIFT)+测量字典(LWH/轴距/罐体三段/栏板/护栏/容积)。gomob 全缺此层。完整架构 docs/architecture/16。
+- [**激光缩扫描角隔离不了目标→唯一解 3D 框裁剪 2026-06-05**](finding_laser_scan_angle_cannot_depth_isolate_2026-06-05.md) — 真机 scan24 实测:设备只有 pan+俯仰角度闸门、无深度闸门，限到目标立体角后背景仍留 99.3%(藏同一视线)。"圈范围→反算扫描角"物理做不到；唯一能按深度隔离的是 3D 框软件裁剪(M9.11 持久车位框,世界系定向,不依赖自动地面)。自动地面 RANSAC 又拟到天花=不可靠。
 - [模拟器在本机的稳定配置 2026-05-08](finding_emulator_setup_2026-05-04.md) — emulator 36.x 必须 `DISPLAY=:1 -gpu host`，并禁 netsim/虚拟 WiFi。
 - [Android 实时 WS 与 devserver 注意点](finding_android_realtime_ws_devserver_2026-05-09.md) — App WS 用 http scheme；devserver 包装器需透传 Hijacker。
+- [**本地 dev 全栈启动配方 2026-06-04**](finding_dev_stack_local_startup_2026-06-04.md) — devserver(:18808) 手动起易挂→App 全链 unexpected end of stream；附一键 build+env 拉起、dev seed shenhm/shenhm123、症状诊断。
 - [KSP2 + Hilt 2.53.x 不兼容](finding_ksp1_required_for_hilt_2_53.md) — `ksp.useKSP2=false` 是当前唯一解。
 - [mob3d 设计最新交付核对 2026-05-05](finding_mob3d_handoff_realign_2026-05-05.md) — 现仓本就是 handoff 业务化升级版；本次只补 token + 微观对齐 + FirstPersonViewer 重写 + 删 PlaceholderScreen。
 - [P100R3 Android SDK 深度流假成功](finding_p100r3_android_depth_stream_2026-05-14.md) — depth native negotiation 失败但 Java startStreams 返 0；别误查 UI。

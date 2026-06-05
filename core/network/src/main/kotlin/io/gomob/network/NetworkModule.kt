@@ -88,5 +88,9 @@ object NetworkModule {
 
     @Provides
     @Singleton
+    fun provideLaserScanApi(retrofit: Retrofit): LaserScanApi = retrofit.create(LaserScanApi::class.java)
+
+    @Provides
+    @Singleton
     fun provideCVEngineApi(retrofit: Retrofit): CVEngineApi = retrofit.create(CVEngineApi::class.java)
 }

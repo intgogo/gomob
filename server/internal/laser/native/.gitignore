@@ -1,0 +1,3 @@
+# native 库为构建产物 / 机器相关软链（由 scripts/laser-cgo-setup.sh 生成），不入库。
+*
+!.gitignore
