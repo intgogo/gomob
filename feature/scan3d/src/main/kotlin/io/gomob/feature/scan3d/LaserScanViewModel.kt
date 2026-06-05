@@ -96,11 +96,23 @@ class LaserScanViewModel @Inject constructor(
             .onEach { d ->
                 if (d.sessionKey != sessionKey) return@onEach
                 val id = scanId ?: return@onEach
-                // 融合云不走实时（百万点），完成后下载 PCD 取整云。
+                // 融合 + 两单元云完成后都下载权威整云：实时增量流仅作采集中预览，会丢帧/滞后，
+                // 末值常比服务端真值少很多（用户反馈"镜头 AB 点数少了很多"）。下载替换为完整云，
+                // 计数与服务端 pts_a/pts_b 一致，漫游标注也用全量云。各自非致命。
                 try {
                     _fusedCloud.value = repo.downloadCloudPoints(id, "fused")
                 } catch (e: Throwable) {
                     Log.w(TAG, "下载融合 PCD 失败: ${e.message}")
+                }
+                try {
+                    _unitACloud.value = repo.downloadCloudPoints(id, "unit_a")
+                } catch (e: Throwable) {
+                    Log.w(TAG, "下载 unitA PCD 失败: ${e.message}")
+                }
+                try {
+                    _unitBCloud.value = repo.downloadCloudPoints(id, "unit_b")
+                } catch (e: Throwable) {
+                    Log.w(TAG, "下载 unitB PCD 失败: ${e.message}")
                 }
                 _state.value = LaserScanState.Completed(
                     points = d.points,

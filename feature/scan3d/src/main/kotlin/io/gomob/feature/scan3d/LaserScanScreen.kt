@@ -655,13 +655,9 @@ private fun LaserControlBar(
                 when (state) {
                     LaserScanState.Idle -> PillButton("开始扫描", primary = true, onClick = onStart)
                     LaserScanState.Connecting -> PillStatus("连接设备中…", spinner = true)
-                    LaserScanState.Scanning -> Row(
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        LiveDot()
-                        PillButton("停止扫描", GomobIcons.Refresh, primary = false, danger = true, onClick = onStop)
-                    }
+                    // 与「开始扫描」同款单 pill（仅 danger 色），不加图标/前置红点——避免按键风格突变 +
+                    // 居中位置偏移；采集中指示已在点云窗口左上「采集中」徽标。
+                    LaserScanState.Scanning -> PillButton("停止扫描", primary = false, danger = true, onClick = onStop)
                     LaserScanState.Processing -> PillStatus("云端融合中…", spinner = true)
                     is LaserScanState.Completed -> PillButton("重新扫描", GomobIcons.Refresh, primary = true, onClick = onRestart)
                     is LaserScanState.Error -> PillButton("重新扫描", GomobIcons.Refresh, primary = true, onClick = onRestart)
@@ -812,13 +808,6 @@ private fun PillStatus(label: String, spinner: Boolean) {
         if (spinner) CircularProgressIndicator(color = Gomob.colors.accent, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
         Text(label, style = Gomob.type.numInline.copy(fontSize = 13.sp), color = Gomob.colors.fg1)
     }
-}
-
-@Composable
-private fun LiveDot() {
-    Box(
-        Modifier.size(10.dp).clip(CircleShape).background(Gomob.colors.danger),
-    )
 }
 
 @Composable
