@@ -77,7 +77,8 @@ fun LaserScanScreen(
     val canEditCropBox = completed != null && fused.isNotEmpty()
     val hasSavedBox = loadedBox != null || savedHint
     // 持久化车位框（unit_a 世界系，跨会话）进场预载一次，用于设置内显示「已圈选」并作编辑器初值。
-    LaunchedEffect(Unit) { loadedBox = vm.loadCropBox() }
+    // 融合云顶视编辑器对应 a 单元（融合==世界==unit_a 系）。
+    LaunchedEffect(Unit) { loadedBox = vm.loadCropBox("a") }
 
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
@@ -126,9 +127,9 @@ fun LaserScanScreen(
                 cloud = fused,
                 groundNormal = if (ground != null && ground.valid) floatArrayOf(ground.nx, ground.ny, ground.nz) else null,
                 initialBox = loadedBox,
-                onPreview = vm::cropPreview,
+                onPreview = { box -> vm.cropPreview("a", box) },
                 onSave = { box ->
-                    vm.saveCropBox(box) { ok -> savedHint = ok; if (ok) loadedBox = box }
+                    vm.saveCropBox("a", box) { ok -> savedHint = ok; if (ok) loadedBox = box }
                     showCropEditor = false
                 },
                 onDismiss = { showCropEditor = false },

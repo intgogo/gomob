@@ -43,6 +43,13 @@ class LaserScanViewModel @Inject constructor(
 
     fun selectVehicleType(t: io.gomob.data.scan.VehicleType) { _vehicleType.value = t }
 
+    // 按单元车位框（M10.2）：a 框在世界系(融合/镜头A)、b 框在 unitB 设备系。各自独立持久化。
+    // 缓存供 UI 显示「已圈选」与编辑器/漫游进场预填。
+    private val _boxA = MutableStateFlow<io.gomob.data.scan.ScanCropBox?>(null)
+    val boxA: StateFlow<io.gomob.data.scan.ScanCropBox?> = _boxA.asStateFlow()
+    private val _boxB = MutableStateFlow<io.gomob.data.scan.ScanCropBox?>(null)
+    val boxB: StateFlow<io.gomob.data.scan.ScanCropBox?> = _boxB.asStateFlow()
+
     private val accA = FloatCloudAccumulator()
     private val accB = FloatCloudAccumulator()
 
@@ -158,28 +165,37 @@ class LaserScanViewModel @Inject constructor(
     /** 重新开始（完成/出错后）。 */
     fun restart() = resetToIdle()
 
-    // --- 持久车位框（M9.11）：用户在融合云上圈 3D 框 → 反算并存为每次扫描的裁剪/测量边界 ---
+    // --- 按单元持久车位框（M9.11 / M10.2）：用户在各镜头点云空间圈 3D 框 → 每次扫描裁框内测量 ---
 
-    /** 拖框预览：用候选框裁当前已完成扫描的融合云并测量（服务端，不落库）。无 scanId / 失败回 null。 */
-    suspend fun cropPreview(box: io.gomob.data.scan.ScanCropBox): io.gomob.data.scan.CropPreviewResult? {
+    /** 拖框预览：用候选框裁当前已完成扫描指定镜头点云(a→unitA / b→unitB)并测量。无 scanId / 失败回 null。 */
+    suspend fun cropPreview(unit: String, box: io.gomob.data.scan.ScanCropBox): io.gomob.data.scan.CropPreviewResult? {
         val id = scanId ?: return null
-        return runCatching { repo.cropPreview(id, box) }.getOrElse {
-            Log.w(TAG, "拖框预览失败: ${it.message}"); null
+        return runCatching { repo.cropPreview(id, unit, box) }.getOrElse {
+            Log.w(TAG, "拖框预览失败($unit): ${it.message}"); null
         }
     }
 
-    /** 保存/覆盖车位框（服务端持久化，下次扫描自动裁框内测量）。 */
-    fun saveCropBox(box: io.gomob.data.scan.ScanCropBox, onDone: (Boolean) -> Unit) {
+    /** 保存/覆盖某单元车位框（服务端持久化，下次扫描自动裁框内测量）。成功后更新本地缓存。 */
+    fun saveCropBox(unit: String, box: io.gomob.data.scan.ScanCropBox, onDone: (Boolean) -> Unit) {
         viewModelScope.launch {
-            val ok = runCatching { repo.saveCropBox(box) }.isSuccess
-            if (!ok) Log.w(TAG, "保存车位框失败")
+            val ok = runCatching { repo.saveCropBox(unit, box) }.isSuccess
+            if (ok) { if (unit == "b") _boxB.value = box else _boxA.value = box }
+            else Log.w(TAG, "保存车位框失败($unit)")
             onDone(ok)
         }
     }
 
-    /** 取已保存的车位框（编辑器进场预填）。失败/未设置回 null。 */
-    suspend fun loadCropBox(): io.gomob.data.scan.ScanCropBox? =
-        runCatching { repo.getCropBox() }.getOrNull()
+    /** 取某单元已保存的车位框（编辑器/漫游进场预填）。失败/未设置回 null。 */
+    suspend fun loadCropBox(unit: String): io.gomob.data.scan.ScanCropBox? =
+        runCatching { repo.getCropBox(unit) }.getOrNull()
+
+    /** 预载 A/B 两单元已存框到缓存（进场刷新「已圈选」状态）。失败静默回退。 */
+    fun refreshCropBoxes() {
+        viewModelScope.launch {
+            _boxA.value = runCatching { repo.getCropBox("a") }.getOrNull()
+            _boxB.value = runCatching { repo.getCropBox("b") }.getOrNull()
+        }
+    }
 
     private fun resetToIdle() {
         _state.value = LaserScanState.Idle

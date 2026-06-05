@@ -214,23 +214,23 @@ class LaserScanRepository @Inject constructor(
         api.deviceCalib(unit, c.toNetwork())
     }
 
-    // --- 持久车位框（M9.11）：用户一次圈定 3D 框 → 每次扫描裁框内测量 ---
+    // --- 持久车位框（M9.11 / M10.2 按镜头）：用户在各镜头点云空间圈 3D 框 → 每次扫描裁框内测量 ---
 
-    /** 取当前装机点的车位框；未设置返回 null。 */
-    suspend fun getCropBox(): ScanCropBox? {
-        val r = api.getCropBox()
+    /** 取某单元(a|b)的车位框；未设置返回 null。a 框在世界系、b 框在 unitB 设备系。 */
+    suspend fun getCropBox(unit: String): ScanCropBox? {
+        val r = api.getCropBox(unit)
         val box = r.box
         return if (r.set && box != null) box.toDomain() else null
     }
 
-    /** 保存/覆盖车位框（服务端持久化，非设备写）。 */
-    suspend fun saveCropBox(box: ScanCropBox) {
-        api.putCropBox(box.toNetwork())
+    /** 保存/覆盖某单元车位框（服务端持久化，非设备写）。 */
+    suspend fun saveCropBox(unit: String, box: ScanCropBox) {
+        api.putCropBox(unit, box.toNetwork())
     }
 
-    /** 用候选框裁某次扫描融合云并测量，供拖框实时预览（不落库）。 */
-    suspend fun cropPreview(scanId: Long, box: ScanCropBox): CropPreviewResult {
-        val r = api.cropPreview(scanId, box.toNetwork())
+    /** 用候选框裁某次扫描指定镜头点云(a→unitA / b→unitB)并测量，供拖框实时预览（不落库）。 */
+    suspend fun cropPreview(scanId: Long, unit: String, box: ScanCropBox): CropPreviewResult {
+        val r = api.cropPreview(scanId, unit, box.toNetwork())
         return CropPreviewResult(
             totalPoints = r.totalPoints,
             inPoints = r.inPoints,

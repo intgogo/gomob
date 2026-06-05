@@ -38,18 +38,22 @@ interface LaserScanApi {
 
     // --- 持久车位框（M9.11，契约 handler.go crop-box / crop-preview 端点）---
 
-    /** 取当前装机点的车位框（未设置 set=false）。 */
+    /** 取某单元(a|b)的车位框（未设置 set=false）。a 框在世界系、b 框在 unitB 设备系。 */
     @GET("v1/scans/laser/crop-box")
-    suspend fun getCropBox(): LaserCropBoxResponse
+    suspend fun getCropBox(@Query("unit") unit: String): LaserCropBoxResponse
 
-    /** 保存/覆盖车位框（服务端持久化，非设备写）。 */
+    /** 保存/覆盖某单元车位框（服务端持久化，非设备写）。 */
     @PUT("v1/scans/laser/crop-box")
-    suspend fun putCropBox(@Body box: LaserCropBox): LaserDeviceOkResponse
+    suspend fun putCropBox(
+        @Query("unit") unit: String,
+        @Body box: LaserCropBox,
+    ): LaserDeviceOkResponse
 
-    /** 用候选框裁某次扫描的融合云并测量，供拖框实时预览（不落库）。 */
+    /** 用候选框裁某次扫描的指定镜头点云(a→unitA / b→unitB)并测量，供拖框实时预览（不落库）。 */
     @POST("v1/scans/laser/{id}/crop-preview")
     suspend fun cropPreview(
         @Path("id") scanId: Long,
+        @Query("unit") unit: String,
         @Body box: LaserCropBox,
     ): LaserCropPreviewResponse
 
