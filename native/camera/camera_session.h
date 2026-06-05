@@ -118,6 +118,8 @@ class ICameraSession {
 
   // 调试:把最新 depth transport 原始字节 dump 到 path。返回写入字节数。无 dump 能力默认 0。
   virtual int dump_raw_depth(const char* /*path*/) { return 0; }
+  // 调试:把最新 color 原始预览帧 dump 到 path。Berxel 为 MJPEG，eYs3D 默认无。
+  virtual int dump_raw_color(const char* /*path*/) { return 0; }
 };
 
 // host(libusb)USB 上下文,由 native/*/host 层定义;Android 走 open_fd 不需要。

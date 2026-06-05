@@ -76,13 +76,15 @@ class LoginViewModel @Inject constructor(
         viewModelScope.launch {
             endpointStore.endpointFlow.collectLatest { ep ->
                 _state.update { it.copy(endpoint = ep, connectivity = ConnectivityStatus.Probing) }
-                val result = probeEndpoint()
+                val result = probeEndpoint(ep)
                 _state.update { it.copy(connectivity = result) }
                 if (result is ConnectivityStatus.Failed) {
-                    discoverGateways(autoApplySingle = true)
+                    discoverGateways(autoApplyBest = true)
                 }
             }
         }
+        // 登录页默认刷新服务端网关：发现到就自动使用最佳网关，找不到则回到默认网关。
+        discoverGateways(autoApplyBest = true, fallbackToDefault = true)
     }
 
     fun setUsername(v: String) = _state.update { it.copy(username = v, errorMessage = null) }
@@ -160,7 +162,7 @@ class LoginViewModel @Inject constructor(
 
     fun setDraftPort(v: String) = updateEditor { it.copy(draftPort = v.filter { ch -> ch.isDigit() }.take(5), validationError = null, testResult = ConnectivityStatus.Unknown) }
 
-    fun discoverGateways(autoApplySingle: Boolean = false) {
+    fun discoverGateways(autoApplyBest: Boolean = false, fallbackToDefault: Boolean = false) {
         if (_state.value.discoveringGateways) return
         _state.update { it.copy(discoveringGateways = true, discoveryMessage = null) }
         viewModelScope.launch {
@@ -171,14 +173,19 @@ class LoginViewModel @Inject constructor(
                     discoveringGateways = false,
                     discoveredGateways = gateways,
                     discoveryMessage = when {
+                        result.isFailure && fallbackToDefault ->
+                            "发现失败: ${shortReason(result.exceptionOrNull() ?: RuntimeException())}，已使用默认网关"
                         result.isFailure -> "发现失败: ${shortReason(result.exceptionOrNull() ?: RuntimeException())}"
+                        gateways.isEmpty() && fallbackToDefault -> "未发现可用网关，已使用默认网关"
                         gateways.isEmpty() -> "未发现可用网关"
                         else -> null
                     },
                 )
             }
-            if (autoApplySingle && gateways.size == 1 && _state.value.connectivity is ConnectivityStatus.Failed) {
-                applyDiscoveredGateway(gateways.first(), closeEditor = false)
+            val bestGateway = if (autoApplyBest) gateways.firstOrNull() else null
+            when {
+                bestGateway != null -> applyDiscoveredGateway(bestGateway, closeEditor = false)
+                fallbackToDefault -> endpointStore.resetToDefault()
             }
         }
     }

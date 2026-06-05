@@ -190,6 +190,18 @@ Java_io_gomob_nativebridge_NativeBridge_cameraDumpRawDepth(
   return written;
 }
 
+// 调试:dump 最新 color 原始预览帧到 path。Berxel 为 MJPEG。返回写入字节数。
+JNIEXPORT jint JNICALL
+Java_io_gomob_nativebridge_NativeBridge_cameraDumpRawColor(
+        JNIEnv* env, jobject /*thiz*/, jlong handle, jstring path) {
+  auto* s = reinterpret_cast<ICameraSession*>(handle);
+  if (!s || !path) return 0;
+  const char* p = env->GetStringUTFChars(path, nullptr);
+  const int written = s->dump_raw_color(p);
+  env->ReleaseStringUTFChars(path, p);
+  return written;
+}
+
 // [colorFrames, depthFrames, dropped, errors, state]。
 JNIEXPORT jlongArray JNICALL
 Java_io_gomob_nativebridge_NativeBridge_cameraStats(JNIEnv* env, jobject /*thiz*/, jlong handle) {

@@ -224,7 +224,9 @@ class BerxelNativeStack @Inject constructor(
         authorizedByName: Map<String, UsbDevice> = emptyMap(),
         keepaliveMs: Int = 50,
         depthFps: Int = 45,
+        colorFps: Int = 30,
         depthTemporal: Boolean = true,
+        mixStrategy: String = MIX_STRATEGY_DEFAULT,
     ): Long {
         if (dualHandle != 0L) {
             Log.w(TAG, "startDualNative: 已有会话 handle=$dualHandle，先 stopDualNative()")
@@ -250,16 +252,22 @@ class BerxelNativeStack @Inject constructor(
         dualMasterConn = mConn
         dualCompanionConn = cConn
 
-        // enable_color = MIX 并发：master/companion 都用【原厂 MIX 序列】（berxel_mix_trace usbmon
-        //   抓原厂 SDK setStreamFlagMode(MIX)+startStreams(COLOR|DEPTH) 的 definitive 配方）。
-        //   depth-only 用 SINGULAR 序列。MIX 序列让设备协调 master 彩色 + companion 深度并发——
-        //   host 实测 color 1003 帧 / depth 146 帧（metric 298mm）/ 0 错 / 145 RGBD 对。
-        //   关键差异：StreamFlagMode(0x0030)=0x0000 写两次 + cmd0x0007=01 + COLOR OpenStream 中段，
-        //   companion reg0x19=04（MIX）。这些都已 baked 在 MIX 资产里，native 不再 patch StreamFlagMode。
-        val masterXu = context.assets.open(
-            if (enableColor) MASTER_MIX_ASSET else MASTER_XU5_ASSET).use { it.readBytes() }
-        val companionInit = context.assets.open(
-            if (enableColor) COMPANION_MIX_ASSET else COMPANION_INIT_ASSET).use { it.readBytes() }
+        // MIX 策略可切资产组合：RGBD 默认对齐厂商 SDK 可工作的 MIX+25fps。
+        // depth-only 仍用 SINGULAR 序列。
+        val normalizedMixStrategy = normalizeMixStrategy(mixStrategy)
+        val masterAsset = if (enableColor && usesMixMasterAsset(normalizedMixStrategy)) {
+            MASTER_MIX_ASSET
+        } else {
+            MASTER_XU5_ASSET
+        }
+        val companionAsset = if (enableColor && usesMixCompanionAsset(normalizedMixStrategy)) {
+            COMPANION_MIX_ASSET
+        } else {
+            COMPANION_INIT_ASSET
+        }
+        val masterXu = context.assets.open(masterAsset).use { it.readBytes() }
+        val keepaliveXu = context.assets.open(MASTER_XU5_ASSET).use { it.readBytes() }
+        val companionInit = context.assets.open(companionAsset).use { it.readBytes() }
 
         // 【depth 640x401@45 默认档 — USB2-safe，2026-06-01 真机定档】
         // depth transport 640x401（active 640x400，native 自动裁状态行 p100r3_depth_active_height），
@@ -272,26 +280,37 @@ class BerxelNativeStack @Inject constructor(
         //   · 当前测试机池（2510DRK44C/HONOR 等）都是 USB2-only OTG，640 是唯一普适稳定档。
         // TODO（终态，待供电/USB3 链路探测模块就绪）：按 bcdUSB + 是否带电 hub 自动选 640/1280，
         //   而非编译期定档；不在此造 fallback，模块就绪前固定 USB2-safe 640。
-        // color 档 640x400@30：原厂 MIX 抓包 master 彩色 UVC commit = fmt1 frame3 interval100ns=333333(30fps)，
-        //   与 master_mix_init 里 COLOR OpenStream(640x400@30) 一致。enableColor=false 时该档不起。
-        // depthFps 可调（45/30/15）：interval=1e7/fps。
-        val depthInterval = (10_000_000 / depthFps.coerceIn(5, 60))
+        // enableColor=true 使用原厂 MIX 抓包资产，但 UVC commit / OpenStream 参数按 USB2 对照档重写到
+        // color/depth 25fps，和官方 SDK MIX+25fps 测试条件一致。
+        // enableColor=false 时 color 档不起。
+        val safeDepthFps = depthFps.coerceIn(5, 60)
+        val safeColorFps = colorFps.coerceIn(5, 60)
+        val depthInterval = (10_000_000 / safeDepthFps)
+        val colorInterval = (10_000_000 / safeColorFps)
         // 大单次读长（64KB）：减少 transfer/事件开销，配合 48 个在途把管子喂满。
         // cfg[13]：时域降噪开关（0/正=启用，负=关闭做 A/B）。默认启用：滑窗均值 N=8 把
         // 相邻帧抖动 ~38mm 压到 ~10mm（harness depth_temporal_quality 实测 3.73×、零偏移、密度不掉）。
         val config = intArrayOf(
-            640, 401, depthFps, 2, depthInterval,
-            640, 400, 30, 3, 333333,
+            640, 401, safeDepthFps, 2, depthInterval,
+            640, 400, safeColorFps, 3, colorInterval,
             keepaliveMs,
             DUAL_ASYNC_READ_LEN,
             if (enableColor) 1 else 0,
             if (depthTemporal) 0 else -1,
         )
-        Log.i(TAG, "startDualNative masterFd=${mConn.fileDescriptor} companionFd=${cConn.fileDescriptor} enableColor=$enableColor keepaliveMs=$keepaliveMs depthFps=$depthFps temporal=$depthTemporal interval=$depthInterval readLen=$DUAL_ASYNC_READ_LEN")
+        Log.i(
+            TAG,
+            "startDualNative masterFd=${mConn.fileDescriptor} companionFd=${cConn.fileDescriptor} " +
+                "enableColor=$enableColor mixStrategy=$normalizedMixStrategy " +
+                "masterAsset=$masterAsset companionAsset=$companionAsset " +
+                "keepaliveMs=$keepaliveMs depthFps=$safeDepthFps " +
+                "colorFps=$safeColorFps temporal=$depthTemporal depthInterval=$depthInterval " +
+                "colorInterval=$colorInterval readLen=$DUAL_ASYNC_READ_LEN",
+        )
         // M6.8b ④：经厂商无关 cameraOpenByFds 分发到 native BerxelDriver(0x0603:0x001f)。
         // options 打包 [masterXu | companionInit | 14-int config]，BerxelDriver 解包后调 berxel_open_dual
         // （与历史 berxelDualStart 同一双流序列，逐位不变）。句柄=ICameraSession*，poll/stop 走 camera*。
-        val options = packBerxelOptions(masterXu, companionInit, config)
+        val options = packBerxelOptions(masterXu, companionInit, keepaliveXu, config)
         val h = NativeBridge.cameraOpenByFds(
             MASTER_VID, MASTER_PID, intArrayOf(mConn.fileDescriptor, cConn.fileDescriptor), options)
         if (h == 0L) {
@@ -310,15 +329,44 @@ class BerxelNativeStack @Inject constructor(
         return 0L
     }
 
-    /** 把 masterXu/companionInit/14-int config 打包成 BerxelDriver 的 options_json 二进制
-     *  （小端：[u32 xuLen][xu][u32 initLen][init][14×i32 config]，与 native unpack_berxel_options 对称）。 */
-    private fun packBerxelOptions(masterXu: ByteArray, companionInit: ByteArray, config: IntArray): ByteArray {
-        val size = 4 + masterXu.size + 4 + companionInit.size + 14 * 4
+    /** 把 masterXu/companionInit/keepaliveXu/14-int config 打包成 BerxelDriver 的 options_json 二进制。
+     *  布局保持旧头兼容：`[xu][init][cfg]` 后追加可选 `[ka]`。 */
+    private fun packBerxelOptions(
+        masterXu: ByteArray,
+        companionInit: ByteArray,
+        keepaliveXu: ByteArray,
+        config: IntArray,
+    ): ByteArray {
+        val size = 4 + masterXu.size + 4 + companionInit.size + 14 * 4 + 4 + keepaliveXu.size
         val bb = java.nio.ByteBuffer.allocate(size).order(java.nio.ByteOrder.LITTLE_ENDIAN)
         bb.putInt(masterXu.size); bb.put(masterXu)
         bb.putInt(companionInit.size); bb.put(companionInit)
         for (i in 0 until 14) bb.putInt(config.getOrElse(i) { 0 })
+        bb.putInt(keepaliveXu.size); bb.put(keepaliveXu)
         return bb.array()
+    }
+
+    private fun normalizeMixStrategy(strategy: String): String = when (val s = strategy.lowercase()) {
+        MIX_STRATEGY_MIX,
+        MIX_STRATEGY_MASTER_FULL,
+        MIX_STRATEGY_COMPANION_FULL,
+        MIX_STRATEGY_FULL
+        -> s
+        else -> MIX_STRATEGY_DEFAULT
+    }
+
+    private fun usesMixMasterAsset(strategy: String): Boolean = when (strategy) {
+        MIX_STRATEGY_MASTER_FULL,
+        MIX_STRATEGY_FULL
+        -> false
+        else -> true
+    }
+
+    private fun usesMixCompanionAsset(strategy: String): Boolean = when (strategy) {
+        MIX_STRATEGY_COMPANION_FULL,
+        MIX_STRATEGY_FULL
+        -> false
+        else -> true
     }
 
     /** 双流富诊断统计（16 项 keepalive/配对/seq，见 BerxelDriver extended_stats 顺序）。无会话返全 0。 */
@@ -349,6 +397,10 @@ class BerxelNativeStack @Inject constructor(
     /** 调试：dump 最新 depth transport 完整原始字节到 path（native fopen）。返回写入字节数。 */
     fun dualDumpRawDepth(path: String): Int =
         if (dualHandle != 0L) NativeBridge.cameraDumpRawDepth(dualHandle, path) else 0
+
+    /** 调试：dump 最新 color MJPEG 到 path（native fopen）。返回写入字节数。 */
+    fun dualDumpRawColor(path: String): Int =
+        if (dualHandle != 0L) NativeBridge.cameraDumpRawColor(dualHandle, path) else 0
 
     fun stopDualNative() {
         val h = dualHandle
@@ -878,6 +930,13 @@ class BerxelNativeStack @Inject constructor(
         // enableColor=true 时替代上面的 SINGULAR 资产。master 21 条 / companion 8 条。
         const val MASTER_MIX_ASSET = "berxel/iHawkP100R3_master_mix_init.json"
         const val COMPANION_MIX_ASSET = "berxel/iHawkP100R3_companion_mix_init.json"
+        const val MIX_STRATEGY_MIX = "mix"
+        const val MIX_STRATEGY_MASTER_FULL = "master_full"
+        const val MIX_STRATEGY_COMPANION_FULL = "companion_full"
+        const val MIX_STRATEGY_FULL = "full"
+        // 小米/USB2 HUB 实测：原厂短 MIX 资产会让 0x81/0x82 都不吐包；master full + companion MIX
+        // 能稳定拿到 depth。COLOR 仍需后续单独修 master 出流/时间复用，不让默认路径卡死在 0 帧。
+        const val MIX_STRATEGY_DEFAULT = MIX_STRATEGY_MIX
 
         /**
          * 从 156 字节 raw blob 加载 device params（测试 / 离线标定路径）。

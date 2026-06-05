@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
@@ -112,10 +113,13 @@ private val TAB_ROUTES = TABS.map { it.key }.toSet()
 fun GomobNavHost(
     debugRouteRequest: String? = null,
     onDebugRouteConsumed: () -> Unit = {},
+    onSystemBarsPaddingRequiredChanged: (Boolean) -> Unit = {},
 ) {
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
+    val currentOnSystemBarsPaddingRequiredChanged by rememberUpdatedState(onSystemBarsPaddingRequiredChanged)
+    val systemBarsPaddingRequired = !currentRoute.isEdgeToEdgeVideoRoute()
     val onTabRoot = currentRoute in TAB_ROUTES
     val density = LocalDensity.current
     val imeVisible = WindowInsets.ime.getBottom(density) > 0
@@ -131,6 +135,9 @@ fun GomobNavHost(
             launchSingleTop = true
         }
         onDebugRouteConsumed()
+    }
+    LaunchedEffect(systemBarsPaddingRequired) {
+        currentOnSystemBarsPaddingRequiredChanged(systemBarsPaddingRequired)
     }
 
     Box(
@@ -562,3 +569,7 @@ private fun AnimatedContentTransitionScope<NavBackStackEntry>.isRootTabTransitio
     initialState.destination.route.isRootTabRoute() && targetState.destination.route.isRootTabRoute()
 
 private fun String?.isRootTabRoute(): Boolean = this in TAB_ROUTES
+
+private fun String?.isEdgeToEdgeVideoRoute(): Boolean =
+    this?.startsWith("message/video-call") == true ||
+        this?.startsWith("collaboration/fpv") == true

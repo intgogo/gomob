@@ -187,3 +187,19 @@
 | M7.5 | VIN 业务链路：`core:network` 加 `CVEngineApi`（multipart `cv/ocr/v1/vin_pipeline`）+ `VinPipelineResp` DTO + 双轨鉴权 interceptor（JWT + `X-Gomob-AppId/Sign/Ts/Nonce` HMAC，§14.1）；devserver 挂 `/cv/ocr/` 反代/直挂 cvengine。 | `cv_vin_pipeline` harness 仍过；devserver 起 cvengine 后端侧多 part 请求拿真 verdict；签名校验通过。 | `core/network/.../CVEngineApi.kt`、`server/cmd/devserver/main.go`、`docs/architecture/server/02-api-contract.md` §14.1 |
 | M7.6 | `VinCaptureViewModel` + 重写 `ScanCaptureScreen`：删硬编码 `VinValue`，接 `CameraSource` 单帧 RGB 拍照 → `CVEngineApi.vinPipeline(vehicleModelId,image)` → 真 verdict/reasons/字符相似度渲染；`vehicle_model_id` 本期可设/默认值（文档化，待接 catalog 客户端）。 | instrumentation + 真 server 回真 verdict；logcat 见上传；无硬编码 VIN。 | `feature/scan3d/.../VinCaptureViewModel.kt`、`ScanCaptureScreen.kt` |
 | M7.7 | 收尾：真机门控（2510DRK44C 直插出帧 + bundle e2e + VIN verdict）；新建/补 `scan_bundle_roundtrip` harness（端打包 → `fusion_service.unpack` → `/fuse` 出 GLB）；更新 finding/registry。 | harness 可判定；真机两功能跑出真实结果（独立门控，受 M6.8b/M1.6 device-gating）。 | `tests/harness/scan_bundle_roundtrip/`、`docs/agent-memory/`、`docs/architecture/registry/` |
+
+## M8 取流/后处理对齐官方 25fps（修 Android 端 ~10fps + 大量延迟）
+
+> 反编译官方 `libBerxelUvcDriver.so` 结论：官方双流稳 25fps 靠 ①event 线程纯 reap+重提交(<1ms) ②后处理(滤波/解码)在专属后台线程(processDepthThread@0xae4f4 / processJpegThreadFunc@0x94b60) ③队列恒 ≤2 帧。
+> 我方同一 native 在 **host 跑 45fps**，**Android 仅 ~10fps+延迟** → 瓶颈是 Android 侧特有：显示层死限速 + 后处理与组帧挤在同一 parser 线程 + chunk 队列 1024 太深不丢。
+> 主因拆账：「10fps 显示」=UI 死限速(M8.1/M8.4)；「延迟累积到秒级」=单线程后处理 + 深队列不丢(M8.2/M8.3)。
+> 关键：host 测不出 `wrap_sys_device`/Android usbfs 行为与显示 fps，M8.2/.3/.5 必须真机验。详见 [[finding_berxel_sdk_acquisition_re_2026-06-03]] + workflow 综合(本会话)。
+
+| ID | 任务 | 验收 | 文档 |
+|----|------|------|------|
+| M8.1 | ✅已落：depth 显示限速 `DEPTH_PREVIEW_MIN_INTERVAL_MS` 120→33ms(≈8→30fps 上限)，背压靠 SharedFlow DROP_OLDEST。 | 真机：depth `measuredFps` 从 ≤8 升到 native 真实出帧率(改完 M8.2 后 25-45)。 | `feature/scan3d/.../DepthCameraViewModel.kt:153` |
+| M8.2 | ★拆 `depth_parser_loop` 为「组帧线程」+「滤波线程」两级：parser 只做 chunk→整帧+marker 分流 depth/IR，整帧推第二级 `filter_thread` 独占跑 `temporal_filter.push`(含 spatial_denoise)。IR plane 与 depth plane 都进 filter_thread 保按序(set_prior_confidence 语义)。对标 processDepthThread。 | host 无回归(depth_seq~45/valid 不降/无崩)；真机 `q_hwm` 稳个位帧、`q_drops≈0`、`measuredFps` 达 25/45、移动跟手 <200ms。 | `native/jni/berxel_dual_session_jni.cpp:508,593` |
+| M8.3 | ★组帧→filter 队列以整帧为单位、上限 ≤2-3 帧、满丢最旧；chunk 队列 `kDepthQMaxChunks` 1024 大幅下调。对标官方 ≤2 帧 @0xf0。 | 真机：落后时丢帧而非堆延迟；端到端显示延迟 <200ms(改前秒级)。filter 跳帧靠 motion_reset 容忍。 | `native/jni/berxel_dual_session_jni.cpp:460,484` |
+| M8.4 | color 解码移到独立单线程 dispatcher + 自适应背压(上一帧解完才 poll)，再放开 `COLOR_PREVIEW_DECODE_INTERVAL_MS=100`(=10fps 死限)。**先线程化再放限速**，否则全速解码打爆 GC 饿死 depth。终态 TODO：MJPEG 解码下沉 native 异步线程。对标 processJpegThreadFunc。 | 真机：color `measuredFps` 从 10 升到解码上限(≥25)，且 depth 不被饿(depth_seq 不降)。 | `core/native-bridge/.../berxel/BerxelService.kt:814,2992` |
+| M8.5 | transfer 池 `kBulkXferCount` 48→20-24 对齐官方水位线(@287618)，**在 M8.2/.3 稳定后做**；保留注释里 48→8 不治死锁的真机证据。 | 真机连续 ≥60s 无新增 `*_err`/babble/掉线(host 测不出 usbfs，必真机)。 | `native/jni/berxel_dual_session_jni.cpp:1104` |
+| M8.6 | 终态(按需)：event 线程零分配(per-chunk vector→预分配环形 buffer view)+ 线程优先级/CPU 亲和。当前机型已 PASS，不为未复现瓶颈提前优化。 | 换机出现 reap 落后再做。 | `native/jni/berxel_dual_session_jni.cpp:484` |

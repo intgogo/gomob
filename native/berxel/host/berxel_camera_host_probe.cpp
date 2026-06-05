@@ -71,18 +71,22 @@ int main(int argc, char** argv) {
     return 2;
   }
 
+  // depth profile 可经 env 覆盖（复现 Android 各 MIX 配置用），默认 1280x801 frameIdx1。
+  const int depthW   = std::getenv("DEPTH_W")   ? std::atoi(std::getenv("DEPTH_W"))   : 1280;
+  const int depthH   = std::getenv("DEPTH_H")   ? std::atoi(std::getenv("DEPTH_H"))   : 801;
+  const int depthIdx = std::getenv("DEPTH_IDX") ? std::atoi(std::getenv("DEPTH_IDX")) : 1;
   // 与 BerxelNativeStack.startDualNative 同一 14-int config。
   const int32_t depthInterval = 10'000'000 / (depthFps < 5 ? 5 : depthFps);
   const int32_t cfg[14] = {
-      1280, 801, depthFps, 1, depthInterval,   // depth: w,h,fps,frameIdx,interval100ns
+      depthW, depthH, depthFps, depthIdx, depthInterval,  // depth: w,h,fps,frameIdx,interval100ns
       640,  400, 15,       3, 666667,          // color: w,h,fps,frameIdx,interval100ns
       50,                                      // keepaliveMs
       64 * 1024,                               // readLen (DUAL_ASYNC_READ_LEN)
       enableColor,                             // enableColor
       0,                                       // depthTemporal on(>=0)
   };
-  std::printf("berxel host 统一验证: open_host(BerxelDriver) depth=1280x801@%d enableColor=%d secs=%d\n",
-              depthFps, enableColor, secs);
+  std::printf("berxel host 统一验证: open_host(BerxelDriver) depth=%dx%d@%d idx=%d enableColor=%d secs=%d\n",
+              depthW, depthH, depthFps, depthIdx, enableColor, secs);
 
   UsbContext ctx;
   if (!ctx.valid()) { std::fprintf(stderr, "UsbContext 无效(libusb_init 失败)\n"); return 1; }

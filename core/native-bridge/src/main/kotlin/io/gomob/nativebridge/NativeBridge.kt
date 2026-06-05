@@ -416,6 +416,9 @@ object NativeBridge {
     /** 调试:dump 最新 depth transport 原始字节到 path。返回写入字节数。 */
     external fun cameraDumpRawDepth(handle: Long, path: String): Int
 
+    /** 调试:dump 最新 color 原始预览帧到 path。Berxel 为 MJPEG。返回写入字节数。 */
+    external fun cameraDumpRawColor(handle: Long, path: String): Int
+
     /** 语义深度控制（负值=不改）→ 各 driver 内部翻 XU。返回是否生效。 */
     external fun cameraSetControls(
         handle: Long,

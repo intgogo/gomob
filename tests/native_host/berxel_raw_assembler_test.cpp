@@ -126,12 +126,30 @@ void oversized_recovery_resets_frame_info() {
     assert(stats.frames == 1);
 }
 
+void raw_mode_ignores_uvc_like_pixel_prefix() {
+    gomob::berxel::host::UvcRawFrameAssemblerConfig config;
+    config.endpoint = 0x82;
+    config.mode = gomob::berxel::host::P100R3VideoMode{2, 2, 1, 25, 400000};
+    config.frame_size = 4;
+    config.parse_uvc_payload_header = false;
+    gomob::berxel::host::UvcRawFrameAssembler assembler(config);
+    std::vector<gomob::berxel::host::UvcRawFrame> frames;
+
+    const std::vector<uint8_t> raw = {4, 0x80, 0x34, 0x12};
+    assert(assembler.push_packet(raw.data(), static_cast<int>(raw.size()), 6000, &frames));
+    assert(frames.size() == 1);
+    assert(frames[0].payload == raw);
+    assert(!frames[0].info.has_uvc_header);
+    assert(assembler.stats().uvc_headers == 0);
+}
+
 }  // namespace
 
 int main() {
     joins_header_and_continuation();
     drops_partial_on_new_uvc_header();
     oversized_recovery_resets_frame_info();
+    raw_mode_ignores_uvc_like_pixel_prefix();
     std::cout << "berxel_raw_assembler_test PASS\n";
     return 0;
 }

@@ -24,8 +24,8 @@ data class GomobSpacing(
     val s28: Dp = 28.dp,
     val s32: Dp = 32.dp,
 
-    // 描边
-    val hairline: Dp = 1.dp,
+    // 细线
+    val hairline: Dp = 0.5.dp,
 
     // 触控目标
     val touchMin: Dp = 44.dp,

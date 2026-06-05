@@ -150,6 +150,8 @@ class DepthCameraViewModel @Inject constructor(
     }
 
     private companion object {
-        const val DEPTH_PREVIEW_MIN_INTERVAL_MS = 120L
+        // 显示节流上限 ~30fps（对齐官方 SDK 无固定 UI 限速；native 真实出帧 25-45fps）。
+        // 背压靠 _depthFrames SharedFlow(extraBufferCapacity=1 + DROP_OLDEST)，不再用 120ms(=8fps)死限。
+        const val DEPTH_PREVIEW_MIN_INTERVAL_MS = 33L
     }
 }

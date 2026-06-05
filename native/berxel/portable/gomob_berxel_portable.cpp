@@ -161,19 +161,33 @@ std::string hex_bytes(const uint8_t* data, int length) {
     }
     return ss.str();
 }
+
+int uvc_payload_header_length_from_flags(uint8_t flags) {
+    int header_len = 2;
+    if ((flags & 0x04) != 0) header_len += 4;
+    if ((flags & 0x08) != 0) header_len += 6;
+    return header_len;
+}
+
+bool looks_like_uvc_payload_header(const uint8_t* data, int actual) {
+    if (!data || actual < 2) return false;
+    const int header_len = data[0];
+    const uint8_t flags = data[1];
+    if (header_len < 2 || header_len > actual || header_len > 64) return false;
+    if ((flags & 0x80) == 0) return false;
+    if ((flags & 0x10) != 0) return false;  // UVC 保留位；像素/压缩数据误撞时常见。
+    return header_len == uvc_payload_header_length_from_flags(flags);
+}
+
 UvcPayloadView parse_uvc_payload(const uint8_t* data, int actual) {
     UvcPayloadView view;
     if (!data || actual <= 0) return view;
     view.length = actual;
     if (actual < 2) return view;
 
+    if (!looks_like_uvc_payload_header(data, actual)) return view;
     const int header_len = data[0];
     const uint8_t flags = data[1];
-    const bool looks_like_uvc = header_len >= 2 &&
-                                header_len <= actual &&
-                                header_len <= 64 &&
-                                ((flags & 0x80) != 0);
-    if (!looks_like_uvc) return view;
 
     view.offset = header_len;
     view.length = actual - header_len;
@@ -356,7 +370,9 @@ bool UvcRawFrameAssembler::push_packet(const uint8_t* data,
     if (out_frames) out_frames->clear();
     if (!data || actual <= 0 || config_.frame_size == 0) return false;
 
-    const UvcPayloadView payload = parse_uvc_payload(data, actual);
+    const UvcPayloadView payload = config_.parse_uvc_payload_header
+        ? parse_uvc_payload(data, actual)
+        : UvcPayloadView{};
     if (payload.error) return true;
     if (payload.valid) {
         stats_.uvc_headers++;
@@ -544,8 +560,10 @@ bool UvcMjpegFrameAssembler::push_packet(const uint8_t* data,
     size_t jpeg_begin = 0;
     size_t jpeg_end = 0;
     const bool has_jpeg = find_jpeg_bounds(frame_, &jpeg_begin, &jpeg_end);
-    const bool complete_by_eof = payload.eof;
-    const bool complete_by_eoi = has_jpeg && !payload.eof;
+    const bool complete_by_eof = payload.valid && payload.eof;
+    const bool has_uvc_stream_header = current_.has_uvc_header || payload.valid || stats_.uvc_headers > 0;
+    const bool complete_by_eoi = has_jpeg && !payload.eof &&
+        (config_.complete_on_jpeg_eoi_without_uvc_eof || !has_uvc_stream_header);
     if (complete_by_eof || complete_by_eoi) {
         if (has_jpeg) {
             UvcMjpegFrame frame;

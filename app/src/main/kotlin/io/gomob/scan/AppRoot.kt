@@ -58,6 +58,7 @@ fun AppRoot(
     onContentReadinessChanged: (Boolean) -> Unit = {},
     debugRouteRequest: String? = null,
     onDebugRouteConsumed: () -> Unit = {},
+    onSystemBarsPaddingRequiredChanged: (Boolean) -> Unit = {},
     vm: AuthGateViewModel = hiltViewModel(),
 ) {
     val loggedIn by vm.isLoggedIn.collectAsStateWithLifecycle(initialValue = null)
@@ -65,10 +66,16 @@ fun AppRoot(
     val warmup: AppWarmupViewModel = hiltViewModel()
     val readyForShell by warmup.readyForShell.collectAsStateWithLifecycle()
     val currentOnContentReadinessChanged by rememberUpdatedState(onContentReadinessChanged)
+    val currentOnSystemBarsPaddingRequiredChanged by rememberUpdatedState(onSystemBarsPaddingRequiredChanged)
     var registerMode by rememberSaveable { mutableStateOf(false) }
     val contentReady = loggedIn == false || (loggedIn == true && readyForShell)
     LaunchedEffect(contentReady) {
         currentOnContentReadinessChanged(contentReady)
+    }
+    LaunchedEffect(loggedIn, readyForShell) {
+        if (loggedIn != true || !readyForShell) {
+            currentOnSystemBarsPaddingRequiredChanged(true)
+        }
     }
     LaunchedEffect(sessionNotice) {
         if (!sessionNotice.isNullOrBlank()) {
@@ -103,6 +110,7 @@ fun AppRoot(
                 GomobNavHost(
                     debugRouteRequest = debugRouteRequest,
                     onDebugRouteConsumed = onDebugRouteConsumed,
+                    onSystemBarsPaddingRequiredChanged = onSystemBarsPaddingRequiredChanged,
                 )
             } else {
                 SplashLoading()

@@ -50,6 +50,7 @@ class MainActivity : ComponentActivity() {
     private var appContentReady by mutableStateOf(false)
     private var holdLaunchBackdropForInspection by mutableStateOf(false)
     private var debugRouteRequest by mutableStateOf<String?>(null)
+    private var systemBarsPaddingRequired by mutableStateOf(true)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         setTheme(R.style.Theme_Gomob)
@@ -77,17 +78,24 @@ class MainActivity : ComponentActivity() {
             }
             // 注意：launchBackdropVisible 必须在 composition 作用域读取，
             // 在 SideEffect lambda 内读不会建立 snapshot 订阅，splash 关闭时不会重跑。
-            val effectiveDark = launchBackdropVisible || darkTheme
+            val effectiveDark = launchBackdropVisible || darkTheme || !systemBarsPaddingRequired
             SideEffect {
                 val transparent = android.graphics.Color.TRANSPARENT
-                // 用 App 自身 darkTheme 作为 detectDarkMode 注入，避免 SystemBarStyle.light()
-                // 内部根据系统暗黑模式自行判定（系统暗+App 浅会出现白 icon 撞浅背景的问题）
+                // 用当前真实背景语义作为 detectDarkMode，避免系统暗黑模式和 App 浅色模式错配。
+                // 视频铺到系统栏背后时底层是黑色视频，需要保持浅色状态栏图标。
                 enableEdgeToEdge(
                     statusBarStyle = SystemBarStyle.auto(transparent, transparent) { effectiveDark },
                     navigationBarStyle = SystemBarStyle.auto(transparent, transparent) { effectiveDark },
                 )
             }
             GomobTheme(darkTheme = darkTheme, colorScheme = colorScheme) {
+                val appFrameModifier = if (systemBarsPaddingRequired) {
+                    Modifier
+                        .fillMaxSize()
+                        .windowInsetsPadding(WindowInsets.systemBars)
+                } else {
+                    Modifier.fillMaxSize()
+                }
                 LaunchedEffect(
                     launchBackdropVisible,
                     launchBackdropMayHide,
@@ -113,9 +121,7 @@ class MainActivity : ComponentActivity() {
                         .background(Gomob.colors.bg0),
                 ) {
                     Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .windowInsetsPadding(WindowInsets.systemBars),
+                        modifier = appFrameModifier,
                     ) {
                         Box(Modifier.fillMaxSize().clipToBounds()) {
                             DefaultPageDragBox(Modifier.fillMaxSize()) {
@@ -124,10 +130,14 @@ class MainActivity : ComponentActivity() {
                                         appContentReady = ready
                                         if (!ready) {
                                             launchBackdropVisible = true
+                                            systemBarsPaddingRequired = true
                                         }
                                     },
                                     debugRouteRequest = debugRouteRequest,
                                     onDebugRouteConsumed = { debugRouteRequest = null },
+                                    onSystemBarsPaddingRequiredChanged = { required ->
+                                        systemBarsPaddingRequired = required
+                                    },
                                 )
                             }
                         }
@@ -187,6 +197,11 @@ class MainActivity : ComponentActivity() {
                         intent.getBooleanExtra(EXTRA_DEBUG_MASTER_RGB, false),
                     )
                 }
+                if (intent.hasExtra(EXTRA_DEBUG_MIX_STRATEGY)) {
+                    berxelService.setNativeMixStrategyForDebug(
+                        intent.getStringExtra(EXTRA_DEBUG_MIX_STRATEGY),
+                    )
+                }
                 intent.getStringExtra(EXTRA_DEBUG_ROUTE)
                     ?.takeIf { it.isNotBlank() }
                     ?.let { debugRouteRequest = it }
@@ -231,6 +246,7 @@ class MainActivity : ComponentActivity() {
         private const val EXTRA_DEBUG_STREAM = "stream"
         private const val EXTRA_DEBUG_PROFILE = "profile"
         private const val EXTRA_DEBUG_MASTER_RGB = "master_rgb"
+        private const val EXTRA_DEBUG_MIX_STRATEGY = "mix_strategy"
         private const val EXTRA_DEBUG_ROUTE = "route"
         private const val REQUEST_DEBUG_CAMERA_PERMISSION = 0xB3
     }

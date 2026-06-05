@@ -170,6 +170,7 @@ struct UvcRawFrameAssemblerConfig {
     size_t frame_size = 0;
     bool drop_partial_on_uvc_header = true;
     size_t max_buffer_bytes = 0;
+    bool parse_uvc_payload_header = true;
 };
 
 struct UvcRawFrameAssemblerStats {
@@ -205,6 +206,7 @@ struct UvcMjpegFrameAssemblerConfig {
     uint8_t endpoint = 0;
     P100R3VideoMode mode;
     size_t max_frame_bytes = 8 * 1024 * 1024;
+    bool complete_on_jpeg_eoi_without_uvc_eof = false;
 };
 
 struct UvcMjpegFrameAssemblerStats {

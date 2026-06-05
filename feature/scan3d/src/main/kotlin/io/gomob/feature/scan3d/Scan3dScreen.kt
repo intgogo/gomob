@@ -257,7 +257,7 @@ private fun ActionTile(
             modifier = Modifier
                 .padding(top = 10.dp)
                 .fillMaxWidth()
-                .height(1.dp)
+                .height(Gomob.spacing.hairline)
                 .background(Gomob.colors.line1),
         )
         Text(

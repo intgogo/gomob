@@ -884,7 +884,7 @@ private fun VoiceMessageBubble(
                 Spacer(
                     Modifier
                         .fillMaxWidth()
-                        .height(1.dp)
+                        .height(Gomob.spacing.hairline)
                         .background(textColor.copy(alpha = 0.10f)),
                 )
                 Text(

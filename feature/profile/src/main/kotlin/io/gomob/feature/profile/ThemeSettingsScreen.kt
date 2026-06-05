@@ -245,7 +245,7 @@ private fun ThemePreviewCard(
         Box(
             Modifier
                 .fillMaxWidth()
-                .height(1.dp)
+                .height(Gomob.spacing.hairline)
                 .background(c.line2),
         )
         // accent 主按钮条

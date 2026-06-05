@@ -1294,7 +1294,7 @@ private fun MsgRow(item: ConversationRowUi, onClick: () -> Unit) {
             Modifier
                 .fillMaxWidth()
                 .padding(start = 76.dp, end = Gomob.spacing.s20)
-                .height(0.5.dp)
+                .height(Gomob.spacing.hairline)
                 .background(Gomob.colors.line1.copy(alpha = 0.05f)),
         )
     }
@@ -1518,7 +1518,7 @@ private fun MultiLineRoomRow(
             Modifier
                 .fillMaxWidth()
                 .padding(start = 76.dp, end = Gomob.spacing.s20)
-                .height(0.5.dp)
+                .height(Gomob.spacing.hairline)
                 .background(Gomob.colors.line1.copy(alpha = 0.05f)),
         )
     }

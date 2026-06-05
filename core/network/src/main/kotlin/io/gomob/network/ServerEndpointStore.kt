@@ -37,7 +37,7 @@ private val Context.serverEndpointDataStore by preferencesDataStore(name = "gomo
  *
  * 默认 `127.0.0.1:8808` —— emulator 通过 `adb reverse tcp:8808 tcp:18808`
  * 访问宿主机开发网关；`./dev.sh install/run` 会自动设置这条反向代理。
- * 真机首次安装由登录页服务发现优先自动写入，失败或多网关时再手动兜底。
+ * 登录页会自动刷新服务发现：发现到网关即写入最佳结果，找不到则恢复默认网关。
  */
 @Singleton
 class ServerEndpointStore @Inject constructor(
@@ -68,6 +68,10 @@ class ServerEndpointStore @Inject constructor(
             it[keyIp] = normalizedIp
             it[keyPort] = port
         }
+    }
+
+    suspend fun resetToDefault() {
+        set(DEFAULT_IP, DEFAULT_PORT)
     }
 
     companion object {

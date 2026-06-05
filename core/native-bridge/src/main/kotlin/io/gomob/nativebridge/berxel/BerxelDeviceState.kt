@@ -132,11 +132,11 @@ object BerxelStreamProfiles {
     val HD_30: BerxelStreamProfile = HD.requireFps(30)
     val HD_45: BerxelStreamProfile = HD.requireFps(45)
 
-    val NATIVE_REWRITE_640_400_45 = BerxelStreamProfile(
-        id = "native_rewrite_640x400_45",
+    val NATIVE_REWRITE_640_400_25 = BerxelStreamProfile(
+        id = "native_rewrite_640x400_25",
         flagProfile = BerxelStreamFlagProfile.SINGULAR,
         color = null,
-        depth = BerxelStreamTarget(width = 640, height = 400, fps = 45),
+        depth = BerxelStreamTarget(width = 640, height = 400, fps = 25),
     )
 
     val DUAL: List<BerxelStreamProfile> = listOf(

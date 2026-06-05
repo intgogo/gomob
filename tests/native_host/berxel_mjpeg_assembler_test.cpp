@@ -85,7 +85,11 @@ void emits_on_uvc_eof() {
 }
 
 void emits_on_jpeg_eoi_without_eof() {
-    auto assembler = make_assembler();
+    gomob::berxel::host::UvcMjpegFrameAssemblerConfig config;
+    config.endpoint = 0x81;
+    config.mode = gomob::berxel::host::P100R3VideoMode{3, 640, 400, 30, 333333};
+    config.complete_on_jpeg_eoi_without_uvc_eof = true;
+    gomob::berxel::host::UvcMjpegFrameAssembler assembler(config);
     std::vector<gomob::berxel::host::UvcMjpegFrame> frames;
     const std::vector<uint8_t> jpeg = jpeg_bytes();
     std::vector<uint8_t> packet = uvc_packet(1, false, jpeg);
@@ -122,13 +126,42 @@ void drops_partial_on_fid_toggle_and_recovers() {
     const std::vector<uint8_t> jpeg = jpeg_bytes();
     packet = uvc_packet(1, false, jpeg);
     assert(assembler.push_packet(packet.data(), static_cast<int>(packet.size()), 5000, &frames));
+    assert(frames.empty());
+
+    packet = uvc_packet(0, false, {});
+    assert(assembler.push_packet(packet.data(), static_cast<int>(packet.size()), 6000, &frames));
     assert(frames.size() == 1);
     assert(frames[0].jpeg == jpeg);
+    assert(frames[0].info.completed_by_fid);
 
     const auto stats = assembler.stats();
-    assert(stats.fid_toggles == 1);
+    assert(stats.fid_toggles == 2);
     assert(stats.frame_drops == 1);
     assert(stats.frames == 1);
+}
+
+void strict_uvc_waits_for_fid_when_eof_missing() {
+    gomob::berxel::host::UvcMjpegFrameAssemblerConfig config;
+    config.endpoint = 0x81;
+    config.mode = gomob::berxel::host::P100R3VideoMode{3, 640, 400, 25, 400000};
+    config.complete_on_jpeg_eoi_without_uvc_eof = false;
+    gomob::berxel::host::UvcMjpegFrameAssembler assembler(config);
+    std::vector<gomob::berxel::host::UvcMjpegFrame> frames;
+
+    const std::vector<uint8_t> jpeg = jpeg_bytes();
+    std::vector<uint8_t> packet = uvc_packet(0, false, jpeg);
+    assert(assembler.push_packet(packet.data(), static_cast<int>(packet.size()), 6000, &frames));
+    assert(frames.empty());
+    assert(assembler.stats().frames == 0);
+
+    packet = uvc_packet(1, false, jpeg);
+    assert(assembler.push_packet(packet.data(), static_cast<int>(packet.size()), 7000, &frames));
+    assert(frames.size() == 1);
+    assert(frames[0].jpeg == jpeg);
+    assert(frames[0].info.completed_by_fid);
+    assert(!frames[0].info.completed_by_jpeg_eoi);
+    assert(assembler.stats().completed_by_fid == 1);
+    assert(assembler.stats().completed_by_jpeg_eoi == 0);
 }
 
 }  // namespace
@@ -137,6 +170,7 @@ int main() {
     emits_on_uvc_eof();
     emits_on_jpeg_eoi_without_eof();
     drops_partial_on_fid_toggle_and_recovers();
+    strict_uvc_waits_for_fid_when_eof_missing();
     std::cout << "berxel_mjpeg_assembler_test PASS\n";
     return 0;
 }

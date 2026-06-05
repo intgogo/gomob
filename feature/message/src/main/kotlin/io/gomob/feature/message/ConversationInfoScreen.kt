@@ -243,12 +243,14 @@ fun ConversationInfoRoute(
                     title = "备注",
                     value = state.remark.ifBlank { "未设置" },
                     onClick = { editTarget = ConversationInfoEditTarget.Remark },
+                    showDivider = false,
                 )
             }
             ConversationInfoDivider()
             ConversationInfoRow(
                 title = "查找聊天内容",
                 onClick = { onOpenSearch(state.conversationId.toString()) },
+                showDivider = false,
             )
             ConversationInfoDivider()
             ConversationInfoSwitchRow(
@@ -272,6 +274,7 @@ fun ConversationInfoRoute(
                 title = "置顶聊天",
                 checked = state.pinned,
                 onToggle = viewModel::togglePinned,
+                showDivider = false,
             )
             ConversationInfoDivider()
             ConversationDangerRow(
@@ -1064,6 +1067,7 @@ private fun ConversationInfoRow(
     value: String? = null,
     trailingIcon: ImageVector? = null,
     onClick: () -> Unit,
+    showDivider: Boolean = true,
 ) {
     Column(Modifier.fillMaxWidth().background(ConversationInfoSurface)) {
         Row(
@@ -1108,7 +1112,9 @@ private fun ConversationInfoRow(
                 modifier = Modifier.padding(start = Gomob.spacing.s8).size(18.dp),
             )
         }
-        ConversationHairline(startPadding = Gomob.spacing.s20)
+        if (showDivider) {
+            ConversationHairline(startPadding = Gomob.spacing.s20)
+        }
     }
 }
 
@@ -1162,6 +1168,7 @@ private fun ConversationInfoSwitchRow(
     title: String,
     checked: Boolean,
     onToggle: () -> Unit,
+    showDivider: Boolean = true,
 ) {
     Column(Modifier.fillMaxWidth().background(ConversationInfoSurface)) {
         Row(
@@ -1180,7 +1187,9 @@ private fun ConversationInfoSwitchRow(
             )
             ConversationSwitch(checked = checked)
         }
-        ConversationHairline(startPadding = Gomob.spacing.s20)
+        if (showDivider) {
+            ConversationHairline(startPadding = Gomob.spacing.s20)
+        }
     }
 }
 
@@ -1232,11 +1241,11 @@ private fun ConversationDangerRow(
 
 @Composable
 private fun ConversationInfoDivider() {
-    Spacer(
+    Box(
         Modifier
             .fillMaxWidth()
-            .height(Gomob.spacing.s8)
-            .background(ConversationInfoPageBg),
+            .height(Gomob.spacing.hairline)
+            .background(ConversationInfoHairline),
     )
 }
 
@@ -1246,7 +1255,7 @@ private fun ConversationHairline(startPadding: androidx.compose.ui.unit.Dp) {
         Modifier
             .fillMaxWidth()
             .padding(start = startPadding)
-            .height(0.5.dp)
+            .height(Gomob.spacing.hairline)
             .background(ConversationInfoHairline),
     )
 }
