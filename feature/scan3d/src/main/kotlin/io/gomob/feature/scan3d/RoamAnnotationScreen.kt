@@ -82,6 +82,8 @@ fun RoamAnnotationScreen(
     Box(Modifier.fillMaxSize().background(Color(0xFF060912))) {
         AndroidView(factory = { view }, modifier = Modifier.fillMaxSize())
 
+        // 漫游交互层：编辑器叠层显示时整层让位——否则全屏 look-pad 会接住穿透触摸、转动隐藏的漫游相机。
+        if (!editing) {
         // look-pad（全屏，最底层 overlay）：拖动转头/抬头。摇杆/按钮在其上、各自消费指针，互不抢。
         Box(
             Modifier.fillMaxSize().pointerInput(Unit) {
@@ -146,6 +148,7 @@ fun RoamAnnotationScreen(
                     .padding(horizontal = 18.dp, vertical = 12.dp),
             ) { Text("重走", fontSize = 13.sp, color = Gomob.colors.fg2) }
         }
+        } // if (!editing)
     }
 
     // 顶视编辑器叠层（不透明，盖住漫游层）：微调 + 翻转 + 保存。返回=回漫游继续走。
