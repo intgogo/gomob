@@ -217,7 +217,8 @@ internal class PointCloudSurfaceView(
                 view.viewport = Viewport(0, 0, width, height)
                 viewHeightPx = height.coerceAtLeast(1)
                 lastAspect = width.toDouble() / height.coerceAtLeast(1)
-                camera.setProjection(45.0, lastAspect, 50.0, currentFar(), Camera.Fov.VERTICAL)
+                if (roamMode) camera.setProjection(60.0, lastAspect, 50.0, roamFar, Camera.Fov.VERTICAL)
+                else camera.setProjection(45.0, lastAspect, 50.0, currentFar(), Camera.Fov.VERTICAL)
                     }
         }
         attachTo(this@PointCloudSurfaceView)
@@ -307,6 +308,19 @@ internal class PointCloudSurfaceView(
     private var gridVertCount = 0
     private var gridUploadBuffer: ByteBuffer? = null // 保活异步上传 buffer
 
+    // 标注路径（LINES，amber，铺地面上方 20mm 防 z-fight）。仿 grid 实体管理；pathMaterialInstance 在 init 赋值。
+    private val maxPathVerts = 4096
+    private val pathVertexBuffer: VertexBuffer = VertexBuffer.Builder()
+        .vertexCount(maxPathVerts).bufferCount(1)
+        .attribute(VertexBuffer.VertexAttribute.POSITION, 0, VertexBuffer.AttributeType.FLOAT3, 0, 12)
+        .build(engine)
+    private val pathIndexBuffer: IndexBuffer = IndexBuffer.Builder()
+        .indexCount(maxPathVerts).bufferType(IndexBuffer.Builder.IndexType.UINT).build(engine)
+    private val pathEntity: Int = EntityManager.get().create()
+    private var pathVertCount = 0
+    private var pathUploadBuffer: ByteBuffer? = null
+    private lateinit var pathMaterialInstance: MaterialInstance
+
     // 相机轨道参数（围绕 grid 中心 (0, 0, gridCenterZmm)，或 autoFit 时围绕点云质心）。
     // yaw/pitch 相对地面正交基 {right, up, fwd}（up=地面法向）；非世界轴 —— 这样顶/侧视相对真实
     // 地面而非设备倾斜的世界系。
@@ -339,6 +353,27 @@ internal class PointCloudSurfaceView(
     private var fitTargetZ = gridCenterZmm
     private var fitRadius = 500f
     private var lastAspect = 1.0
+
+    // ───── 第一视角漫游（标注用）。orbit 字段不动；roamMode=false 时本段全不参与渲染/输入。 ─────
+    private var roamMode = false
+    private var eyeHeightMm = 1600f          // 站立眼高（地面平面之上，mm）
+    private var roamYaw = 0f                  // 头朝向（绕 up；0=朝 +fwd0/取景中心）
+    private var roamPitch = 0f               // 抬头/低头（rad，clamp ±1.4 避退化）
+    private var walkU = 0f                    // 沿 right0 的地面位移（相对取景中心投影）
+    private var walkV = 0f                    // 沿 fwd0
+    @Volatile private var moveStrafe = 0f     // 摇杆右(+)
+    @Volatile private var moveForward = 0f    // 摇杆前(+)
+    @Volatile private var moveMag = 0f        // 摇杆幅度 0..1（部分推=慢走）
+    private var moveSpeedMmPerSec = 1500f
+    private var roamFar = 8000.0
+    private var lastFrameNanos = 0L           // 帧 dt 源；0=首帧（dt=0 不跳）
+    private var pitchInvert = false
+    // 取景中心(质心)在地面基的 (u,v)，世界原点系——与 projectTopView/worldBox 同源。
+    private var originU = 0f; private var originV = 0f
+    // 标注路径（世界原点系基坐标 [u0,v0,...]，与 projectTopView 同源，直接喂 worldBox）。
+    private var annotating = false
+    private val pathUV = ArrayList<Float>()
+    private var lastSampleU = 0f; private var lastSampleV = 0f; private var hasSample = false
 
     init {
         view.camera = camera
@@ -413,6 +448,23 @@ internal class PointCloudSurfaceView(
             .culling(false).castShadows(false).receiveShadows(false)
             .build(engine, gridEntity)
         scene.addEntity(gridEntity)
+
+        // 标注路径 entity（LINES，amber）：顺序索引；indexCount=0 起步，走动采样时填。
+        pathMaterialInstance = material.createInstance().apply {
+            setParameter("baseColor", 1f, 0.773f, 0.239f, 1f) // amber，与车位框黄一致
+            setParameter("pointSizePx", 1f)
+        }
+        val pathIdx = ByteBuffer.allocateDirect(maxPathVerts * 4).order(ByteOrder.nativeOrder())
+        for (i in 0 until maxPathVerts) pathIdx.putInt(i)
+        pathIdx.rewind()
+        pathIndexBuffer.setBuffer(engine, pathIdx)
+        RenderableManager.Builder(1)
+            .geometry(0, RenderableManager.PrimitiveType.LINES, pathVertexBuffer, pathIndexBuffer, 0, 0)
+            .material(0, pathMaterialInstance)
+            .boundingBox(bbox)
+            .culling(false).castShadows(false).receiveShadows(false)
+            .build(engine, pathEntity)
+        scene.addEntity(pathEntity)
 
         // directional light: 从右上前方照下来 — mesh 立体感主要靠这个；lit material 没 IBL
         // 时 fragment 光照仅来自 directional / point / spot，缺光会全黑
@@ -655,6 +707,7 @@ internal class PointCloudSurfaceView(
     }
 
     private fun applyCamera() {
+        if (roamMode) { applyRoamCamera(); return }
         // 取景中心 = 包围球质心(或 grid 中心) + 双指平移累计偏移。
         val tx = (if (hasFit) fitTargetX else 0f).toDouble() + panX
         val ty = (if (hasFit) fitTargetY else 0f).toDouble() + panY
@@ -669,6 +722,150 @@ internal class PointCloudSurfaceView(
         val ey = ty + oR * rgY + oU * upY + oF * fwY
         val ez = tz + oR * rgZ + oU * upZ + oF * fwZ
         camera.lookAt(ex, ey, ez, tx, ty, tz, upX.toDouble(), upY.toDouble(), upZ.toDouble())
+    }
+
+    /**
+     * 第一视角相机：眼=取景中心(u,v)+走动位移，沿地面基抬升 eyeHeight；朝向由 yaw(绕 up)+pitch 决定。
+     * 地面平面 up·x+d=0 → 平面 h=-d；眼在其上 eyeHeight。
+     */
+    private fun applyRoamCamera() {
+        val uW = originU + walkU
+        val vW = originV + walkV
+        val hEye = -groundOffsetD + eyeHeightMm
+        val ex = uW * rgX + vW * fwX + hEye * upX
+        val ey = uW * rgY + vW * fwY + hEye * upY
+        val ez = uW * rgZ + vW * fwZ + hEye * upZ
+        val cy = cos(roamYaw.toDouble()).toFloat(); val sy = sin(roamYaw.toDouble()).toFloat()
+        val cp = cos(roamPitch.toDouble()).toFloat(); val sp = sin(roamPitch.toDouble()).toFloat()
+        // 水平朝向 = cy·fwd0 + sy·right0（yaw=0 朝 +fwd0）；整体 = cp·水平 + sp·up。
+        val fx = cp * (cy * fwX + sy * rgX) + sp * upX
+        val fy = cp * (cy * fwY + sy * rgY) + sp * upY
+        val fz = cp * (cy * fwZ + sy * rgZ) + sp * upZ
+        camera.lookAt(
+            ex.toDouble(), ey.toDouble(), ez.toDouble(),
+            (ex + fx * 1000f).toDouble(), (ey + fy * 1000f).toDouble(), (ez + fz * 1000f).toDouble(),
+            upX.toDouble(), upY.toDouble(), upZ.toDouble(),
+        )
+    }
+
+    // ───── 漫游对外接口（RoamAnnotationScreen 调用） ─────
+
+    /** 进入第一视角漫游：站到取景中心后方、眼高 eyeHeight，朝中心看。须在 setGround + setPoints(已 fit) 后调。 */
+    fun enterRoamMode(eyeHeight: Float) {
+        eyeHeightMm = eyeHeight
+        roamMode = true
+        lastFrameNanos = 0L
+        originU = fitTargetX * rgX + fitTargetY * rgY + fitTargetZ * rgZ
+        originV = fitTargetX * fwX + fitTargetY * fwY + fitTargetZ * fwZ
+        walkU = 0f
+        walkV = -(fitRadius + 1000f)   // 退到取景中心后方一点
+        roamYaw = 0f; roamPitch = 0f   // 朝 +fwd0 = 看向中心
+        roamFar = (2f * fitRadius + eyeHeightMm + 3000f).toDouble().coerceAtLeast(6000.0)
+        camera.setProjection(60.0, lastAspect, 50.0, roamFar, Camera.Fov.VERTICAL)
+        applyCamera()
+    }
+
+    fun exitRoamMode() { roamMode = false; lastFrameNanos = 0L }
+
+    /** 摇杆输入：strafe 右(+)、forward 前(+)、magnitude 0..1（部分推=慢走）。主线程写、渲染回调读。 */
+    fun setMoveInput(strafe: Float, forward: Float, magnitude: Float) {
+        moveStrafe = strafe; moveForward = forward; moveMag = magnitude
+    }
+
+    /** 转头/抬头（look-pad 拖动）。pitch clamp ±1.4 避开近竖直退化。 */
+    fun applyLook(dYaw: Float, dPitch: Float) {
+        roamYaw += dYaw
+        val p = if (pitchInvert) -dPitch else dPitch
+        roamPitch = (roamPitch + p).coerceIn(-1.40f, 1.40f)
+        if (roamMode) applyCamera()
+    }
+
+    fun setPitchInvert(on: Boolean) { pitchInvert = on }
+
+    /** 开/关标注。起标时把当前脚下点作为路径首点。 */
+    fun setAnnotating(on: Boolean) {
+        annotating = on
+        if (on && !hasSample) {
+            lastSampleU = originU + walkU; lastSampleV = originV + walkV
+            pathUV.add(lastSampleU); pathUV.add(lastSampleV); hasSample = true
+            rebuildPath()
+        }
+    }
+
+    /** 清空标注路径。 */
+    fun resetPath() {
+        pathUV.clear(); hasSample = false; pathVertCount = 0
+        val inst = engine.renderableManager.getInstance(pathEntity)
+        if (inst != 0) {
+            engine.renderableManager.setGeometryAt(inst, 0, RenderableManager.PrimitiveType.LINES,
+                pathVertexBuffer, pathIndexBuffer, 0, 0)
+        }
+    }
+
+    /** 标注路径采样快照（世界原点系基坐标 [u0,v0,...]，与 projectTopView/worldBox 同源）。 */
+    fun pathSamplesUV(): FloatArray = pathUV.toFloatArray()
+    fun pathSampleCount(): Int = pathUV.size / 2
+
+    /** 每帧积分走动（doFrame 调）。dt 来自 frameTimeNanos，clamp 50ms 防后台恢复时瞬移。 */
+    private fun integrateRoam(frameTimeNanos: Long) {
+        val dt = if (lastFrameNanos == 0L) 0f else ((frameTimeNanos - lastFrameNanos) / 1_000_000_000.0).toFloat()
+        lastFrameNanos = frameTimeNanos
+        val dtc = dt.coerceIn(0f, 0.05f)
+        val s = moveStrafe; val f = moveForward; val mag = moveMag
+        if (dtc <= 0f || mag <= 0f || (s == 0f && f == 0f)) return
+        val cy = cos(roamYaw.toDouble()).toFloat(); val sy = sin(roamYaw.toDouble()).toFloat()
+        // 前=cy·fwd0+sy·right0 → (u,v)=(sy,cy)；右=cy·right0−sy·fwd0 → (u,v)=(cy,−sy)。
+        var du = f * sy + s * cy
+        var dv = f * cy - s * sy
+        val m = kotlin.math.sqrt(du * du + dv * dv)
+        if (m > 1e-4f) { du /= m; dv /= m } // 归一方向，对角不超速
+        val step = moveSpeedMmPerSec * dtc * mag.coerceIn(0f, 1f)
+        val lim = (fitRadius * 3f).coerceAtLeast(3000f)
+        walkU = (walkU + du * step).coerceIn(-lim, lim) // 别走丢云
+        walkV = (walkV + dv * step).coerceIn(-lim, lim)
+        applyCamera()
+        if (annotating) maybeSamplePath()
+    }
+
+    /** 走动中按位移 ≥150mm 采一个路径点，重建 LINES。 */
+    private fun maybeSamplePath() {
+        val curU = originU + walkU; val curV = originV + walkV
+        val moved = kotlin.math.hypot((curU - lastSampleU).toDouble(), (curV - lastSampleV).toDouble())
+        if (hasSample && moved < 150.0) return
+        if (pathUV.size / 2 >= maxPathVerts / 2) return // 满了停采（车位足迹不会到这）
+        pathUV.add(curU); pathUV.add(curV)
+        lastSampleU = curU; lastSampleV = curV; hasSample = true
+        rebuildPath()
+    }
+
+    /** 按 pathUV 重建路径 LINES（成对顶点；每点投影到地面上方 20mm）。异步上传 buffer 保活。 */
+    private fun rebuildPath() {
+        val inst = engine.renderableManager.getInstance(pathEntity)
+        if (inst == 0) return
+        val k = pathUV.size / 2
+        if (k < 2) {
+            engine.renderableManager.setGeometryAt(inst, 0, RenderableManager.PrimitiveType.LINES,
+                pathVertexBuffer, pathIndexBuffer, 0, 0)
+            return
+        }
+        val nv = (2 * (k - 1)).coerceAtMost(maxPathVerts / 2 * 2)
+        val hLift = -groundOffsetD + 20f
+        val buf = ByteBuffer.allocateDirect(nv * 12).order(ByteOrder.nativeOrder())
+        val fb = buf.asFloatBuffer()
+        var written = 0; var i = 0
+        while (i < k - 1 && written + 2 <= nv) {
+            val au = pathUV[i * 2]; val av = pathUV[i * 2 + 1]
+            val bu = pathUV[(i + 1) * 2]; val bv = pathUV[(i + 1) * 2 + 1]
+            fb.put(au * rgX + av * fwX + hLift * upX); fb.put(au * rgY + av * fwY + hLift * upY); fb.put(au * rgZ + av * fwZ + hLift * upZ)
+            fb.put(bu * rgX + bv * fwX + hLift * upX); fb.put(bu * rgY + bv * fwY + hLift * upY); fb.put(bu * rgZ + bv * fwZ + hLift * upZ)
+            written += 2; i++
+        }
+        buf.rewind()
+        pathUploadBuffer = buf // 保活，防异步上传读已释放内存
+        pathVertexBuffer.setBufferAt(engine, 0, buf, 0, nv * 12)
+        pathVertCount = nv
+        engine.renderableManager.setGeometryAt(inst, 0, RenderableManager.PrimitiveType.LINES,
+            pathVertexBuffer, pathIndexBuffer, 0, nv)
     }
 
     /** 设置地面平面：法向(=up)、offset、是否显示网格。重算正交基并按需重建网格。 */
@@ -788,6 +985,7 @@ internal class PointCloudSurfaceView(
     private val choreographer = Choreographer.getInstance()
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
+            if (roamMode) integrateRoam(frameTimeNanos)
             val sc = swapChain
             if (sc != null && uiHelper.isReadyToRender) {
                 if (renderer.beginFrame(sc, frameTimeNanos)) {
@@ -816,6 +1014,7 @@ internal class PointCloudSurfaceView(
     @Volatile private var pinching = false
 
     override fun onTouchEvent(ev: MotionEvent): Boolean {
+        if (roamMode) return false // 漫游期所有输入走 Compose HUD（左摇杆 + 全屏 look-pad）
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 lastX = ev.x; lastY = ev.y
@@ -918,10 +1117,12 @@ internal class PointCloudSurfaceView(
         scene.removeEntity(pointEntity)
         scene.removeEntity(meshEntity)
         scene.removeEntity(gridEntity)
+        scene.removeEntity(pathEntity)
         scene.removeEntity(lightEntity)
         engine.entityManager.destroy(pointEntity)
         engine.entityManager.destroy(meshEntity)
         engine.entityManager.destroy(gridEntity)
+        engine.entityManager.destroy(pathEntity)
         engine.entityManager.destroy(lightEntity)
         engine.destroyVertexBuffer(vertexBuffer)
         engine.destroyIndexBuffer(indexBuffer)
@@ -929,13 +1130,17 @@ internal class PointCloudSurfaceView(
         engine.destroyIndexBuffer(meshIndexBuffer)
         engine.destroyVertexBuffer(gridVertexBuffer)
         engine.destroyIndexBuffer(gridIndexBuffer)
+        engine.destroyVertexBuffer(pathVertexBuffer)
+        engine.destroyIndexBuffer(pathIndexBuffer)
         engine.destroyMaterialInstance(materialInstance)
         engine.destroyMaterialInstance(gridMaterialInstance) // 先于 material（同 material 派生）
+        engine.destroyMaterialInstance(pathMaterialInstance) // 先于 material（同 material 派生）
         engine.destroyMaterial(material)
         engine.destroyMaterialInstance(meshMaterialInstance)
         engine.destroyMaterial(meshMaterial)
         pointUploadBuffers.clear()
         gridUploadBuffer = null
+        pathUploadBuffer = null
         meshPositionUploadBuffer = null
         meshTangentUploadBuffer = null
         meshIndexUploadBuffer = null

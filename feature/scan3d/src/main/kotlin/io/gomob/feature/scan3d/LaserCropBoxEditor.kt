@@ -205,7 +205,7 @@ fun LaserCropBoxEditor(
 
 /** 顶部浮层小药丸按钮（半透明底，叠在点云上）。accent=主色描边强调（如显隐切换）。 */
 @Composable
-private fun OverlayPill(label: String, accent: Boolean = false, onClick: () -> Unit) {
+internal fun OverlayPill(label: String, accent: Boolean = false, onClick: () -> Unit) {
     val line = if (accent) Gomob.colors.accent else Gomob.colors.line2
     val fg = if (accent) Gomob.colors.accent else Gomob.colors.fg1
     Box(
@@ -384,7 +384,7 @@ private fun HeightCenterSlider(label: String, value: Float, minV: Float, maxV: F
 // --- 几何（镜像服务端 cropbox.go；单位 mm）---
 
 /** 顶视投影结果：子采样点的基坐标 (u,v,h) + 框内 mask + 基向量 + 范围。 */
-private class TopProj(
+internal class TopProj(
     val n: Int,
     val u: FloatArray, val v: FloatArray, val h: FloatArray,
     val right0: FloatArray, val fwd0: FloatArray, val up: FloatArray,
@@ -408,7 +408,7 @@ private fun groundBasis(up: FloatArray): Pair<FloatArray, FloatArray> {
     return floatArrayOf(rx, ry, rz) to floatArrayOf(fx, fy, fz)
 }
 
-private fun projectTopView(cloud: FloatArray, groundNormal: FloatArray?, upSign: Int, maxPts: Int = 4000): TopProj {
+internal fun projectTopView(cloud: FloatArray, groundNormal: FloatArray?, upSign: Int, maxPts: Int = 4000): TopProj {
     val total = cloud.size / 3
     if (total == 0) {
         return TopProj(0, FloatArray(0), FloatArray(0), FloatArray(0),
@@ -442,7 +442,7 @@ private fun projectTopView(cloud: FloatArray, groundNormal: FloatArray?, upSign:
 }
 
 /** 把基坐标的框转成世界系 ScanCropBox（center=cU·right0+cV·fwd0+cH·up；up=upSign·法向；half=[hU,hV,hH]）。 */
-private fun worldBox(proj: TopProj, cU: Float, cV: Float, cH: Float, hU: Float, hV: Float, hH: Float, yawDeg: Float, upSign: Int): ScanCropBox {
+internal fun worldBox(proj: TopProj, cU: Float, cV: Float, cH: Float, hU: Float, hV: Float, hH: Float, yawDeg: Float, upSign: Int): ScanCropBox {
     val cx = cU * proj.right0[0] + cV * proj.fwd0[0] + cH * proj.up[0]
     val cy = cU * proj.right0[1] + cV * proj.fwd0[1] + cH * proj.up[1]
     val cz = cU * proj.right0[2] + cV * proj.fwd0[2] + cH * proj.up[2]
@@ -467,7 +467,7 @@ private fun yawedBasis(proj: TopProj, yawDeg: Float): Pair<FloatArray, FloatArra
 }
 
 /** 本地框内点计数（子采样近似），同时回填 proj.inMask 供画布高亮。镜像服务端 toBoxFrame 判定。 */
-private fun countInBox(proj: TopProj, box: ScanCropBox): Int {
+internal fun countInBox(proj: TopProj, box: ScanCropBox): Int {
     if (proj.n == 0) return 0
     val (r, f) = yawedBasis(proj, box.yawDeg)
     val up = box.up; val c = box.center; val hU = box.half[0]; val hV = box.half[1]; val hH = box.half[2]
