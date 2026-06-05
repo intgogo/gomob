@@ -151,7 +151,7 @@ private fun LaserCaptureBody(
     onSelectVehicleType: (io.gomob.data.scan.VehicleType) -> Unit,
     onOpenSettings: () -> Unit,
 ) {
-    // 融合模型视角预设（完成后生效，相对检测到的地面"上"方向）。新扫描重置为自由家位。
+    // 视角预设（顶/侧/斜/自由，相对各云的"上"方向）。A/B/融合三窗同款；新扫描重置为自由家位。
     var viewPreset by remember { mutableStateOf(LaserViewPreset.FREE) }
     // 视角重置信号：每次「重置」自增一次，PointCloud3dView 据此回到当前预设家位 + 清平移。
     var resetSignal by remember { mutableStateOf(0) }
@@ -170,9 +170,6 @@ private fun LaserCaptureBody(
             LaserScanState.Idle -> { selected = LaserCloudKind.FUSED; viewPreset = LaserViewPreset.FREE }
             else -> Unit
         }
-    }
-    LaunchedEffect(state is LaserScanState.Completed) {
-        if (state !is LaserScanState.Completed) viewPreset = LaserViewPreset.FREE
     }
 
     val selectedCloud = when (selected) {
@@ -207,12 +204,12 @@ private fun LaserCaptureBody(
             LaserCloudPanel(
                 title = title, accent = accent, cloud = selectedCloud, emptyHint = emptyHint, state = state,
                 autoFit = true, modifier = Modifier.fillMaxSize(),
-                upAxis = viewUp, viewPreset = if (isFused) viewPreset else LaserViewPreset.FREE,
+                upAxis = viewUp, viewPreset = viewPreset,
                 showGround = showGround, groundD = ground?.d ?: 0f, resetSignal = resetSignal,
                 autoFitKey = selected, // 切换显示的云(融合/A/B)时重拟合；同一云增量生长时不变→不冲掉手动视角
             )
-            // 视角段控仅对融合模型（含地面摆正）有意义，完成后叠右上。
-            if (completed != null && isFused) {
+            // 视角段控：A/B/融合三窗同款，凡当前云非空即叠右上一键切机位/复位。
+            if (selectedCloud.isNotEmpty()) {
                 ViewPresetBar(
                     current = viewPreset, onSelect = { viewPreset = it }, onReset = { resetSignal++ },
                     modifier = Modifier.align(Alignment.TopEnd).padding(10.dp),
