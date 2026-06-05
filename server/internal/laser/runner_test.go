@@ -3,6 +3,7 @@ package laser
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -56,6 +57,13 @@ func (f *fakeCloudStore) PutCloud(_ context.Context, sessionKey, name string, xy
 	return LaserObjectKey(sessionKey, name), nil
 }
 
+func (f *fakeCloudStore) PutCloudXYZI(ctx context.Context, sessionKey, name string, xyz, attr []float32) (string, error) {
+	if len(attr) != len(xyz)/3 {
+		return "", errors.New("attr 长度与点数不符")
+	}
+	return f.PutCloud(ctx, sessionKey, name, xyz)
+}
+
 type fakePublisher struct {
 	mu     sync.Mutex
 	topic  string
@@ -90,13 +98,13 @@ func (s *recordSink) Status(state string, _, _ int) {
 }
 
 // fakeScan 模拟 cgo 流式回调：unit0 两帧、unit1 两帧、status scanning→fusing→done、unit2 融合整云。
+// 每单元帧带递增 h_angle(0→90°)模拟真实扫掠，过空扫守卫。
 func fakeScan(_, _, align, _ string, _ float32, cb ScanCallbacks) (ScanResult, error) {
-	emit := func(unit int, n int) {
+	emit := func(unit, n int, h float32) {
 		if cb.OnPoints == nil {
 			return
 		}
-		xyz := make([]float32, n*3)
-		cb.OnPoints(PointFrame{Unit: unit, XYZmm: xyz})
+		cb.OnPoints(PointFrame{Unit: unit, XYZmm: make([]float32, n*3), HAngleDeg: h})
 	}
 	status := func(s string) {
 		if cb.OnStatus != nil {
@@ -104,14 +112,55 @@ func fakeScan(_, _, align, _ string, _ float32, cb ScanCallbacks) (ScanResult, e
 		}
 	}
 	status("scanning")
-	emit(0, 100)
-	emit(0, 50) // unitA 共 150
-	emit(1, 200)
-	emit(1, 40) // unitB 共 240
+	emit(0, 100, 0)
+	emit(0, 50, 90) // unitA 共 150，扫掠 0→90°
+	emit(1, 200, 0)
+	emit(1, 40, 90) // unitB 共 240，扫掠 0→90°
 	status("fusing")
-	emit(2, 390) // 融合 = 150+240
+	emit(2, 390, 0) // 融合帧 h=0
 	status("done")
 	return ScanResult{PtsA: 150, PtsB: 240, Fused: 390, AfterCrop: 390, Align: "icp"}, nil
+}
+
+// TestRunnerNoSweepGuard：控制板没真转台 → 帧 h_angle 恒定 → 空扫守卫判失败（不静默产出扁平云）。
+func TestRunnerNoSweepGuard(t *testing.T) {
+	jobs := &fakeJobStore{}
+	clouds := &fakeCloudStore{}
+	sink := &recordSink{}
+	r := newTestRunner(jobs, clouds, nil)
+	// 模拟掉线控制板：state 报 SCAN/有点，但 h_angle 恒为 0（没扫掠）。
+	r.Replay = func(_, _, _, _ string, _ float32, cb ScanCallbacks) (ScanResult, error) {
+		if cb.OnStatus != nil {
+			cb.OnStatus("scanning", 0, 0)
+		}
+		for _, u := range []int{0, 1} {
+			cb.OnPoints(PointFrame{Unit: u, XYZmm: make([]float32, 300), HAngleDeg: 0})
+		}
+		return ScanResult{PtsA: 100, PtsB: 100, Fused: 200, AfterCrop: 200, Align: "none"}, nil
+	}
+	_, err := r.Run(context.Background(), RunSpec{JobID: 9, SessionKey: "s", Replay: true}, sink)
+	if err == nil {
+		t.Fatal("空扫应失败，得 nil")
+	}
+	if !strings.Contains(err.Error(), "未真正扫掠") {
+		t.Errorf("错误应含「未真正扫掠」，得: %v", err)
+	}
+	if jobs.failCalls != 1 || jobs.completeCalls != 0 {
+		t.Errorf("应 Fail 1/Complete 0，得 Fail=%d Complete=%d", jobs.failCalls, jobs.completeCalls)
+	}
+	if clouds.counts["fused"] != 0 {
+		t.Errorf("空扫不应落云，得 %+v", clouds.counts)
+	}
+	// 端侧应收到 error 状态。
+	got := false
+	for _, s := range sink.statuses {
+		if s == "error" {
+			got = true
+		}
+	}
+	if !got {
+		t.Errorf("sink 应收 error 状态，得 %v", sink.statuses)
+	}
 }
 
 func newTestRunner(jobs JobStore, clouds CloudStore, pub Publisher) *Runner {

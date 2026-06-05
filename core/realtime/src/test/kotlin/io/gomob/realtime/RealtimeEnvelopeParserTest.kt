@@ -89,6 +89,69 @@ class RealtimeEnvelopeParserTest {
     }
 
     @Test
+    fun laserScanDoneParsesMeasurementAndCompliance() {
+        val event = parser.toEvent(
+            parser.parse(
+                """
+                {
+                  "type":"scan.fusion_done",
+                  "payload":{
+                    "kind":"laser",
+                    "job_id":42,
+                    "session_key":"sess-1",
+                    "result_object_key":"k/fused.pcd",
+                    "unit_a_object_key":"k/a.pcd",
+                    "unit_b_object_key":"k/b.pcd",
+                    "points":154074,
+                    "pts_a":85492,
+                    "pts_b":68582,
+                    "align_method":"none",
+                    "length_mm":1797.0,
+                    "width_mm":523.0,
+                    "height_mm":750.0,
+                    "measure_valid":true,
+                    "compliant":true,
+                    "violations":[]
+                  }
+                }
+                """.trimIndent(),
+            ),
+        )
+
+        assertThat(event).isInstanceOf(RealtimeEvent.LaserScanDone::class.java)
+        val d = event as RealtimeEvent.LaserScanDone
+        assertThat(d.sessionKey).isEqualTo("sess-1")
+        assertThat(d.lengthMm).isEqualTo(1797.0f)
+        assertThat(d.widthMm).isEqualTo(523.0f)
+        assertThat(d.heightMm).isEqualTo(750.0f)
+        assertThat(d.measureValid).isTrue()
+        assertThat(d.compliant).isTrue()
+        assertThat(d.violations).isEmpty()
+    }
+
+    @Test
+    fun laserScanDoneCarriesViolations() {
+        val event = parser.toEvent(
+            parser.parse(
+                """
+                {
+                  "type":"scan.fusion_done",
+                  "payload":{
+                    "kind":"laser","session_key":"s","result_object_key":"f",
+                    "length_mm":13000.0,"width_mm":2600.0,"height_mm":4100.0,
+                    "measure_valid":true,"compliant":false,
+                    "violations":["车长超限","车宽超限","车高超限"]
+                  }
+                }
+                """.trimIndent(),
+            ),
+        )
+        val d = event as RealtimeEvent.LaserScanDone
+        assertThat(d.compliant).isFalse()
+        assertThat(d.violations).containsExactly("车长超限", "车宽超限", "车高超限")
+    }
+
+    @Test
     fun transcriptUpdatedPayloadParses() {
         val event = parser.toEvent(
             parser.parse(

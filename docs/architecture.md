@@ -34,6 +34,8 @@
 | `architecture/09-realtime-message-live-implementation.md` | M5 实时协作实施步骤、端侧 / 服务端 / harness 验收 | 草稿 |
 | `architecture/10-android-uvc-stack-rewrite.md` | 自研 Android UVC stack 重写（绕开厂商 SDK 坏栈） | 草稿 |
 | `architecture/11-embedded-camera-form.md` | P100R3 内嵌手机形态设计（供电软恢复 / 位姿固定 / 分阶段路线 / 风险） | 草稿 |
+| `architecture/15-laser-scanner-integration.md` | 激光扫描设备集成（双单元 LIDAR-PTZ 采集 + 融合点云，服务端下沉） | 草稿 |
+| `architecture/16-jchy-vehicle-measurement-app.md` | JCHY 车辆外廓测量/建模层逆向（采集层之上：车型分类 + LWH/轴距/罐体/栏板/护栏测量 + gomob 差距） | 草稿 |
 
 ## 设计原则速览
 

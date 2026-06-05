@@ -160,6 +160,11 @@ private data class PendingConfirm(val title: String, val body: String, val onCon
 @Composable
 fun LaserDeviceControlSheet(
     onDismiss: () -> Unit,
+    // 车位框（一次性标定）入口：底座固定后圈一次范围，之后扫描自动裁框内测量。
+    // canEditCropBox=有融合云可作顶视底图时才可圈选；cropBoxSaved=已存框。
+    canEditCropBox: Boolean = false,
+    cropBoxSaved: Boolean = false,
+    onEditCropBox: () -> Unit = {},
     vm: LaserDeviceViewModel = hiltViewModel(),
 ) {
     val ui by vm.ui.collectAsStateWithLifecycle()
@@ -225,6 +230,9 @@ fun LaserDeviceControlSheet(
                 }
             }
 
+            // 测量范围 · 车位框（一次性标定）：底座固定，圈一次即长期生效。
+            CropBoxSection(canEdit = canEditCropBox, saved = cropBoxSaved, onEdit = onEditCropBox)
+
             ui.info?.let { info ->
                 ScanSettingsSection(info.scanSettings, onSave = vm::saveScanSettings)
                 CalibSection(info.calib, onSave = { c ->
@@ -243,6 +251,53 @@ fun LaserDeviceControlSheet(
 }
 
 // ───── 子区块 ─────
+
+/**
+ * 测量范围 · 车位框入口（设置内的一次性标定）。底座固定后圈一次顶视范围，之后每次扫描自动裁框内测量。
+ * 编辑器需融合点云作顶视底图：[canEdit]=true（当前有完成态融合云）才可圈选；否则提示先扫一次。
+ * [saved]=已存框（持久于 unit_a 世界系，跨会话）。
+ */
+@Composable
+private fun CropBoxSection(canEdit: Boolean, saved: Boolean, onEdit: () -> Unit) {
+    SectionCard("测量范围") {
+        val border = if (canEdit) Gomob.colors.accent else Gomob.colors.line2
+        val bg = if (canEdit) Gomob.colors.accentSoft else Gomob.colors.bg2
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(Gomob.shapes.r2)
+                .background(bg)
+                .border(BorderStroke(1.dp, border), Gomob.shapes.r2)
+                .then(if (canEdit) Modifier.clickable(onClick = onEdit) else Modifier)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(
+                GomobIcons.Cube, "圈选车位框",
+                tint = if (canEdit) Gomob.colors.accent else Gomob.colors.fg3,
+                modifier = Modifier.size(18.dp),
+            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    if (saved) "车位框 · 已圈选" else "圈选车位框",
+                    fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                    color = if (canEdit) Gomob.colors.accent else Gomob.colors.fg1,
+                )
+                Text(
+                    when {
+                        canEdit && saved -> "顶视拖框可重调 · 下次扫描自动裁框内测量"
+                        canEdit -> "顶视拖框定车位 → 裁掉背景 → 框内量尺寸"
+                        saved -> "已保存 · 下次扫描自动裁框内测量（重扫后可调整）"
+                        else -> "先完成一次扫描，再来圈选车位范围"
+                    },
+                    fontSize = 9.sp,
+                    color = if (saved && !canEdit) Gomob.colors.ok else Gomob.colors.fg3,
+                )
+            }
+        }
+    }
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable

@@ -96,21 +96,34 @@ func (s *natsSink) Status(state string, a, b int) {
 	}
 }
 
-// devctlGate 实现 DeviceGate：对两单元发 SCAN_START / SCAN_STOP。
+// devctlGate 实现 DeviceGate：起扫前（可选）给两单元各自下发扫描起止角，再发 SCAN_START / SCAN_STOP。
 type devctlGate struct {
-	a, b *DeviceClient
-	log  *slog.Logger
+	a, b                   *DeviceClient
+	log                    *slog.Logger
+	aStart, aStop          float64 // unit A 起止角（绝对°）
+	bStart, bStop          float64 // unit B 起止角
+	setAngles              bool    // 是否下发角度（false 则沿用设备持久化值）
 }
 
-// NewDevctlGate 建门控。
-func NewDevctlGate(ipA, ipB string, log *slog.Logger) DeviceGate {
+// NewDevctlGate 建门控。setAngles=true 时起扫前把 A 设为 [aStart,aStop]、B 设为 [bStart,bStop]。
+// per-unit：两单元几何不同，不能强加同一对称值（-180/180 会让 A 起=止塌成 0° 不转）。
+func NewDevctlGate(ipA, ipB string, aStart, aStop, bStart, bStop float64, setAngles bool, log *slog.Logger) DeviceGate {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &devctlGate{a: NewDeviceClient(ipA, 0), b: NewDeviceClient(ipB, 0), log: log}
+	return &devctlGate{
+		a: NewDeviceClient(ipA, 0), b: NewDeviceClient(ipB, 0),
+		aStart: aStart, aStop: aStop, bStart: bStart, bStop: bStop, setAngles: setAngles, log: log,
+	}
 }
 
 func (g *devctlGate) Start(ctx context.Context) error {
+	// 起扫前下发扫描角度：读当前 control → 只改起止角 → 整体回写（保留 scan_speed/zero_speed/
+	// watching）。设角度失败不阻断扫描（记 warn，沿用设备持久化角度继续），避免一次读写抖动毁整次扫描。
+	if g.setAngles {
+		g.applyScanAngles(ctx, g.a, g.aStart, g.aStop, "A")
+		g.applyScanAngles(ctx, g.b, g.bStart, g.bStop, "B")
+	}
 	if err := g.a.ControlScan(ctx, ScanStart); err != nil {
 		return err
 	}
@@ -120,6 +133,26 @@ func (g *devctlGate) Start(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// applyScanAngles 把单元 c 的扫描起止角设为 start/stop（读-改-写，保留其它运动参数）。
+func (g *devctlGate) applyScanAngles(ctx context.Context, c *DeviceClient, start, stop float64, tag string) {
+	info, err := c.GetInfo(ctx)
+	if err != nil {
+		g.log.Warn("读控制设置失败，沿用设备持久化扫描角度", "unit", tag, "err", err)
+		return
+	}
+	ctrl := info.Control
+	if ctrl.ScanStartAngle == start && ctrl.ScanStopAngle == stop {
+		return // 已是目标角度，免去一次写
+	}
+	ctrl.ScanStartAngle = start
+	ctrl.ScanStopAngle = stop
+	if err := c.UpdateControl(ctx, ctrl); err != nil {
+		g.log.Warn("下发扫描角度失败，沿用设备持久化角度", "unit", tag, "err", err)
+		return
+	}
+	g.log.Info("已设扫描角度", "unit", tag, "start", start, "stop", stop)
 }
 
 func (g *devctlGate) Stop(ctx context.Context) error {

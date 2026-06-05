@@ -77,6 +77,17 @@ class RealtimeEnvelopeParser @Inject constructor(
                     ptsA = it.ptsA,
                     ptsB = it.ptsB,
                     alignMethod = it.alignMethod ?: "",
+                    lengthMm = it.lengthMm,
+                    widthMm = it.widthMm,
+                    heightMm = it.heightMm,
+                    measureValid = it.measureValid,
+                    compliant = it.compliant,
+                    violations = it.violations,
+                    groundNx = it.groundNx,
+                    groundNy = it.groundNy,
+                    groundNz = it.groundNz,
+                    groundD = it.groundD,
+                    groundValid = it.groundValid,
                 )
             } else {
                 RealtimeEvent.ScanFusionDone(
@@ -184,6 +195,19 @@ private data class FusionDonePayload(
     @SerialName("pts_a") val ptsA: Int = 0,
     @SerialName("pts_b") val ptsB: Int = 0,
     @SerialName("align_method") val alignMethod: String? = null,
+    // --- M9.6 测量 + 合规（kind=laser 时填）---
+    @SerialName("length_mm") val lengthMm: Float = 0f,
+    @SerialName("width_mm") val widthMm: Float = 0f,
+    @SerialName("height_mm") val heightMm: Float = 0f,
+    @SerialName("measure_valid") val measureValid: Boolean = false,
+    val compliant: Boolean = false,
+    val violations: List<String> = emptyList(),
+    // 地面平面（端侧视角预设的"上"方向；nx*x+ny*y+nz*z+d=0）。
+    @SerialName("ground_nx") val groundNx: Float = 0f,
+    @SerialName("ground_ny") val groundNy: Float = 0f,
+    @SerialName("ground_nz") val groundNz: Float = 0f,
+    @SerialName("ground_d") val groundD: Float = 0f,
+    @SerialName("ground_valid") val groundValid: Boolean = false,
 )
 
 @Serializable

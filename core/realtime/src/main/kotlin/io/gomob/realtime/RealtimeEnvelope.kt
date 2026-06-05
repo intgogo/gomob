@@ -70,6 +70,19 @@ sealed interface RealtimeEvent {
         val ptsA: Int,
         val ptsB: Int,
         val alignMethod: String,
+        // 融合后外廓测量 + GB7258 合规（M9.6，服务端 measure.go 推来；mm）。
+        val lengthMm: Float,
+        val widthMm: Float,
+        val heightMm: Float,
+        val measureValid: Boolean,
+        val compliant: Boolean,
+        val violations: List<String>,
+        // 地面平面（视角预设的"上"方向基准；nx*x+ny*y+nz*z+d=0，法向指向点云主体侧）。
+        val groundNx: Float = 0f,
+        val groundNy: Float = 0f,
+        val groundNz: Float = 0f,
+        val groundD: Float = 0f,
+        val groundValid: Boolean = false,
     ) : RealtimeEvent
     /** 激光采集中的增量点（laser.points，M8'）。unit: 0=unitA, 1=unitB。[points] 扁平 [x,y,z,...] mm。 */
     data class LaserPoints(

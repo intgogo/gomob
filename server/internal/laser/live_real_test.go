@@ -40,7 +40,8 @@ func TestRunnerLiveReal(t *testing.T) {
 	clouds := &fakeCloudStore{}
 	sink := &recordSink{}
 	r := NewRunner(jobs, clouds, nil, slog.Default())
-	r.Gate = NewDevctlGate(ipA, ipB, slog.Default())
+	// 角度下发关（false）：本 E2E 只验采集/起停，不在测试里改设备持久化扫描角度。
+	r.Gate = NewDevctlGate(ipA, ipB, 0, 90, -180, 20, false, slog.Default())
 
 	job, err := r.Run(ctx, RunSpec{
 		JobID:      1,

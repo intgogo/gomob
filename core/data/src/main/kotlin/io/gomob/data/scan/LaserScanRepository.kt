@@ -53,6 +53,31 @@ data class LaserDoneResult(
     val ptsA: Int,
     val ptsB: Int,
     val alignMethod: String,
+    val measurement: VehicleMeasurement,
+    val ground: GroundPlane,
+)
+
+/** 车辆外廓测量 + GB7258 合规（M9.6，服务端 measure.go 算后经 done 事件推来；mm）。 */
+data class VehicleMeasurement(
+    val lengthMm: Float,
+    val widthMm: Float,
+    val heightMm: Float,
+    val valid: Boolean,
+    val compliant: Boolean,
+    val violations: List<String>,
+)
+
+/**
+ * 地面平面（服务端 ground.go RANSAC 拟合，经 done 事件推来）：nx*x+ny*y+nz*z+d=0，
+ * 法向单位向量指向点云主体一侧(=“上”)。端侧用作视角预设的"上"方向基准（设备世界系 Z 非真竖直）。
+ * valid=false 时端侧回退世界 +Z。
+ */
+data class GroundPlane(
+    val nx: Float,
+    val ny: Float,
+    val nz: Float,
+    val d: Float,
+    val valid: Boolean,
 )
 
 /**
@@ -91,15 +116,34 @@ class LaserScanRepository @Inject constructor(
                 ptsA = it.ptsA,
                 ptsB = it.ptsB,
                 alignMethod = it.alignMethod,
+                measurement = VehicleMeasurement(
+                    lengthMm = it.lengthMm,
+                    widthMm = it.widthMm,
+                    heightMm = it.heightMm,
+                    valid = it.measureValid,
+                    compliant = it.compliant,
+                    violations = it.violations,
+                ),
+                ground = GroundPlane(
+                    nx = it.groundNx, ny = it.groundNy, nz = it.groundNz,
+                    d = it.groundD, valid = it.groundValid,
+                ),
             )
         }
 
     /** 确保实时通道已连接（扫描页进场时调，保证能收到 laser.points/status/done 推送）。 */
     fun ensureRealtimeConnected() = socket.connect()
 
-    /** 起一次扫描（请求驱动；服务端探活两单元后开始采集，立即返回 capturing）。 */
-    suspend fun start(align: String = "none", keepRatio: Float? = null, inspectionId: Long? = null): LaserStartResult {
-        val resp = api.start(LaserScanStartRequest(align = align, keepRatio = keepRatio, inspectionId = inspectionId))
+    /** 起一次扫描（请求驱动；服务端探活两单元后开始采集，立即返回 capturing）。vehicleTypeId=车型编号（可空）。 */
+    suspend fun start(
+        align: String = "none",
+        keepRatio: Float? = null,
+        inspectionId: Long? = null,
+        vehicleTypeId: Int? = null,
+    ): LaserStartResult {
+        val resp = api.start(LaserScanStartRequest(
+            align = align, keepRatio = keepRatio, inspectionId = inspectionId, vehicleTypeId = vehicleTypeId,
+        ))
         return LaserStartResult(resp.scanId, resp.sessionKey, resp.status)
     }
 
@@ -143,6 +187,10 @@ class LaserScanRepository @Inject constructor(
     suspend fun downloadCloudPoints(scanId: Long, name: String): FloatArray =
         parsePcdBinary(downloadCloudFile(scanId, name).readBytes())
 
+    /** 下载一朵单元 PCD（XYZI），解析为 (xyz 扁平 mm, 每点 h_angle°)。供"圈框→看每点采集角"。 */
+    suspend fun downloadCloudWithAngles(scanId: Long, name: String): CloudWithAngles =
+        parsePcdBinaryWithAngles(downloadCloudFile(scanId, name).readBytes())
+
     // --- 设备控制面板（原厂功能键；unit="a"|"b"）---
 
     /** 单元实时状态。 */
@@ -165,7 +213,78 @@ class LaserScanRepository @Inject constructor(
     suspend fun updateCalib(unit: String, c: DeviceCalib) {
         api.deviceCalib(unit, c.toNetwork())
     }
+
+    // --- 持久车位框（M9.11）：用户一次圈定 3D 框 → 每次扫描裁框内测量 ---
+
+    /** 取当前装机点的车位框；未设置返回 null。 */
+    suspend fun getCropBox(): ScanCropBox? {
+        val r = api.getCropBox()
+        val box = r.box
+        return if (r.set && box != null) box.toDomain() else null
+    }
+
+    /** 保存/覆盖车位框（服务端持久化，非设备写）。 */
+    suspend fun saveCropBox(box: ScanCropBox) {
+        api.putCropBox(box.toNetwork())
+    }
+
+    /** 用候选框裁某次扫描融合云并测量，供拖框实时预览（不落库）。 */
+    suspend fun cropPreview(scanId: Long, box: ScanCropBox): CropPreviewResult {
+        val r = api.cropPreview(scanId, box.toNetwork())
+        return CropPreviewResult(
+            totalPoints = r.totalPoints,
+            inPoints = r.inPoints,
+            lengthMm = r.measurement.lengthMm,
+            widthMm = r.measurement.widthMm,
+            heightMm = r.measurement.heightMm,
+            bodyPts = r.measurement.bodyPts,
+            bodyRatio = r.measurement.bodyRatio,
+            valid = r.measurement.valid,
+        )
+    }
 }
+
+/**
+ * 世界系定向裁剪框(OBB)，mm。center=框心；up=朝上单位向量(地面法向，可翻转/微调)；
+ * yawDeg=绕 up 旋转(footprint 朝向/车头)；half=[右半宽,前半长,上半高]。
+ */
+data class ScanCropBox(
+    val center: FloatArray,
+    val up: FloatArray,
+    val yawDeg: Float,
+    val half: FloatArray,
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is ScanCropBox) return false
+        return center.contentEquals(other.center) && up.contentEquals(other.up) &&
+            yawDeg == other.yawDeg && half.contentEquals(other.half)
+    }
+    override fun hashCode(): Int {
+        var r = center.contentHashCode(); r = 31 * r + up.contentHashCode()
+        r = 31 * r + yawDeg.hashCode(); r = 31 * r + half.contentHashCode(); return r
+    }
+}
+
+/** 拖框预览结果：框内点数 + 框内测量（mm）。 */
+data class CropPreviewResult(
+    val totalPoints: Int,
+    val inPoints: Int,
+    val lengthMm: Float,
+    val widthMm: Float,
+    val heightMm: Float,
+    val bodyPts: Int,
+    val bodyRatio: Float,
+    val valid: Boolean,
+)
+
+private fun io.gomob.network.LaserCropBox.toDomain() = ScanCropBox(
+    center = center.toFloatArray(), up = up.toFloatArray(), yawDeg = yawDeg, half = half.toFloatArray(),
+)
+
+private fun ScanCropBox.toNetwork() = io.gomob.network.LaserCropBox(
+    center = center.toList(), up = up.toList(), yawDeg = yawDeg, half = half.toList(),
+)
 
 // --- feature 层可见设备控制类型（剥离 core:network）---
 
@@ -287,12 +406,24 @@ data class LaserScanInfo(
     val error: String?,
 )
 
+/** 单元云解析结果：xyz 扁平 [x,y,z,...] mm + 每点 h_angle°（融合云无角度时 angles 为空）。 */
+data class CloudWithAngles(val xyz: FloatArray, val angles: FloatArray) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is CloudWithAngles) return false
+        return xyz.contentEquals(other.xyz) && angles.contentEquals(other.angles)
+    }
+    override fun hashCode(): Int = 31 * xyz.contentHashCode() + angles.contentHashCode()
+}
+
 /**
- * 解析 server 端 EncodePCDBinary 产物（FIELDS x y z / SIZE 4 / TYPE F / DATA binary，小端 float32）。
- * 仅支持该编码器形态（非通用 PCD 解析器）。与 server internal/laser/pcd.go 对偶。
+ * 解析 server 端 EncodePCDBinary{,XYZI} 产物（DATA binary，小端 float32）。与 server internal/laser/pcd.go 对偶。
+ * 支持 FIELDS "x y z"（融合云，12B/点）与 "x y z intensity"（单元云，intensity=h_angle°，16B/点）。
  */
-internal fun parsePcdBinary(data: ByteArray): FloatArray {
-    // 找头部 "DATA binary\n" 的结束位置 + POINTS 数。
+internal fun parsePcdBinary(data: ByteArray): FloatArray = parsePcdBinaryWithAngles(data).xyz
+
+/** 同 parsePcdBinary，但额外返回每点 intensity(=h_angle°)；融合云无 intensity 时 angles 为空。 */
+internal fun parsePcdBinaryWithAngles(data: ByteArray): CloudWithAngles {
     var points = -1
     var fields = ""
     var dataMode = ""
@@ -310,16 +441,24 @@ internal fun parsePcdBinary(data: ByteArray): FloatArray {
         idx = lineEnd + 1
         if (dataMode.isNotEmpty()) break
     }
-    require(fields == "x y z") { "仅支持 FIELDS x y z，得 \"$fields\"" }
+    val hasIntensity = when (fields) {
+        "x y z" -> false
+        "x y z intensity" -> true
+        else -> throw IllegalArgumentException("仅支持 FIELDS \"x y z\" / \"x y z intensity\"，得 \"$fields\"")
+    }
     require(dataMode == "binary") { "仅支持 DATA binary，得 \"$dataMode\"" }
     require(points >= 0) { "缺 POINTS" }
-    val floats = points * 3
-    val need = floats * 4
+    val perPt = if (hasIntensity) 4 else 3
+    val need = points * perPt * 4
     require(n - idx >= need) { "二进制主体不足：期望 $need 字节，剩 ${n - idx}" }
     val bb = ByteBuffer.wrap(data, idx, need).order(ByteOrder.LITTLE_ENDIAN)
-    val out = FloatArray(floats)
-    for (i in 0 until floats) out[i] = bb.float
-    return out
+    val xyz = FloatArray(points * 3)
+    val angles = if (hasIntensity) FloatArray(points) else FloatArray(0)
+    for (i in 0 until points) {
+        xyz[3 * i] = bb.float; xyz[3 * i + 1] = bb.float; xyz[3 * i + 2] = bb.float
+        if (hasIntensity) angles[i] = bb.float
+    }
+    return CloudWithAngles(xyz, angles)
 }
 
 private fun indexOfNewline(data: ByteArray, from: Int): Int {

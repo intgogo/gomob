@@ -1,0 +1,3 @@
+BEGIN;
+DROP TABLE IF EXISTS laser_crop_box;
+COMMIT;

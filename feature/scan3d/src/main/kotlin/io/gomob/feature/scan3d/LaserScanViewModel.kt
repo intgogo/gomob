@@ -37,6 +37,12 @@ class LaserScanViewModel @Inject constructor(
     private val _unitBCloud = MutableStateFlow(FloatArray(0))
     val unitBCloud: StateFlow<FloatArray> = _unitBCloud.asStateFlow()
 
+    // 当前选中车型（控制栏车型下拉；随扫描下发服务端套 carType 偏移/合规/记录）。默认常规货车。
+    private val _vehicleType = MutableStateFlow(io.gomob.data.scan.VehicleTypeCatalog.default)
+    val vehicleType: StateFlow<io.gomob.data.scan.VehicleType> = _vehicleType.asStateFlow()
+
+    fun selectVehicleType(t: io.gomob.data.scan.VehicleType) { _vehicleType.value = t }
+
     private val accA = FloatCloudAccumulator()
     private val accB = FloatCloudAccumulator()
 
@@ -94,6 +100,8 @@ class LaserScanViewModel @Inject constructor(
                     ptsA = d.ptsA,
                     ptsB = d.ptsB,
                     alignMethod = d.alignMethod,
+                    measurement = d.measurement,
+                    ground = d.ground,
                 )
             }
             .launchIn(viewModelScope)
@@ -106,7 +114,7 @@ class LaserScanViewModel @Inject constructor(
         _state.value = LaserScanState.Connecting
         viewModelScope.launch {
             try {
-                val r = repo.start()
+                val r = repo.start(vehicleTypeId = _vehicleType.value.id)
                 scanId = r.scanId
                 sessionKey = r.sessionKey
                 // 服务端立即 capturing；真正进入 Scanning 由 laser.status "scanning" 触发。
@@ -149,6 +157,29 @@ class LaserScanViewModel @Inject constructor(
 
     /** 重新开始（完成/出错后）。 */
     fun restart() = resetToIdle()
+
+    // --- 持久车位框（M9.11）：用户在融合云上圈 3D 框 → 反算并存为每次扫描的裁剪/测量边界 ---
+
+    /** 拖框预览：用候选框裁当前已完成扫描的融合云并测量（服务端，不落库）。无 scanId / 失败回 null。 */
+    suspend fun cropPreview(box: io.gomob.data.scan.ScanCropBox): io.gomob.data.scan.CropPreviewResult? {
+        val id = scanId ?: return null
+        return runCatching { repo.cropPreview(id, box) }.getOrElse {
+            Log.w(TAG, "拖框预览失败: ${it.message}"); null
+        }
+    }
+
+    /** 保存/覆盖车位框（服务端持久化，下次扫描自动裁框内测量）。 */
+    fun saveCropBox(box: io.gomob.data.scan.ScanCropBox, onDone: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            val ok = runCatching { repo.saveCropBox(box) }.isSuccess
+            if (!ok) Log.w(TAG, "保存车位框失败")
+            onDone(ok)
+        }
+    }
+
+    /** 取已保存的车位框（编辑器进场预填）。失败/未设置回 null。 */
+    suspend fun loadCropBox(): io.gomob.data.scan.ScanCropBox? =
+        runCatching { repo.getCropBox() }.getOrNull()
 
     private fun resetToIdle() {
         _state.value = LaserScanState.Idle

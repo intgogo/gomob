@@ -76,15 +76,25 @@ func main() {
 
 	jobs := repo.NewLaserScanRepo(pool)
 	runner := laser.NewRunner(jobs, clouds, publisher, logger.New("laser.runner"))
+	// 持久车位框（M9.11）：runner 测量优先用框、handler 提供 get/put/preview，同一实例。
+	cropBoxes := laser.NewDBCropBoxStore(repo.NewLaserCropBoxRepo(pool))
+	runner.CropBoxes = cropBoxes
 
 	cfg := laser.Config{
 		DefaultUnitAIP: envOr("GOMOB_LASER_UNIT_A_IP", "192.168.9.101"),
 		DefaultUnitBIP: envOr("GOMOB_LASER_UNIT_B_IP", "192.168.9.102"),
 		DefaultAlign:   envOr("GOMOB_LASER_ALIGN", "icp"),
 		DefaultKeep:    float32(parseFloat("GOMOB_LASER_KEEP_RATIO", 1.0)),
+		// 起扫前给两单元各自下发扫描角度（per-unit；默认 job 9 验证可扫的 A:0-90 / B:-180-20）。
+		SetScanAngles: parseBool("GOMOB_LASER_SET_SCAN_ANGLES", true),
+		ScanAStart:    parseFloat("GOMOB_LASER_A_START_ANGLE", 0),
+		ScanAStop:     parseFloat("GOMOB_LASER_A_STOP_ANGLE", 90),
+		ScanBStart:    parseFloat("GOMOB_LASER_B_START_ANGLE", -180),
+		ScanBStop:     parseFloat("GOMOB_LASER_B_STOP_ANGLE", 20),
 	}
 	h := laser.NewHandler(cfg, jobs, runner, publisher, log)
 	h.SetCloudReader(clouds) // 同一 MinIO 实例兼作 PCD 下载读取器
+	h.SetCropBoxStore(cropBoxes)
 
 	mux := http.NewServeMux()
 	h.Mount(mux)
@@ -103,7 +113,9 @@ func main() {
 	}()
 
 	log.Info("laserworker 启动", "addr", addr, "unitA", cfg.DefaultUnitAIP, "unitB", cfg.DefaultUnitBIP,
-		"align", cfg.DefaultAlign, "nats", publisher != nil)
+		"align", cfg.DefaultAlign, "nats", publisher != nil,
+		"set_scan_angles", cfg.SetScanAngles,
+		"angle_a", [2]float64{cfg.ScanAStart, cfg.ScanAStop}, "angle_b", [2]float64{cfg.ScanBStart, cfg.ScanBStop})
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Error("HTTP 服务退出", "err", err)
 		os.Exit(1)
@@ -122,6 +134,15 @@ func parseFloat(key string, def float64) float64 {
 	if v := os.Getenv(key); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			return f
+		}
+	}
+	return def
+}
+
+func parseBool(key string, def bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
 		}
 	}
 	return def

@@ -1,5 +1,8 @@
 package io.gomob.feature.scan3d
 
+import io.gomob.data.scan.GroundPlane
+import io.gomob.data.scan.VehicleMeasurement
+
 /**
  * 激光双单元车辆外廓扫描状态机（M8' 瘦客户端）。
  *
@@ -17,6 +20,8 @@ sealed interface LaserScanState {
         val ptsA: Int,
         val ptsB: Int,
         val alignMethod: String,
+        val measurement: VehicleMeasurement,
+        val ground: GroundPlane,
     ) : LaserScanState
     data class Error(val msg: String) : LaserScanState
 }

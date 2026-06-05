@@ -89,10 +89,23 @@ func (s *MinIOCloudStore) PutCloud(ctx context.Context, sessionKey, name string,
 	if err != nil {
 		return "", err
 	}
+	return s.put(ctx, sessionKey, name, pcd)
+}
+
+// PutCloudXYZI 编码 XYZI PCD（intensity=每点 h_angle°）并上传。供单元云带采集角，端侧"圈ROI→反算扫描角"用。
+func (s *MinIOCloudStore) PutCloudXYZI(ctx context.Context, sessionKey, name string, xyzMM, attr []float32) (string, error) {
+	pcd, err := EncodePCDBinaryXYZI(xyzMM, attr)
+	if err != nil {
+		return "", err
+	}
+	return s.put(ctx, sessionKey, name, pcd)
+}
+
+func (s *MinIOCloudStore) put(ctx context.Context, sessionKey, name string, pcd []byte) (string, error) {
 	key := LaserObjectKey(sessionKey, name)
 	putCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	_, err = s.mc.PutObject(putCtx, s.bucket, key, bytes.NewReader(pcd), int64(len(pcd)),
+	_, err := s.mc.PutObject(putCtx, s.bucket, key, bytes.NewReader(pcd), int64(len(pcd)),
 		minio.PutObjectOptions{ContentType: "application/octet-stream"})
 	if err != nil {
 		return "", fmt.Errorf("上传 %s 失败: %w", key, err)

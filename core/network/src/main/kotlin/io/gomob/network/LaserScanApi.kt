@@ -6,6 +6,7 @@ import okhttp3.ResponseBody
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
+import retrofit2.http.PUT
 import retrofit2.http.Path
 import retrofit2.http.Query
 import retrofit2.http.Streaming
@@ -34,6 +35,23 @@ interface LaserScanApi {
         @Path("id") scanId: Long,
         @Path("name") name: String,
     ): ResponseBody
+
+    // --- 持久车位框（M9.11，契约 handler.go crop-box / crop-preview 端点）---
+
+    /** 取当前装机点的车位框（未设置 set=false）。 */
+    @GET("v1/scans/laser/crop-box")
+    suspend fun getCropBox(): LaserCropBoxResponse
+
+    /** 保存/覆盖车位框（服务端持久化，非设备写）。 */
+    @PUT("v1/scans/laser/crop-box")
+    suspend fun putCropBox(@Body box: LaserCropBox): LaserDeviceOkResponse
+
+    /** 用候选框裁某次扫描的融合云并测量，供拖框实时预览（不落库）。 */
+    @POST("v1/scans/laser/{id}/crop-preview")
+    suspend fun cropPreview(
+        @Path("id") scanId: Long,
+        @Body box: LaserCropBox,
+    ): LaserCropPreviewResponse
 
     // --- 设备控制面板（原厂功能键，unit=a|b 直打单元 :4000，契约 handler.go device-* 端点）---
 
@@ -170,6 +188,8 @@ data class LaserScanStartRequest(
     // none 给有界可渲染的 union 结果。
     val align: String = "none", // icp|none|site
     @SerialName("keep_ratio") val keepRatio: Float? = null,
+    // 车型编号（逆向 JCHY 26 型，docs/16 §4.1）：服务端据此套 carType 偏移 + 按型合规 + 落库记录。
+    @SerialName("vehicle_type_id") val vehicleTypeId: Int? = null,
 )
 
 @Serializable
@@ -177,6 +197,46 @@ data class LaserScanStartResponse(
     @SerialName("scan_id") val scanId: Long,
     @SerialName("session_key") val sessionKey: String,
     val status: String,
+)
+
+// --- 持久车位框 DTO（镜像 server internal/laser CropBox + handler crop-box/preview 响应）---
+
+/** 世界系定向裁剪框(OBB)。center/half 单位 mm；up 朝上单位向量；yawDeg 绕 up 旋转(车头朝向)。 */
+@Serializable
+data class LaserCropBox(
+    val center: List<Float> = listOf(0f, 0f, 0f),
+    val up: List<Float> = listOf(0f, 0f, 1f),
+    @SerialName("yaw_deg") val yawDeg: Float = 0f,
+    val half: List<Float> = listOf(0f, 0f, 0f), // [右半宽, 前半长, 上半高]
+)
+
+@Serializable
+data class LaserCropBoxResponse(
+    @SerialName("bay_key") val bayKey: String = "",
+    val set: Boolean = false,
+    val box: LaserCropBox? = null,
+)
+
+/** crop-preview 响应：框内点数 + 框内测量。 */
+@Serializable
+data class LaserCropPreviewResponse(
+    @SerialName("total_points") val totalPoints: Int = 0,
+    @SerialName("in_points") val inPoints: Int = 0,
+    val measurement: LaserMeasurement = LaserMeasurement(),
+)
+
+/** 框内/通用测量结果（镜像 server measure.Dimensions JSON）。 */
+@Serializable
+data class LaserMeasurement(
+    @SerialName("length_mm") val lengthMm: Float = 0f,
+    @SerialName("width_mm") val widthMm: Float = 0f,
+    @SerialName("height_mm") val heightMm: Float = 0f,
+    @SerialName("obb_angle_deg") val obbAngleDeg: Float = 0f,
+    @SerialName("raw_pts") val rawPts: Int = 0,
+    @SerialName("roi_pts") val roiPts: Int = 0,
+    @SerialName("body_pts") val bodyPts: Int = 0,
+    @SerialName("body_ratio") val bodyRatio: Float = 0f,
+    val valid: Boolean = false,
 )
 
 /** GET 状态 / stop 的统一视图（字段随状态机渐次出现，未就绪为 null）。对齐 handler.go jobView。 */

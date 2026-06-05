@@ -41,6 +41,15 @@ type Config struct {
 	DefaultAlign   string        // 默认 icp
 	DefaultKeep    float32       // 默认 1.0
 	ProbeTimeout   time.Duration // 探活超时，默认 3s
+
+	// 起扫前给两单元各自下发扫描起止角（per-unit；两单元几何/可扫范围不同，不能强加同一对称值
+	// —— 实测 -180/180 会让 A 起=止塌成 0° 扫程不转）。默认用 job 9 验证可扫的设备原值
+	// A:0→90 / B:-180→20。SetScanAngles=false 时跳过、沿用设备持久化值。
+	SetScanAngles bool    // 默认 true（main.go 经 env 注入）
+	ScanAStart    float64 // unit A 起始角，默认 0
+	ScanAStop     float64 // unit A 停止角，默认 90
+	ScanBStart    float64 // unit B 起始角，默认 -180
+	ScanBStop     float64 // unit B 停止角，默认 20
 }
 
 func (c Config) withDefaults() Config {
@@ -59,6 +68,11 @@ func (c Config) withDefaults() Config {
 	if c.ProbeTimeout <= 0 {
 		c.ProbeTimeout = 3 * time.Second
 	}
+	// 角度缺省给 job 9 验证可扫的设备原值；SetScanAngles 由 main.go 显式注入（默认 true），测试默认 false。
+	if c.ScanAStart == 0 && c.ScanAStop == 0 && c.ScanBStart == 0 && c.ScanBStop == 0 {
+		c.ScanAStart, c.ScanAStop = 0, 90
+		c.ScanBStart, c.ScanBStop = -180, 20
+	}
 	return c
 }
 
@@ -71,7 +85,8 @@ type Handler struct {
 	log      *slog.Logger
 	sessions *sessionRegistry
 
-	reader CloudReader // PCD 下载（可空 → 下载端点 501）
+	reader    CloudReader  // PCD 下载（可空 → 下载端点 501）
+	cropBoxes CropBoxStore // 持久车位框存储（可空 → crop-box 端点 501）
 
 	// 可注入点（默认指向真实现）。
 	probe   Prober
@@ -92,6 +107,9 @@ type DeviceAPI interface {
 // SetCloudReader 注入 PCD 下载读取器（laserworker 用同一 MinIOCloudStore 实例）。
 func (h *Handler) SetCloudReader(r CloudReader) { h.reader = r }
 
+// SetCropBoxStore 注入持久车位框存储（与 runner.CropBoxes 同实例）。
+func (h *Handler) SetCropBoxStore(s CropBoxStore) { h.cropBoxes = s }
+
 // NewHandler 建生产 handler。pub 可空（不发 NATS）。
 func NewHandler(cfg Config, lr LaserRepo, runner *Runner, pub Publisher, log *slog.Logger) *Handler {
 	cfg = cfg.withDefaults()
@@ -106,7 +124,7 @@ func NewHandler(cfg Config, lr LaserRepo, runner *Runner, pub Publisher, log *sl
 		log:      log,
 		sessions: &sessionRegistry{active: map[int64]*activeSession{}},
 		probe:    NewDeviceProber(cfg.ProbeTimeout),
-		newGate:  func(a, b string) DeviceGate { return NewDevctlGate(a, b, log) },
+		newGate:  func(a, b string) DeviceGate { return NewDevctlGate(a, b, cfg.ScanAStart, cfg.ScanAStop, cfg.ScanBStart, cfg.ScanBStop, cfg.SetScanAngles, log) },
 		launch:   func(f func()) { go f() },
 		newDev:   func(ip string) DeviceAPI { return NewDeviceClient(ip, cfg.ProbeTimeout) },
 	}
@@ -119,6 +137,11 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/scans/laser/{id}", h.GetScan)
 	// PCD 下载（融合 414万点不走 ws，经此流式取；name 白名单从 job 取 object key，零路径穿越）。
 	mux.HandleFunc("GET /v1/scans/laser/{id}/cloud/{name}", h.DownloadCloud)
+
+	// 持久车位框（M9.11）。crop-box 是 literal 段，比 {id} 更具体不歧义；crop-preview 是 {id} 子资源。
+	mux.HandleFunc("GET /v1/scans/laser/crop-box", h.GetCropBox)
+	mux.HandleFunc("PUT /v1/scans/laser/crop-box", h.PutCropBox)
+	mux.HandleFunc("POST /v1/scans/laser/{id}/crop-preview", h.CropPreview)
 
 	// 设备控制面板（原厂功能键）。用 literal 子资源 + ?unit=a|b 查询参，避开与 {id}/cloud/{name}
 	// 通配的路由歧义（literal 段比 {id} 更具体，不 panic）。
@@ -146,11 +169,12 @@ func (h *Handler) resolveUnit(r *http.Request) (DeviceAPI, string, bool) {
 // --- 请求/响应体 ---
 
 type startReq struct {
-	InspectionID *int64   `json:"inspection_id"`
-	UnitAIP      string   `json:"unit_a_ip"`
-	UnitBIP      string   `json:"unit_b_ip"`
-	Align        string   `json:"align"`
-	KeepRatio    *float32 `json:"keep_ratio"`
+	InspectionID  *int64   `json:"inspection_id"`
+	UnitAIP       string   `json:"unit_a_ip"`
+	UnitBIP       string   `json:"unit_b_ip"`
+	Align         string   `json:"align"`
+	KeepRatio     *float32 `json:"keep_ratio"`
+	VehicleTypeID *int     `json:"vehicle_type_id"` // 逆向 JCHY 车型编号（docs/16 §4.1）；缺省=未选
 }
 
 type startResp struct {
@@ -230,15 +254,20 @@ func (h *Handler) StartScan(w http.ResponseWriter, r *http.Request) {
 	// 配置 runner 的设备门控（live SCAN_START/STOP）。
 	h.runner.Gate = h.newGate(ipA, ipB)
 	sink := NewNATSSink(h.pub, sessionKey, &owner, h.log)
+	vehicleTypeID := -1 // 未选
+	if req.VehicleTypeID != nil {
+		vehicleTypeID = *req.VehicleTypeID
+	}
 	spec := RunSpec{
-		JobID:        job.ID,
-		SessionKey:   sessionKey,
-		InspectionID: req.InspectionID,
-		OwnerUserID:  &owner,
-		UnitAIP:      ipA,
-		UnitBIP:      ipB,
-		Align:        align,
-		KeepRatio:    keep,
+		JobID:         job.ID,
+		SessionKey:    sessionKey,
+		InspectionID:  req.InspectionID,
+		OwnerUserID:   &owner,
+		UnitAIP:       ipA,
+		UnitBIP:       ipB,
+		Align:         align,
+		KeepRatio:     keep,
+		VehicleTypeID: vehicleTypeID,
 	}
 	// 注册活动会话（cancel = CancelScan 协作取消 cgo 采集；设备 SCAN_STOP 由 runner 的 defer Gate.Stop 兜底）。
 	h.sessions.set(job.ID, &activeSession{jobID: job.ID, sessionKey: sessionKey, owner: owner, cancel: CancelScan})
@@ -505,6 +534,122 @@ func (h *Handler) DeviceCalib(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "unit_ip": ip})
+}
+
+// --- 持久车位框端点（M9.11；服务端持久化，非设备写，无需设备审批）---
+
+// bayKey 当前装机点标识 = 默认 unit_a_ip（固定 master 单元标识车位）。
+func (h *Handler) bayKey() string { return h.cfg.DefaultUnitAIP }
+
+// GetCropBox GET /v1/scans/laser/crop-box。返回当前车位框（未设置 → set=false）。
+func (h *Handler) GetCropBox(w http.ResponseWriter, r *http.Request) {
+	if callerUserID(r) == 0 {
+		writeErr(w, http.StatusUnauthorized, "需要鉴权")
+		return
+	}
+	if h.cropBoxes == nil {
+		writeErr(w, http.StatusNotImplemented, "未配置车位框存储")
+		return
+	}
+	box, ok, err := h.cropBoxes.GetCropBox(r.Context(), h.bayKey())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "取车位框失败: "+err.Error())
+		return
+	}
+	resp := map[string]any{"bay_key": h.bayKey(), "set": ok}
+	if ok {
+		resp["box"] = box
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// PutCropBox PUT /v1/scans/laser/crop-box  body=CropBox。保存/覆盖当前车位框。
+func (h *Handler) PutCropBox(w http.ResponseWriter, r *http.Request) {
+	if callerUserID(r) == 0 {
+		writeErr(w, http.StatusUnauthorized, "需要鉴权")
+		return
+	}
+	if h.cropBoxes == nil {
+		writeErr(w, http.StatusNotImplemented, "未配置车位框存储")
+		return
+	}
+	var box CropBox
+	if err := json.NewDecoder(r.Body).Decode(&box); err != nil {
+		writeErr(w, http.StatusBadRequest, "解析车位框失败: "+err.Error())
+		return
+	}
+	if !box.Valid() {
+		writeErr(w, http.StatusBadRequest, "车位框退化（半尺须为正、Up 非零）")
+		return
+	}
+	if err := h.cropBoxes.SaveCropBox(r.Context(), h.bayKey(), box); err != nil {
+		writeErr(w, http.StatusInternalServerError, "保存车位框失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bay_key": h.bayKey()})
+}
+
+// CropPreview POST /v1/scans/laser/{id}/crop-preview  body=CropBox。
+// 用候选框裁某次扫描的融合云并测量，回 {in_points,total_points,measurement}，供拖框实时预览（不落库）。
+func (h *Handler) CropPreview(w http.ResponseWriter, r *http.Request) {
+	uid := callerUserID(r)
+	if uid == 0 {
+		writeErr(w, http.StatusUnauthorized, "需要鉴权")
+		return
+	}
+	if h.reader == nil {
+		writeErr(w, http.StatusNotImplemented, "未配置点云存储读取器")
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "无效 scan id")
+		return
+	}
+	job, err := h.repo.FindByID(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "扫描不存在")
+		return
+	}
+	if !ownsOrAdmin(r, job, uid) {
+		writeErr(w, http.StatusForbidden, "无权预览该扫描")
+		return
+	}
+	if job.FusedObjectKey == nil || *job.FusedObjectKey == "" {
+		writeErr(w, http.StatusNotFound, "融合云尚未就绪")
+		return
+	}
+	var box CropBox
+	if err := json.NewDecoder(r.Body).Decode(&box); err != nil {
+		writeErr(w, http.StatusBadRequest, "解析车位框失败: "+err.Error())
+		return
+	}
+	if !box.Valid() {
+		writeErr(w, http.StatusBadRequest, "车位框退化（半尺须为正、Up 非零）")
+		return
+	}
+	rc, _, gerr := h.reader.GetObject(r.Context(), *job.FusedObjectKey)
+	if gerr != nil {
+		writeErr(w, http.StatusBadGateway, "取融合云失败: "+gerr.Error())
+		return
+	}
+	defer rc.Close()
+	raw, rerr := io.ReadAll(rc)
+	if rerr != nil {
+		writeErr(w, http.StatusBadGateway, "读融合云失败: "+rerr.Error())
+		return
+	}
+	xyz, derr := DecodePCDBinary(raw)
+	if derr != nil {
+		writeErr(w, http.StatusInternalServerError, "解码融合云失败: "+derr.Error())
+		return
+	}
+	dims := Measure(xyz, CropBoxMeasureParams(box))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total_points": len(xyz) / 3,
+		"in_points":    len(CropToBox(xyz, box)) / 3,
+		"measurement":  dims,
+	})
 }
 
 // jobView 转端侧可见视图（object key 供 presign 下载；不外泄内部字段）。
