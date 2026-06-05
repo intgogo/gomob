@@ -327,6 +327,12 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 		// 仅 A 框（含历史单框迁移数据）：A 框 == 世界系，裁融合云测量（权威路径不变）。
 		mp = CropBoxMeasureParams(boxA)
 		measMode = "crop_box"
+	case okB && ground.Valid:
+		// 仅 B 框 + 有地面：B 云按 B 框去背景 → 经 B→A 入世界系 → 地面相对测量（A 框缺时用 B 的部分外廓，
+		// 不静默丢弃 B 标注）。无地面则无法把 B 框定向到世界系，落到下方 device_roi 回退。
+		measCloud = transformPoints(CropToBox(cloudB, boxB), res.BToA)
+		mp = GroundMeasureParams([3]float32{ground.NX, ground.NY, ground.NZ}, ground.D, 30, 5000)
+		measMode = "crop_box_b"
 	case ground.Valid:
 		mp = GroundMeasureParams([3]float32{ground.NX, ground.NY, ground.NZ}, ground.D, 30, 5000)
 		measMode = "ground"

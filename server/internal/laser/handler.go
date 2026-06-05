@@ -631,7 +631,7 @@ func (h *Handler) CropPreview(w http.ResponseWriter, r *http.Request) {
 	// 按镜头标注时各自对自己镜头的点云空间裁剪预览（A 框在世界系、B 框在 unitB 设备系）。
 	var objKey *string
 	switch r.URL.Query().Get("unit") {
-	case "":
+	case "", "fused":
 		objKey = job.FusedObjectKey
 	case "a", "A", "101":
 		objKey = job.UnitAObjectKey

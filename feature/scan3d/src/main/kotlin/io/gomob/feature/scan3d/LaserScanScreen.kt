@@ -135,7 +135,8 @@ fun LaserScanScreen(
                 cloud = fused,
                 groundNormal = if (ground != null && ground.valid) floatArrayOf(ground.nx, ground.ny, ground.nz) else null,
                 initialBox = loadedBox,
-                onPreview = { box -> vm.cropPreview("a", box) },
+                // 顶视编辑器显示的是融合云 → 预览也裁融合云（与显示 + crop_box 测量一致）；存为 a 框。
+                onPreview = { box -> vm.cropPreview("fused", box) },
                 onSave = { box ->
                     vm.saveCropBox("a", box) { ok -> savedHint = ok; if (ok) loadedBox = box }
                     showCropEditor = false
