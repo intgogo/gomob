@@ -77,6 +77,19 @@ func CropToBox(xyzMM []float32, b CropBox) []float32 {
 	return out
 }
 
+// transformPoints 用行优先 4x4 仿射矩阵 m 变换点列([x,y,z,...] mm)，返回新切片（不改原）。
+// 用于把 unitB 设备系点经 B→A(res.BToA, 行优先) 变换并入 unit_a/世界系做双框并集测量。
+func transformPoints(xyz []float32, m [16]float32) []float32 {
+	out := make([]float32, len(xyz))
+	for i := 0; i+2 < len(xyz); i += 3 {
+		x, y, z := xyz[i], xyz[i+1], xyz[i+2]
+		out[i] = m[0]*x + m[1]*y + m[2]*z + m[3]
+		out[i+1] = m[4]*x + m[5]*y + m[6]*z + m[7]
+		out[i+2] = m[8]*x + m[9]*y + m[10]*z + m[11]
+	}
+	return out
+}
+
 // toBoxFrame 把点变换到框局部系(u=右,v=前,w=上，相对框心)并只保留框内点。供框内测量。
 func toBoxFrame(in []pt, b CropBox) []pt {
 	right, fwd, up := b.Basis()

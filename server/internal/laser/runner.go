@@ -308,16 +308,32 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 	// 非致命——测量无效不让 job 失败，只记 measure_valid=false（docs/16 §3⑥/§8）。
 	mp := DefaultMeasureParams()
 	measMode := "device_roi"
-	if box, ok := r.loadCropBox(ctx, spec.UnitAIP); ok {
-		mp = CropBoxMeasureParams(box)
+	measCloud := cloudFus
+	boxA, okA := r.loadCropBox(ctx, spec.UnitAIP, "a")
+	boxB, okB := r.loadCropBox(ctx, spec.UnitAIP, "b")
+	switch {
+	case okA && okB:
+		// 按镜头双框：各单元云按各自框去背景 → unitB 经 B→A 并入世界系 → 对隔离并集测量。
+		// 每台相机看到的背景不同，分别在各自点云空间裁剪，比单一世界框隔离更干净。
+		measCloud = append(CropToBox(cloudA, boxA), transformPoints(CropToBox(cloudB, boxB), res.BToA)...)
+		if ground.Valid {
+			// 并集已隔离到车体；用地面正交基测量（坐标系无关，高度从地面量起）。
+			mp = GroundMeasureParams([3]float32{ground.NX, ground.NY, ground.NZ}, ground.D, 30, 5000)
+		} else {
+			mp = CropBoxMeasureParams(boxA) // 无地面：退回 A 框系定向测量。
+		}
+		measMode = "crop_box_dual"
+	case okA:
+		// 仅 A 框（含历史单框迁移数据）：A 框 == 世界系，裁融合云测量（权威路径不变）。
+		mp = CropBoxMeasureParams(boxA)
 		measMode = "crop_box"
-	} else if ground.Valid {
+	case ground.Valid:
 		mp = GroundMeasureParams([3]float32{ground.NX, ground.NY, ground.NZ}, ground.D, 30, 5000)
 		measMode = "ground"
 	}
 	// 车型 carType 偏移：选定车型把该型 (x,y,z) 偏移叠到测量区域（设备 ROI/裁剪框路径生效；地面路径暂不接）。
 	mp.CarOffset = CarTypeOffset(spec.VehicleTypeID)
-	dims := Measure(cloudFus, mp)
+	dims := Measure(measCloud, mp)
 	// 合规按车型套限值（当前逐型限值未录入，LimitsForVehicleType 回退通用值，见其 TODO）。
 	compl := CheckCompliance(dims, LimitsForVehicleType(spec.VehicleTypeID))
 	if !dims.Valid {
@@ -402,15 +418,15 @@ func (r *Runner) failJob(ctx context.Context, id int64, msg string) {
 	}
 }
 
-// loadCropBox 取该装机点(bayKey=unit_a_ip)的持久车位框；无 store / 未设置 / 框退化 / 取错均回 ok=false
-// （非致命：测量回退自动地面/设备系 ROI）。
-func (r *Runner) loadCropBox(ctx context.Context, unitAIP string) (CropBox, bool) {
+// loadCropBox 取该装机点(bayKey=unit_a_ip)某单元(unit a|b)的持久车位框；无 store / 未设置 / 框退化 /
+// 取错均回 ok=false（非致命：测量回退自动地面/设备系 ROI）。
+func (r *Runner) loadCropBox(ctx context.Context, unitAIP, unit string) (CropBox, bool) {
 	if r.CropBoxes == nil || unitAIP == "" {
 		return CropBox{}, false
 	}
-	box, ok, err := r.CropBoxes.GetCropBox(ctx, unitAIP)
+	box, ok, err := r.CropBoxes.GetCropBox(ctx, unitAIP, unit)
 	if err != nil {
-		r.Log.Warn("取车位框失败", "err", err, "bay", unitAIP)
+		r.Log.Warn("取车位框失败", "err", err, "bay", unitAIP, "unit", unit)
 		return CropBox{}, false
 	}
 	if !ok || !box.Valid() {

@@ -541,6 +541,16 @@ func (h *Handler) DeviceCalib(w http.ResponseWriter, r *http.Request) {
 // bayKey 当前装机点标识 = 默认 unit_a_ip（固定 master 单元标识车位）。
 func (h *Handler) bayKey() string { return h.cfg.DefaultUnitAIP }
 
+// cropUnit 从 ?unit=a|b 解析车位框单元，缺省 a（向后兼容单框语义；a 框在世界系、b 框在 unitB 设备系）。
+func cropUnit(r *http.Request) string {
+	switch r.URL.Query().Get("unit") {
+	case "b", "B", "102":
+		return "b"
+	default:
+		return "a"
+	}
+}
+
 // GetCropBox GET /v1/scans/laser/crop-box。返回当前车位框（未设置 → set=false）。
 func (h *Handler) GetCropBox(w http.ResponseWriter, r *http.Request) {
 	if callerUserID(r) == 0 {
@@ -551,12 +561,13 @@ func (h *Handler) GetCropBox(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotImplemented, "未配置车位框存储")
 		return
 	}
-	box, ok, err := h.cropBoxes.GetCropBox(r.Context(), h.bayKey())
+	unit := cropUnit(r)
+	box, ok, err := h.cropBoxes.GetCropBox(r.Context(), h.bayKey(), unit)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "取车位框失败: "+err.Error())
 		return
 	}
-	resp := map[string]any{"bay_key": h.bayKey(), "set": ok}
+	resp := map[string]any{"bay_key": h.bayKey(), "unit": unit, "set": ok}
 	if ok {
 		resp["box"] = box
 	}
@@ -582,11 +593,12 @@ func (h *Handler) PutCropBox(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "车位框退化（半尺须为正、Up 非零）")
 		return
 	}
-	if err := h.cropBoxes.SaveCropBox(r.Context(), h.bayKey(), box); err != nil {
+	unit := cropUnit(r)
+	if err := h.cropBoxes.SaveCropBox(r.Context(), h.bayKey(), unit, box); err != nil {
 		writeErr(w, http.StatusInternalServerError, "保存车位框失败: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bay_key": h.bayKey()})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bay_key": h.bayKey(), "unit": unit})
 }
 
 // CropPreview POST /v1/scans/laser/{id}/crop-preview  body=CropBox。
@@ -615,8 +627,22 @@ func (h *Handler) CropPreview(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "无权预览该扫描")
 		return
 	}
-	if job.FusedObjectKey == nil || *job.FusedObjectKey == "" {
-		writeErr(w, http.StatusNotFound, "融合云尚未就绪")
+	// 预览云：?unit 缺省→融合（向后兼容/权威测量视图）；a→unitA 云；b→unitB 云。
+	// 按镜头标注时各自对自己镜头的点云空间裁剪预览（A 框在世界系、B 框在 unitB 设备系）。
+	var objKey *string
+	switch r.URL.Query().Get("unit") {
+	case "":
+		objKey = job.FusedObjectKey
+	case "a", "A", "101":
+		objKey = job.UnitAObjectKey
+	case "b", "B", "102":
+		objKey = job.UnitBObjectKey
+	default:
+		writeErr(w, http.StatusBadRequest, "unit 须为 a|b")
+		return
+	}
+	if objKey == nil || *objKey == "" {
+		writeErr(w, http.StatusNotFound, "目标点云尚未就绪")
 		return
 	}
 	var box CropBox
@@ -628,7 +654,7 @@ func (h *Handler) CropPreview(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "车位框退化（半尺须为正、Up 非零）")
 		return
 	}
-	rc, _, gerr := h.reader.GetObject(r.Context(), *job.FusedObjectKey)
+	rc, _, gerr := h.reader.GetObject(r.Context(), *objKey)
 	if gerr != nil {
 		writeErr(w, http.StatusBadGateway, "取融合云失败: "+gerr.Error())
 		return
