@@ -2,6 +2,7 @@ package laser
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -232,6 +233,58 @@ func TestRunnerHappyPath(t *testing.T) {
 	}
 	if len(sink.statuses) != 3 || sink.statuses[0] != "scanning" || sink.statuses[2] != "done" {
 		t.Errorf("状态序列错: %v", sink.statuses)
+	}
+}
+
+// TestRunnerDualCropBox：按单元框测量路由 + 双框 union/transformPoints 路径不 panic。
+// 双框→crop_box_dual（跑 CropToBox(cloudA)∪BToA·CropToBox(cloudB)）；仅 A 框→crop_box。
+func TestRunnerDualCropBox(t *testing.T) {
+	bay := "192.168.9.101"
+	bigBox := CropBox{Center: [3]float32{0, 0, 0}, Up: [3]float32{0, 0, 1}, YawDeg: 0, Half: [3]float32{5000, 5000, 5000}}
+	// 自带 BToA=单位阵的扫描（默认 ScanResult 零矩阵会把 B 点全压到原点；测真实 transform 用单位阵）。
+	dualScan := func(_, _, _, _ string, _ float32, cb ScanCallbacks) (ScanResult, error) {
+		if cb.OnStatus != nil {
+			cb.OnStatus("scanning", 0, 0)
+		}
+		if cb.OnPoints != nil {
+			cb.OnPoints(PointFrame{Unit: 0, XYZmm: make([]float32, 300), HAngleDeg: 0})
+			cb.OnPoints(PointFrame{Unit: 0, XYZmm: make([]float32, 300), HAngleDeg: 90})
+			cb.OnPoints(PointFrame{Unit: 1, XYZmm: make([]float32, 300), HAngleDeg: 0})
+			cb.OnPoints(PointFrame{Unit: 1, XYZmm: make([]float32, 300), HAngleDeg: 90})
+			cb.OnPoints(PointFrame{Unit: 2, XYZmm: make([]float32, 600), HAngleDeg: 0})
+		}
+		if cb.OnStatus != nil {
+			cb.OnStatus("fusing", 0, 0)
+			cb.OnStatus("done", 0, 0)
+		}
+		return ScanResult{PtsA: 200, PtsB: 200, Fused: 200, AfterCrop: 200, Align: "icp",
+			BToA: [16]float32{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}}, nil
+	}
+	runMode := func(t *testing.T, store *fakeCropBoxStore) string {
+		jobs := &fakeJobStore{}
+		r := newTestRunner(jobs, &fakeCloudStore{}, nil)
+		r.Replay = dualScan
+		r.CropBoxes = store
+		if _, err := r.Run(context.Background(), RunSpec{JobID: 1, SessionKey: "s", UnitAIP: bay, Replay: true}, &recordSink{}); err != nil {
+			t.Fatalf("Run 失败: %v", err)
+		}
+		var stats map[string]any
+		_ = json.Unmarshal(jobs.lastCompletion.Stats, &stats)
+		m, _ := stats["measure_mode"].(string)
+		return m
+	}
+
+	dual := newFakeCropBoxStore()
+	_ = dual.SaveCropBox(context.Background(), bay, "a", bigBox)
+	_ = dual.SaveCropBox(context.Background(), bay, "b", bigBox)
+	if m := runMode(t, dual); m != "crop_box_dual" {
+		t.Errorf("双框应 crop_box_dual，得 %q", m)
+	}
+
+	aOnly := newFakeCropBoxStore()
+	_ = aOnly.SaveCropBox(context.Background(), bay, "a", bigBox)
+	if m := runMode(t, aOnly); m != "crop_box" {
+		t.Errorf("仅 A 框应 crop_box，得 %q", m)
 	}
 }
 
