@@ -73,12 +73,17 @@ fun LaserScanScreen(
     var showCropEditor by remember { mutableStateOf(false) }
     var loadedBox by remember { mutableStateOf<io.gomob.data.scan.ScanCropBox?>(null) }
     var savedHint by remember { mutableStateOf(false) }
+    // 按单元已存框缓存（驱动「已标/重标」提示）。
+    val boxA by vm.boxA.collectAsStateWithLifecycle()
+    val boxB by vm.boxB.collectAsStateWithLifecycle()
+    // 漫游标注请求（按当前镜头进第一视角圈框；非空即全屏叠漫游屏）。
+    var roamReq by remember { mutableStateOf<RoamReq?>(null) }
     val completed = state as? LaserScanState.Completed
     val canEditCropBox = completed != null && fused.isNotEmpty()
     val hasSavedBox = loadedBox != null || savedHint
     // 持久化车位框（unit_a 世界系，跨会话）进场预载一次，用于设置内显示「已圈选」并作编辑器初值。
-    // 融合云顶视编辑器对应 a 单元（融合==世界==unit_a 系）。
-    LaunchedEffect(Unit) { loadedBox = vm.loadCropBox("a") }
+    // 融合云顶视编辑器对应 a 单元（融合==世界==unit_a 系）；同时预载 A/B 两单元缓存。
+    LaunchedEffect(Unit) { loadedBox = vm.loadCropBox("a"); vm.refreshCropBoxes() }
 
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
@@ -103,6 +108,9 @@ fun LaserScanScreen(
                     vehicleType = vehicleType,
                     onSelectVehicleType = vm::selectVehicleType,
                     onOpenSettings = { showDevice = true },
+                    boxASaved = boxA != null,
+                    boxBSaved = boxB != null,
+                    onRoam = { cloud, unit, up -> roamReq = RoamReq(cloud, unit, up) },
                 )
             }
         }
@@ -136,8 +144,28 @@ fun LaserScanScreen(
             )
         }
     }
+    // 全屏漫游标注（叠在最上层，按镜头进第一视角走动圈框 → 顶视编辑器微调保存）。
+    roamReq?.let { req ->
+        Box(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
+            RoamAnnotationScreen(
+                cloud = req.cloud,
+                groundNormal = req.up,
+                onPreview = { box -> vm.cropPreview(req.unit, box) },
+                onSave = { box ->
+                    vm.saveCropBox(req.unit, box) { ok ->
+                        if (ok && req.unit == "a") { savedHint = true; loadedBox = box }
+                    }
+                    roamReq = null
+                },
+                onDismiss = { roamReq = null },
+            )
+        }
+    }
     }
 }
+
+/** 漫游标注请求：按某镜头进第一视角圈框所需的点云 + 单元(a|b) + 上方向(null→+Z)。 */
+private class RoamReq(val cloud: FloatArray, val unit: String, val up: FloatArray?)
 
 @Composable
 private fun LaserCaptureBody(
@@ -151,6 +179,9 @@ private fun LaserCaptureBody(
     vehicleType: io.gomob.data.scan.VehicleType,
     onSelectVehicleType: (io.gomob.data.scan.VehicleType) -> Unit,
     onOpenSettings: () -> Unit,
+    boxASaved: Boolean,
+    boxBSaved: Boolean,
+    onRoam: (cloud: FloatArray, unit: String, up: FloatArray?) -> Unit,
 ) {
     // 视角预设（顶/侧/斜/自由，相对各云的"上"方向）。A/B/融合三窗同款；新扫描重置为自由家位。
     var viewPreset by remember { mutableStateOf(LaserViewPreset.FREE) }
@@ -215,6 +246,19 @@ private fun LaserCaptureBody(
                     current = viewPreset, onSelect = { viewPreset = it }, onReset = { resetSignal++ },
                     modifier = Modifier.align(Alignment.TopEnd).padding(10.dp),
                 )
+            }
+            // 漫游标注入口：完成态且当前云非空时叠左下——按当前镜头进第一视角走一圈圈车位框。
+            // 融合/镜头A → 世界系 a 框（A==世界，up=地面法向）；镜头B → unitB 设备系 b 框（up=+Z）。
+            if (completed != null && selectedCloud.isNotEmpty()) {
+                val roamUnit = if (selected == LaserCloudKind.B) "b" else "a"
+                val roamUp = if (selected == LaserCloudKind.B) null
+                else if (ground != null && ground.valid) floatArrayOf(ground.nx, ground.ny, ground.nz) else null
+                val saved = if (roamUnit == "b") boxBSaved else boxASaved
+                Box(Modifier.align(Alignment.BottomStart).padding(10.dp)) {
+                    OverlayPill(if (saved) "重标车位框 ◈" else "漫游标注 ◈", accent = true) {
+                        onRoam(selectedCloud, roamUnit, roamUp)
+                    }
+                }
             }
         }
         // 缩略图切换行（融合/A/B，2D 散点轻量预览；采集时实时长，点击切主窗口）。
