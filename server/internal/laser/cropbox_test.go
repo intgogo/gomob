@@ -5,6 +5,30 @@ import (
 	"testing"
 )
 
+// transformPoints 行优先 4x4 仿射：锁 B→A(res.BToA 行优先)约定。约定错=双框 crop_box_dual
+// 把 unitB 点变换到错误世界系、测量静默偏。验证 单位阵不变 / 纯平移 / 绕 Z 90°+平移。
+func TestTransformPoints_RowMajor(t *testing.T) {
+	approx := func(a, b float32) bool { return math.Abs(float64(a-b)) < 1e-4 }
+	// 单位阵：点不变。
+	id := [16]float32{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}
+	got := transformPoints([]float32{3, 4, 5}, id)
+	if !(approx(got[0], 3) && approx(got[1], 4) && approx(got[2], 5)) {
+		t.Errorf("单位阵应不变，得 %v", got)
+	}
+	// 纯平移 (10,20,30)。
+	tr := [16]float32{1, 0, 0, 10, 0, 1, 0, 20, 0, 0, 1, 30, 0, 0, 0, 1}
+	got = transformPoints([]float32{1, 2, 3}, tr)
+	if !(approx(got[0], 11) && approx(got[1], 22) && approx(got[2], 33)) {
+		t.Errorf("平移应 +（10,20,30），得 %v", got)
+	}
+	// 绕 Z 90°（行优先 [0,-1,0,tx; 1,0,0,ty; 0,0,1,tz]）+ 平移：点(1,0,0)→(tx, 1+ty, tz)。
+	rz := [16]float32{0, -1, 0, 10, 1, 0, 0, 20, 0, 0, 1, 30, 0, 0, 0, 1}
+	got = transformPoints([]float32{1, 0, 0}, rz)
+	if !(approx(got[0], 10) && approx(got[1], 21) && approx(got[2], 30)) {
+		t.Errorf("绕Z 90°+平移应 (10,21,30)，得 %v", got)
+	}
+}
+
 // Up=+Z、Yaw=0：基应为 right=+Y、fwd=+X、up=+Z（groundBasis 对 +Z 的确定性结果：fwd=right×up）。
 func TestCropBoxBasis_FlatGround(t *testing.T) {
 	b := CropBox{Up: [3]float32{0, 0, 1}, YawDeg: 0}
