@@ -758,8 +758,8 @@ internal class PointCloudSurfaceView(
         originU = fitTargetX * rgX + fitTargetY * rgY + fitTargetZ * rgZ
         originV = fitTargetX * fwX + fitTargetY * fwY + fitTargetZ * fwZ
         walkU = 0f
-        walkV = -(fitRadius + 1000f)   // 退到取景中心后方一点
-        roamYaw = 0f; roamPitch = 0f   // 朝 +fwd0 = 看向中心
+        walkV = 0f                     // 落在点云中心（用户要站正中、从里向外环顾），脚踏地面 eyeHeight 处
+        roamYaw = 0f; roamPitch = 0f   // 水平起视，转头(look-pad)环顾四周
         roamFar = (2f * fitRadius + eyeHeightMm + 3000f).toDouble().coerceAtLeast(6000.0)
         camera.setProjection(60.0, lastAspect, 50.0, roamFar, Camera.Fov.VERTICAL)
         applyCamera()
