@@ -365,7 +365,10 @@ internal class PointCloudSurfaceView(
     @Volatile private var moveStrafe = 0f     // 摇杆右(+)
     @Volatile private var moveForward = 0f    // 摇杆前(+)
     @Volatile private var moveMag = 0f        // 摇杆幅度 0..1（部分推=慢走）
+    @Volatile private var lookYawRate = 0f    // 右摇杆转身：横轴(+右转)，每帧连续积分
+    @Volatile private var lookPitchRate = 0f  // 右摇杆抬头低头：纵轴(+上)，每帧连续积分
     private var moveSpeedMmPerSec = 1500f
+    private val turnSpeedRadPerSec = 2.0f     // 右摇杆满偏转速 ≈115°/s
     private var roamFar = 8000.0
     private var lastFrameNanos = 0L           // 帧 dt 源；0=首帧（dt=0 不跳）
     private var pitchInvert = false
@@ -778,6 +781,11 @@ internal class PointCloudSurfaceView(
         moveStrafe = strafe; moveForward = forward; moveMag = magnitude
     }
 
+    /** 右摇杆转身/抬头低头输入：yawRate 横轴(+右转)、pitchRate 纵轴(+上)，−1..1。主线程写、渲染回调读。 */
+    fun setLookInput(yawRate: Float, pitchRate: Float) {
+        lookYawRate = yawRate; lookPitchRate = pitchRate
+    }
+
     /** 转头/抬头（look-pad 拖动）。pitch clamp ±1.4 避开近竖直退化。 */
     fun applyLook(dYaw: Float, dPitch: Float) {
         roamYaw += dYaw
@@ -817,20 +825,33 @@ internal class PointCloudSurfaceView(
         val dt = if (lastFrameNanos == 0L) 0f else ((frameTimeNanos - lastFrameNanos) / 1_000_000_000.0).toFloat()
         lastFrameNanos = frameTimeNanos
         val dtc = dt.coerceIn(0f, 0.05f)
+        if (dtc <= 0f) return
+        var dirty = false
+        // 右摇杆转身/抬头：连续转视，站着不走也能转（look-pad 拖动是叠加的离散补充）。
+        val ly = lookYawRate; val lp = lookPitchRate
+        if (ly != 0f || lp != 0f) {
+            roamYaw += ly * turnSpeedRadPerSec * dtc
+            val dp = (if (pitchInvert) -lp else lp) * turnSpeedRadPerSec * dtc
+            roamPitch = (roamPitch + dp).coerceIn(-1.40f, 1.40f)
+            dirty = true
+        }
+        // 左摇杆走动。
         val s = moveStrafe; val f = moveForward; val mag = moveMag
-        if (dtc <= 0f || mag <= 0f || (s == 0f && f == 0f)) return
-        val cy = cos(roamYaw.toDouble()).toFloat(); val sy = sin(roamYaw.toDouble()).toFloat()
-        // 前=cy·fwd0+sy·right0 → (u,v)=(sy,cy)；右=cy·right0−sy·fwd0 → (u,v)=(cy,−sy)。
-        var du = f * sy + s * cy
-        var dv = f * cy - s * sy
-        val m = kotlin.math.sqrt(du * du + dv * dv)
-        if (m > 1e-4f) { du /= m; dv /= m } // 归一方向，对角不超速
-        val step = moveSpeedMmPerSec * dtc * mag.coerceIn(0f, 1f)
-        val lim = (roamRadius * 3f).coerceAtLeast(3000f)
-        walkU = (walkU + du * step).coerceIn(-lim, lim) // 别走丢云
-        walkV = (walkV + dv * step).coerceIn(-lim, lim)
-        applyCamera()
-        if (annotating) maybeSamplePath()
+        if (mag > 0f && (s != 0f || f != 0f)) {
+            val cy = cos(roamYaw.toDouble()).toFloat(); val sy = sin(roamYaw.toDouble()).toFloat()
+            // 前=cy·fwd0+sy·right0 → (u,v)=(sy,cy)；右=cy·right0−sy·fwd0 → (u,v)=(cy,−sy)。
+            var du = f * sy + s * cy
+            var dv = f * cy - s * sy
+            val m = kotlin.math.sqrt(du * du + dv * dv)
+            if (m > 1e-4f) { du /= m; dv /= m } // 归一方向，对角不超速
+            val step = moveSpeedMmPerSec * dtc * mag.coerceIn(0f, 1f)
+            val lim = (roamRadius * 3f).coerceAtLeast(3000f)
+            walkU = (walkU + du * step).coerceIn(-lim, lim) // 别走丢云
+            walkV = (walkV + dv * step).coerceIn(-lim, lim)
+            dirty = true
+            if (annotating) maybeSamplePath()
+        }
+        if (dirty) applyCamera()
     }
 
     /** 走动中按位移 ≥150mm 采一个路径点，重建 LINES。 */

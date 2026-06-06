@@ -97,7 +97,16 @@ fun RoamAnnotationScreen(
         // 左虚拟摇杆（走动）。
         RoamJoystick(
             modifier = Modifier.align(Alignment.BottomStart).padding(start = 28.dp, bottom = 44.dp),
+            tint = Color(0xFF5BD6FF),
             onMove = { strafe, forward, mag -> view.setMoveInput(strafe, forward, mag) },
+        )
+
+        // 右虚拟摇杆（转身/抬头低头）：横轴=转身(yaw)、纵轴=抬头低头(pitch)，连续转视。
+        // 与 look-pad 拖动叠加：摇杆给持续转向，拖动给快速大幅扫视。
+        RoamJoystick(
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 28.dp, bottom = 44.dp),
+            tint = Color(0xFFFFC15B),
+            onMove = { yaw, pitch, mag -> view.setLookInput(yaw * mag, pitch * mag) },
         )
 
         // 顶部 HUD：取消 / 提示 / 标注 toggle。
@@ -108,7 +117,7 @@ fun RoamAnnotationScreen(
         ) {
             OverlayPill("取消") { onDismiss() }
             Text(
-                if (annotating) "走一圈圈出车位 · 已采 $sampleCount 点" else "第一视角 · 左摇杆走动，右侧拖动转头",
+                if (annotating) "走一圈圈出车位 · 已采 $sampleCount 点" else "第一视角 · 左摇杆走动 · 右摇杆转身/抬头",
                 fontSize = 9.sp, color = Gomob.colors.fg2,
             )
             OverlayPill(if (annotating) "标注中 ●" else "开始标注 ▴", accent = annotating) {
@@ -117,36 +126,39 @@ fun RoamAnnotationScreen(
             }
         }
 
-        // 完成圈选（标注中且采样≥4 才可用）：拟合最小面积矩形 → 顶视编辑器微调保存。
+        // 标注操作（完成圈选 / 重走）：顶部居中行，避开左右两个底部摇杆。
         if (annotating) {
             val enough = sampleCount >= 4
-            Box(
-                Modifier.align(Alignment.BottomCenter).padding(bottom = 44.dp)
-                    .clip(CircleShape)
-                    .background(if (enough) Gomob.colors.accentSoft else Gomob.colors.bg1)
-                    .border(BorderStroke(1.dp, if (enough) Gomob.colors.accent else Gomob.colors.line2), CircleShape)
-                    .clickable(enabled = enough) {
-                        val box = fitRoamBox(view.pathSamplesUV(), cloud, groundNormal)
-                        if (box != null) {
-                            fitted = box; editing = true
-                            annotating = false; view.setAnnotating(false); view.setMoveInput(0f, 0f, 0f)
-                        }
-                    }
-                    .padding(horizontal = 28.dp, vertical = 12.dp),
+            Row(
+                Modifier.align(Alignment.TopCenter).padding(top = 50.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("完成圈选", fontSize = 14.sp, color = if (enough) Gomob.colors.accent else Gomob.colors.fg3)
+                Box(
+                    Modifier.clip(CircleShape)
+                        .background(if (enough) Gomob.colors.accentSoft else Gomob.colors.bg1)
+                        .border(BorderStroke(1.dp, if (enough) Gomob.colors.accent else Gomob.colors.line2), CircleShape)
+                        .clickable(enabled = enough) {
+                            val box = fitRoamBox(view.pathSamplesUV(), cloud, groundNormal)
+                            if (box != null) {
+                                fitted = box; editing = true
+                                annotating = false; view.setAnnotating(false)
+                                view.setMoveInput(0f, 0f, 0f); view.setLookInput(0f, 0f)
+                            }
+                        }
+                        .padding(horizontal = 24.dp, vertical = 10.dp),
+                ) {
+                    Text("完成圈选", fontSize = 14.sp, color = if (enough) Gomob.colors.accent else Gomob.colors.fg3)
+                }
+                if (sampleCount > 0) {
+                    Box(
+                        Modifier.clip(CircleShape).background(Gomob.colors.bg1)
+                            .border(BorderStroke(1.dp, Gomob.colors.line2), CircleShape)
+                            .clickable { view.resetPath(); sampleCount = 0 }
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                    ) { Text("重走", fontSize = 13.sp, color = Gomob.colors.fg2) }
+                }
             }
-        }
-
-        // 重走（标注中常驻，清空已画路径重来）。
-        if (annotating && sampleCount > 0) {
-            Box(
-                Modifier.align(Alignment.BottomEnd).padding(end = 28.dp, bottom = 44.dp)
-                    .clip(CircleShape).background(Gomob.colors.bg1)
-                    .border(BorderStroke(1.dp, Gomob.colors.line2), CircleShape)
-                    .clickable { view.resetPath(); sampleCount = 0 }
-                    .padding(horizontal = 18.dp, vertical = 12.dp),
-            ) { Text("重走", fontSize = 13.sp, color = Gomob.colors.fg2) }
         }
         } // if (!editing)
     }
@@ -170,7 +182,8 @@ fun RoamAnnotationScreen(
 @Composable
 private fun RoamJoystick(
     modifier: Modifier = Modifier,
-    onMove: (strafe: Float, forward: Float, mag: Float) -> Unit,
+    tint: Color = Color(0xFF5BD6FF),
+    onMove: (x: Float, y: Float, mag: Float) -> Unit,
 ) {
     val baseDp = 132.dp
     val radiusPx = with(LocalDensity.current) { 56.dp.toPx() }
@@ -192,8 +205,8 @@ private fun RoamJoystick(
             },
     ) {
         Canvas(Modifier.fillMaxSize()) {
-            drawCircle(Color(0xFF5BD6FF).copy(alpha = 0.15f), radius = radiusPx, center = center)
-            drawCircle(Color(0xFF5BD6FF), radius = 24f, center = center + knob)
+            drawCircle(tint.copy(alpha = 0.15f), radius = radiusPx, center = center)
+            drawCircle(tint, radius = 24f, center = center + knob)
         }
     }
 }
