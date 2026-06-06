@@ -507,7 +507,7 @@ private fun boxCenterAxis(box: ScanCropBox, proj: TopProj, axis: Int): Float {
  * 拟合默认框：各轴取 2–98 百分位罩住点云主体（排远端离群），center=区间中点，half=半区间夹紧。
  * 保证开场框内>0、黄框落在视野内——用户从一个"已套住云"的框起步微调，而非空框。返回 [cU,cV,cH,hU,hV,hH]。
  */
-private fun fitToCloud(proj: TopProj): FloatArray {
+internal fun fitToCloud(proj: TopProj): FloatArray {
     if (proj.n == 0) return floatArrayOf(0f, 0f, 0f, 1300f, 2000f, 1000f)
     fun band(a: FloatArray): Pair<Float, Float> {
         val s = a.copyOf(); s.sort()

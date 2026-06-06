@@ -356,7 +356,8 @@ internal class PointCloudSurfaceView(
 
     // ───── 第一视角漫游（标注用）。orbit 字段不动；roamMode=false 时本段全不参与渲染/输入。 ─────
     private var roamMode = false
-    private var eyeHeightMm = 1600f          // 站立眼高（地面平面之上，mm）
+    private var roamEyeH = 1600f             // 漫游眼高（地面基 h，世界原点系；屏幕用 2–98 百分位鲁棒算，抗离群）
+    private var roamRadius = 1500f           // 鲁棒包围半径（定远裁剪 + 走动范围；抗离群坏数据）
     private var roamYaw = 0f                  // 头朝向（绕 up；0=朝 +fwd0/取景中心）
     private var roamPitch = 0f               // 抬头/低头（rad，clamp ±1.4 避退化）
     private var walkU = 0f                    // 沿 right0 的地面位移（相对取景中心投影）
@@ -731,7 +732,7 @@ internal class PointCloudSurfaceView(
     private fun applyRoamCamera() {
         val uW = originU + walkU
         val vW = originV + walkV
-        val hEye = -groundOffsetD + eyeHeightMm
+        val hEye = roamEyeH
         val ex = uW * rgX + vW * fwX + hEye * upX
         val ey = uW * rgY + vW * fwY + hEye * upY
         val ez = uW * rgZ + vW * fwZ + hEye * upZ
@@ -750,17 +751,22 @@ internal class PointCloudSurfaceView(
 
     // ───── 漫游对外接口（RoamAnnotationScreen 调用） ─────
 
-    /** 进入第一视角漫游：站到取景中心后方、眼高 eyeHeight，朝中心看。须在 setGround + setPoints(已 fit) 后调。 */
-    fun enterRoamMode(eyeHeight: Float) {
-        eyeHeightMm = eyeHeight
+    /**
+     * 进入第一视角漫游：落在给定中心(centerU,centerV)、眼高 eyeH（均在地面基 (u,v,h) 世界原点系）。
+     * 中心/眼高由屏幕用 2–98 百分位**鲁棒**算（抗离群/坏数据——均值质心会被远端垃圾点拉进空域致点云出视）。
+     * radius=鲁棒包围半径，定远裁剪 + 走动范围。须在 setGround + setPoints 后调。
+     */
+    fun enterRoamMode(centerU: Float, centerV: Float, eyeH: Float, radius: Float) {
         roamMode = true
         lastFrameNanos = 0L
-        originU = fitTargetX * rgX + fitTargetY * rgY + fitTargetZ * rgZ
-        originV = fitTargetX * fwX + fitTargetY * fwY + fitTargetZ * fwZ
+        originU = centerU
+        originV = centerV
+        roamEyeH = eyeH
+        roamRadius = radius.coerceAtLeast(500f)
         walkU = 0f
-        walkV = 0f                     // 落在点云中心（用户要站正中、从里向外环顾），脚踏地面 eyeHeight 处
+        walkV = 0f                     // 落在点云中心（用户要站正中、从里向外环顾）
         roamYaw = 0f; roamPitch = 0f   // 水平起视，转头(look-pad)环顾四周
-        roamFar = (2f * fitRadius + eyeHeightMm + 3000f).toDouble().coerceAtLeast(6000.0)
+        roamFar = (2f * roamRadius + 3000f).toDouble().coerceAtLeast(6000.0)
         camera.setProjection(60.0, lastAspect, 50.0, roamFar, Camera.Fov.VERTICAL)
         applyCamera()
     }
@@ -820,7 +826,7 @@ internal class PointCloudSurfaceView(
         val m = kotlin.math.sqrt(du * du + dv * dv)
         if (m > 1e-4f) { du /= m; dv /= m } // 归一方向，对角不超速
         val step = moveSpeedMmPerSec * dtc * mag.coerceIn(0f, 1f)
-        val lim = (fitRadius * 3f).coerceAtLeast(3000f)
+        val lim = (roamRadius * 3f).coerceAtLeast(3000f)
         walkU = (walkU + du * step).coerceIn(-lim, lim) // 别走丢云
         walkV = (walkV + dv * step).coerceIn(-lim, lim)
         applyCamera()
