@@ -89,7 +89,9 @@ fun RoamAnnotationScreen(
             Modifier.fillMaxSize().pointerInput(Unit) {
                 detectDragGestures { change, drag ->
                     change.consume()
-                    view.applyLook(dYaw = drag.x * 0.004f, dPitch = -drag.y * 0.004f)
+                    // dYaw 取 -drag.x：地面基 right0 实为相机左(fwd0=right0×up → camera_right=-right0)，
+                    // 不翻则左右反（用户实测）。strafe/转身同理在各自 onMove 取反。
+                    view.applyLook(dYaw = -drag.x * 0.004f, dPitch = -drag.y * 0.004f)
                 }
             },
         )
@@ -98,7 +100,7 @@ fun RoamAnnotationScreen(
         RoamJoystick(
             modifier = Modifier.align(Alignment.BottomStart).padding(start = 28.dp, bottom = 44.dp),
             tint = Color(0xFF5BD6FF),
-            onMove = { strafe, forward, mag -> view.setMoveInput(strafe, forward, mag) },
+            onMove = { strafe, forward, mag -> view.setMoveInput(-strafe, forward, mag) },
         )
 
         // 右虚拟摇杆（转身/抬头低头）：横轴=转身(yaw)、纵轴=抬头低头(pitch)，连续转视。
@@ -106,7 +108,7 @@ fun RoamAnnotationScreen(
         RoamJoystick(
             modifier = Modifier.align(Alignment.BottomEnd).padding(end = 28.dp, bottom = 44.dp),
             tint = Color(0xFFFFC15B),
-            onMove = { yaw, pitch, mag -> view.setLookInput(yaw * mag, pitch * mag) },
+            onMove = { yaw, pitch, mag -> view.setLookInput(-yaw * mag, pitch * mag) },
         )
 
         // 顶部 HUD：取消 / 提示 / 标注 toggle。

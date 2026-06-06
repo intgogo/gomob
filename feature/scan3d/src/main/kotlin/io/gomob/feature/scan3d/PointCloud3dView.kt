@@ -308,6 +308,17 @@ internal class PointCloudSurfaceView(
     private var gridVertCount = 0
     private var gridUploadBuffer: ByteBuffer? = null // 保活异步上传 buffer
 
+    // 地面实体（TRIANGLES 大方块，暗色，沉 grid 下 8mm）。给漫游清晰落脚参照，缓解迷失方向。
+    private val groundVertexBuffer: VertexBuffer = VertexBuffer.Builder()
+        .vertexCount(4).bufferCount(1)
+        .attribute(VertexBuffer.VertexAttribute.POSITION, 0, VertexBuffer.AttributeType.FLOAT3, 0, 12)
+        .build(engine)
+    private val groundIndexBuffer: IndexBuffer = IndexBuffer.Builder()
+        .indexCount(6).bufferType(IndexBuffer.Builder.IndexType.UINT).build(engine)
+    private val groundEntity: Int = EntityManager.get().create()
+    private var groundUploadBuffer: ByteBuffer? = null
+    private lateinit var groundMaterialInstance: MaterialInstance
+
     // 标注路径（LINES，amber，铺地面上方 20mm 防 z-fight）。仿 grid 实体管理；pathMaterialInstance 在 init 赋值。
     private val maxPathVerts = 4096
     private val pathVertexBuffer: VertexBuffer = VertexBuffer.Builder()
@@ -452,6 +463,24 @@ internal class PointCloudSurfaceView(
             .culling(false).castShadows(false).receiveShadows(false)
             .build(engine, gridEntity)
         scene.addEntity(gridEntity)
+
+        // 地面实体 entity（TRIANGLES 方块）：固定索引 0,1,2,0,2,3；indexCount=0 起步，buildGrid 填 4 角。
+        // 暗色不抢点云；culling(false) 双面 → 俯视也可见。
+        groundMaterialInstance = material.createInstance().apply {
+            setParameter("baseColor", 0.10f, 0.13f, 0.18f, 1f)
+            setParameter("pointSizePx", 1f)
+        }
+        val groundIdx = ByteBuffer.allocateDirect(6 * 4).order(ByteOrder.nativeOrder())
+        intArrayOf(0, 1, 2, 0, 2, 3).forEach { groundIdx.putInt(it) }
+        groundIdx.rewind()
+        groundIndexBuffer.setBuffer(engine, groundIdx)
+        RenderableManager.Builder(1)
+            .geometry(0, RenderableManager.PrimitiveType.TRIANGLES, groundVertexBuffer, groundIndexBuffer, 0, 0)
+            .material(0, groundMaterialInstance)
+            .boundingBox(bbox)
+            .culling(false).castShadows(false).receiveShadows(false)
+            .build(engine, groundEntity)
+        scene.addEntity(groundEntity)
 
         // 标注路径 entity（LINES，amber）：顺序索引；indexCount=0 起步，走动采样时填。
         pathMaterialInstance = material.createInstance().apply {
@@ -984,6 +1013,26 @@ internal class PointCloudSurfaceView(
             engine.renderableManager.setGeometryAt(inst, 0, RenderableManager.PrimitiveType.LINES,
                 gridVertexBuffer, gridIndexBuffer, 0, nv)
         }
+
+        // 地面实体方块：地面投影质心为心，±half 沿 rg/fw 铺面，沉 8mm 让 grid 线浮其上不 z-fight。
+        val lower = 8f
+        val qx = gx - upX * lower; val qy = gy - upY * lower; val qz = gz - upZ * lower
+        val qb = ByteBuffer.allocateDirect(4 * 12).order(ByteOrder.nativeOrder())
+        val qfb = qb.asFloatBuffer()
+        // 4 角：(-rg,-fw)(+rg,-fw)(+rg,+fw)(-rg,+fw)，索引 0,1,2,0,2,3 拼两三角。
+        for ((sr, sf) in listOf(-1f to -1f, 1f to -1f, 1f to 1f, -1f to 1f)) {
+            qfb.put(qx + rgX * half * sr + fwX * half * sf)
+            qfb.put(qy + rgY * half * sr + fwY * half * sf)
+            qfb.put(qz + rgZ * half * sr + fwZ * half * sf)
+        }
+        qb.rewind()
+        groundUploadBuffer = qb // 保活异步上传
+        groundVertexBuffer.setBufferAt(engine, 0, qb, 0, 4 * 12)
+        val ginst = engine.renderableManager.getInstance(groundEntity)
+        if (ginst != 0) {
+            engine.renderableManager.setGeometryAt(ginst, 0, RenderableManager.PrimitiveType.TRIANGLES,
+                groundVertexBuffer, groundIndexBuffer, 0, 6)
+        }
     }
 
     private fun hideGrid() {
@@ -991,6 +1040,11 @@ internal class PointCloudSurfaceView(
         if (inst != 0) {
             engine.renderableManager.setGeometryAt(inst, 0, RenderableManager.PrimitiveType.LINES,
                 gridVertexBuffer, gridIndexBuffer, 0, 0)
+        }
+        val ginst = engine.renderableManager.getInstance(groundEntity)
+        if (ginst != 0) {
+            engine.renderableManager.setGeometryAt(ginst, 0, RenderableManager.PrimitiveType.TRIANGLES,
+                groundVertexBuffer, groundIndexBuffer, 0, 0)
         }
     }
 
@@ -1144,11 +1198,13 @@ internal class PointCloudSurfaceView(
         scene.removeEntity(pointEntity)
         scene.removeEntity(meshEntity)
         scene.removeEntity(gridEntity)
+        scene.removeEntity(groundEntity)
         scene.removeEntity(pathEntity)
         scene.removeEntity(lightEntity)
         engine.entityManager.destroy(pointEntity)
         engine.entityManager.destroy(meshEntity)
         engine.entityManager.destroy(gridEntity)
+        engine.entityManager.destroy(groundEntity)
         engine.entityManager.destroy(pathEntity)
         engine.entityManager.destroy(lightEntity)
         engine.destroyVertexBuffer(vertexBuffer)
@@ -1157,16 +1213,20 @@ internal class PointCloudSurfaceView(
         engine.destroyIndexBuffer(meshIndexBuffer)
         engine.destroyVertexBuffer(gridVertexBuffer)
         engine.destroyIndexBuffer(gridIndexBuffer)
+        engine.destroyVertexBuffer(groundVertexBuffer)
+        engine.destroyIndexBuffer(groundIndexBuffer)
         engine.destroyVertexBuffer(pathVertexBuffer)
         engine.destroyIndexBuffer(pathIndexBuffer)
         engine.destroyMaterialInstance(materialInstance)
         engine.destroyMaterialInstance(gridMaterialInstance) // 先于 material（同 material 派生）
+        engine.destroyMaterialInstance(groundMaterialInstance) // 先于 material（同 material 派生）
         engine.destroyMaterialInstance(pathMaterialInstance) // 先于 material（同 material 派生）
         engine.destroyMaterial(material)
         engine.destroyMaterialInstance(meshMaterialInstance)
         engine.destroyMaterial(meshMaterial)
         pointUploadBuffers.clear()
         gridUploadBuffer = null
+        groundUploadBuffer = null
         pathUploadBuffer = null
         meshPositionUploadBuffer = null
         meshTangentUploadBuffer = null
