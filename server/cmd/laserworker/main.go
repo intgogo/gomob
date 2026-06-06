@@ -79,6 +79,8 @@ func main() {
 	// 持久车位框（M9.11）：runner 测量优先用框、handler 提供 get/put/preview，同一实例。
 	cropBoxes := laser.NewDBCropBoxStore(repo.NewLaserCropBoxRepo(pool))
 	runner.CropBoxes = cropBoxes
+	// 设备出云竖直翻转约定（默认开）：对每点 z 取反，使端侧默认正立显示，三朵云/测量/车位框同系。
+	runner.FlipVertical = parseBool("GOMOB_LASER_FLIP_VERTICAL", true)
 
 	cfg := laser.Config{
 		DefaultUnitAIP: envOr("GOMOB_LASER_UNIT_A_IP", "192.168.9.101"),

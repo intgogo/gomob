@@ -140,7 +140,21 @@ type Runner struct {
 	CropBoxes CropBoxStore // 可空（无则回退自动地面测量）：持久车位框，按 bayKey=unit_a_ip 取
 	Live      ScanFunc
 	Replay    ScanFunc
-	Log       *slog.Logger
+	// FlipVertical：设备出云竖直翻转的硬件约定（雷达倒装），true 则对每点 z 取反。用户拍板「默认相机
+	// 扫描到的点云就需要上下翻转」。零值 false → host 测试不翻转、断言原始坐标不变；main.go 经
+	// GOMOB_LASER_FLIP_VERTICAL（默认 true）开启。对 A/B/fused 三流一致施加（见 flipZmm）。
+	FlipVertical bool
+	Log          *slog.Logger
+}
+
+// flipZmm 原地取反每点 z（mm）。对 cloudA/cloudB/cloudFus 三流一致翻转 → 显示/地面/测量/车位框
+// 同处一个翻转系、自洽；纯反射不改任何长度，L/W/H 量测不变。
+// 注意：当前 align=none(BToA=identity)，与 fused 流自洽。若日后启用对齐，runner 测量处对 cloudB 的
+// BToA 再变换需按 F=diag(1,1,-1) 共轭（F·BToA·F），届时一并处理。
+func flipZmm(xyz []float32) {
+	for i := 2; i < len(xyz); i += 3 {
+		xyz[i] = -xyz[i]
+	}
 }
 
 // NewRunner 默认绑定真实包级扫描函数。
@@ -199,6 +213,11 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 
 	cb := ScanCallbacks{
 		OnPoints: func(f PointFrame) {
+			// 竖直翻转设备约定：在累积/推流前原地翻 z，使实时预览、三朵 PCD、地面、测量、车位框
+			// 全在同一翻转系。回调内 f.XYZmm 是本帧新拷贝（cgo 已从 C 拷成 Go slice），原地改安全。
+			if r.FlipVertical {
+				flipZmm(f.XYZmm)
+			}
 			mu.Lock()
 			switch f.Unit {
 			case 0:
