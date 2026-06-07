@@ -189,6 +189,7 @@ private fun RoamJoystick(
 ) {
     val baseDp = 132.dp
     val radiusPx = with(LocalDensity.current) { 56.dp.toPx() }
+    val knobRadiusPx = with(LocalDensity.current) { 32.dp.toPx() } // 摇杆头：密度无关、加大好按
     var knob by remember { mutableStateOf(Offset.Zero) }
     Box(
         modifier.size(baseDp).clip(CircleShape)
@@ -208,7 +209,8 @@ private fun RoamJoystick(
     ) {
         Canvas(Modifier.fillMaxSize()) {
             drawCircle(tint.copy(alpha = 0.15f), radius = radiusPx, center = center)
-            drawCircle(tint, radius = 24f, center = center + knob)
+            drawCircle(tint.copy(alpha = 0.35f), radius = knobRadiusPx + 4f, center = center + knob) // 外圈描边
+            drawCircle(tint, radius = knobRadiusPx, center = center + knob)
         }
     }
 }
