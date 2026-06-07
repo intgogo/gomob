@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -103,12 +104,12 @@ fun RoamAnnotationScreen(
             onMove = { strafe, forward, mag -> view.setMoveInput(-strafe, forward, mag) },
         )
 
-        // 右虚拟摇杆（转身/抬头低头）：横轴=转身(yaw)、纵轴=抬头低头(pitch)，连续转视。
-        // 与 look-pad 拖动叠加：摇杆给持续转向，拖动给快速大幅扫视。
-        RoamJoystick(
-            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 28.dp, bottom = 44.dp),
+        // 右转身/俯仰键盘（圆弧+箭头）：◄►按住=连续转身(yaw)、▲▼=抬头低头(pitch)，离手停。
+        // 符号已内嵌(◄左=+1/►右=-1)，无需再取反；与 look-pad 拖动叠加(拖=快速扫视)。
+        RoamTurnPad(
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 18.dp, bottom = 32.dp),
             tint = Color(0xFFFFC15B),
-            onMove = { yaw, pitch, mag -> view.setLookInput(-yaw * mag, pitch * mag) },
+            onLook = { yaw, pitch -> view.setLookInput(yaw, pitch) },
         )
 
         // 顶部 HUD：取消 / 提示 / 标注 toggle。
@@ -119,7 +120,7 @@ fun RoamAnnotationScreen(
         ) {
             OverlayPill("取消") { onDismiss() }
             Text(
-                if (annotating) "走一圈圈出车位 · 已采 $sampleCount 点" else "第一视角 · 左摇杆走动 · 右摇杆转身/抬头",
+                if (annotating) "走一圈圈出车位 · 已采 $sampleCount 点" else "第一视角 · 左摇杆走动 · 右侧 ◄►转身 ▲▼抬头",
                 fontSize = 9.sp, color = Gomob.colors.fg2,
             )
             OverlayPill(if (annotating) "标注中 ●" else "开始标注 ▴", accent = annotating) {
@@ -212,6 +213,59 @@ private fun RoamJoystick(
             drawCircle(tint.copy(alpha = 0.16f), radius = knobRadiusPx + 4f, center = center + knob) // 外圈描边
             drawCircle(tint.copy(alpha = 0.40f), radius = knobRadiusPx, center = center + knob)
         }
+    }
+}
+
+/**
+ * 右转身/俯仰键盘（圆弧+箭头）：四向箭头键排在一圈淡弧上——◄►按住=连续转身(yaw)、▲▼=抬头低头(pitch)，
+ * 离手停。符号内嵌：◄=+1(左转)/►=-1(右转)/▲=+1(抬头)/▼=-1(低头)，与积分器/look-pad 约定一致。
+ * onLook(yaw,pitch) 每次按下/抬起即推（站着不走也能连续转，rate 由 view 端积分）。
+ */
+@Composable
+private fun RoamTurnPad(
+    modifier: Modifier = Modifier,
+    tint: Color = Color(0xFFFFC15B),
+    onLook: (yaw: Float, pitch: Float) -> Unit,
+) {
+    var yaw by remember { mutableStateOf(0f) }
+    var pitch by remember { mutableStateOf(0f) }
+    Box(modifier.size(176.dp), contentAlignment = Alignment.Center) {
+        // 淡弧底盘：一圈细环，箭头键贴其上 → 读作"圆弧+方向箭头"。
+        Canvas(Modifier.fillMaxSize()) {
+            drawCircle(tint.copy(alpha = 0.05f), radius = size.minDimension * 0.47f, center = center)
+        }
+        ArcKey(Modifier.align(Alignment.CenterStart), tint, "◄") { d -> yaw = if (d) 1f else 0f; onLook(yaw, pitch) }
+        ArcKey(Modifier.align(Alignment.CenterEnd), tint, "►") { d -> yaw = if (d) -1f else 0f; onLook(yaw, pitch) }
+        ArcKey(Modifier.align(Alignment.TopCenter), tint, "▲", small = true) { d -> pitch = if (d) 1f else 0f; onLook(yaw, pitch) }
+        ArcKey(Modifier.align(Alignment.BottomCenter), tint, "▼", small = true) { d -> pitch = if (d) -1f else 0f; onLook(yaw, pitch) }
+    }
+}
+
+/** 按住型箭头键：按下 onHold(true)、抬起 onHold(false)；按下高亮。消费自身指针。 */
+@Composable
+private fun ArcKey(
+    modifier: Modifier,
+    tint: Color,
+    glyph: String,
+    small: Boolean = false,
+    onHold: (down: Boolean) -> Unit,
+) {
+    var pressed by remember { mutableStateOf(false) }
+    val sz = if (small) 46.dp else 56.dp
+    Box(
+        modifier.size(sz).clip(CircleShape)
+            .background(tint.copy(alpha = if (pressed) 0.34f else 0.10f))
+            .border(BorderStroke(1.dp, tint.copy(alpha = if (pressed) 0.7f else 0.22f)), CircleShape)
+            .pointerInput(Unit) {
+                detectTapGestures(onPress = {
+                    pressed = true; onHold(true)
+                    tryAwaitRelease()
+                    pressed = false; onHold(false)
+                })
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(glyph, fontSize = if (small) 16.sp else 22.sp, color = tint.copy(alpha = if (pressed) 0.95f else 0.7f))
     }
 }
 
