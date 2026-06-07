@@ -193,8 +193,8 @@ private fun RoamJoystick(
     var knob by remember { mutableStateOf(Offset.Zero) }
     Box(
         modifier.size(baseDp).clip(CircleShape)
-            .background(Gomob.colors.bg0.copy(alpha = 0.55f))
-            .border(BorderStroke(1.dp, Gomob.colors.line2), CircleShape)
+            .background(Gomob.colors.bg0.copy(alpha = 0.22f))
+            .border(BorderStroke(1.dp, Gomob.colors.line2.copy(alpha = 0.45f)), CircleShape)
             .pointerInput(Unit) {
                 detectDragGestures(
                     onDragStart = { knob = Offset.Zero },
@@ -208,9 +208,9 @@ private fun RoamJoystick(
             },
     ) {
         Canvas(Modifier.fillMaxSize()) {
-            drawCircle(tint.copy(alpha = 0.15f), radius = radiusPx, center = center)
-            drawCircle(tint.copy(alpha = 0.35f), radius = knobRadiusPx + 4f, center = center + knob) // 外圈描边
-            drawCircle(tint, radius = knobRadiusPx, center = center + knob)
+            drawCircle(tint.copy(alpha = 0.07f), radius = radiusPx, center = center)
+            drawCircle(tint.copy(alpha = 0.16f), radius = knobRadiusPx + 4f, center = center + knob) // 外圈描边
+            drawCircle(tint.copy(alpha = 0.40f), radius = knobRadiusPx, center = center + knob)
         }
     }
 }
