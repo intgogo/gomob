@@ -14,6 +14,9 @@ captures/
 # 构建产物 / 日志统一进 .dev/
 .dev/
 
+# CodeGraph 索引：数据固定在 .dev/codegraph/，根目录 .codegraph 只是软链
+.codegraph
+
 # 本地编译的 Go 开发服务器二进制
 server/devserver
 

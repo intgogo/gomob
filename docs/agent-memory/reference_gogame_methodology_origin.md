@@ -40,3 +40,14 @@ type: reference
 - 写新 feedback 时先看 gogame 是否已有类似条目，避免重复发明
 - 写 harness 时参考 gogame 现有 harness 的脚本骨架（采样器 → 分析器二段式）
 - 写工程治理脚本（dev.sh / ensure-*）时参考 gogame 的脚本结构和命名约定
+
+## 最近同步（2026-06-12）
+
+从 gogame 同步通用工程方法论一轮，已落地：
+
+- 新 principle：[[principle_three_questions_before_acting]]、[[principle_compute_equivalent_optimization]]；更新 [[principle_first_principles_no_compromise]]。
+- 新 feedback：critical_thinking_not_yes_man / holistic_not_patching / mock_first_io_conserved / autonomous_execution_no_check_in / self_test_before_claim_done / business_verification_not_ui_only / p_phase_default_workflow / phase_0_is_skeleton_not_realism / worktree_only_for_parallel；更新 design_style / dev_loop / plan_writing_quality / harness_mandatory。
+- 顶层文档：`AGENTS.md` 从一行重定向改成正式入口（三问宗旨 / 文档读法 / harness / UI+业务双验证 / CodeGraph / 记忆硬规 / 构建落点 / worktree / BUGS.md）；`CLAUDE.md` 补三问、CodeGraph 节、记忆硬规 check_doc_index 守门、BUGS.md，并把 worktree 政策从「multi-step 就推荐」改成「仅并行才开」。
+- 治理工具：移植 `scripts/codegraph.sh`、`scripts/check_doc_index.sh`、`scripts/sync-claude-memory.sh`，新建 `BUGS.md`，并给 gomob 建了 CodeGraph 索引（覆盖见 [[reference_codegraph_coverage_boundaries]]）。
+
+**本轮刻意跳过的 gogame 专属约定**（Go / 游戏特有，不迁）：archgov 架构治理 CLI、`go build -o .dev` 二进制纪律、Godot 渲染器规范、客户端世界放映机原则、NPC 自主 / 灵魂链接 / 六公理等业务公理。下次同步从这些里挑能通用化的再议。

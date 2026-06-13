@@ -17,6 +17,15 @@
 - stub（固定值返回 / 单分支硬编码 / demo 数据伪装真实链路）直接接真实数据源，不留。
 - 详见 `docs/agent-memory/principle_first_principles_no_compromise.md`。
 
+## ★ 宗旨 — 动手前必答三问
+
+**任何任务动手写代码前，先答清三问，答不清就先调研 / 问用户，不要凭感觉开干。**
+
+- **我要什么**：目标和验收标准是什么？做完怎么判定算成功（harness 结论 / 真机行为 / 量测复现）？
+- **我有什么**：现有模块、数据契约、native 通道、harness、设备规格里哪些可直接复用？别重新发明。
+- **我要怎么做**：从因果链推导最优路径，标出依赖与风险，再落到 TODO 可验收单元。
+- 详见 `docs/agent-memory/principle_three_questions_before_acting.md`。
+
 ## 项目概述
 
 **gomob** 是 Android 端 3D 扫描应用，目标是把外接 Berxel iHawk 深度相机与手机主摄像头**深度绑定**，做成一台移动高精度 3D 扫描设备。
@@ -55,6 +64,16 @@
 4. `TODO.md` — 找当前任务、验收标准、相关设计文档。
 
 不要一次加载全部长文档。按任务查专题，避免把旧方案和当前主线混在一起。
+
+## CodeGraph 代码图谱
+
+理解**代码结构 / 调用链 / 被调链 / 改动影响面**时，优先用 CodeGraph，不要靠 grep + 人肉读盲扫。
+
+- 查"X 怎么工作 / 谁调用 X / X 调用谁 / 改 X 会波及什么"用 CodeGraph MCP（`codegraph_explore` / `codegraph_callers` / `codegraph_callees` / `codegraph_impact`）或 `./scripts/codegraph.sh`。
+- **精确文本 / 日志 / 字符串匹配**仍用 `rg`（ripgrep），CodeGraph 不替代它。
+- 索引数据固定落 `.dev/codegraph`；根目录 `.codegraph` 是指向它的软链，不提交。
+- 切分支或大量重命名 / 移动文件后，先 `./scripts/codegraph.sh sync` 再查，避免读到陈旧图谱。
+- 覆盖以 Kotlin / 自有 native C++ / Go / Python / 配置为主，`third_party/` 厂商 SDK 二进制不纳入；边界详见 `docs/agent-memory/reference_codegraph_coverage_boundaries.md`。
 
 ## 架构概要
 
@@ -175,24 +194,24 @@
 ## Workflow
 
 - Track tasks in **`TODO.md`**；不另起 plan 文档，不使用本地临时 TODO 替代真理源。
+- **`BUGS.md` 是用户维护的 bug / 漏洞清单（git tracked）**：Agent 每修复并验证一条，就从清单里**删掉那一条**，不打勾、不留已完成标记，保持清单只剩未修项。
 - TODO 条目须附相关设计 / 架构文档路径，例如 `| docs: docs/architecture/04b-multiview-rgbd-reconstruction.md`。
 - 跨 Agent 协作读法：`AGENTS.md` → `CLAUDE.md` → `docs/agent-memory/AGENTS_MEMORY.md` → `docs/architecture.md` → `TODO.md`。
 - 需要保存记忆时，直接写到 `docs/agent-memory/`，并更新 `AGENTS_MEMORY.md` 索引；不要只写 Claude 本地 memory。
-- **记忆写作硬规**：单文件聚焦一个主题，结构为标题 + Why + How to apply；`AGENTS_MEMORY.md` 每条描述不超过 60 字；过时记忆直接删除，不留历史噪音；新增条目前先判断能否合并到旧主题。
+- **记忆写作硬规**：单文件聚焦一个主题，结构为标题 + Why + How to apply；`AGENTS_MEMORY.md` 每条描述不超过 60 字；过时记忆直接删除，不留历史噪音；新增条目前先判断能否合并到旧主题。改完索引必须跑 `./scripts/check_doc_index.sh` 守门，超长索引行（剥链接后）会非 0 退出。
 - 写 plan / TODO 节 / spec 时遵守 `docs/agent-memory/feedback_plan_writing_quality.md`：无占位符，批判性复审，任务按 harness 可验收单元切。
 - Understand context before coding；requirements 不清楚时先问。
 - 完成任务后总结做了什么，以及如何验证。
 
 ### 工作区隔离（worktree）
 
-multi-step 改动 / 同时多分支并行 / 探索性大改动推荐用 `git worktree` 隔离，避免污染主工作树。
+**只在并行任务编程时才开 worktree**：同时跑多个分支 / 多 Agent 并行写代码、需要物理隔离工作树时才用 `git worktree`。单 Agent 串行作业（即使 multi-step / 探索性大改动）直接在 master 上干，不要为"怕污染"而开 worktree——串行场景 worktree 只增加切换和同步成本。详见 `docs/agent-memory/feedback_worktree_only_for_parallel.md`。
 
-约定：
+并行确需 worktree 时的约定：
 
 - 新开 worktree 前先问用户。
 - 目录固定 `.worktrees/<branch-name-without-prefix>/`，例如 `feature/scan-fusion` → `.worktrees/scan-fusion/`。
 - 每个 worktree 有独立 `.dev/`；跨 worktree 比对时用 `OUTPUT_DIR=.dev/<name>-<branch>/` 显式指定。
-- 没有用户明确同意，不在 main / master 直接做 multi-step 大改。
 
 ## Git Push 策略
 
