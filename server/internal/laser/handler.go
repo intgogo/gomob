@@ -994,7 +994,44 @@ func jobView(j *repo.LaserScanJob) map[string]any {
 	} else if jAlignMethod(j) == "site" {
 		v["fusion_available"] = true
 	}
+	flattenMeasureFromStats(j.Stats, v)
 	return v
+}
+
+// flattenMeasureFromStats 把 job.Stats 里的 measure/axle/compliance 拍平进端侧视图，
+// 对齐 FusionDoneEvent 的扁平字段名 → 刷新看历史扫描时测量面板与实时事件同款渲染。
+func flattenMeasureFromStats(stats json.RawMessage, v map[string]any) {
+	if len(stats) == 0 {
+		return
+	}
+	var s struct {
+		Measure    *Dimensions `json:"measure"`
+		Axle       *AxleResult `json:"axle"`
+		Compliance *Compliance `json:"compliance"`
+	}
+	if err := json.Unmarshal(stats, &s); err != nil {
+		return
+	}
+	if s.Measure != nil && s.Measure.Valid {
+		v["measure_valid"] = true
+		v["length_mm"] = s.Measure.LengthMM
+		v["width_mm"] = s.Measure.WidthMM
+		v["height_mm"] = s.Measure.HeightMM
+	}
+	if s.Compliance != nil {
+		v["compliant"] = s.Compliance.Compliant
+		if len(s.Compliance.Violations) > 0 {
+			v["violations"] = s.Compliance.Violations
+		}
+	}
+	if s.Axle != nil && s.Axle.Valid {
+		v["axle_valid"] = true
+		v["num_axles"] = s.Axle.NumAxles
+		v["wheelbases_mm"] = s.Axle.WheelbasesMM
+		v["total_wheelbase_mm"] = s.Axle.TotalWheelbaseMM
+		v["front_overhang_mm"] = s.Axle.FrontOverhangMM
+		v["rear_overhang_mm"] = s.Axle.RearOverhangMM
+	}
 }
 
 func jAlignMethod(j *repo.LaserScanJob) string {

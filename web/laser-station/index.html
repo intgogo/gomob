@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>3D 扫描工位管理台</title>
-    <link rel="stylesheet" href="./styles.css?v=20260617-scan-status" />
+    <link rel="stylesheet" href="./styles.css?v=20260617-axle-measure" />
   </head>
   <body>
     <div class="app-shell">
@@ -51,6 +51,14 @@
             <strong id="cloudTitle">分镜点云</strong>
             <span id="cloudHint">右键平移 · 左键旋转 · 滚轮缩放</span>
           </div>
+        </div>
+
+        <div id="measurePanel" class="measure-panel" hidden>
+          <div class="measure-head">
+            <strong>车辆外廓测量</strong>
+            <span id="measureCompliance" class="measure-badge"></span>
+          </div>
+          <div id="measureBody" class="measure-grid"></div>
         </div>
 
         <div class="viewport-toolbar">
@@ -303,6 +311,6 @@
     </div>
 
     <div id="toast" class="toast"></div>
-    <script type="module" src="./app.js?v=20260617-scan-status"></script>
+    <script type="module" src="./app.js?v=20260617-axle-measure"></script>
   </body>
 </html>

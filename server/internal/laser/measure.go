@@ -93,11 +93,27 @@ type vkey = [3]int32
 
 func ifloor(v, leaf float32) int32 { return int32(math.Floor(float64(v) / float64(leaf))) }
 
-// Measure 跑完整测量管线。xyzMM=[x,y,z,...] mm。空/退化输入返回 Valid=false（不 panic）。
+// Measure 跑完整测量管线，返回外廓 LWH。xyzMM=[x,y,z,...] mm。空/退化输入返回 Valid=false（不 panic）。
 func Measure(xyzMM []float32, p MeasureParams) Dimensions {
+	_, d := measureBody(xyzMM, p)
+	return d
+}
+
+// MeasureFull 跑测量管线，同时返回外廓 LWH 与 轴距/前后悬（同一车体点、同一 OBB 帧，不重复裁剪）。
+// 测量无效时 AxleResult.Valid=false。轴心检测见 axle.go（几何贴地接触带）。
+func MeasureFull(xyzMM []float32, p MeasureParams, ap AxleParams) (Dimensions, AxleResult) {
+	body, d := measureBody(xyzMM, p)
+	if !d.Valid {
+		return d, AxleResult{}
+	}
+	return d, DetectAxles(body, d.OBBAngleDeg, ap)
+}
+
+// measureBody 跑裁剪→主簇→ROR→OBB+车高，返回车体点（OBB 所在帧，z=上）与外廓维度。
+func measureBody(xyzMM []float32, p MeasureParams) ([]pt, Dimensions) {
 	d := Dimensions{RawPts: len(xyzMM) / 3}
 	if d.RawPts == 0 {
-		return d
+		return nil, d
 	}
 	pts := toPoints(xyzMM)
 	if p.UseCropBox {
@@ -120,18 +136,23 @@ func Measure(xyzMM []float32, p MeasureParams) Dimensions {
 	}
 	d.ROIPts = len(pts)
 	if len(pts) == 0 {
-		return d
+		return nil, d
 	}
-	body := largestCluster(pts, p.ClusterLeaf)
+	// 轴心检测返回的是 裁剪后、聚类前 的点(roiPts)：largestCluster 会把悬挂间隙>体素而与车体
+	// 不连通的轮(尤其驾驶室下遮挡的前轮)当独立小簇丢掉，使该轴接触峰塌到阈值下。贴地接触带 +
+	// 峰突出度本就抗散点噪声，故 DetectAxles 跑在裁剪点上更稳；LWH 仍走 主簇→ROR(干净 OBB)。
+	roiPts := append([]pt(nil), pts...)
+	cluster := largestCluster(pts, p.ClusterLeaf)
+	body := cluster
 	if p.UseROR {
-		body = radiusOutlierRemoval(body, p.RORRadius, p.RORMinNeighbors)
+		body = radiusOutlierRemoval(cluster, p.RORRadius, p.RORMinNeighbors)
 	}
 	d.BodyPts = len(body)
 	if d.ROIPts > 0 {
 		d.BodyRatio = float32(d.BodyPts) / float32(d.ROIPts)
 	}
 	if len(body) == 0 {
-		return d
+		return nil, d
 	}
 	l, w, ang := minAreaRectXY(body, p.OBBStepDeg)
 	d.LengthMM, d.WidthMM, d.OBBAngleDeg = l, w, ang
@@ -142,7 +163,7 @@ func Measure(xyzMM []float32, p MeasureParams) Dimensions {
 		d.HeightMM = zSpan(body)
 	}
 	d.Valid = true
-	return d
+	return roiPts, d // 返回裁剪后/聚类前的点供轴心检测（保留被聚类丢弃的悬挂轮接触点）
 }
 
 // toGroundFrame 把点变换到地面正交基：x'=p·right, y'=p·fwd, z'=n·p+d(离地高)。

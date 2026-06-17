@@ -22,6 +22,9 @@ const els = {
   scanBanner: $("scanBanner"),
   scanBannerTitle: $("scanBannerTitle"),
   scanBannerDetail: $("scanBannerDetail"),
+  measurePanel: $("measurePanel"),
+  measureCompliance: $("measureCompliance"),
+  measureBody: $("measureBody"),
   canvas: $("cloudCanvas"),
   markerLayer: $("markerLayer"),
   emptyHint: $("emptyHint"),
@@ -341,6 +344,7 @@ const app = {
   restoreSerial: 0,
   fusedCount: 0,
   fusionUnavailable: false,
+  measure: null,
   deviceStatuses: { a: null, b: null },
   deviceInfos: { a: null, b: null },
   liveAngles: { a: null, b: null },
@@ -702,6 +706,35 @@ function renderScanMeta() {
   updateScanBanner();
 }
 
+// 车辆外廓测量面板：随 scan.fusion_done 到达的 LWH + 轴距/前后悬 + GB7258 合规。
+// 测量无效（未标定/点云退化）则隐藏；不编造数字。单位 mm。
+function renderMeasure() {
+  const p = app.measure;
+  const panel = els.measurePanel;
+  if (!panel) return;
+  if (!p || !p.measure_valid) { panel.hidden = true; return; }
+  panel.hidden = false;
+  const mm = (v) => `${Math.round(Number(v) || 0).toLocaleString()} mm`;
+  const rows = [
+    ["车长", mm(p.length_mm)],
+    ["车宽", mm(p.width_mm)],
+    ["车高", mm(p.height_mm)],
+  ];
+  if (p.axle_valid) {
+    const wb = Array.isArray(p.wheelbases_mm) ? p.wheelbases_mm.map((v) => Math.round(v)).join(" / ") : "-";
+    rows.push([`轴距(${p.num_axles}轴)`, `${wb} mm`]);
+    rows.push(["总轴距", mm(p.total_wheelbase_mm)]);
+    rows.push(["前悬/后悬", `${Math.round(p.front_overhang_mm)} / ${Math.round(p.rear_overhang_mm)} mm`]);
+  }
+  els.measureBody.innerHTML = rows
+    .map(([k, v]) => `<span>${escapeHtml(k)}</span><strong>${escapeHtml(v)}</strong>`)
+    .join("");
+  const ok = Boolean(p.compliant);
+  const badge = els.measureCompliance;
+  badge.textContent = ok ? "合规" : (Array.isArray(p.violations) && p.violations.length ? p.violations.join("、") : "超限");
+  badge.className = `measure-badge ${ok ? "ok" : "bad"}`;
+}
+
 // 扫描进行中的醒目横幅：采集/融合/加载各状态 + 已用时 + 旋转 spinner。靠 1.2s 轮询驱动（不依赖实时 WS），
 // 长扫描（采集慢 + 融合精修）有持续的“在动”反馈，避免被误判卡死而中途取消。
 function updateScanBanner() {
@@ -939,6 +972,8 @@ function handleRealtime(envelope) {
     app.scanState = "done";
     app.fusionUnavailable = isRawScanPayload(payload);
     app.fusedCount = Number(payload.points || 0);
+    app.measure = payload.measure_valid ? payload : null; // 外廓+轴距测量随完成事件到达
+    renderMeasure();
     renderScanMeta();
     if (isCloudRefreshPaused()) {
       app.deferredFinalCloudPayload = payload;
@@ -1156,6 +1191,8 @@ async function loadLastScan() {
   app.fusionUnavailable = isRawScanPayload(scan);
   app.finalCloudsLoading = false;
   app.finalCloudsLoaded = false;
+  app.measure = scan.measure_valid ? scan : null; // 历史扫描的测量随 /latest 拍平字段到达
+  renderMeasure();
   renderScanMeta();
   try {
     await downloadFinalClouds({ job_id: scanId, ...scan });
@@ -1501,6 +1538,8 @@ function resetClouds({ force = false } = {}) {
   app.fusionUnavailable = false;
   app.deferredFinalCloudPayload = null;
   app.liveAngles = { a: null, b: null };
+  app.measure = null; // 清掉上一笔测量，避免新扫描时残留旧数字
+  renderMeasure();
   markRoamFitDirty();
   renderCalibration();
   renderRegionCalibration();

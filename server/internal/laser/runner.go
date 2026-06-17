@@ -108,6 +108,14 @@ type FusionDoneEvent struct {
 	Compliant    bool     `json:"compliant"`
 	Violations   []string `json:"violations,omitempty"`
 
+	// 轴距/前后悬（M9.4，几何贴地接触带检测；docs/16 §3⑥ caluteDeepWheel 等价）。
+	NumAxles         int       `json:"num_axles,omitempty"`
+	WheelbasesMM     []float32 `json:"wheelbases_mm,omitempty"`
+	TotalWheelbaseMM float32   `json:"total_wheelbase_mm,omitempty"`
+	FrontOverhangMM  float32   `json:"front_overhang_mm,omitempty"`
+	RearOverhangMM   float32   `json:"rear_overhang_mm,omitempty"`
+	AxleValid        bool      `json:"axle_valid"`
+
 	// 地面平面（端侧视角预设的"上"方向基准；nx*x+ny*y+nz*z+d=0，法向指向点云主体侧）。
 	GroundNX    float32 `json:"ground_nx,omitempty"`
 	GroundNY    float32 `json:"ground_ny,omitempty"`
@@ -284,7 +292,7 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 		mu                       sync.Mutex
 		cloudA, cloudB, cloudFus []float32
 		colorAXYZ                []float32
-		rgbA                     []uint32  // 101 相机纹理投影颜色（0xRRGGBB），与 colorAXYZ 点数一致时写入 unit_a
+		rgbA                     []uint32 // 101 相机纹理投影颜色（0xRRGGBB），与 colorAXYZ 点数一致时写入 unit_a
 		colorBXYZ                []float32
 		rgbB                     []uint32  // 102 相机纹理投影颜色（0xRRGGBB），与 colorBXYZ 点数一致时写入 unit_b
 		hA, hB                   sweepSpan // 各单元扫掠角跨度，仅作诊断日志
@@ -596,6 +604,7 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 
 	var ground GroundPlane
 	var dims Dimensions
+	var axle AxleResult
 	var compl Compliance
 	measMode := "unfused"
 	carOffset := CarTypeOffset(spec.VehicleTypeID)
@@ -648,11 +657,16 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 		}
 		// 车型 carType 偏移：选定车型把该型 (x,y,z) 偏移叠到测量区域（设备 ROI/裁剪框路径生效；地面路径暂不接）。
 		mp.CarOffset = carOffset
-		dims = Measure(measCloud, mp)
+		// MeasureFull 一遍出外廓 LWH + 轴距/前后悬（同一车体点、同一 OBB 帧；docs/16 §3⑥）。
+		dims, axle = MeasureFull(measCloud, mp, DefaultAxleParams())
 		// 合规按车型套限值（当前逐型限值未录入，LimitsForVehicleType 回退通用值，见其 TODO）。
 		compl = CheckCompliance(dims, LimitsForVehicleType(spec.VehicleTypeID))
 		if !dims.Valid {
 			r.Log.Warn("测量无效(点云退化?)", "job", spec.JobID, "mode", measMode, "fused", res.Fused, "body", dims.BodyPts)
+		}
+		if axle.Valid {
+			r.Log.Info("轴距测量", "job", spec.JobID, "axles", axle.NumAxles,
+				"wheelbases", axle.WheelbasesMM, "front_over", axle.FrontOverhangMM, "rear_over", axle.RearOverhangMM)
 		}
 	}
 
@@ -678,6 +692,7 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 			"region_filter":   spec.RegionFilter,
 			"keep_ratio":      spec.KeepRatio,
 			"measure":         dims,
+			"axle":            axle,
 			"measure_mode":    measMode,
 			"vehicle_type_id": spec.VehicleTypeID,
 			"car_offset":      carOffset,
@@ -695,39 +710,45 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 	publishRes.PtsB = gotB
 	publishRes.Fused = gotFus
 	publishRes.AfterCrop = gotFus
-	r.publishDone(ctx, spec, job, publishRes, fusedKey, aKey, bKey, dims, compl, ground)
+	r.publishDone(ctx, spec, job, publishRes, fusedKey, aKey, bKey, dims, axle, compl, ground)
 	return job, nil
 }
 
 func (r *Runner) publishDone(ctx context.Context, spec RunSpec, job *repo.LaserScanJob,
-	res ScanResult, fusedKey, aKey, bKey string, dims Dimensions, compl Compliance, ground GroundPlane) {
+	res ScanResult, fusedKey, aKey, bKey string, dims Dimensions, axle AxleResult, compl Compliance, ground GroundPlane) {
 	if r.Publisher == nil {
 		return
 	}
 	evt := FusionDoneEvent{
-		Kind:            "laser",
-		JobID:           job.ID,
-		SessionKey:      spec.SessionKey,
-		InspectionID:    spec.InspectionID,
-		OwnerUserID:     spec.OwnerUserID,
-		ResultObjectKey: fusedKey,
-		UnitAObjectKey:  aKey,
-		UnitBObjectKey:  bKey,
-		Points:          res.Fused,
-		PtsA:            res.PtsA,
-		PtsB:            res.PtsB,
-		AlignMethod:     res.Align,
-		LengthMM:        dims.LengthMM,
-		WidthMM:         dims.WidthMM,
-		HeightMM:        dims.HeightMM,
-		MeasureValid:    dims.Valid,
-		Compliant:       compl.Compliant,
-		Violations:      compl.Violations,
-		GroundNX:        ground.NX,
-		GroundNY:        ground.NY,
-		GroundNZ:        ground.NZ,
-		GroundD:         ground.D,
-		GroundValid:     ground.Valid,
+		Kind:             "laser",
+		JobID:            job.ID,
+		SessionKey:       spec.SessionKey,
+		InspectionID:     spec.InspectionID,
+		OwnerUserID:      spec.OwnerUserID,
+		ResultObjectKey:  fusedKey,
+		UnitAObjectKey:   aKey,
+		UnitBObjectKey:   bKey,
+		Points:           res.Fused,
+		PtsA:             res.PtsA,
+		PtsB:             res.PtsB,
+		AlignMethod:      res.Align,
+		LengthMM:         dims.LengthMM,
+		WidthMM:          dims.WidthMM,
+		HeightMM:         dims.HeightMM,
+		MeasureValid:     dims.Valid,
+		Compliant:        compl.Compliant,
+		Violations:       compl.Violations,
+		NumAxles:         axle.NumAxles,
+		WheelbasesMM:     axle.WheelbasesMM,
+		TotalWheelbaseMM: axle.TotalWheelbaseMM,
+		FrontOverhangMM:  axle.FrontOverhangMM,
+		RearOverhangMM:   axle.RearOverhangMM,
+		AxleValid:        axle.Valid,
+		GroundNX:         ground.NX,
+		GroundNY:         ground.NY,
+		GroundNZ:         ground.NZ,
+		GroundD:          ground.D,
+		GroundValid:      ground.Valid,
 	}
 	if err := r.Publisher.Publish(ctx, TopicFusionDone, evt); err != nil {
 		r.Log.Warn("发布 scan.fusion_done(laser) 失败", "err", err, "job", job.ID)

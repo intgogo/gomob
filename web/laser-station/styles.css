@@ -1228,3 +1228,44 @@ label {
 }
 .scan-banner.busy .scan-spinner { border-top-color: #f0be5a; }
 @keyframes scanspin { to { transform: rotate(360deg); } }
+
+/* 车辆外廓测量面板：视口右上角，随 scan.fusion_done 显示 LWH + 轴距/前后悬 + 合规 */
+.measure-panel {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  min-width: 200px;
+  max-width: 280px;
+  padding: 10px 12px;
+  border: 1px solid rgba(120, 200, 180, 0.3);
+  border-radius: 6px;
+  background: rgba(8, 13, 12, 0.82);
+  color: #e8f0ee;
+  backdrop-filter: blur(10px);
+  z-index: 3;
+}
+.measure-panel[hidden] { display: none; }
+.measure-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.measure-head strong { font-size: 13px; }
+.measure-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.measure-badge.ok { background: rgba(110, 211, 176, 0.18); color: #6fd3b0; border: 1px solid rgba(110, 211, 176, 0.5); }
+.measure-badge.bad { background: rgba(240, 120, 110, 0.18); color: #f0887e; border: 1px solid rgba(240, 120, 110, 0.5); }
+.measure-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  font-size: 12px;
+}
+.measure-grid span { color: #b6c4c0; }
+.measure-grid strong { text-align: right; font-variant-numeric: tabular-nums; }
