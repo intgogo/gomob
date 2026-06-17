@@ -2,6 +2,7 @@ package laser
 
 import (
 	"context"
+	"encoding/base64"
 	"log/slog"
 	"time"
 )
@@ -64,10 +65,14 @@ func (s *natsSink) Points(f PointFrame) {
 	if f.Unit != 0 && f.Unit != 1 {
 		return
 	}
+	s.publishPoints(f.Unit, f.XYZmm, f.HAngleDeg)
+}
+
+func (s *natsSink) publishPoints(unit int, points []float32, hAngleDeg float32) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	// 按 maxPointsPerMsg 切分（正常单帧远小于此，不触发）。
-	pts := f.XYZmm
+	pts := points
 	for off := 0; off < len(pts); off += maxPointsPerMsg * 3 {
 		end := off + maxPointsPerMsg*3
 		if end > len(pts) {
@@ -76,9 +81,9 @@ func (s *natsSink) Points(f PointFrame) {
 		msg := LaserPointsMsg{
 			OwnerUserID: s.owner,
 			SessionKey:  s.sessionKey,
-			Unit:        f.Unit,
+			Unit:        unit,
 			Points:      pts[off:end],
-			HAngleDeg:   f.HAngleDeg,
+			HAngleDeg:   hAngleDeg,
 		}
 		if err := s.pub.Publish(ctx, TopicLaserPoints, msg); err != nil {
 			s.log.Warn("发布 laser.points 失败", "err", err, "session", s.sessionKey)
@@ -96,13 +101,33 @@ func (s *natsSink) Status(state string, a, b int) {
 	}
 }
 
+// Image 把采集中相机 RGB 预览帧（已降采样 JPEG）发 laser.frame，复用取景标定的载荷与桥（按 owner 路由）。
+// 端侧据 session_key（非 "site-framing"）走点云页小窗，而非取景标定页。
+func (s *natsSink) Image(f ImageFrame) {
+	if (f.Unit != 0 && f.Unit != 1) || len(f.JPEG) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	msg := LaserFrameMsg{
+		OwnerUserID: s.owner,
+		SessionKey:  s.sessionKey,
+		Unit:        f.Unit,
+		HeadingDeg:  float64(f.HAngleDeg),
+		JPEGB64:     base64.StdEncoding.EncodeToString(f.JPEG),
+	}
+	if err := s.pub.Publish(ctx, TopicLaserFrame, msg); err != nil {
+		s.log.Warn("发布 laser.frame(预览) 失败", "err", err, "session", s.sessionKey)
+	}
+}
+
 // devctlGate 实现 DeviceGate：起扫前（可选）给两单元各自下发扫描起止角，再发 SCAN_START / SCAN_STOP。
 type devctlGate struct {
-	a, b                   *DeviceClient
-	log                    *slog.Logger
-	aStart, aStop          float64 // unit A 起止角（绝对°）
-	bStart, bStop          float64 // unit B 起止角
-	setAngles              bool    // 是否下发角度（false 则沿用设备持久化值）
+	a, b          *DeviceClient
+	log           *slog.Logger
+	aStart, aStop float64 // unit A 起止角（绝对°）
+	bStart, bStop float64 // unit B 起止角
+	setAngles     bool    // 是否下发角度（false 则沿用设备持久化值）
 }
 
 // NewDevctlGate 建门控。setAngles=true 时起扫前把 A 设为 [aStart,aStop]、B 设为 [bStart,bStop]。

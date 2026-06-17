@@ -101,6 +101,24 @@ func (s *MinIOCloudStore) PutCloudXYZI(ctx context.Context, sessionKey, name str
 	return s.put(ctx, sessionKey, name, pcd)
 }
 
+// PutCloudXYZRGB 编码带每点 RGB 的点云。
+func (s *MinIOCloudStore) PutCloudXYZRGB(ctx context.Context, sessionKey, name string, xyzMM []float32, rgb []uint32) (string, error) {
+	pcd, err := EncodePCDBinaryXYZRGB(xyzMM, rgb)
+	if err != nil {
+		return "", err
+	}
+	return s.put(ctx, sessionKey, name, pcd)
+}
+
+// PutCloudXYZRGBI 编码带每点 RGB + 采集角的单元云。
+func (s *MinIOCloudStore) PutCloudXYZRGBI(ctx context.Context, sessionKey, name string, xyzMM []float32, rgb []uint32, attr []float32) (string, error) {
+	pcd, err := EncodePCDBinaryXYZRGBI(xyzMM, rgb, attr)
+	if err != nil {
+		return "", err
+	}
+	return s.put(ctx, sessionKey, name, pcd)
+}
+
 func (s *MinIOCloudStore) put(ctx context.Context, sessionKey, name string, pcd []byte) (string, error) {
 	key := LaserObjectKey(sessionKey, name)
 	putCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)

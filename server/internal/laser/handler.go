@@ -8,8 +8,11 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
+	"net/netip"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +33,7 @@ type LaserRepo interface {
 	Create(ctx context.Context, sessionKey, unitAIP, unitBIP, align string, keepRatio float32,
 		inspectionID, ownerUserID *int64) (*repo.LaserScanJob, error)
 	FindByID(ctx context.Context, id int64) (*repo.LaserScanJob, error)
+	FindLatestDone(ctx context.Context, unitAIP, unitBIP string) (*repo.LaserScanJob, error)
 	Cancel(ctx context.Context, id int64) (*repo.LaserScanJob, error)
 	JobStore
 }
@@ -38,18 +42,19 @@ type LaserRepo interface {
 type Config struct {
 	DefaultUnitAIP string        // 默认 192.168.9.101
 	DefaultUnitBIP string        // 默认 192.168.9.102
-	DefaultAlign   string        // 默认 icp
+	DefaultAlign   string        // 默认 site，起扫必须显式携带外参
 	DefaultKeep    float32       // 默认 1.0
 	ProbeTimeout   time.Duration // 探活超时，默认 3s
 
-	// 起扫前给两单元各自下发扫描起止角（per-unit；两单元几何/可扫范围不同，不能强加同一对称值
-	// —— 实测 -180/180 会让 A 起=止塌成 0° 扫程不转）。默认用 job 9 验证可扫的设备原值
-	// A:0→90 / B:-180→20。SetScanAngles=false 时跳过、沿用设备持久化值。
-	SetScanAngles bool    // 默认 true（main.go 经 env 注入）
+	// 起扫前给两单元各自下发扫描起止角。默认 false：沿用设备持久化值，让控制面板设置真正生效。
+	// 只有运维显式设 GOMOB_LASER_SET_SCAN_ANGLES=true 时才覆盖。
+	SetScanAngles bool    // 默认 false（main.go 经 env 注入）
 	ScanAStart    float64 // unit A 起始角，默认 0
 	ScanAStop     float64 // unit A 停止角，默认 90
-	ScanBStart    float64 // unit B 起始角，默认 -180
-	ScanBStop     float64 // unit B 停止角，默认 20
+	ScanBStart    float64 // unit B 起始角，默认 -170
+	ScanBStop     float64 // unit B 停止角，默认 -10
+
+	DefaultRegionFilter PointRegionFilter // 默认工位区域墙过滤；空值=不过滤。
 }
 
 func (c Config) withDefaults() Config {
@@ -60,7 +65,7 @@ func (c Config) withDefaults() Config {
 		c.DefaultUnitBIP = "192.168.9.102"
 	}
 	if c.DefaultAlign == "" {
-		c.DefaultAlign = "icp"
+		c.DefaultAlign = "site"
 	}
 	if c.DefaultKeep <= 0 || c.DefaultKeep > 1 {
 		c.DefaultKeep = 1.0
@@ -68,10 +73,10 @@ func (c Config) withDefaults() Config {
 	if c.ProbeTimeout <= 0 {
 		c.ProbeTimeout = 3 * time.Second
 	}
-	// 角度缺省给 job 9 验证可扫的设备原值；SetScanAngles 由 main.go 显式注入（默认 true），测试默认 false。
+	// 角度缺省给一段线性机械角内的稳定扫程；仅 SetScanAngles=true 时使用，默认不覆盖设备持久化值。
 	if c.ScanAStart == 0 && c.ScanAStop == 0 && c.ScanBStart == 0 && c.ScanBStop == 0 {
 		c.ScanAStart, c.ScanAStop = 0, 90
-		c.ScanBStart, c.ScanBStop = -180, 20
+		c.ScanBStart, c.ScanBStop = -170, -10
 	}
 	return c
 }
@@ -91,7 +96,7 @@ type Handler struct {
 	// 可注入点（默认指向真实现）。
 	probe   Prober
 	newGate func(ipA, ipB string) DeviceGate
-	launch  func(func()) // 后台执行扫描；默认 go f()，测试可改同步
+	launch  func(func())              // 后台执行扫描；默认 go f()，测试可改同步
 	newDev  func(ip string) DeviceAPI // 单元设备客户端工厂（设备控制面板用）
 }
 
@@ -124,15 +129,20 @@ func NewHandler(cfg Config, lr LaserRepo, runner *Runner, pub Publisher, log *sl
 		log:      log,
 		sessions: &sessionRegistry{active: map[int64]*activeSession{}},
 		probe:    NewDeviceProber(cfg.ProbeTimeout),
-		newGate:  func(a, b string) DeviceGate { return NewDevctlGate(a, b, cfg.ScanAStart, cfg.ScanAStop, cfg.ScanBStart, cfg.ScanBStop, cfg.SetScanAngles, log) },
-		launch:   func(f func()) { go f() },
-		newDev:   func(ip string) DeviceAPI { return NewDeviceClient(ip, cfg.ProbeTimeout) },
+		newGate: func(a, b string) DeviceGate {
+			return NewDevctlGate(a, b, cfg.ScanAStart, cfg.ScanAStop, cfg.ScanBStart, cfg.ScanBStop, cfg.SetScanAngles, log)
+		},
+		launch: func(f func()) { go f() },
+		newDev: func(ip string) DeviceAPI { return NewDeviceClient(ip, cfg.ProbeTimeout) },
 	}
 }
 
 // Mount 注册路由。
 func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/scans/laser", h.StartScan)
+	mux.HandleFunc("GET /v1/scans/laser/active", h.ActiveScan)
+	mux.HandleFunc("GET /v1/scans/laser/latest", h.LatestScan)
+	mux.HandleFunc("GET /v1/scans/laser/active/cloud/{name}", h.DownloadActiveCloud)
 	mux.HandleFunc("POST /v1/scans/laser/{id}/stop", h.StopScan)
 	mux.HandleFunc("GET /v1/scans/laser/{id}", h.GetScan)
 	// PCD 下载（融合 414万点不走 ws，经此流式取；name 白名单从 job 取 object key，零路径穿越）。
@@ -145,15 +155,26 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 
 	// 设备控制面板（原厂功能键）。用 literal 子资源 + ?unit=a|b 查询参，避开与 {id}/cloud/{name}
 	// 通配的路由歧义（literal 段比 {id} 更具体，不 panic）。
-	mux.HandleFunc("GET /v1/scans/laser/device-status", h.DeviceStatus)             // 状态信息
-	mux.HandleFunc("GET /v1/scans/laser/device-info", h.DeviceInfo)                 // 设备信息+当前设置/标定
-	mux.HandleFunc("POST /v1/scans/laser/device-command", h.DeviceCommand)         // 零位校准/守望/停止/清错/软复位
+	mux.HandleFunc("GET /v1/scans/laser/device-status", h.DeviceStatus)               // 状态信息
+	mux.HandleFunc("GET /v1/scans/laser/device-info", h.DeviceInfo)                   // 设备信息+当前设置/标定
+	mux.HandleFunc("POST /v1/scans/laser/device-command", h.DeviceCommand)            // 零位校准/守望/停止/清错/软复位
 	mux.HandleFunc("POST /v1/scans/laser/device-scan-settings", h.DeviceScanSettings) // 扫描设置
-	mux.HandleFunc("POST /v1/scans/laser/device-calib", h.DeviceCalib)             // 标定参数（破坏性）
+	mux.HandleFunc("POST /v1/scans/laser/site-calib", h.SiteCalib)                    // 一键自动标定 A↔B(ArUco 标记场)
+	mux.HandleFunc("POST /v1/scans/laser/site-framing", h.SiteFraming)                // 实时取景标定（边扫边推 RGB 帧+检测）
+	mux.HandleFunc("POST /v1/scans/laser/device-calib", h.DeviceCalib)                // 标定参数（破坏性）
 }
 
-// resolveUnit 从 ?unit=a|b（兼容 101|102）解析出该单元的设备客户端 + IP。
+// resolveUnit 从 ?ip= 或 ?unit=a|b（兼容 101|102）解析出设备客户端 + IP。
+// Web 工位管理台可管理多个相机，故允许显式 ip；unit 查询保持 App 兼容。
 func (h *Handler) resolveUnit(r *http.Request) (DeviceAPI, string, bool) {
+	if rawIP := r.URL.Query().Get("ip"); rawIP != "" {
+		addr, err := netip.ParseAddr(rawIP)
+		if err != nil || !addr.Is4() {
+			return nil, "", false
+		}
+		ip := addr.String()
+		return h.newDev(ip), ip, true
+	}
 	var ip string
 	switch r.URL.Query().Get("unit") {
 	case "a", "A", "101":
@@ -166,15 +187,40 @@ func (h *Handler) resolveUnit(r *http.Request) (DeviceAPI, string, bool) {
 	return h.newDev(ip), ip, true
 }
 
+func (h *Handler) expectedSweepDeg(ctx context.Context, ip, tag string) (float32, error) {
+	var start, stop float64
+	if h.cfg.SetScanAngles {
+		if tag == "A" {
+			start, stop = h.cfg.ScanAStart, h.cfg.ScanAStop
+		} else {
+			start, stop = h.cfg.ScanBStart, h.cfg.ScanBStop
+		}
+	} else {
+		info, err := h.newDev(ip).GetInfo(ctx)
+		if err != nil {
+			return 0, errors.New("读取 unit" + tag + "(" + ip + ") 扫描设置失败: " + err.Error())
+		}
+		start, stop = info.Control.ScanStartAngle, info.Control.ScanStopAngle
+	}
+	if err := validateScanAngles(start, stop); err != nil {
+		return 0, errors.New("unit" + tag + "(" + ip + ") 扫描设置无效 " +
+			strconv.FormatFloat(start, 'f', 1, 64) + "°→" +
+			strconv.FormatFloat(stop, 'f', 1, 64) + "°: " + err.Error())
+	}
+	return float32(linearScanSpanDeg(start, stop)), nil
+}
+
 // --- 请求/响应体 ---
 
 type startReq struct {
-	InspectionID  *int64   `json:"inspection_id"`
-	UnitAIP       string   `json:"unit_a_ip"`
-	UnitBIP       string   `json:"unit_b_ip"`
-	Align         string   `json:"align"`
-	KeepRatio     *float32 `json:"keep_ratio"`
-	VehicleTypeID *int     `json:"vehicle_type_id"` // 逆向 JCHY 车型编号（docs/16 §4.1）；缺省=未选
+	InspectionID  *int64             `json:"inspection_id"`
+	UnitAIP       string             `json:"unit_a_ip"`
+	UnitBIP       string             `json:"unit_b_ip"`
+	Align         string             `json:"align"`
+	SiteJSON      string             `json:"site_json"`
+	KeepRatio     *float32           `json:"keep_ratio"`
+	VehicleTypeID *int               `json:"vehicle_type_id"` // 逆向 JCHY 车型编号（docs/16 §4.1）；缺省=未选
+	RegionFilter  *PointRegionFilter `json:"region_filter"`
 }
 
 type startResp struct {
@@ -196,10 +242,23 @@ func (h *Handler) StartScan(w http.ResponseWriter, r *http.Request) {
 	}
 	ipA := orStr(req.UnitAIP, h.cfg.DefaultUnitAIP)
 	ipB := orStr(req.UnitBIP, h.cfg.DefaultUnitBIP)
-	align := orStr(req.Align, h.cfg.DefaultAlign)
-	if align != "icp" && align != "none" && align != "site" {
-		writeErr(w, http.StatusBadRequest, "align 须为 icp|none|site")
+	siteJSON := strings.TrimSpace(req.SiteJSON)
+	align := strings.TrimSpace(req.Align)
+	if align == "" {
+		align = h.cfg.DefaultAlign
+	}
+	if align != "site" && align != "raw" {
+		writeErr(w, http.StatusBadRequest, "激光多镜头扫描只支持外参融合或未标定原始采集")
 		return
+	}
+	if siteJSON == "" {
+		align = "raw"
+	} else {
+		align = "site"
+		if err := validateSiteExtrinsicJSON(siteJSON); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	keep := h.cfg.DefaultKeep
 	if req.KeepRatio != nil {
@@ -207,6 +266,16 @@ func (h *Handler) StartScan(w http.ResponseWriter, r *http.Request) {
 	}
 	if keep <= 0 || keep > 1 {
 		writeErr(w, http.StatusBadRequest, "keep_ratio 须在 (0,1]")
+		return
+	}
+	regionFilter := h.cfg.DefaultRegionFilter
+	if req.RegionFilter != nil {
+		regionFilter = *req.RegionFilter
+	}
+	var err error
+	regionFilter, err = regionFilter.Normalized()
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "region_filter 无效: "+err.Error())
 		return
 	}
 
@@ -236,6 +305,18 @@ func (h *Handler) StartScan(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "unitB("+ipB+") 不可达或子系统离线: "+pr.Err)
 		return
 	}
+	expectedA, err := h.expectedSweepDeg(ctx, ipA, "A")
+	if err != nil {
+		release()
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	expectedB, err := h.expectedSweepDeg(ctx, ipB, "B")
+	if err != nil {
+		release()
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
 
 	sessionKey, err := newSessionKey()
 	if err != nil {
@@ -244,7 +325,11 @@ func (h *Handler) StartScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	owner := uid
-	job, err := h.repo.Create(context.WithoutCancel(ctx), sessionKey, ipA, ipB, align, keep, req.InspectionID, &owner)
+	jobAlign := align
+	if jobAlign == "raw" {
+		jobAlign = "site"
+	}
+	job, err := h.repo.Create(context.WithoutCancel(ctx), sessionKey, ipA, ipB, jobAlign, keep, req.InspectionID, &owner)
 	if err != nil {
 		release()
 		writeErr(w, http.StatusInternalServerError, "建扫描任务失败: "+err.Error())
@@ -253,24 +338,40 @@ func (h *Handler) StartScan(w http.ResponseWriter, r *http.Request) {
 
 	// 配置 runner 的设备门控（live SCAN_START/STOP）。
 	h.runner.Gate = h.newGate(ipA, ipB)
-	sink := NewNATSSink(h.pub, sessionKey, &owner, h.log)
+	active := &activeSession{
+		jobID:        job.ID,
+		sessionKey:   sessionKey,
+		owner:        owner,
+		unitAIP:      ipA,
+		unitBIP:      ipB,
+		alignMethod:  align,
+		state:        repo.LaserScanStatusCapturing,
+		regionFilter: regionFilter,
+		cache:        newLivePointCache(),
+		cancel:       CancelScan,
+	}
+	sink := liveSessionSink{active: active, primary: NewNATSSink(h.pub, sessionKey, &owner, h.log)}
 	vehicleTypeID := -1 // 未选
 	if req.VehicleTypeID != nil {
 		vehicleTypeID = *req.VehicleTypeID
 	}
 	spec := RunSpec{
-		JobID:         job.ID,
-		SessionKey:    sessionKey,
-		InspectionID:  req.InspectionID,
-		OwnerUserID:   &owner,
-		UnitAIP:       ipA,
-		UnitBIP:       ipB,
-		Align:         align,
-		KeepRatio:     keep,
-		VehicleTypeID: vehicleTypeID,
+		JobID:             job.ID,
+		SessionKey:        sessionKey,
+		InspectionID:      req.InspectionID,
+		OwnerUserID:       &owner,
+		UnitAIP:           ipA,
+		UnitBIP:           ipB,
+		Align:             align,
+		SiteJSON:          siteJSON,
+		KeepRatio:         keep,
+		VehicleTypeID:     vehicleTypeID,
+		ExpectedSweepADeg: expectedA,
+		ExpectedSweepBDeg: expectedB,
+		RegionFilter:      regionFilter,
 	}
 	// 注册活动会话（cancel = CancelScan 协作取消 cgo 采集；设备 SCAN_STOP 由 runner 的 defer Gate.Stop 兜底）。
-	h.sessions.set(job.ID, &activeSession{jobID: job.ID, sessionKey: sessionKey, owner: owner, cancel: CancelScan})
+	h.sessions.set(job.ID, active)
 
 	h.launch(func() {
 		defer release()
@@ -346,6 +447,78 @@ func (h *Handler) GetScan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, jobView(job))
 }
 
+// ActiveScan GET /v1/scans/laser/active?unit_a_ip=...&unit_b_ip=...。
+// 返回当前工位正在跑的扫描；网页刷新后据此恢复 scan_id/session_key 并下载实时快照。
+func (h *Handler) ActiveScan(w http.ResponseWriter, r *http.Request) {
+	uid := callerUserID(r)
+	if uid == 0 {
+		writeErr(w, http.StatusUnauthorized, "需要鉴权")
+		return
+	}
+	ipA, ipB, ok := activeStationIPs(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "unit_a_ip/unit_b_ip 必须是 IPv4")
+		return
+	}
+	as := h.sessions.find(ipA, ipB)
+	if as == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"active": false})
+		return
+	}
+	job, err := h.repo.FindByID(r.Context(), as.jobID)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"active": false})
+		return
+	}
+	if !ownsOrAdmin(r, job, uid) {
+		writeErr(w, http.StatusForbidden, "无权查看该扫描")
+		return
+	}
+	state, framesA, framesB := as.liveStatus()
+	counts := as.cache.counts()
+	resp := jobView(job)
+	resp["active"] = true
+	resp["unit_a_ip"] = as.unitAIP
+	resp["unit_b_ip"] = as.unitBIP
+	resp["live_state"] = state
+	resp["frames_a"] = framesA
+	resp["frames_b"] = framesB
+	resp["live_points_a"] = counts[0]
+	resp["live_points_b"] = counts[1]
+	resp["align_method"] = as.alignMethod
+	resp["fusion_available"] = as.alignMethod == "site"
+	resp["region_filter"] = as.regionFilter
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// LatestScan GET /v1/scans/laser/latest?unit_a_ip=...&unit_b_ip=...。
+// 返回该工位最近一次已完成扫描（done），供网页刷新后默认展示上次结果；无则 {found:false}。
+// 不依赖客户端本地记忆，刷新即可还原（含新代码上线前的历史扫描）。
+func (h *Handler) LatestScan(w http.ResponseWriter, r *http.Request) {
+	uid := callerUserID(r)
+	if uid == 0 {
+		writeErr(w, http.StatusUnauthorized, "需要鉴权")
+		return
+	}
+	ipA, ipB, ok := activeStationIPs(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "unit_a_ip/unit_b_ip 必须是 IPv4")
+		return
+	}
+	job, err := h.repo.FindLatestDone(r.Context(), ipA, ipB)
+	if err != nil || job == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"found": false})
+		return
+	}
+	if !ownsOrAdmin(r, job, uid) {
+		writeJSON(w, http.StatusOK, map[string]any{"found": false})
+		return
+	}
+	resp := jobView(job)
+	resp["found"] = true
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // DownloadCloud GET /v1/scans/laser/{id}/cloud/{name}（name ∈ fused|unit_a|unit_b）。
 // 流式回传 PCD。object key 从 job 白名单字段取（非客户端传入），杜绝路径穿越/越权取任意对象。
 func (h *Handler) DownloadCloud(w http.ResponseWriter, r *http.Request) {
@@ -385,6 +558,10 @@ func (h *Handler) DownloadCloud(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if key == nil || *key == "" {
+		if r.PathValue("name") == "fused" && jAlignMethod(job) == "raw" {
+			writeErr(w, http.StatusNotFound, "未标定无法融合")
+			return
+		}
 		writeErr(w, http.StatusNotFound, "该点云尚未就绪（扫描未完成？）")
 		return
 	}
@@ -400,6 +577,54 @@ func (h *Handler) DownloadCloud(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Disposition", `attachment; filename="`+r.PathValue("name")+`.pcd"`)
 	_, _ = io.Copy(w, rc)
+}
+
+// DownloadActiveCloud GET /v1/scans/laser/active/cloud/{unit_a|unit_b}?unit_a_ip=...&unit_b_ip=...。
+// 返回当前活动扫描的分镜实时缓存快照；未完成前也能被网页刷新后直接加载。
+func (h *Handler) DownloadActiveCloud(w http.ResponseWriter, r *http.Request) {
+	uid := callerUserID(r)
+	if uid == 0 {
+		writeErr(w, http.StatusUnauthorized, "需要鉴权")
+		return
+	}
+	ipA, ipB, ok := activeStationIPs(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "unit_a_ip/unit_b_ip 必须是 IPv4")
+		return
+	}
+	as := h.sessions.find(ipA, ipB)
+	if as == nil {
+		writeErr(w, http.StatusNotFound, "当前工位没有正在扫描的点云")
+		return
+	}
+	job, err := h.repo.FindByID(r.Context(), as.jobID)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "扫描不存在")
+		return
+	}
+	if !ownsOrAdmin(r, job, uid) {
+		writeErr(w, http.StatusForbidden, "无权下载该扫描")
+		return
+	}
+	var unit int
+	switch r.PathValue("name") {
+	case "unit_a":
+		unit = 0
+	case "unit_b":
+		unit = 1
+	default:
+		writeErr(w, http.StatusBadRequest, "name 须为 unit_a|unit_b")
+		return
+	}
+	pcd, err := EncodePCDBinary(as.cache.snapshot(unit))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "编码实时点云失败: "+err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.Itoa(len(pcd)))
+	w.Header().Set("Content-Disposition", `attachment; filename="live_`+r.PathValue("name")+`.pcd"`)
+	_, _ = w.Write(pcd)
 }
 
 // --- 设备控制面板端点（直接打单元 :4000，不经扫描任务）---
@@ -506,12 +731,66 @@ func (h *Handler) DeviceScanSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "解析扫描设置失败: "+err.Error())
 		return
 	}
+	if s.ScanAngle != nil {
+		stop, err := scanStopFromAngle(s.ScanStartAngle, *s.ScanAngle)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		s.ScanStopAngle = stop
+	}
+	if err := validateScanAngles(s.ScanStartAngle, s.ScanStopAngle); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if s.ScanAngle == nil {
+		scanAngle := s.ScanStopAngle - s.ScanStartAngle
+		s.ScanAngle = &scanAngle
+	}
 	if err := dev.UpdateControl(r.Context(), s); err != nil {
 		writeErr(w, http.StatusBadGateway, "下发扫描设置失败("+ip+"): "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "unit_ip": ip})
 }
+
+func validateScanAngles(start, stop float64) error {
+	if math.IsNaN(start) || math.IsNaN(stop) || math.IsInf(start, 0) || math.IsInf(stop, 0) {
+		return errors.New("扫描角无效：起止角必须是有限数字")
+	}
+	if stop <= start {
+		return errors.New("扫描角无效：当前固件只支持沿设备正向扫描；结束位置必须大于初始位置，负扫描角会被设备跨 +180° 扫成超大角度")
+	}
+	if !scanAxisAngleInRange(start) || !scanAxisAngleInRange(stop) {
+		return errors.New("扫描角无效：起止角需在设备机械范围 -180°～180° 内，并避开 ±180° 边界")
+	}
+	span := linearScanSpanDeg(start, stop)
+	if span < minSweepDeg {
+		return errors.New("扫描角无效：有效扫程需 ≥10°")
+	}
+	if span >= 179.5 {
+		return errors.New("扫描角无效：单段扫描角度必须小于 180°；请拆多段或调整初始位置")
+	}
+	return nil
+}
+
+func scanStopFromAngle(start, scanAngle float64) (float64, error) {
+	if math.IsNaN(start) || math.IsNaN(scanAngle) || math.IsInf(start, 0) || math.IsInf(scanAngle, 0) {
+		return 0, errors.New("扫描角无效：初始位置和扫描角度必须是有限数字")
+	}
+	if scanAngle <= 0 {
+		return 0, errors.New("扫描角无效：当前固件只支持沿设备正向扫描；负扫描角会被设备跨 +180° 扫成超大角度，请调换初始位置后使用正扫描角")
+	}
+	stop := start + scanAngle
+	if err := validateScanAngles(start, stop); err != nil {
+		return 0, err
+	}
+	return stop, nil
+}
+
+func linearScanSpanDeg(start, stop float64) float64 { return stop - start }
+
+func scanAxisAngleInRange(a float64) bool { return a > -180.0 && a < 180.0 }
 
 // DeviceCalib POST /v1/scans/laser/device-calib?unit=a|b  body CalibParams（破坏性：覆写设备存储标定）。
 func (h *Handler) DeviceCalib(w http.ResponseWriter, r *http.Request) {
@@ -710,16 +989,37 @@ func jobView(j *repo.LaserScanJob) map[string]any {
 	if j.ErrorMessage != nil {
 		v["error"] = *j.ErrorMessage
 	}
+	if jAlignMethod(j) == "raw" {
+		v["fusion_available"] = false
+	} else if jAlignMethod(j) == "site" {
+		v["fusion_available"] = true
+	}
 	return v
+}
+
+func jAlignMethod(j *repo.LaserScanJob) string {
+	if j == nil || j.AlignMethod == nil {
+		return ""
+	}
+	return *j.AlignMethod
 }
 
 // --- 活动会话注册表（单活 + 取消句柄）---
 
 type activeSession struct {
-	jobID      int64
-	sessionKey string
-	owner      int64
-	cancel     func()
+	mu           sync.RWMutex
+	jobID        int64
+	sessionKey   string
+	owner        int64
+	unitAIP      string
+	unitBIP      string
+	alignMethod  string
+	state        string
+	framesA      int
+	framesB      int
+	regionFilter PointRegionFilter
+	cache        *livePointCache
+	cancel       func()
 }
 
 type sessionRegistry struct {
@@ -779,6 +1079,23 @@ func ownsOrAdmin(r *http.Request, j *repo.LaserScanJob, uid int64) bool {
 		return true
 	}
 	return r.Header.Get("X-Gomob-Roles") == "admin"
+}
+
+func activeStationIPs(r *http.Request) (string, string, bool) {
+	ipA, okA := normalizeOptionalIPv4(r.URL.Query().Get("unit_a_ip"))
+	ipB, okB := normalizeOptionalIPv4(r.URL.Query().Get("unit_b_ip"))
+	return ipA, ipB, okA && okB
+}
+
+func normalizeOptionalIPv4(raw string) (string, bool) {
+	if raw == "" {
+		return "", true
+	}
+	addr, err := netip.ParseAddr(raw)
+	if err != nil || !addr.Is4() {
+		return "", false
+	}
+	return addr.String(), true
 }
 
 func newSessionKey() (string, error) {

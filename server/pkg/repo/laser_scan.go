@@ -81,7 +81,7 @@ const laserScanCols = `id, session_key, inspection_id, owner_user_id, unit_a_ip,
 func (r *LaserScanRepo) Create(ctx context.Context, sessionKey, unitAIP, unitBIP, align string,
 	keepRatio float32, inspectionID, ownerUserID *int64) (*LaserScanJob, error) {
 	if align == "" {
-		align = "icp"
+		align = "site"
 	}
 	if keepRatio <= 0 || keepRatio > 1 {
 		keepRatio = 1.0
@@ -164,6 +164,16 @@ func (r *LaserScanRepo) FindByID(ctx context.Context, id int64) (*LaserScanJob, 
 	job := &LaserScanJob{}
 	err := scanLaserJob(r.pool.QueryRow(ctx,
 		`SELECT `+laserScanCols+` FROM laser_scan_jobs WHERE id=$1`, id), job)
+	return oneLaser(job, err)
+}
+
+// FindLatestDone 返回该工位（unit_a_ip/unit_b_ip）最近一次已完成扫描，供网页刷新后默认展示上次结果。
+func (r *LaserScanRepo) FindLatestDone(ctx context.Context, unitAIP, unitBIP string) (*LaserScanJob, error) {
+	job := &LaserScanJob{}
+	err := scanLaserJob(r.pool.QueryRow(ctx,
+		`SELECT `+laserScanCols+` FROM laser_scan_jobs
+		 WHERE unit_a_ip=$1 AND unit_b_ip=$2 AND status=$3
+		 ORDER BY id DESC LIMIT 1`, unitAIP, unitBIP, LaserScanStatusDone), job)
 	return oneLaser(job, err)
 }
 

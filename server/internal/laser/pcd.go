@@ -78,6 +78,81 @@ func EncodePCDBinaryXYZI(xyzMM, attr []float32) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// EncodePCDBinaryXYZRGB 把 xyz(mm) + rgb(0xRRGGBB) 编码为 FIELDS x y z rgb。
+// rgb 按 PCL 习惯写入 float32 槽位的原始位型；端侧按 24bit 颜色位读取。
+func EncodePCDBinaryXYZRGB(xyzMM []float32, rgb []uint32) ([]byte, error) {
+	if len(xyzMM)%3 != 0 {
+		return nil, fmt.Errorf("点数据长度 %d 不是 3 的倍数", len(xyzMM))
+	}
+	n := len(xyzMM) / 3
+	if len(rgb) != n {
+		return nil, fmt.Errorf("rgb 长度 %d != 点数 %d", len(rgb), n)
+	}
+	var buf bytes.Buffer
+	header := "# .PCD v0.7 - Point Cloud Data file format\n" +
+		"VERSION 0.7\n" +
+		"FIELDS x y z rgb\n" +
+		"SIZE 4 4 4 4\n" +
+		"TYPE F F F F\n" +
+		"COUNT 1 1 1 1\n" +
+		"WIDTH " + strconv.Itoa(n) + "\n" +
+		"HEIGHT 1\n" +
+		"VIEWPOINT 0 0 0 1 0 0 0\n" +
+		"POINTS " + strconv.Itoa(n) + "\n" +
+		"DATA binary\n"
+	buf.WriteString(header)
+	tmp := make([]byte, 4)
+	for i := 0; i < n; i++ {
+		for _, v := range []float32{xyzMM[3*i], xyzMM[3*i+1], xyzMM[3*i+2]} {
+			binary.LittleEndian.PutUint32(tmp, math.Float32bits(v))
+			buf.Write(tmp)
+		}
+		binary.LittleEndian.PutUint32(tmp, rgb[i]&0x00ffffff)
+		buf.Write(tmp)
+	}
+	return buf.Bytes(), nil
+}
+
+// EncodePCDBinaryXYZRGBI 把 xyz(mm) + rgb(0xRRGGBB) + 每点属性 attr 编码为
+// FIELDS x y z rgb intensity。rgb 按 PCL 习惯写入 float32 位型，但保持原始 24bit 颜色位。
+func EncodePCDBinaryXYZRGBI(xyzMM []float32, rgb []uint32, attr []float32) ([]byte, error) {
+	if len(xyzMM)%3 != 0 {
+		return nil, fmt.Errorf("点数据长度 %d 不是 3 的倍数", len(xyzMM))
+	}
+	n := len(xyzMM) / 3
+	if len(rgb) != n {
+		return nil, fmt.Errorf("rgb 长度 %d != 点数 %d", len(rgb), n)
+	}
+	if len(attr) != n {
+		return nil, fmt.Errorf("attr 长度 %d != 点数 %d", len(attr), n)
+	}
+	var buf bytes.Buffer
+	header := "# .PCD v0.7 - Point Cloud Data file format\n" +
+		"VERSION 0.7\n" +
+		"FIELDS x y z rgb intensity\n" +
+		"SIZE 4 4 4 4 4\n" +
+		"TYPE F F F F F\n" +
+		"COUNT 1 1 1 1 1\n" +
+		"WIDTH " + strconv.Itoa(n) + "\n" +
+		"HEIGHT 1\n" +
+		"VIEWPOINT 0 0 0 1 0 0 0\n" +
+		"POINTS " + strconv.Itoa(n) + "\n" +
+		"DATA binary\n"
+	buf.WriteString(header)
+	tmp := make([]byte, 4)
+	for i := 0; i < n; i++ {
+		for _, v := range []float32{xyzMM[3*i], xyzMM[3*i+1], xyzMM[3*i+2]} {
+			binary.LittleEndian.PutUint32(tmp, math.Float32bits(v))
+			buf.Write(tmp)
+		}
+		binary.LittleEndian.PutUint32(tmp, rgb[i]&0x00ffffff)
+		buf.Write(tmp)
+		binary.LittleEndian.PutUint32(tmp, math.Float32bits(attr[i]))
+		buf.Write(tmp)
+	}
+	return buf.Bytes(), nil
+}
+
 // DecodePCDBinaryXYZI 解析 EncodePCDBinaryXYZI 产物，回 (xyz[3n], attr[n])。
 func DecodePCDBinaryXYZI(data []byte) (xyz, attr []float32, err error) {
 	br := bufio.NewReader(bytes.NewReader(data))

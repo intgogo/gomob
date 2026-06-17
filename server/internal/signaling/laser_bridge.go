@@ -22,12 +22,14 @@ import (
 const (
 	topicLaserPoints = "laser.points"
 	topicLaserStatus = "laser.status"
+	topicLaserFrame  = "laser.frame" // 实时取景标定：相机 RGB 预览帧 + ArUco 检测
 )
 
 // 推给端侧的事件帧类型（S→C）。
 const (
 	EnvelopeTypeLaserPoints = "laser.points"
 	EnvelopeTypeLaserStatus = "laser.status"
+	EnvelopeTypeLaserFrame  = "laser.frame"
 )
 
 // laserRoute 仅解路由所需字段；payload 其余（unit/points/state/...）原样转发。
@@ -56,6 +58,7 @@ func StartLaserBridge(nc *nats.Conn, hub *Hub, log *slog.Logger) (*LaserBridge, 
 	}{
 		{topicLaserPoints, EnvelopeTypeLaserPoints},
 		{topicLaserStatus, EnvelopeTypeLaserStatus},
+		{topicLaserFrame, EnvelopeTypeLaserFrame},
 	} {
 		envType := s.envType
 		sub, err := nc.Subscribe(s.subject, func(msg *nats.Msg) {

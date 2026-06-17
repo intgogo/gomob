@@ -2,6 +2,7 @@ package laser
 
 import (
 	"bytes"
+	"encoding/binary"
 	"math"
 	"testing"
 )
@@ -52,6 +53,50 @@ func TestPCDEmpty(t *testing.T) {
 func TestPCDBadLength(t *testing.T) {
 	if _, err := EncodePCDBinary([]float32{1, 2}); err == nil {
 		t.Error("非 3 倍数长度应报错")
+	}
+}
+
+func TestPCDXYZRGBI(t *testing.T) {
+	enc, err := EncodePCDBinaryXYZRGBI(
+		[]float32{1, 2, 3, 4, 5, 6},
+		[]uint32{0x00ff3300, 0x000077ff},
+		[]float32{10, 20},
+	)
+	if err != nil {
+		t.Fatalf("编码失败: %v", err)
+	}
+	if !bytes.Contains(enc, []byte("FIELDS x y z rgb intensity\n")) {
+		t.Fatal("头缺 XYZRGBI FIELDS")
+	}
+	body := enc[bytes.Index(enc, []byte("DATA binary\n"))+len("DATA binary\n"):]
+	if len(body) != 2*5*4 {
+		t.Fatalf("主体长度=%d want %d", len(body), 2*5*4)
+	}
+	if got := binary.LittleEndian.Uint32(body[12:16]); got != 0x00ff3300 {
+		t.Fatalf("rgb0=0x%08x", got)
+	}
+	if got := math.Float32frombits(binary.LittleEndian.Uint32(body[16:20])); got != 10 {
+		t.Fatalf("intensity0=%f", got)
+	}
+}
+
+func TestPCDXYZRGB(t *testing.T) {
+	enc, err := EncodePCDBinaryXYZRGB(
+		[]float32{1, 2, 3, 4, 5, 6},
+		[]uint32{0x00123456, 0x00abcdef},
+	)
+	if err != nil {
+		t.Fatalf("编码失败: %v", err)
+	}
+	if !bytes.Contains(enc, []byte("FIELDS x y z rgb\n")) {
+		t.Fatal("头缺 XYZRGB FIELDS")
+	}
+	body := enc[bytes.Index(enc, []byte("DATA binary\n"))+len("DATA binary\n"):]
+	if len(body) != 2*4*4 {
+		t.Fatalf("主体长度=%d want %d", len(body), 2*4*4)
+	}
+	if got := binary.LittleEndian.Uint32(body[12:16]); got != 0x00123456 {
+		t.Fatalf("rgb0=0x%08x", got)
 	}
 }
 

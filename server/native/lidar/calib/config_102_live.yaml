@@ -1,0 +1,56 @@
+# .102 联机纹理配置 — 基于 config150，填入真机标定（interpretation A）
+# device_pose 设为单位：设备 PTS 已是 b2w=identity 的世界系。
+# 相机：fixed_transform=120°名义安装(==R(camera_rot_quat))；init_quaternion=camera_corr_quat(2°精修)；
+#       init_translation=camera_corr_offset；内参/畸变=真机 device_info.parameters。
+lidar_calibration:
+  fixed_transform:
+    - [1.000000, 0.000000, 0.000000, 0.000000]
+    - [0.000000, 0.000000, -1.000000, 0.000000]
+    - [0.000000, 1.000000, 0.000000, 0.000000]
+    - [0.000000, 0.000000, 0.000000, 1.000000]
+  prior_translation: [0.02, 0.0, 0.02]
+  init_translation: [0.0, 0.0, 0.0]
+  init_quaternion: [1.0, 0.0, 0.0, 0.0]
+  icp_max_iterations: 5
+  plane_max_distance: 0.2
+  planes:
+    - [-0.000478032, -0.000573542, 1, -1.5215, -0.8530, -0.995, 10.893, 9.428, 0.03]
+
+device_pose:
+  translation: [0.0, 0.0, 0.0]
+  quaternion:  [1.0, 0.0, 0.0, 0.0]
+
+camera_calibration:
+  # 转轴 -> 相机安装座 (== R(camera_rot_quat=[0.5,0.5,-0.5,-0.5]))
+  fixed_transform:
+    - [0.000000, 0.000000, -1.000000, 0.000000]
+    - [-1.000000, 0.000000,  0.000000, 0.000000]
+    - [0.000000, 1.000000,  0.000000, 0.000000]
+    - [0.000000, 0.000000,  0.000000, 1.000000]
+  # 真机 camera_corr_offset
+  init_translation: [-0.006147725157678158, 0.04429386815640751, 0.05907860410440805]
+  # 真机 camera_corr_quat (2° 精修)
+  init_quaternion: [0.9997074022738741, -0.017478129572897405, 0.013796835149421713, 0.009448394853906897]
+  # 真机内参 fx,fy,cx,cy
+  init_intrinsics: [2084.414773200171, 2080.323649058249, 1868.7387975603026, 1048.1119000968554]
+  # 真机畸变 k1,k2,p1,p2,k3
+  init_distortion: [0.07445335612629674, -0.12090720148342139, -0.0008544487742729419, -0.0007014910286916727, 0.04668336943659364]
+  max_iterations: 100
+  num_threads: 18
+  function_tolerance: 1.0e-10
+
+texture_mapping:
+  image_width: 3840
+  image_height: 2160
+  fov_margin_ratio: 0.7
+  angle_threshold_extra: 0.1
+  safe_pixel_margin: 50
+
+debug:
+  save_intermediate_results: true
+  save_transformed_cloud: true
+  template_sample_ratio: 1.0
+  enable_synthesis: true
+  enable_texture_mapping: true
+  synthesis_voxel: 1.0
+  output_dir: "./debug_output/"

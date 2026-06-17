@@ -39,6 +39,22 @@ type PointFrame struct {
 // Points 返回该帧点数（三元组个数）。
 func (f PointFrame) Points() int { return len(f.XYZmm) / 3 }
 
+// ColorPointFrame = 纹理投影后的彩色点云。RGB 为 0xRRGGBB，每点一项。
+type ColorPointFrame struct {
+	Unit  int
+	XYZmm []float32
+	RGB   []uint32
+}
+
+func (f ColorPointFrame) Points() int { return len(f.XYZmm) / 3 }
+
+// ImageFrame = 采集中相机 RGB 预览帧（已降采样 JPEG，从 C 拷出）。供端侧小窗实时预览。
+type ImageFrame struct {
+	Unit      int     // 0=unitA, 1=unitB
+	JPEG      []byte  // 降采样后的 JPEG 字节
+	HAngleDeg float32 // 该帧水平角
+}
+
 // ScanResult = 一次扫描完成后的汇总（对应 C LidarScanResult）。
 type ScanResult struct {
 	PtsA      int         // unitA 原始点数
@@ -54,6 +70,12 @@ type ScanResult struct {
 // 注意：OnPoints 在 live 模式下可能被两条采集线程**并发**调用（unitA/unitB 各一线程），
 // 实现须自带同步（如往 channel 投递 / 加锁）。
 type ScanCallbacks struct {
-	OnPoints func(PointFrame)
-	OnStatus func(state string, framesA, framesB int) // state: connecting|scanning|fusing|done|error|cancelled
+	OnPoints      func(PointFrame)
+	OnColorPoints func(ColorPointFrame)
+	OnImage       func(ImageFrame) // 采集中相机 RGB 预览帧（端侧小窗）；nil 则关闭预览
+	OnStatus      func(state string, framesA, framesB int) // state: connecting|armed|scanning|fusing|done|error|cancelled
+
+	// ExpectedSweep*Deg 是当前设备配置的线性目标扫掠角，仅用于诊断日志；不再作为 live 终止/失败条件。
+	ExpectedSweepADeg float32
+	ExpectedSweepBDeg float32
 }

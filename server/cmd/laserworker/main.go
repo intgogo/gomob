@@ -1,7 +1,7 @@
 // gomob-laserworker — 双单元激光（LIDAR-PTZ）车辆外廓扫描服务（M8'）。
 //
 // 请求驱动的 HTTP 服务（非轮询 worker）：App 经 gateway 反代 POST /v1/scans/laser 起扫描，
-// 本服务直接：探活 .101/.102:4000 → cgo 调已 byte 验证的 C++ 管线采集+ICP/site 融合（流式点经
+// 本服务直接：探活 .101/.102:4000 → cgo 调已 byte 验证的 C++ 管线采集+工位外参融合（流式点经
 // NATS laser.points 推 ws 预览）→ 三朵 PCD 落 MinIO → 写库 → 发 NATS scan.fusion_done(kind:laser)。
 // 与 .101/.102 同网段（dev --network host）。形态对照 cmd/asset + cmd/fusionworker。
 //
@@ -13,8 +13,13 @@
 //	GOMOB_LASERWORKER_HTTP_ADDR  监听地址（默认 :18087）
 //	GOMOB_LASER_UNIT_A_IP        默认 192.168.9.101
 //	GOMOB_LASER_UNIT_B_IP        默认 192.168.9.102
-//	GOMOB_LASER_ALIGN            默认 icp（icp|none|site）
+//	GOMOB_LASER_ALIGN            默认 site；HTTP 起扫只接受 site + site_json
 //	GOMOB_LASER_KEEP_RATIO       融合降采样保留比，默认 1.0
+//	GOMOB_LASER_TEXTURE          相机纹理投影开关（0/false/off 禁用，默认启用；A/B 双相机）
+//	GOMOB_LASER_TEXTURE_CONFIG   B(.102) 纹理 YAML，默认 server/native/lidar/calib/config_102_live.yaml
+//	GOMOB_LASER_TEXTURE_CALIB    B(.102) 标定 JSON，默认 server/native/lidar/calib/calib_102.json
+//	GOMOB_LASER_TEXTURE_CONFIG_A A(.101) 纹理 YAML，默认 server/native/lidar/calib/config_101_live.yaml
+//	GOMOB_LASER_TEXTURE_CALIB_A  A(.101) 标定 JSON，默认 server/native/lidar/calib/calib_101.json
 //	GOMOB_NATS_URL               NATS 地址（配则发 laser.points/status + scan.fusion_done）
 //	GOMOB_DB_DSN / GOMOB_MINIO_* 复用平台约定
 package main
@@ -85,14 +90,14 @@ func main() {
 	cfg := laser.Config{
 		DefaultUnitAIP: envOr("GOMOB_LASER_UNIT_A_IP", "192.168.9.101"),
 		DefaultUnitBIP: envOr("GOMOB_LASER_UNIT_B_IP", "192.168.9.102"),
-		DefaultAlign:   envOr("GOMOB_LASER_ALIGN", "icp"),
+		DefaultAlign:   envOr("GOMOB_LASER_ALIGN", "site"),
 		DefaultKeep:    float32(parseFloat("GOMOB_LASER_KEEP_RATIO", 1.0)),
-		// 起扫前给两单元各自下发扫描角度（per-unit；默认 job 9 验证可扫的 A:0-90 / B:-180-20）。
-		SetScanAngles: parseBool("GOMOB_LASER_SET_SCAN_ANGLES", true),
+		// 默认尊重设备已持久化的扫描角度；只有显式配置 env=true 时才在起扫前覆盖。
+		SetScanAngles: parseBool("GOMOB_LASER_SET_SCAN_ANGLES", false),
 		ScanAStart:    parseFloat("GOMOB_LASER_A_START_ANGLE", 0),
 		ScanAStop:     parseFloat("GOMOB_LASER_A_STOP_ANGLE", 90),
-		ScanBStart:    parseFloat("GOMOB_LASER_B_START_ANGLE", -180),
-		ScanBStop:     parseFloat("GOMOB_LASER_B_STOP_ANGLE", 20),
+		ScanBStart:    parseFloat("GOMOB_LASER_B_START_ANGLE", -170),
+		ScanBStop:     parseFloat("GOMOB_LASER_B_STOP_ANGLE", -10),
 	}
 	h := laser.NewHandler(cfg, jobs, runner, publisher, log)
 	h.SetCloudReader(clouds) // 同一 MinIO 实例兼作 PCD 下载读取器

@@ -20,8 +20,8 @@ CREATE TABLE laser_scan_jobs (
     owner_user_id        BIGINT REFERENCES users(id) ON DELETE SET NULL,
     unit_a_ip            TEXT NOT NULL,
     unit_b_ip            TEXT NOT NULL,
-    align                TEXT NOT NULL DEFAULT 'icp',   -- 请求的配准策略：icp|none|site
-    align_method         TEXT,                          -- 实际采用（icp 未收敛会降级 none）
+    align                TEXT NOT NULL DEFAULT 'site',  -- 请求的配准策略；生产起扫必须为 site
+    align_method         TEXT,                          -- 实际采用；生产起扫必须返回 site
     keep_ratio           REAL NOT NULL DEFAULT 1.0,     -- 融合云随机降采样保留比 (0,1]
     status               TEXT NOT NULL DEFAULT 'capturing',
     pts_a                INTEGER,

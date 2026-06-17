@@ -87,14 +87,15 @@ type DeviceInfo struct {
 // ControlSettings = 扫描运动参数（device_info.control 读 / update_control 写）。
 // 字段名对齐 lidar http_client ControlParams 与 /api/update_control body。
 type ControlSettings struct {
-	ScanSpeed        float64    `json:"scan_speed"`         // 扫描速度 °/s
-	ZeroSpeed        float64    `json:"zero_speed"`         // 回零速度 °/s
-	ScanStartAngle   float64    `json:"scan_start_angle"`   // 扫描起始角 °（绝对）
-	ScanStopAngle    float64    `json:"scan_stop_angle"`    // 扫描停止角 °
-	WatchingAngle    float64    `json:"watching_angle"`     // 守望停泊角 °
-	LidarFilterGhost float64    `json:"lidar_filter_ghost"` // 幽灵点过滤阈值
-	LidarFilterZone  [2]float64 `json:"lidar_filter_zone"`  // 激光竖直角过滤范围 [min,max] °
-	CameraFPS        float64    `json:"camera_fps"`         // 相机 FPS
+	ScanSpeed        float64    `json:"scan_speed"`           // 扫描速度 °/s
+	ZeroSpeed        float64    `json:"zero_speed"`           // 回零速度 °/s
+	ScanStartAngle   float64    `json:"scan_start_angle"`     // 扫描起始角 °（绝对）
+	ScanStopAngle    float64    `json:"scan_stop_angle"`      // 扫描停止角 °
+	ScanAngle        *float64   `json:"scan_angle,omitempty"` // 可选：从起始角出发的带符号扫描角 °
+	WatchingAngle    float64    `json:"watching_angle"`       // 守望停泊角 °
+	LidarFilterGhost float64    `json:"lidar_filter_ghost"`   // 幽灵点过滤阈值
+	LidarFilterZone  [2]float64 `json:"lidar_filter_zone"`    // 激光竖直角过滤范围 [min,max] °
+	CameraFPS        float64    `json:"camera_fps"`           // 相机 FPS
 }
 
 // CalibParams = 设备标定（device_info.parameters 读 / update_calib_parameters 写）。
@@ -112,11 +113,11 @@ type LidarCalib struct {
 }
 
 type CameraCalib struct {
-	RotQuat    [4]float64 `json:"camera_rot_quat"`   // [w,x,y,z]
-	CorrQuat   [4]float64 `json:"camera_corr_quat"`  // [w,x,y,z]
-	CorrOffset [3]float64 `json:"camera_corr_offset"`// [x,y,z] 米
-	Intrinsic  [4]float64 `json:"camera_intrinsic"`  // [fx,fy,cx,cy] px
-	Distortion [5]float64 `json:"camera_distortion"` // [k1,k2,p1,p2,k3]
+	RotQuat    [4]float64 `json:"camera_rot_quat"`    // [w,x,y,z]
+	CorrQuat   [4]float64 `json:"camera_corr_quat"`   // [w,x,y,z]
+	CorrOffset [3]float64 `json:"camera_corr_offset"` // [x,y,z] 米
+	Intrinsic  [4]float64 `json:"camera_intrinsic"`   // [fx,fy,cx,cy] px
+	Distortion [5]float64 `json:"camera_distortion"`  // [k1,k2,p1,p2,k3]
 }
 
 type Body2WorldCalib struct {

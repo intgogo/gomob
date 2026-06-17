@@ -75,3 +75,6 @@ __pycache__/
 
 # Go 编译产物（laserworker 可执行）
 /server/laserworker
+
+# 服务端 native C++ cmake 构建产物（liblidar_*.a / *.o / 可执行）
+server/native/**/build/
