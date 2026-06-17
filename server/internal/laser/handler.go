@@ -1005,10 +1005,11 @@ func flattenMeasureFromStats(stats json.RawMessage, v map[string]any) {
 		return
 	}
 	var s struct {
-		Measure    *Dimensions `json:"measure"`
-		Axle       *AxleResult `json:"axle"`
-		CargoBox   *CargoBox   `json:"cargo_box"`
-		Compliance *Compliance `json:"compliance"`
+		Measure    *Dimensions     `json:"measure"`
+		Axle       *AxleResult     `json:"axle"`
+		CargoBox   *CargoBox       `json:"cargo_box"`
+		Overlay    *VehicleOverlay `json:"overlay"`
+		Compliance *Compliance     `json:"compliance"`
 	}
 	if err := json.Unmarshal(stats, &s); err != nil {
 		return
@@ -1039,6 +1040,9 @@ func flattenMeasureFromStats(stats json.RawMessage, v map[string]any) {
 		v["box_outer_width_mm"] = s.CargoBox.OuterWidthMM
 		v["box_depth_mm"] = s.CargoBox.DepthMM
 		v["box_inner_width_mm"] = s.CargoBox.InnerWidthMM
+	}
+	if s.Overlay != nil && s.Overlay.Valid {
+		v["overlay"] = s.Overlay // 世界系车体框/货箱框/轴线，网页 3D 叠加（与事件同结构）
 	}
 }
 

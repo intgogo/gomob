@@ -1269,3 +1269,21 @@ label {
 }
 .measure-grid span { color: #b6c4c0; }
 .measure-grid strong { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* 可视分割叠加：车体框/货箱框/轴线，绝对覆盖在融合视图上（pointer-events none 不挡交互） */
+.overlay-pane {
+  position: absolute;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 2;
+}
+.overlay-svg { width: 100%; height: 100%; overflow: visible; }
+.overlay-svg .ov-vehicle { stroke: #4fd1ff; stroke-width: 1.6; fill: none; opacity: 0.9; }
+.overlay-svg .ov-cargo { stroke: #ffd54a; stroke-width: 1.6; fill: none; opacity: 0.95; }
+.overlay-svg .ov-axle { stroke: #ff7a6b; stroke-width: 2.2; fill: none; opacity: 0.95; }
+.measure-badge.warn { background: rgba(240, 190, 90, 0.18); color: #f0be5a; border: 1px solid rgba(240, 190, 90, 0.5); }
+.ov-legend { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 500; }
+.ov-dot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-left: 4px; }
+.ov-dot.ov-v { background: #4fd1ff; }
+.ov-dot.ov-c { background: #ffd54a; }
+.ov-dot.ov-a { background: #ff7a6b; }

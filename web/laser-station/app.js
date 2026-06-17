@@ -345,6 +345,7 @@ const app = {
   fusedCount: 0,
   fusionUnavailable: false,
   measure: null,
+  overlay: null,
   deviceStatuses: { a: null, b: null },
   deviceInfos: { a: null, b: null },
   liveAngles: { a: null, b: null },
@@ -712,7 +713,19 @@ function renderMeasure() {
   const p = app.measure;
   const panel = els.measurePanel;
   if (!panel) return;
-  if (!p || !p.measure_valid) { panel.hidden = true; return; }
+  const done = app.scanState === "done" && Boolean(app.activeScanId);
+  // 融合成功但测不出：面板仍出现并给原因，让"自动测量"可见、可排查（不静默隐藏）。
+  if ((!p || !p.measure_valid)) {
+    if (!done) { panel.hidden = true; return; }
+    panel.hidden = false;
+    let reason = "未能自动测量 · 请圈定车位框，或确保点云完整覆盖车辆";
+    let badge = "需圈车位框";
+    if (app.fusionUnavailable) { reason = "工位未标定，无法融合测量"; badge = "未标定"; }
+    els.measureBody.innerHTML = `<span>状态</span><strong>${escapeHtml(reason)}</strong>`;
+    els.measureCompliance.textContent = badge;
+    els.measureCompliance.className = "measure-badge warn";
+    return;
+  }
   panel.hidden = false;
   const mm = (v) => `${Math.round(Number(v) || 0).toLocaleString()} mm`;
   const rows = [
@@ -730,9 +743,14 @@ function renderMeasure() {
     rows.push(["货箱长×宽", `${Math.round(p.box_outer_length_mm)} × ${Math.round(p.box_outer_width_mm)} mm`]);
     rows.push(["货箱深", mm(p.box_depth_mm)]);
   }
-  els.measureBody.innerHTML = rows
+  let html = rows
     .map(([k, v]) => `<span>${escapeHtml(k)}</span><strong>${escapeHtml(v)}</strong>`)
     .join("");
+  if (app.overlay && app.overlay.valid && app.cloudMode === "fused") {
+    html += `<span>叠加</span><strong class="ov-legend">` +
+      `<i class="ov-dot ov-v"></i>车体 <i class="ov-dot ov-c"></i>货箱 <i class="ov-dot ov-a"></i>轴</strong>`;
+  }
+  els.measureBody.innerHTML = html;
   const ok = Boolean(p.compliant);
   const badge = els.measureCompliance;
   badge.textContent = ok ? "合规" : (Array.isArray(p.violations) && p.violations.length ? p.violations.join("、") : "超限");
@@ -976,7 +994,9 @@ function handleRealtime(envelope) {
     app.scanState = "done";
     app.fusionUnavailable = isRawScanPayload(payload);
     app.fusedCount = Number(payload.points || 0);
-    app.measure = payload.measure_valid ? payload : null; // 外廓+轴距测量随完成事件到达
+    app.measure = payload; // 始终留 payload：测得出显数字，测不出据此给原因
+    app.overlay = payload.overlay || null; // 世界系车体框/货箱框/轴线，融合视图叠加
+    app.overlayDirty = true;
     renderMeasure();
     renderScanMeta();
     if (isCloudRefreshPaused()) {
@@ -1195,7 +1215,9 @@ async function loadLastScan() {
   app.fusionUnavailable = isRawScanPayload(scan);
   app.finalCloudsLoading = false;
   app.finalCloudsLoaded = false;
-  app.measure = scan.measure_valid ? scan : null; // 历史扫描的测量随 /latest 拍平字段到达
+  app.measure = scan; // 历史扫描测量随 /latest 拍平字段到达；始终留以便测不出给原因
+  app.overlay = scan.overlay || null;
+  app.overlayDirty = true;
   renderMeasure();
   renderScanMeta();
   try {
@@ -1543,6 +1565,8 @@ function resetClouds({ force = false } = {}) {
   app.deferredFinalCloudPayload = null;
   app.liveAngles = { a: null, b: null };
   app.measure = null; // 清掉上一笔测量，避免新扫描时残留旧数字
+  app.overlay = null;
+  app.overlayDirty = true;
   renderMeasure();
   markRoamFitDirty();
   renderCalibration();
@@ -2750,6 +2774,7 @@ function renderMarkers() {
   renderCoordinateAxes(rect);
   renderScanSweepGizmo(rect);
   renderRegionWall(rect);
+  renderVehicleOverlay(rect);
   if (!app.calibration.enabled) return;
   const markers = calibrationMarkersForRender();
   for (const m of markers) {
@@ -2867,6 +2892,51 @@ function renderRegionWall(rect) {
       text.textContent = `R${i + 1}`;
       svg.append(text);
     });
+    layer.append(svg);
+    els.markerLayer.append(layer);
+  }
+}
+
+// 可视分割叠加：把融合点云世界系的 车体框/货箱框/轴线 投影到融合视图上画 SVG。
+// 几何由服务端按融合云坐标导出（overlay.go），前端只投影连线，不需懂测量坐标系。
+// 只在融合视图画（A/B 分镜各自设备系，与融合世界框不同帧）。
+const OVERLAY_BOX_EDGES = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
+function renderVehicleOverlay(rect) {
+  const ov = app.overlay;
+  if (!ov || !ov.valid || app.cloudMode !== "fused") return;
+  const panes = app.renderPanes.length ? app.renderPanes : buildRenderPanes(rect);
+  const SVGNS = "http://www.w3.org/2000/svg";
+  for (const pane of panes) {
+    if (pane.key !== "fused") continue;
+    const layer = document.createElement("div");
+    layer.className = "overlay-pane";
+    layer.style.left = `${pane.x}px`;
+    layer.style.top = `${pane.y}px`;
+    layer.style.width = `${pane.w}px`;
+    layer.style.height = `${pane.h}px`;
+    const svg = document.createElementNS(SVGNS, "svg");
+    svg.setAttribute("class", "overlay-svg");
+    svg.setAttribute("viewBox", `0 0 ${pane.w} ${pane.h}`);
+    const line = (a, b, cls) => {
+      const sa = projectPointInPane(a, pane), sb = projectPointInPane(b, pane);
+      if (!sa || !sb) return;
+      const el = document.createElementNS(SVGNS, "line");
+      el.setAttribute("x1", (sa[0] - pane.x).toFixed(1));
+      el.setAttribute("y1", (sa[1] - pane.y).toFixed(1));
+      el.setAttribute("x2", (sb[0] - pane.x).toFixed(1));
+      el.setAttribute("y2", (sb[1] - pane.y).toFixed(1));
+      el.setAttribute("class", cls);
+      svg.append(el);
+    };
+    const box = (corners, cls) => {
+      if (!Array.isArray(corners) || corners.length !== 8) return;
+      for (const [a, b] of OVERLAY_BOX_EDGES) line(corners[a], corners[b], cls);
+    };
+    box(ov.vehicle_box, "ov-vehicle");
+    if (ov.has_cargo_box) box(ov.cargo_box, "ov-cargo");
+    if (Array.isArray(ov.axle_lines)) {
+      for (const ln of ov.axle_lines) if (Array.isArray(ln) && ln.length === 2) line(ln[0], ln[1], "ov-axle");
+    }
     layer.append(svg);
     els.markerLayer.append(layer);
   }

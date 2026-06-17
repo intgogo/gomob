@@ -42,6 +42,12 @@ type CargoBox struct {
 	InnerWidthMM  float32 `json:"inner_width_mm"`  // 内宽(壁中距)，参考值；0=未测出
 	StartLMM      float32 `json:"start_l_mm"`      // 货箱在车长轴的起始(车头端坐标系)
 	Valid         bool    `json:"valid"`
+
+	// 叠加几何用：货箱在 OBB 车长/车宽投影坐标(与 axle/overlay 同 l/w 坐标)的范围，供映回世界系画框。
+	BoxLMinMM    float32 `json:"-"`
+	BoxLMaxMM    float32 `json:"-"`
+	BoxWCenterMM float32 `json:"-"`
+	BoxWHalfMM   float32 `json:"-"`
 }
 
 // DetectCargoBox 在 OBB 对齐后的车体点上分割货箱并测外长/外宽/箱深。
@@ -173,9 +179,30 @@ func DetectCargoBox(body []pt, obbAngleDeg float32, p CargoBoxParams) CargoBox {
 	r.InnerWidthMM = innerWallSpan(bw, bz, bed+0.1*r.DepthMM, top-0.1*r.DepthMM)
 
 	r.StartLMM = bl0 - lo
+	// 叠加几何坐标（与 axle/overlay 同 l/w 投影系）：货箱 l 范围 + 宽心/半宽。
+	r.BoxLMinMM, r.BoxLMaxMM = bl0, bl1
+	r.BoxWCenterMM = pctVal(bw, 2)/2 + pctVal(bw, 98)/2
+	r.BoxWHalfMM = outerW / 2
 	r.HasBox = true
 	r.Valid = true
 	return r
+}
+
+// pctVal 返回升序分位值。
+func pctVal(v []float32, pct float64) float32 {
+	if len(v) == 0 {
+		return 0
+	}
+	c := append([]float32(nil), v...)
+	sort.Slice(c, func(i, j int) bool { return c[i] < c[j] })
+	idx := int(pct / 100.0 * float64(len(c)-1))
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(c) {
+		idx = len(c) - 1
+	}
+	return c[idx]
 }
 
 // projectLWZ 按 OBB 角旋转，返回每点的车长坐标 l、车宽坐标 w、上向 z。

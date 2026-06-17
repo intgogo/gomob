@@ -95,25 +95,26 @@ func ifloor(v, leaf float32) int32 { return int32(math.Floor(float64(v) / float6
 
 // Measure 跑完整测量管线，返回外廓 LWH。xyzMM=[x,y,z,...] mm。空/退化输入返回 Valid=false（不 panic）。
 func Measure(xyzMM []float32, p MeasureParams) Dimensions {
-	_, d := measureBody(xyzMM, p)
+	_, _, d := measureBody(xyzMM, p)
 	return d
 }
 
 // MeasureFull 跑测量管线，同时返回外廓 LWH + 轴距/前后悬 + 货箱（同一车体点、同一 OBB 帧，不重复裁剪）。
 // 测量无效时 AxleResult/CargoBox.Valid=false。轴心检测见 axle.go，货箱见 cargobox.go（均几何 PCL-free）。
 func MeasureFull(xyzMM []float32, p MeasureParams, ap AxleParams) (Dimensions, AxleResult, CargoBox) {
-	body, d := measureBody(xyzMM, p)
+	roiPts, _, d := measureBody(xyzMM, p)
 	if !d.Valid {
 		return d, AxleResult{}, CargoBox{}
 	}
-	return d, DetectAxles(body, d.OBBAngleDeg, ap), DetectCargoBox(body, d.OBBAngleDeg, DefaultCargoBoxParams())
+	return d, DetectAxles(roiPts, d.OBBAngleDeg, ap), DetectCargoBox(roiPts, d.OBBAngleDeg, DefaultCargoBoxParams())
 }
 
-// measureBody 跑裁剪→主簇→ROR→OBB+车高，返回车体点（OBB 所在帧，z=上）与外廓维度。
-func measureBody(xyzMM []float32, p MeasureParams) ([]pt, Dimensions) {
-	d := Dimensions{RawPts: len(xyzMM) / 3}
+// measureBody 跑裁剪→主簇→ROR→OBB+车高，返回：roiPts(裁剪后/聚类前，供轴心/货箱检测，含被聚类
+// 丢弃的悬挂轮)、cleaned(主簇→ROR 后的干净车体，供 OBB/车体框，剔端噪+离群)、外廓维度。OBB 所在帧 z=上。
+func measureBody(xyzMM []float32, p MeasureParams) (roiPts, cleaned []pt, d Dimensions) {
+	d = Dimensions{RawPts: len(xyzMM) / 3}
 	if d.RawPts == 0 {
-		return nil, d
+		return nil, nil, d
 	}
 	pts := toPoints(xyzMM)
 	if p.UseCropBox {
@@ -136,12 +137,12 @@ func measureBody(xyzMM []float32, p MeasureParams) ([]pt, Dimensions) {
 	}
 	d.ROIPts = len(pts)
 	if len(pts) == 0 {
-		return nil, d
+		return nil, nil, d
 	}
 	// 轴心检测返回的是 裁剪后、聚类前 的点(roiPts)：largestCluster 会把悬挂间隙>体素而与车体
 	// 不连通的轮(尤其驾驶室下遮挡的前轮)当独立小簇丢掉，使该轴接触峰塌到阈值下。贴地接触带 +
 	// 峰突出度本就抗散点噪声，故 DetectAxles 跑在裁剪点上更稳；LWH 仍走 主簇→ROR(干净 OBB)。
-	roiPts := append([]pt(nil), pts...)
+	roiPts = append([]pt(nil), pts...)
 	cluster := largestCluster(pts, p.ClusterLeaf)
 	body := cluster
 	if p.UseROR {
@@ -152,7 +153,7 @@ func measureBody(xyzMM []float32, p MeasureParams) ([]pt, Dimensions) {
 		d.BodyRatio = float32(d.BodyPts) / float32(d.ROIPts)
 	}
 	if len(body) == 0 {
-		return nil, d
+		return nil, nil, d
 	}
 	l, w, ang := minAreaRectXY(body, p.OBBStepDeg)
 	d.LengthMM, d.WidthMM, d.OBBAngleDeg = l, w, ang
@@ -163,7 +164,7 @@ func measureBody(xyzMM []float32, p MeasureParams) ([]pt, Dimensions) {
 		d.HeightMM = zSpan(body)
 	}
 	d.Valid = true
-	return roiPts, d // 返回裁剪后/聚类前的点供轴心检测（保留被聚类丢弃的悬挂轮接触点）
+	return roiPts, body, d // roiPts=聚类前(轴心/货箱用)、body=主簇→ROR 干净车体(OBB/车体框用)
 }
 
 // toGroundFrame 把点变换到地面正交基：x'=p·right, y'=p·fwd, z'=n·p+d(离地高)。

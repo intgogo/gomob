@@ -43,6 +43,10 @@ type AxleResult struct {
 	FrontOverhangMM  float32   `json:"front_overhang_mm"`  // 车头端 → 首轴
 	RearOverhangMM   float32   `json:"rear_overhang_mm"`   // 末轴 → 车尾端
 	Valid            bool      `json:"valid"`
+
+	// AxleCentersRawMM = 轴心在 OBB 车长轴投影坐标(projectLengthAxis 的 l，升序、未翻转)。
+	// 供叠加几何把轴线映回世界系（与 cargobox/overlay 同 l 坐标）；语义量用上面的 from-front 值。
+	AxleCentersRawMM []float32 `json:"-"`
 }
 
 // DetectAxles 在 OBB 对齐后的车体点上检测轴心，算轴距 + 前后悬。
@@ -126,6 +130,7 @@ func DetectAxles(body []pt, obbAngleDeg float32, p AxleParams) AxleResult {
 	if len(centers) < 2 {
 		return r
 	}
+	r.AxleCentersRawMM = append([]float32(nil), centers...) // 原始 l 坐标(未翻转)，供叠加几何
 	// 7) 判车头端并统一成"从车头端起"坐标（front=lo, rear=hi），再算轴距 + 前后悬。
 	//    车头端=邻接最大轴距且其外侧轴数更少的一端（单转向轴 vs 后轴组）。
 	if frontIsHighEnd(adjDiff(centers)) {

@@ -123,6 +123,9 @@ type FusionDoneEvent struct {
 	BoxDepthMM       float32 `json:"box_depth_mm,omitempty"`
 	BoxInnerWidthMM  float32 `json:"box_inner_width_mm,omitempty"`
 
+	// 叠加几何（M9.4c，世界系车体框/货箱框/轴线，供网页 3D 叠加可视分割）。
+	Overlay *VehicleOverlay `json:"overlay,omitempty"`
+
 	// 地面平面（端侧视角预设的"上"方向基准；nx*x+ny*y+nz*z+d=0，法向指向点云主体侧）。
 	GroundNX    float32 `json:"ground_nx,omitempty"`
 	GroundNY    float32 `json:"ground_ny,omitempty"`
@@ -613,6 +616,7 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 	var dims Dimensions
 	var axle AxleResult
 	var cargo CargoBox
+	var overlay VehicleOverlay
 	var compl Compliance
 	measMode := "unfused"
 	carOffset := CarTypeOffset(spec.VehicleTypeID)
@@ -680,6 +684,8 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 			r.Log.Info("货箱测量", "job", spec.JobID, "outer_len", cargo.OuterLengthMM,
 				"outer_w", cargo.OuterWidthMM, "depth", cargo.DepthMM)
 		}
+		// 叠加几何：把分割结果(车体框/货箱框/轴线)按融合云世界系导出，供网页 3D 叠加（docs/16 §3⑥）。
+		overlay = BuildVehicleOverlay(measCloud, mp, DefaultAxleParams(), DefaultCargoBoxParams())
 	}
 
 	bToA, _ := json.Marshal(res.BToA)
@@ -706,6 +712,7 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 			"measure":         dims,
 			"axle":            axle,
 			"cargo_box":       cargo,
+			"overlay":         overlay,
 			"measure_mode":    measMode,
 			"vehicle_type_id": spec.VehicleTypeID,
 			"car_offset":      carOffset,
@@ -723,12 +730,12 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 	publishRes.PtsB = gotB
 	publishRes.Fused = gotFus
 	publishRes.AfterCrop = gotFus
-	r.publishDone(ctx, spec, job, publishRes, fusedKey, aKey, bKey, dims, axle, cargo, compl, ground)
+	r.publishDone(ctx, spec, job, publishRes, fusedKey, aKey, bKey, dims, axle, cargo, overlay, compl, ground)
 	return job, nil
 }
 
 func (r *Runner) publishDone(ctx context.Context, spec RunSpec, job *repo.LaserScanJob,
-	res ScanResult, fusedKey, aKey, bKey string, dims Dimensions, axle AxleResult, cargo CargoBox, compl Compliance, ground GroundPlane) {
+	res ScanResult, fusedKey, aKey, bKey string, dims Dimensions, axle AxleResult, cargo CargoBox, overlay VehicleOverlay, compl Compliance, ground GroundPlane) {
 	if r.Publisher == nil {
 		return
 	}
@@ -762,6 +769,7 @@ func (r *Runner) publishDone(ctx context.Context, spec RunSpec, job *repo.LaserS
 		BoxOuterWidthMM:  cargo.OuterWidthMM,
 		BoxDepthMM:       cargo.DepthMM,
 		BoxInnerWidthMM:  cargo.InnerWidthMM,
+		Overlay:          overlayPtr(overlay),
 		GroundNX:         ground.NX,
 		GroundNY:         ground.NY,
 		GroundNZ:         ground.NZ,
