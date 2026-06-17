@@ -59,6 +59,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import javax.inject.Inject
 
 /**
@@ -86,7 +87,11 @@ class LaserDeviceViewModel @Inject constructor(
     private val _ui = MutableStateFlow(LaserDeviceUi())
     val ui = _ui.asStateFlow()
 
+    private var refreshInFlight = false
+    private var operationInFlight = false
+
     fun selectUnit(u: String) {
+        if (operationInFlight) return
         if (u == _ui.value.unit) return
         // 不清空旧 status/info —— 切换时保留上一单元数据当占位，避免面板因等待新数据而收缩；
         // 新数据 ~40ms 到达后原地替换。
@@ -95,7 +100,9 @@ class LaserDeviceViewModel @Inject constructor(
     }
 
     fun refresh() {
+        if (refreshInFlight || operationInFlight) return
         val unit = _ui.value.unit
+        refreshInFlight = true
         viewModelScope.launch {
             _ui.update { it.copy(loading = true, error = null) }
             try {
@@ -104,53 +111,91 @@ class LaserDeviceViewModel @Inject constructor(
                 _ui.update { it.copy(loading = false, status = st, info = info) }
             } catch (e: Throwable) {
                 _ui.update { it.copy(loading = false, error = e.message ?: "查询失败") }
+            } finally {
+                refreshInFlight = false
             }
         }
     }
 
     fun command(cmd: String, label: String) {
+        if (operationInFlight) return
+        operationInFlight = true
         val unit = _ui.value.unit
         viewModelScope.launch {
-            _ui.update { it.copy(busy = label) }
+            _ui.update { it.copy(busy = label, toast = null, error = null) }
             try {
                 repo.deviceCommand(unit, cmd)
-                _ui.update { it.copy(busy = null, toast = "「$label」已下发") }
-                refresh()
+                val reloadError = refreshVisibleUnit(unit)
+                _ui.update {
+                    it.copy(
+                        busy = null,
+                        toast = if (reloadError == null) "「$label」已下发" else "「$label」已下发，状态刷新失败: ${reloadError.message}",
+                    )
+                }
             } catch (e: Throwable) {
                 _ui.update { it.copy(busy = null, toast = "「$label」失败: ${e.message}") }
+            } finally {
+                operationInFlight = false
             }
         }
     }
 
     fun saveScanSettings(s: ScanSettings) {
+        if (operationInFlight) return
+        operationInFlight = true
         val unit = _ui.value.unit
         viewModelScope.launch {
-            _ui.update { it.copy(busy = "保存扫描设置") }
+            _ui.update { it.copy(busy = "保存扫描设置", toast = null, error = null) }
             try {
                 repo.updateScanSettings(unit, s)
-                _ui.update { it.copy(busy = null, toast = "扫描设置已下发") }
-                refresh()
+                val reloadError = refreshVisibleUnit(unit)
+                _ui.update {
+                    it.copy(
+                        busy = null,
+                        toast = if (reloadError == null) "扫描设置已下发" else "扫描设置已下发，状态刷新失败: ${reloadError.message}",
+                    )
+                }
             } catch (e: Throwable) {
                 _ui.update { it.copy(busy = null, toast = "保存扫描设置失败: ${e.message}") }
+            } finally {
+                operationInFlight = false
             }
         }
     }
 
     fun saveCalib(c: DeviceCalib) {
+        if (operationInFlight) return
+        operationInFlight = true
         val unit = _ui.value.unit
         viewModelScope.launch {
-            _ui.update { it.copy(busy = "保存标定") }
+            _ui.update { it.copy(busy = "保存标定", toast = null, error = null) }
             try {
                 repo.updateCalib(unit, c)
-                _ui.update { it.copy(busy = null, toast = "标定已覆写到设备") }
-                refresh()
+                val reloadError = refreshVisibleUnit(unit)
+                _ui.update {
+                    it.copy(
+                        busy = null,
+                        toast = if (reloadError == null) "标定已覆写到设备" else "标定已覆写到设备，状态刷新失败: ${reloadError.message}",
+                    )
+                }
             } catch (e: Throwable) {
                 _ui.update { it.copy(busy = null, toast = "保存标定失败: ${e.message}") }
+            } finally {
+                operationInFlight = false
             }
         }
     }
 
     fun clearToast() = _ui.update { it.copy(toast = null) }
+
+    private suspend fun refreshVisibleUnit(unit: String): Throwable? =
+        runCatching {
+            val st = repo.deviceStatus(unit)
+            val info = repo.deviceInfo(unit)
+            _ui.update { current ->
+                if (current.unit == unit) current.copy(loading = false, status = st, info = info) else current
+            }
+        }.exceptionOrNull()
 }
 
 // 待确认的破坏性操作。
@@ -170,6 +215,7 @@ fun LaserDeviceControlSheet(
     val ui by vm.ui.collectAsStateWithLifecycle()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var confirm by remember { mutableStateOf<PendingConfirm?>(null) }
+    val controlsEnabled = ui.busy == null && !ui.loading
 
     LaunchedEffect(Unit) { if (ui.status == null) vm.refresh() }
 
@@ -191,9 +237,9 @@ fun LaserDeviceControlSheet(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("设备控制", style = Gomob.type.numInline.copy(fontSize = 16.sp), color = Gomob.colors.fg0, fontWeight = FontWeight.Medium)
                 Spacer(Modifier.weight(1f))
-                IconPill(GomobIcons.Refresh, "刷新", onClick = vm::refresh)
+                IconPill(GomobIcons.Refresh, "刷新", enabled = controlsEnabled, onClick = vm::refresh)
             }
-            UnitTabs(unit = ui.unit, onSelect = vm::selectUnit)
+            UnitTabs(unit = ui.unit, enabled = controlsEnabled, onSelect = vm::selectUnit)
 
             ui.toast?.let { ToastBar(it, onClose = vm::clearToast) }
             ui.busy?.let { BusyBar(it) }
@@ -214,15 +260,15 @@ fun LaserDeviceControlSheet(
             // 控制键
             SectionCard("控制") {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    CtlButton("零位校准", GomobIcons.Calibrate) {
+                    CtlButton("零位校准", GomobIcons.Calibrate, enabled = controlsEnabled) {
                         confirm = PendingConfirm("零位校准", "电机将转动回零位，请确认扫描区域已清空、无人靠近。") {
                             vm.command("ALIGN_ZERO", "零位校准"); confirm = null
                         }
                     }
-                    CtlButton("守望", GomobIcons.Eyeball) { vm.command("SCAN_WATCH", "守望") }
-                    CtlButton("停止", GomobIcons.Minus, danger = true) { vm.command("SCAN_STOP", "停止") }
-                    CtlButton("清除错误", GomobIcons.Check) { vm.command("CLEAR_ERROR", "清除错误") }
-                    CtlButton("软件复位", GomobIcons.Refresh, danger = true) {
+                    CtlButton("守望", GomobIcons.Eyeball, enabled = controlsEnabled) { vm.command("SCAN_WATCH", "守望") }
+                    CtlButton("停止", GomobIcons.Minus, danger = true, enabled = controlsEnabled) { vm.command("SCAN_STOP", "停止") }
+                    CtlButton("清除错误", GomobIcons.Check, enabled = controlsEnabled) { vm.command("CLEAR_ERROR", "清除错误") }
+                    CtlButton("软件复位", GomobIcons.Refresh, danger = true, enabled = controlsEnabled) {
                         confirm = PendingConfirm("软件复位", "设备将立即断连并重启（约 40 秒），开机自检会自动回零动电机。确认执行？") {
                             vm.command("SOFT_REBOOT", "软件复位"); confirm = null
                         }
@@ -234,8 +280,8 @@ fun LaserDeviceControlSheet(
             CropBoxSection(canEdit = canEditCropBox, saved = cropBoxSaved, onEdit = onEditCropBox)
 
             ui.info?.let { info ->
-                ScanSettingsSection(info.scanSettings, onSave = vm::saveScanSettings)
-                CalibSection(info.calib, onSave = { c ->
+                ScanSettingsSection(info.scanSettings, busy = !controlsEnabled, onSave = vm::saveScanSettings)
+                CalibSection(info.calib, busy = !controlsEnabled, onSave = { c ->
                     confirm = PendingConfirm("覆写标定", "将把标定参数写入设备并覆盖出厂值，且不可撤销。确认下发？") {
                         vm.saveCalib(c); confirm = null
                     }
@@ -326,33 +372,55 @@ private fun StatusSection(s: DeviceStatusInfo) {
 }
 
 @Composable
-private fun ScanSettingsSection(s: ScanSettings, onSave: (ScanSettings) -> Unit) {
+private fun ScanSettingsSection(s: ScanSettings, busy: Boolean, onSave: (ScanSettings) -> Unit) {
     var speed by remember(s) { mutableStateOf(num(s.scanSpeed)) }
     var zero by remember(s) { mutableStateOf(num(s.zeroSpeed)) }
     var start by remember(s) { mutableStateOf(num(s.scanStartAngle)) }
-    var stop by remember(s) { mutableStateOf(num(s.scanStopAngle)) }
+    var scanAngle by remember(s) { mutableStateOf(num(s.scanAngle ?: signedScanAngleDeg(s.scanStartAngle, s.scanStopAngle))) }
     var watch by remember(s) { mutableStateOf(num(s.watchingAngle)) }
     var fps by remember(s) { mutableStateOf(num(s.cameraFps)) }
+    val angleWarning = remember(start, scanAngle) {
+        scanAngleWarning(start.toDoubleOrNull(), scanAngle.toDoubleOrNull())
+    }
+    val derivedStop = remember(start, scanAngle, angleWarning) {
+        if (angleWarning == null) {
+            val startAngle = start.toDoubleOrNull()
+            val sweepAngle = scanAngle.toDoubleOrNull()
+            if (startAngle != null && sweepAngle != null) stopAngleFromScan(startAngle, sweepAngle) else null
+        } else {
+            null
+        }
+    }
 
     SectionCard("扫描设置") {
         NumField("扫描速度 °/s", speed) { speed = it }
         NumField("回零速度 °/s", zero) { zero = it }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Box(Modifier.weight(1f)) { NumField("起始角 °", start) { start = it } }
-            Box(Modifier.weight(1f)) { NumField("停止角 °", stop) { stop = it } }
+            Box(Modifier.weight(1f)) { NumField("初始位置 °", start) { start = it } }
+            Box(Modifier.weight(1f)) { NumField("扫描角度 °", scanAngle) { scanAngle = it } }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Box(Modifier.weight(1f)) { NumField("守望角 °", watch) { watch = it } }
             Box(Modifier.weight(1f)) { NumField("相机 FPS", fps) { fps = it } }
         }
+        derivedStop?.let {
+            KV("结束角", "${fmt2(it)}°")
+        }
+        angleWarning?.let {
+            Spacer(Modifier.height(4.dp))
+            Text(it, fontSize = 10.sp, color = Gomob.colors.danger)
+        }
         Spacer(Modifier.height(8.dp))
-        SaveButton("下发扫描设置") {
+        SaveButton("下发扫描设置", enabled = angleWarning == null && !busy) {
+            val startAngle = start.toDoubleOrNull() ?: s.scanStartAngle
+            val sweepAngle = scanAngle.toDoubleOrNull() ?: (s.scanAngle ?: signedScanAngleDeg(s.scanStartAngle, s.scanStopAngle))
             onSave(
                 s.copy(
                     scanSpeed = speed.toDoubleOrNull() ?: s.scanSpeed,
                     zeroSpeed = zero.toDoubleOrNull() ?: s.zeroSpeed,
-                    scanStartAngle = start.toDoubleOrNull() ?: s.scanStartAngle,
-                    scanStopAngle = stop.toDoubleOrNull() ?: s.scanStopAngle,
+                    scanStartAngle = startAngle,
+                    scanStopAngle = stopAngleFromScan(startAngle, sweepAngle),
+                    scanAngle = sweepAngle,
                     watchingAngle = watch.toDoubleOrNull() ?: s.watchingAngle,
                     cameraFps = fps.toDoubleOrNull() ?: s.cameraFps,
                 ),
@@ -361,8 +429,28 @@ private fun ScanSettingsSection(s: ScanSettings, onSave: (ScanSettings) -> Unit)
     }
 }
 
+internal fun scanAngleWarning(start: Double?, scanAngle: Double?): String? {
+    if (start == null || scanAngle == null) return "初始位置和扫描角度必须是数字"
+    val span = abs(scanAngle)
+    val stop = start + scanAngle
+    return when {
+        start <= -180.0 || start >= 180.0 -> "无效范围：初始位置需在 -180°～180° 内，并避开 ±180° 边界"
+        scanAngle <= 0.0 -> "当前固件只支持沿设备正向扫描；负扫描角会跨 +180° 扫成超大角度，请调换初始位置后使用正角度"
+        stop <= -180.0 || stop >= 180.0 -> "无效范围：结束位置 ${fmt2(stop)}° 需避开 ±180° 边界"
+        span < 10.0 -> "无效范围：扫描角度需 ≥10°，过小角度不会形成有效点云"
+        span >= 179.5 -> "无效范围：单段扫描角度必须小于 180°"
+        else -> null
+    }
+}
+
+internal fun signedScanAngleDeg(start: Double, stop: Double): Double =
+    stop - start
+
+internal fun stopAngleFromScan(start: Double, scanAngle: Double): Double =
+    start + scanAngle
+
 @Composable
-private fun CalibSection(c: DeviceCalib, onSave: (DeviceCalib) -> Unit) {
+private fun CalibSection(c: DeviceCalib, busy: Boolean, onSave: (DeviceCalib) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     // 每个数组以逗号分隔文本编辑。
     var lRot by remember(c) { mutableStateOf(arr(c.lidarRotQuat)) }
@@ -405,7 +493,7 @@ private fun CalibSection(c: DeviceCalib, onSave: (DeviceCalib) -> Unit) {
             NumField("b2w_offset [x,y,z] m", bOff) { bOff = it }
             NumField("b2w_scale", bScale) { bScale = it }
             Spacer(Modifier.height(8.dp))
-            SaveButton("覆写标定到设备", danger = true) {
+            SaveButton("覆写标定到设备", danger = true, enabled = !busy) {
                 onSave(
                     c.copy(
                         lidarRotQuat = parseArr(lRot, c.lidarRotQuat),
@@ -458,7 +546,7 @@ private fun SectionCard(title: String, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun UnitTabs(unit: String, onSelect: (String) -> Unit) {
+private fun UnitTabs(unit: String, enabled: Boolean, onSelect: (String) -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -467,18 +555,18 @@ private fun UnitTabs(unit: String, onSelect: (String) -> Unit) {
             .padding(3.dp),
         horizontalArrangement = Arrangement.spacedBy(3.dp),
     ) {
-        UnitTab("镜头 A · .101", unit == "a", Modifier.weight(1f)) { onSelect("a") }
-        UnitTab("镜头 B · .102", unit == "b", Modifier.weight(1f)) { onSelect("b") }
+        UnitTab("镜头 A · .101", unit == "a", enabled, Modifier.weight(1f)) { onSelect("a") }
+        UnitTab("镜头 B · .102", unit == "b", enabled, Modifier.weight(1f)) { onSelect("b") }
     }
 }
 
 @Composable
-private fun UnitTab(label: String, active: Boolean, modifier: Modifier, onClick: () -> Unit) {
+private fun UnitTab(label: String, active: Boolean, enabled: Boolean, modifier: Modifier, onClick: () -> Unit) {
     Box(
         modifier
             .clip(Gomob.shapes.r1)
             .background(if (active) Gomob.colors.accentSoft else Color.Transparent)
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(vertical = 8.dp),
         contentAlignment = Alignment.Center,
     ) {
@@ -520,16 +608,32 @@ private fun KV(k: String, v: String) {
 }
 
 @Composable
-private fun CtlButton(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, danger: Boolean = false, onClick: () -> Unit) {
-    val tint = if (danger) Gomob.colors.danger else Gomob.colors.fg1
-    val line = if (danger) Gomob.colors.danger else Gomob.colors.line2
+private fun CtlButton(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    danger: Boolean = false,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    var clickLocked by remember(label) { mutableStateOf(false) }
+    LaunchedEffect(enabled) { if (enabled) clickLocked = false }
+    val canClick = enabled && !clickLocked
+    val tint = when {
+        !canClick -> Gomob.colors.fg3
+        danger -> Gomob.colors.danger
+        else -> Gomob.colors.fg1
+    }
+    val line = if (danger && canClick) Gomob.colors.danger else Gomob.colors.line2
     Row(
         Modifier
             .height(38.dp)
             .clip(Gomob.shapes.r2)
             .background(Gomob.colors.bg2)
             .border(BorderStroke(1.dp, line), Gomob.shapes.r2)
-            .clickable(onClick = onClick)
+            .clickable(enabled = canClick) {
+                clickLocked = true
+                onClick()
+            }
             .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -540,16 +644,32 @@ private fun CtlButton(label: String, icon: androidx.compose.ui.graphics.vector.I
 }
 
 @Composable
-private fun SaveButton(label: String, danger: Boolean = false, onClick: () -> Unit) {
-    val tint = if (danger) Gomob.colors.danger else Gomob.colors.accent
+private fun SaveButton(label: String, danger: Boolean = false, enabled: Boolean = true, onClick: () -> Unit) {
+    var clickLocked by remember(label) { mutableStateOf(false) }
+    LaunchedEffect(enabled) { if (enabled) clickLocked = false }
+    val canClick = enabled && !clickLocked
+    val tint = when {
+        !canClick -> Gomob.colors.fg3
+        danger -> Gomob.colors.danger
+        else -> Gomob.colors.accent
+    }
     Row(
         Modifier
             .fillMaxWidth()
             .height(42.dp)
             .clip(Gomob.shapes.r2)
-            .background(if (danger) Gomob.colors.danger.copy(alpha = 0.12f) else Gomob.colors.accentSoft)
+            .background(
+                when {
+                    !canClick -> Gomob.colors.bg2
+                    danger -> Gomob.colors.danger.copy(alpha = 0.12f)
+                    else -> Gomob.colors.accentSoft
+                },
+            )
             .border(BorderStroke(1.dp, tint), Gomob.shapes.r2)
-            .clickable(onClick = onClick),
+            .clickable(enabled = canClick) {
+                clickLocked = true
+                onClick()
+            },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center,
     ) {
@@ -567,7 +687,7 @@ private fun NumField(label: String, value: String, onChange: (String) -> Unit) {
             value = value,
             onValueChange = onChange,
             singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
             textStyle = TextStyle(color = Gomob.colors.fg0, fontSize = 13.sp, fontFamily = FontFamily.Monospace),
             cursorBrush = androidx.compose.ui.graphics.SolidColor(Gomob.colors.accent),
             modifier = Modifier
@@ -582,17 +702,28 @@ private fun NumField(label: String, value: String, onChange: (String) -> Unit) {
 }
 
 @Composable
-private fun IconPill(icon: androidx.compose.ui.graphics.vector.ImageVector, cd: String, onClick: () -> Unit) {
+private fun IconPill(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    cd: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    var clickLocked by remember(cd) { mutableStateOf(false) }
+    LaunchedEffect(enabled) { if (enabled) clickLocked = false }
+    val canClick = enabled && !clickLocked
     Box(
         Modifier
             .size(34.dp)
             .clip(Gomob.shapes.r2)
             .background(Gomob.colors.bg2)
             .border(BorderStroke(1.dp, Gomob.colors.line2), Gomob.shapes.r2)
-            .clickable(onClick = onClick),
+            .clickable(enabled = canClick) {
+                clickLocked = true
+                onClick()
+            },
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, cd, tint = Gomob.colors.fg1, modifier = Modifier.size(16.dp))
+        Icon(icon, cd, tint = if (canClick) Gomob.colors.fg1 else Gomob.colors.fg3, modifier = Modifier.size(16.dp))
     }
 }
 

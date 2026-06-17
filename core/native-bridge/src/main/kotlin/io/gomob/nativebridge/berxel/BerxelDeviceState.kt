@@ -206,6 +206,8 @@ data class BerxelFrameStat(
     val receivedAtElapsedMs: Long,
     val width: Int,
     val height: Int,
+    /** true 表示底层仍在吐帧，但画面内容重复，UI 应显示为冻结而不是假 FPS。 */
+    val visualStale: Boolean = false,
 )
 
 /**

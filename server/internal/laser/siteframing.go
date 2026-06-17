@@ -198,10 +198,10 @@ func (h *Handler) runFramingStream(ctx context.Context, owner int64, ipA, ipB, o
 
 	gate := h.newFramingGate(ipA, ipB)
 	var (
-		startOnce sync.Once
-		started   bool
-		gateErr   error
-		result    map[string]any
+		startOnce  sync.Once
+		started    bool
+		gateErr    error
+		result     map[string]any
 		sessionKey = "site-framing"
 	)
 	startGate := func() {

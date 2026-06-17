@@ -66,6 +66,7 @@ enum class LaserViewPreset { FREE, TOP, SIDE, OBLIQUE }
 @Composable
 fun PointCloud3dView(
     points: FloatArray,
+    colors: IntArray? = null,
     modifier: Modifier = Modifier,
     gridCenterZmm: Float = 750f,  // 默认值与 Scan3dRecordingScreen / SessionCreate 对齐 (grid z[0,1500]mm)
     mesh: ScanMeshData? = null,
@@ -103,9 +104,9 @@ fun PointCloud3dView(
     LaunchedEffect(autoFitKey) {
         view.requestRefit()
     }
-    LaunchedEffect(points, mesh) {
+    LaunchedEffect(points, colors, mesh) {
         // mesh 在显示时点云隐藏（避免叠加）；mesh 为 null 时点云正常更新
-        if (mesh == null) view.setPoints(points)
+        if (mesh == null) view.setPoints(points, colors)
     }
     LaunchedEffect(viewPreset) {
         view.applyPreset(viewPreset)
@@ -217,7 +218,7 @@ internal class PointCloudSurfaceView(
                 view.viewport = Viewport(0, 0, width, height)
                 viewHeightPx = height.coerceAtLeast(1)
                 lastAspect = width.toDouble() / height.coerceAtLeast(1)
-                if (roamMode) camera.setProjection(60.0, lastAspect, 50.0, roamFar, Camera.Fov.VERTICAL)
+                if (roamMode) camera.setProjection(roamFovDeg, lastAspect, 50.0, roamFar, Camera.Fov.VERTICAL)
                 else camera.setProjection(45.0, lastAspect, 50.0, currentFar(), Camera.Fov.VERTICAL)
                     }
         }
@@ -226,6 +227,8 @@ internal class PointCloudSurfaceView(
 
     private val material: Material
     private val materialInstance: MaterialInstance
+    private val colorMaterial: Material
+    private val colorMaterialInstance: MaterialInstance
     private val meshMaterial: Material
     private val meshMaterialInstance: MaterialInstance
     private val gridMaterialInstance: MaterialInstance // 地面网格用 unlit 同材质另开实例（暗灰）
@@ -234,11 +237,9 @@ internal class PointCloudSurfaceView(
     // 不每帧 destroy/recreate VB/IB —— 那会累积 stale handle 让 FEngine::loop 在 ~20s
     // 后撞到 "corrupted heap Handle" SIGABRT。改为一次性 alloc，setBufferAt 复用 + 用
     // RenderableManager.setGeometryAt 调整 index count。
-    // 激光真扫掠后单元云 30万+、融合云 60万+（实测 job9 fused=619265）。上限太小时旧实现按
-    // 前 N 截断 —— 而融合云是 [A 全部 + B 全部] 拼接，截前 N 会丢掉整个 B（用户反馈"镜头只剩
-    // 一半/不对"）。改：上限提到 80 万覆盖当前融合云全量；超限时 setPoints 走 stride 均匀抽样
-    // （非截尾），保全空间覆盖。预分配 vertex≈9.6MB + index≈3.2MB GPU，单 view 可接受。
-    private val maxVertices = 800_000
+    // 激光全扫后融合云约 280~300 万点。这里必须全量上传，否则按 PCD 原始线束顺序 stride 抽样会在
+    // 顶视/漫游里看成稀疏几条线。上限按当前真机全量云留余量；超过才进入兜底抽样。
+    private val maxVertices = 3_500_000
 
     // 点云上传：每次 setPoints 分配新 DirectByteBuffer，**不能立刻丢引用**。
     //
@@ -254,7 +255,9 @@ internal class PointCloudSurfaceView(
     // buffer 则字段持有到下一次 setMesh / destroy。这样既不复用正在被 driver 读取的内存，
     // 也不让局部 DirectByteBuffer 过早释放。
     private val pointUploadBuffers = ArrayDeque<ByteBuffer>()
-    private val pointUploadBufferLimit = 8
+    private var pointUploadBufferBytes = 0L
+    private val pointUploadBufferCountLimit = 4
+    private val pointUploadBufferByteLimit = 96L * 1024L * 1024L
     private lateinit var pointIndexUploadBuffer: ByteBuffer
     private var meshPositionUploadBuffer: ByteBuffer? = null
     private var meshTangentUploadBuffer: ByteBuffer? = null
@@ -267,11 +270,16 @@ internal class PointCloudSurfaceView(
 
     private val vertexBuffer: VertexBuffer = VertexBuffer.Builder()
         .vertexCount(maxVertices)
-        .bufferCount(1)
+        .bufferCount(2)
         .attribute(
             VertexBuffer.VertexAttribute.POSITION, 0,
             VertexBuffer.AttributeType.FLOAT3, 0, 12,
         )
+        .attribute(
+            VertexBuffer.VertexAttribute.COLOR, 1,
+            VertexBuffer.AttributeType.UBYTE4, 0, 4,
+        )
+        .normalized(VertexBuffer.VertexAttribute.COLOR)
         .build(engine)
     private val indexBuffer: IndexBuffer
     private val pointEntity: Int = EntityManager.get().create()
@@ -363,11 +371,13 @@ internal class PointCloudSurfaceView(
     private var fitTargetY = 0f
     private var fitTargetZ = gridCenterZmm
     private var fitRadius = 500f
+    private var fitFarRadius = 500f
     private var lastAspect = 1.0
+    @Volatile private var pointCloudInteractionEnabled = true
 
     // ───── 第一视角漫游（标注用）。orbit 字段不动；roamMode=false 时本段全不参与渲染/输入。 ─────
     private var roamMode = false
-    private var roamEyeH = 1600f             // 漫游眼高（地面基 h，世界原点系；屏幕用 2–98 百分位鲁棒算，抗离群）
+    private var roamEyeH = 1600f             // 漫游眼点的绝对 h 坐标（floorH + 人眼离地高度）
     private var roamRadius = 1500f           // 鲁棒包围半径（定远裁剪 + 走动范围；抗离群坏数据）
     private var roamYaw = 0f                  // 头朝向（绕 up；0=朝 +fwd0/取景中心）
     private var roamPitch = 0f               // 抬头/低头（rad，clamp ±1.4 避退化）
@@ -378,8 +388,9 @@ internal class PointCloudSurfaceView(
     @Volatile private var moveMag = 0f        // 摇杆幅度 0..1（部分推=慢走）
     @Volatile private var lookYawRate = 0f    // 右摇杆转身：横轴(+右转)，每帧连续积分
     @Volatile private var lookPitchRate = 0f  // 右摇杆抬头低头：纵轴(+上)，每帧连续积分
-    private var moveSpeedMmPerSec = 1500f
+    private var moveSpeedMmPerSec = 1100f
     private val turnSpeedRadPerSec = 2.0f     // 右摇杆满偏转速 ≈115°/s
+    private val roamFovDeg = 50.0
     private var roamFar = 8000.0
     private var lastFrameNanos = 0L           // 帧 dt 源；0=首帧（dt=0 不跳）
     private var pitchInvert = false
@@ -398,6 +409,12 @@ internal class PointCloudSurfaceView(
         materialInstance = material.createInstance().apply {
             // 浅蓝点云（与 Compose Canvas 版本视觉一致）
             setParameter("baseColor", 0.49f, 0.72f, 1f, 1f)
+            setParameter("pointSizePx", 6f)
+        }
+        // 102 相机纹理投影后的彩色点云：同样 unlit，只把 PCD rgb 字段作为 vertex color。
+        colorMaterial = loadMaterial(context, "materials/point_cloud_color.filamat")
+        colorMaterialInstance = colorMaterial.createInstance().apply {
+            setParameter("baseColor", 1f, 1f, 1f, 1f)
             setParameter("pointSizePx", 6f)
         }
 
@@ -531,7 +548,7 @@ internal class PointCloudSurfaceView(
      *   - 只写 + 只上传前 n × 12 字节；indexCount=n 时 GPU 只读前 n 个 vertex，多余 slot
      *     不被采样，不需要 anchor 填充
      */
-    fun setPoints(cloud: FloatArray) {
+    fun setPoints(cloud: FloatArray, colors: IntArray? = null) {
         val total = cloud.size / 3
         val rm = engine.renderableManager
         // 切到点云模式：隐藏 mesh entity（indexCount=0）
@@ -558,28 +575,53 @@ internal class PointCloudSurfaceView(
         val byteCount = n * 12
         val vBuf = ByteBuffer.allocateDirect(byteCount).order(ByteOrder.nativeOrder())
         val fb = vBuf.asFloatBuffer()
+        val rgb = colors
+        val hasColors = rgb != null && rgb.size >= total
+        val colorBuf = if (hasColors) ByteBuffer.allocateDirect(n * 4).order(ByteOrder.nativeOrder()) else null
         if (stride == 1) {
             fb.put(cloud, 0, n * 3)
+            if (colorBuf != null) {
+                var i = 0
+                while (i < n) {
+                    putRgb(colorBuf, rgb!![i])
+                    i++
+                }
+            }
         } else {
             var src = 0; var cnt = 0
             while (cnt < n) {
                 val base = src * 3
                 fb.put(cloud[base]); fb.put(cloud[base + 1]); fb.put(cloud[base + 2])
+                if (colorBuf != null) putRgb(colorBuf, rgb!![src])
                 src += stride; cnt++
             }
         }
         vBuf.rewind()
         retainPointUploadBuffer(vBuf)
         vertexBuffer.setBufferAt(engine, 0, vBuf, 0, byteCount)
+        if (colorBuf != null) {
+            colorBuf.rewind()
+            retainPointUploadBuffer(colorBuf)
+            vertexBuffer.setBufferAt(engine, 1, colorBuf, 0, n * 4)
+        }
 
         if (instance != 0) {
+            rm.setMaterialInstanceAt(instance, 0, if (colorBuf != null) colorMaterialInstance else materialInstance)
             rm.setGeometryAt(instance, 0, RenderableManager.PrimitiveType.POINTS,
                              vertexBuffer, indexBuffer, 0, n)
         }
+        android.util.Log.i(TAG, "setPoints total=$total uploaded=$n stride=$stride color=${colorBuf != null}")
 
         // autoFit：用户未上手时每帧按整云包围球跟随取景（采集时跟着云生长）；一旦用户手动操作过
         // (userInteracted) 即冻结，不再重拟合，保住手动视角（实测：每帧拟合会把位置/缩放/平移冲掉）。
         if (autoFit && !userInteracted) fitTo(cloud, total)
+    }
+
+    private fun putRgb(buf: ByteBuffer, rgb: Int) {
+        buf.put(((rgb ushr 16) and 0xff).toByte())
+        buf.put(((rgb ushr 8) and 0xff).toByte())
+        buf.put((rgb and 0xff).toByte())
+        buf.put(0xff.toByte())
     }
 
     /** 切换显示的云时调：清"用户已交互"，让新云恢复自动取景跟随。 */
@@ -587,48 +629,71 @@ internal class PointCloudSurfaceView(
         userInteracted = false
     }
 
-    /** 远裁剪面：autoFit 后取 distance + 2R 余量覆盖整云深度；否则沿用默认 6000mm。 */
+    /** 远裁剪面：取景按主体半径，far 仍按全量有效点半径，避免远处点被直接裁掉。 */
     private fun currentFar(): Double =
-        if (hasFit) (distance + 2f * fitRadius + 200f).toDouble() else 6000.0
+        if (hasFit) (distance + 2f * fitFarRadius + 500f).toDouble() else 6000.0
 
     /** 坐标是否在合理范围（有限且 |v|≤50m mm）。用于 autoFit 抗离群，与服务端 handlePts 阈值一致。 */
     private fun isSane(v: Float): Boolean = v.isFinite() && kotlin.math.abs(v) <= 50_000f
 
     /**
-     * 按点云包围球拟合相机一次：target=质心，distance=R/sin(22.5°)·余量（让半径 R 球恰好入 45° 垂直
-     * FOV），并据此扩远裁剪面。整云坐标可能 X/Y 远离原点、Z 跨数十米，固定取景会整云出锥；此法保证可见。
+     * 主体优先拟合相机：target/radius 用地面基下 2–98% 分位数主体范围，避免背景/远端点把整车缩成
+     * 小模型；far 另按全量有效点扩展，保留远处点的可见性。
      */
     private fun fitTo(cloud: FloatArray, n: Int) {
         if (n <= 0) return
-        // 抗离群：设备偶发吐坐标爆表(~1e37mm)的垃圾点，若纳入质心/半径会把相机 target 拉到 1e31mm
-        // 外、真实云出锥变黑（用户反馈"镜头完全不对"真因）。服务端已在源头过滤，这里再兜一层：
-        // 统计质心与半径时跳过非有限 / 超 SANE_MM 的点。SANE_MM=50m 远大于真实场景，不误杀。
-        var cx = 0.0; var cy = 0.0; var cz = 0.0
-        var valid = 0
+        val maxSamples = 12_000
+        val stride = if (n > maxSamples) (n + maxSamples - 1) / maxSamples else 1
+        val sampleCapacity = if (n < maxSamples) n else maxSamples
+        val us = ArrayList<Float>(sampleCapacity)
+        val vs = ArrayList<Float>(sampleCapacity)
+        val hs = ArrayList<Float>(sampleCapacity)
         var i = 0
         val lim = n * 3
         while (i < lim) {
             val x = cloud[i]; val y = cloud[i + 1]; val z = cloud[i + 2]
-            if (isSane(x) && isSane(y) && isSane(z)) { cx += x; cy += y; cz += z; valid++ }
-            i += 3
+            if (isSane(x) && isSane(y) && isSane(z)) {
+                us.add(x * rgX + y * rgY + z * rgZ)
+                vs.add(x * fwX + y * fwY + z * fwZ)
+                hs.add(x * upX + y * upY + z * upZ)
+            }
+            i += 3 * stride
         }
-        if (valid == 0) return
-        val inv = 1.0 / valid
-        cx *= inv; cy *= inv; cz *= inv
-        var maxR2 = 0.0
+        if (us.isEmpty()) return
+        fun band(values: ArrayList<Float>): Pair<Float, Float> {
+            val a = values.toFloatArray()
+            a.sort()
+            val last = a.lastIndex
+            fun q(p: Float) = a[(last * p).toInt().coerceIn(0, last)]
+            return q(0.02f) to q(0.98f)
+        }
+        val (u0, u1) = band(us)
+        val (v0, v1) = band(vs)
+        val (h0, h1) = band(hs)
+        val cU = (u0 + u1) * 0.5f
+        val cV = (v0 + v1) * 0.5f
+        val cH = (h0 + h1) * 0.5f
+        val hU = ((u1 - u0) * 0.5f).coerceAtLeast(300f)
+        val hV = ((v1 - v0) * 0.5f).coerceAtLeast(300f)
+        val hH = ((h1 - h0) * 0.5f).coerceAtLeast(120f)
+        val cx = cU * rgX + cV * fwX + cH * upX
+        val cy = cU * rgY + cV * fwY + cH * upY
+        val cz = cU * rgZ + cV * fwZ + cH * upZ
+        var farR2 = 0f
         i = 0
         while (i < lim) {
             val x = cloud[i]; val y = cloud[i + 1]; val z = cloud[i + 2]
             if (!(isSane(x) && isSane(y) && isSane(z))) { i += 3; continue }
             val dx = x - cx; val dy = y - cy; val dz = z - cz
             val r2 = dx * dx + dy * dy + dz * dz
-            if (r2 > maxR2) maxR2 = r2
+            if (r2 > farR2) farR2 = r2
             i += 3
         }
-        fitTargetX = cx.toFloat(); fitTargetY = cy.toFloat(); fitTargetZ = cz.toFloat()
-        fitRadius = kotlin.math.sqrt(maxR2).toFloat().coerceIn(100f, 100_000f)
-        // d = R / sin(fov/2)，fov=45° → sin22.5°≈0.3827；×1.2 留边距。
-        distance = (fitRadius / 0.3827f * 1.2f).coerceIn(300f, 80_000f)
+        fitTargetX = cx; fitTargetY = cy; fitTargetZ = cz
+        fitRadius = kotlin.math.sqrt((hU * hU + hV * hV + hH * hH).toDouble()).toFloat().coerceIn(250f, 40_000f)
+        fitFarRadius = kotlin.math.sqrt(farR2.toDouble()).toFloat().coerceIn(fitRadius, 100_000f)
+        // d = R / sin(fov/2)，fov=45° → sin22.5°≈0.3827；主体优先取景只留少量边距。
+        distance = (fitRadius / 0.3827f * 0.95f).coerceIn(300f, 60_000f)
         hasFit = true
         camera.setProjection(45.0, lastAspect, 50.0, currentFar(), Camera.Fov.VERTICAL)
         applyCamera()
@@ -734,8 +799,13 @@ internal class PointCloudSurfaceView(
 
     private fun retainPointUploadBuffer(buffer: ByteBuffer) {
         pointUploadBuffers.addLast(buffer)
-        while (pointUploadBuffers.size > pointUploadBufferLimit) {
-            pointUploadBuffers.removeFirst()
+        pointUploadBufferBytes += buffer.capacity().toLong()
+        while (
+            pointUploadBuffers.size > pointUploadBufferCountLimit ||
+            pointUploadBufferBytes > pointUploadBufferByteLimit
+        ) {
+            val removed = pointUploadBuffers.removeFirst()
+            pointUploadBufferBytes -= removed.capacity().toLong()
         }
     }
 
@@ -757,10 +827,7 @@ internal class PointCloudSurfaceView(
         camera.lookAt(ex, ey, ez, tx, ty, tz, upX.toDouble(), upY.toDouble(), upZ.toDouble())
     }
 
-    /**
-     * 第一视角相机：眼=取景中心(u,v)+走动位移，沿地面基抬升 eyeHeight；朝向由 yaw(绕 up)+pitch 决定。
-     * 地面平面 up·x+d=0 → 平面 h=-d；眼在其上 eyeHeight。
-     */
+    /** 第一视角相机：眼=起点(u,v)+走动位移+hEye·up；朝向由 yaw(绕 up)+pitch 决定。 */
     private fun applyRoamCamera() {
         val uW = originU + walkU
         val vW = originV + walkV
@@ -784,26 +851,40 @@ internal class PointCloudSurfaceView(
     // ───── 漫游对外接口（RoamAnnotationScreen 调用） ─────
 
     /**
-     * 进入第一视角漫游：落在给定中心(centerU,centerV)、眼高 eyeH（均在地面基 (u,v,h) 世界原点系）。
-     * 中心/眼高由屏幕用 2–98 百分位**鲁棒**算（抗离群/坏数据——均值质心会被远端垃圾点拉进空域致点云出视）。
+     * 进入第一视角漫游：落在给定起点(centerU,centerV)，眼高 eyeHeight 为离地高度。
+     * 起点由屏幕用 2–98 百分位**鲁棒**算（抗离群/坏数据——均值质心会被远端垃圾点拉进空域致点云出视）。
      * radius=鲁棒包围半径，定远裁剪 + 走动范围。须在 setGround + setPoints 后调。
      */
-    fun enterRoamMode(centerU: Float, centerV: Float, eyeH: Float, radius: Float) {
+    fun enterRoamMode(centerU: Float, centerV: Float, eyeHeight: Float, radius: Float) {
         roamMode = true
+        setPointCloudInteractionEnabled(false)
         lastFrameNanos = 0L
         originU = centerU
         originV = centerV
-        roamEyeH = eyeH
+        roamEyeH = -groundOffsetD + eyeHeight.coerceIn(900f, 2200f)
         roamRadius = radius.coerceAtLeast(500f)
         walkU = 0f
-        walkV = 0f                     // 落在点云中心（用户要站正中、从里向外环顾）
-        roamYaw = 0f; roamPitch = 0f   // 水平起视，转头(look-pad)环顾四周
+        walkV = 0f                     // 起点已在主体外侧，走动位移从 0 开始积分
+        roamYaw = 0f; roamPitch = 0f   // 水平起视，转头由漫游 HUD 接管
         roamFar = (2f * roamRadius + 3000f).toDouble().coerceAtLeast(6000.0)
-        camera.setProjection(60.0, lastAspect, 50.0, roamFar, Camera.Fov.VERTICAL)
+        camera.setProjection(roamFovDeg, lastAspect, 50.0, roamFar, Camera.Fov.VERTICAL)
         applyCamera()
     }
 
-    fun exitRoamMode() { roamMode = false; lastFrameNanos = 0L }
+    fun exitRoamMode() {
+        roamMode = false
+        lastFrameNanos = 0L
+        setPointCloudInteractionEnabled(true)
+    }
+
+    /** 开关普通点云查看手势（orbit / pinch / pan）。漫游期点云只展示，移动由 HUD 控件接管。 */
+    fun setPointCloudInteractionEnabled(enabled: Boolean) {
+        pointCloudInteractionEnabled = enabled
+        if (!enabled) {
+            pinching = false
+            parent?.requestDisallowInterceptTouchEvent(false)
+        }
+    }
 
     /** 摇杆输入：strafe 右(+)、forward 前(+)、magnitude 0..1（部分推=慢走）。主线程写、渲染回调读。 */
     fun setMoveInput(strafe: Float, forward: Float, magnitude: Float) {
@@ -815,7 +896,7 @@ internal class PointCloudSurfaceView(
         lookYawRate = yawRate; lookPitchRate = pitchRate
     }
 
-    /** 转头/抬头（look-pad 拖动）。pitch clamp ±1.4 避开近竖直退化。 */
+    /** 转头/抬头的增量入口。pitch clamp ±1.4 避开近竖直退化。 */
     fun applyLook(dYaw: Float, dPitch: Float) {
         roamYaw += dYaw
         val p = if (pitchInvert) -dPitch else dPitch
@@ -968,7 +1049,7 @@ internal class PointCloudSurfaceView(
     fun resetView() {
         userInteracted = false // 重置 → 恢复自动取景跟随（再有增量点会重新拟合）
         if (autoFit && hasFit) {
-            distance = (fitRadius / 0.3827f * 1.2f).coerceIn(300f, 80_000f)
+            distance = (fitRadius / 0.3827f * 0.95f).coerceIn(300f, 60_000f)
             camera.setProjection(45.0, lastAspect, 50.0, currentFar(), Camera.Fov.VERTICAL)
         }
         applyPreset(preset) // 重置角度 + 清平移 + applyCamera
@@ -1095,7 +1176,11 @@ internal class PointCloudSurfaceView(
     @Volatile private var pinching = false
 
     override fun onTouchEvent(ev: MotionEvent): Boolean {
-        if (roamMode) return false // 漫游期所有输入走 Compose HUD（左摇杆 + 全屏 look-pad）
+        if (roamMode || !pointCloudInteractionEnabled) {
+            pinching = false
+            parent?.requestDisallowInterceptTouchEvent(false)
+            return false
+        }
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 lastX = ev.x; lastY = ev.y
@@ -1222,9 +1307,12 @@ internal class PointCloudSurfaceView(
         engine.destroyMaterialInstance(groundMaterialInstance) // 先于 material（同 material 派生）
         engine.destroyMaterialInstance(pathMaterialInstance) // 先于 material（同 material 派生）
         engine.destroyMaterial(material)
+        engine.destroyMaterialInstance(colorMaterialInstance)
+        engine.destroyMaterial(colorMaterial)
         engine.destroyMaterialInstance(meshMaterialInstance)
         engine.destroyMaterial(meshMaterial)
         pointUploadBuffers.clear()
+        pointUploadBufferBytes = 0L
         gridUploadBuffer = null
         groundUploadBuffer = null
         pathUploadBuffer = null

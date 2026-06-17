@@ -3,6 +3,7 @@
 #include <libusb-1.0/libusb.h>
 
 #include "camera/host/usb_context.h"
+#include "eys3d/host/eys3d_usb_api.h"
 
 namespace gomob::eys3d::host {
 
@@ -38,6 +39,8 @@ bool Eys3dHostSession::start(const SessionCallbacks& cb) {
 }
 
 void Eys3dHostSession::StreamLoop() {
+  // host：函数表填真实链接的 libusb_*（Android 侧由 fd 会话 dlopen libusb100 填）。
+  gomob::eys3d::Eys3dUsbSetHostApi();
   // 流逻辑全在传输无关的 RunEys3dStreamLoop(host 与 Android-fd 共调,零重复)。
   // host 走 UsbContext 默认 context → handle_events 传 nullptr。
   RunEys3dStreamLoop(nullptr, static_cast<libusb_device_handle*>(handle_), plan_, cfg_, core_);

@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.gomob.data.scan.LaserCloudRenderData
 import io.gomob.data.scan.VehicleMeasurement
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.icons.GomobIcons
@@ -79,7 +80,7 @@ fun LaserScanScreen(
     // 漫游标注请求（按当前镜头进第一视角圈框；非空即全屏叠漫游屏）。
     var roamReq by remember { mutableStateOf<RoamReq?>(null) }
     val completed = state as? LaserScanState.Completed
-    val canEditCropBox = completed != null && fused.isNotEmpty()
+    val canEditCropBox = completed != null && fused.xyz.isNotEmpty()
     val hasSavedBox = loadedBox != null || savedHint
     // 持久化车位框（unit_a 世界系，跨会话）进场预载一次，用于设置内显示「已圈选」并作编辑器初值。
     // 融合云顶视编辑器对应 a 单元（融合==世界==unit_a 系）；同时预载 A/B 两单元缓存。
@@ -128,11 +129,11 @@ fun LaserScanScreen(
         )
     }
     // 全屏车位框编辑器（叠在最上层）。
-    if (showCropEditor && fused.isNotEmpty()) {
+    if (showCropEditor && fused.xyz.isNotEmpty()) {
         val ground = completed?.ground
         Box(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
             LaserCropBoxEditor(
-                cloud = fused,
+                cloud = fused.xyz,
                 groundNormal = if (ground != null && ground.valid) floatArrayOf(ground.nx, ground.ny, ground.nz) else null,
                 initialBox = loadedBox,
                 // 顶视编辑器显示的是融合云 → 预览也裁融合云（与显示 + crop_box 测量一致）；存为 a 框。
@@ -149,7 +150,8 @@ fun LaserScanScreen(
     roamReq?.let { req ->
         Box(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
             RoamAnnotationScreen(
-                cloud = req.cloud,
+                cloud = req.cloud.xyz,
+                colors = req.cloud.rgb,
                 groundNormal = req.up,
                 onPreview = { box -> vm.cropPreview(req.unit, box) },
                 onSave = { box ->
@@ -165,15 +167,15 @@ fun LaserScanScreen(
     }
 }
 
-/** 漫游标注请求：按某镜头进第一视角圈框所需的点云 + 单元(a|b) + 上方向(null→+Z)。 */
-private class RoamReq(val cloud: FloatArray, val unit: String, val up: FloatArray?)
+/** 漫游标注请求：按某镜头进第一视角圈框所需的点云(含可选颜色) + 单元(a|b) + 上方向(null→+Z)。 */
+private class RoamReq(val cloud: LaserCloudRenderData, val unit: String, val up: FloatArray?)
 
 @Composable
 private fun LaserCaptureBody(
     state: LaserScanState,
-    fused: FloatArray,
-    unitA: FloatArray,
-    unitB: FloatArray,
+    fused: LaserCloudRenderData,
+    unitA: LaserCloudRenderData,
+    unitB: LaserCloudRenderData,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onRestart: () -> Unit,
@@ -182,7 +184,7 @@ private fun LaserCaptureBody(
     onOpenSettings: () -> Unit,
     boxASaved: Boolean,
     boxBSaved: Boolean,
-    onRoam: (cloud: FloatArray, unit: String, up: FloatArray?) -> Unit,
+    onRoam: (cloud: LaserCloudRenderData, unit: String, up: FloatArray?) -> Unit,
 ) {
     // 视角预设（顶/侧/斜/自由，相对各云的"上"方向）。A/B/融合三窗同款；新扫描重置为自由家位。
     var viewPreset by remember { mutableStateOf(LaserViewPreset.FREE) }
@@ -198,7 +200,7 @@ private fun LaserCaptureBody(
     // 用户随后手动点缩略图的选择会保留（同一 state 实例不再触发本效应）。
     LaunchedEffect(state) {
         when (state) {
-            LaserScanState.Scanning -> if (fused.isEmpty()) selected = LaserCloudKind.A
+            LaserScanState.Scanning -> if (fused.xyz.isEmpty()) selected = LaserCloudKind.A
             is LaserScanState.Completed -> selected = LaserCloudKind.FUSED
             LaserScanState.Idle -> { selected = LaserCloudKind.FUSED; viewPreset = LaserViewPreset.FREE }
             else -> Unit
@@ -242,7 +244,7 @@ private fun LaserCaptureBody(
                 autoFitKey = selected, // 切换显示的云(融合/A/B)时重拟合；同一云增量生长时不变→不冲掉手动视角
             )
             // 视角段控：A/B/融合三窗同款，凡当前云非空即叠右上一键切机位/复位。
-            if (selectedCloud.isNotEmpty()) {
+            if (selectedCloud.xyz.isNotEmpty()) {
                 ViewPresetBar(
                     current = viewPreset, onSelect = { viewPreset = it }, onReset = { resetSignal++ },
                     modifier = Modifier.align(Alignment.TopEnd).padding(10.dp),
@@ -250,7 +252,7 @@ private fun LaserCaptureBody(
             }
             // 漫游标注入口：完成态且当前云非空时叠左下——按当前镜头进第一视角走一圈圈车位框。
             // 融合/镜头A → 世界系 a 框（A==世界，up=地面法向）；镜头B → unitB 设备系 b 框（up=+Z）。
-            if (completed != null && selectedCloud.isNotEmpty()) {
+            if (completed != null && selectedCloud.xyz.isNotEmpty()) {
                 val roamUnit = if (selected == LaserCloudKind.B) "b" else "a"
                 val roamUp = if (selected == LaserCloudKind.B) null
                 else if (ground != null && ground.valid) floatArrayOf(ground.nx, ground.ny, ground.nz) else null
@@ -282,9 +284,9 @@ private fun LaserCaptureBody(
 @Composable
 private fun CloudSwitcherRow(
     selected: LaserCloudKind,
-    fused: FloatArray,
-    unitA: FloatArray,
-    unitB: FloatArray,
+    fused: LaserCloudRenderData,
+    unitA: LaserCloudRenderData,
+    unitB: LaserCloudRenderData,
     onSelect: (LaserCloudKind) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -305,14 +307,14 @@ private fun CloudSwitcherRow(
 @Composable
 private fun CloudThumbnail(
     label: String,
-    cloud: FloatArray,
+    cloud: LaserCloudRenderData,
     selected: Boolean,
     accent: Color,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val pts = remember(cloud) { project2D(cloud) }
-    val count = cloud.size / 3
+    val pts = remember(cloud) { project2D(cloud.xyz) }
+    val count = cloud.pointCount
     Column(modifier = modifier.clickable(onClick = onClick), verticalArrangement = Arrangement.spacedBy(3.dp)) {
         Box(
             Modifier
@@ -372,6 +374,12 @@ private fun LaserStatusPanel(
             "融合 ${s.points} 点 · A ${s.ptsA} / B ${s.ptsB} · ${s.alignMethod}",
             style = Gomob.type.numInline.copy(fontSize = 9.sp), color = Gomob.colors.fg2,
         )
+        s.pointIntegrityWarning?.let {
+            Text(
+                "点云完整性告警：$it",
+                style = Gomob.type.numInline.copy(fontSize = 10.sp), color = Gomob.colors.danger,
+            )
+        }
         if (s.measurement.valid) {
             MeasurementCard(s.measurement)
         } else {
@@ -441,7 +449,7 @@ private fun sane(v: Float): Boolean = v.isFinite() && kotlin.math.abs(v) <= 50_0
 private fun LaserCloudPanel(
     title: String,
     accent: Color,
-    cloud: FloatArray,
+    cloud: LaserCloudRenderData,
     emptyHint: String,
     state: LaserScanState,
     modifier: Modifier = Modifier,
@@ -454,15 +462,16 @@ private fun LaserCloudPanel(
     autoFitKey: Any? = null,
 ) {
     // 车辆尺度点云在数千 mm 量级；按点云均值 z 居中以改善取景（按 cloud 实例 memo，避免每帧 O(n)）。
-    val centerZ = remember(cloud) { meanZ(cloud) }
+    val centerZ = remember(cloud) { meanZ(cloud.xyz) }
     Box(
         modifier = modifier
             .clip(Gomob.shapes.r3)
             .background(Color(0xFF060912)),
     ) {
-        if (cloud.isNotEmpty()) {
+        if (cloud.xyz.isNotEmpty()) {
             PointCloud3dView(
-                points = cloud, modifier = Modifier.fillMaxSize(), gridCenterZmm = centerZ,
+                points = cloud.xyz, colors = cloud.rgb,
+                modifier = Modifier.fillMaxSize(), gridCenterZmm = centerZ,
                 autoFit = autoFit, upAxis = upAxis, viewPreset = viewPreset,
                 showGround = showGround, groundD = groundD, resetSignal = resetSignal,
                 autoFitKey = autoFitKey,
@@ -483,7 +492,7 @@ private fun LaserCloudPanel(
         ) {
             Text(title, style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.1.em), color = accent)
             Text(
-                "${cloud.size / 3} 点",
+                "${cloud.pointCount} 点",
                 style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.08.em),
                 color = Gomob.colors.fg2,
             )
@@ -771,14 +780,20 @@ private fun PillButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
     primary: Boolean,
     danger: Boolean = false,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
+    var clickLocked by remember(label) { mutableStateOf(false) }
+    LaunchedEffect(enabled) { if (enabled) clickLocked = false }
+    val canClick = enabled && !clickLocked
     val tint = when {
+        !canClick -> Gomob.colors.fg3
         danger -> Gomob.colors.danger
         primary -> Gomob.colors.accent
         else -> Gomob.colors.fg1
     }
     val line = when {
+        !canClick -> Gomob.colors.line2
         danger -> Gomob.colors.danger
         primary -> Gomob.colors.accent
         else -> Gomob.colors.line2
@@ -787,9 +802,12 @@ private fun PillButton(
         modifier = Modifier
             .height(46.dp)
             .clip(CircleShape)
-            .background(if (primary) Gomob.colors.accentSoft else Gomob.colors.bg1)
+            .background(if (primary && canClick) Gomob.colors.accentSoft else Gomob.colors.bg1)
             .border(BorderStroke(1.dp, line), CircleShape)
-            .clickable(onClick = onClick)
+            .clickable(enabled = canClick) {
+                clickLocked = true
+                onClick()
+            }
             .padding(horizontal = 22.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),

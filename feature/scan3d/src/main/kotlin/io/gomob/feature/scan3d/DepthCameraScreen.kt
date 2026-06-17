@@ -57,12 +57,12 @@ import io.gomob.designsystem.component.SegmentedTabs
 import io.gomob.designsystem.component.SettingRow
 import io.gomob.designsystem.component.SettingRowDivider
 import io.gomob.designsystem.theme.Gomob
-import io.gomob.nativebridge.berxel.BerxelDeviceState
 import io.gomob.nativebridge.berxel.BerxelFrameStat
 import io.gomob.nativebridge.berxel.BerxelStackBackend
 import io.gomob.nativebridge.berxel.BerxelStreamProfile
 import io.gomob.nativebridge.berxel.BerxelStreamProfiles
 import io.gomob.nativebridge.berxel.BerxelStreamTarget
+import io.gomob.nativebridge.camera.CameraSourceState
 
 const val DEPTH_CAMERA_ROUTE = "scan3d/depth-camera"
 
@@ -85,6 +85,7 @@ fun DepthCameraRoute(
     val ui by vm.uiState.collectAsStateWithLifecycle()
     val colorBmp by vm.colorPreview.collectAsStateWithLifecycle()
     val depthBmp by vm.depthPreview.collectAsStateWithLifecycle()
+    val rgbBmp by vm.rgbPreview.collectAsStateWithLifecycle()
     val strictFrameSize by vm.strictFrameSize.collectAsStateWithLifecycle()
     val irRenderMode by vm.irRenderMode.collectAsStateWithLifecycle()
 
@@ -102,14 +103,19 @@ fun DepthCameraRoute(
     ) { granted ->
         hasCameraPermission = granted
     }
-    LaunchedEffect(Unit) {
+    LaunchedEffect(hasCameraPermission) {
+        vm.setCameraPermissionGranted(hasCameraPermission)
         if (!hasCameraPermission) {
             permissionLauncher.launch(Manifest.permission.CAMERA)
         }
     }
 
     Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        BackHeader(title = "深度相机", eyebrow = "Berxel iHawk · 详情与控制", onBack = onBack)
+        BackHeader(
+            title = "深度相机",
+            eyebrow = ui.label.ifBlank { "深度相机" } + " · 详情与控制",
+            onBack = onBack,
+        )
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
@@ -118,67 +124,81 @@ fun DepthCameraRoute(
             ),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
-            item {
-                BackendSwitcher(
-                    current = ui.backend,
-                    onChange = { vm.setBackendMode(it) },
-                )
+            // 采集后端 / 流模式选择是 Berxel 专属（eYs3D mode25 无对应概念）—— 仅 Berxel 显示，不放假按钮。
+            if (ui.isBerxel) {
+                item {
+                    BackendSwitcher(
+                        current = ui.backend,
+                        onChange = { vm.setBackendMode(it) },
+                    )
+                }
+                item {
+                    StreamProfileSelector(
+                        current = ui.streamProfile,
+                        backend = ui.backend,
+                        onChange = { vm.setStreamProfile(it) },
+                    )
+                }
             }
-            item {
-                StreamProfileSelector(
-                    current = ui.streamProfile,
-                    backend = ui.backend,
-                    onChange = { vm.setStreamProfile(it) },
-                )
+            // HLSD8 真彩 RGB（独立第二颗 USB 相机，正射图高分辨率源）—— 仅插着时显示。
+            if (ui.hasRgb) {
+                item {
+                    LargePreview(
+                        label = "RGB · ${ui.rgbLabel.ifBlank { "HLSD8" }}${ui.rgbStat.fpsSuffix()}",
+                        bitmap = rgbBmp,
+                        placeholder = "等待 HLSD8 RGB 帧…",
+                    )
+                }
             }
             item {
                 LargePreview(
-                    label = "COLOR${ui.color.fpsSuffix()}",
+                    // eYs3D 这路是 L'(左矫正/IR 参考)，非真彩；Berxel 才是真彩。标签随相机区分。
+                    label = (if (ui.isBerxel) "COLOR" else "L' (左矫正)") + ui.colorStat.fpsSuffix(),
                     bitmap = colorBmp,
-                    placeholder = "等待彩色帧",
+                    placeholder = ui.sourceState.colorPlaceholder(),
                 )
             }
             item {
                 LargePreview(
                     label = buildString {
-                        append(if (irRenderMode) "DEPTH · IR-GREY" else "DEPTH · TURBO")
-                        append(ui.depth.fpsSuffix())
-                        append(" · ")
-                        append(if (strictFrameSize) "STRICT 401" else "RAW")
+                        append(if (ui.isBerxel && irRenderMode) "DEPTH · IR-GREY" else "DEPTH · TURBO")
+                        append(ui.depthStat.fpsSuffix())
+                        if (ui.isBerxel) {
+                            append(" · ")
+                            append(if (strictFrameSize) "STRICT 401" else "RAW")
+                        }
                     },
                     bitmap = depthBmp,
-                    placeholder = when (ui.device) {
-                        BerxelDeviceState.NoDevice -> "未检测到相机"
-                        BerxelDeviceState.Initializing -> "正在枚举 USB"
-                        BerxelDeviceState.Opening -> "正在打开深度流"
-                        BerxelDeviceState.WaitingPermission -> "等待 USB 权限"
-                        is BerxelDeviceState.Error -> "深度流异常"
-                        else -> "等待深度帧"
-                    },
-                    actionLabel = if (strictFrameSize) "切 RAW" else "切 STRICT",
-                    onAction = { vm.toggleStrictFrameSize() },
-                    action2Label = if (irRenderMode) "切 TURBO" else "切 IR",
-                    onAction2 = { vm.toggleIrRenderMode() },
-                    action3Label = "DUMP",
-                    onAction3 = { vm.triggerFrameDump() },
+                    placeholder = ui.sourceState.depthPlaceholder(),
+                    // STRICT / IR / DUMP 是 Berxel NATIVE_REWRITE 调试 toggle，eYs3D 下不暴露。
+                    actionLabel = if (ui.isBerxel) (if (strictFrameSize) "切 RAW" else "切 STRICT") else null,
+                    onAction = if (ui.isBerxel) vm::toggleStrictFrameSize else null,
+                    action2Label = if (ui.isBerxel) (if (irRenderMode) "切 TURBO" else "切 IR") else null,
+                    onAction2 = if (ui.isBerxel) vm::toggleIrRenderMode else null,
+                    action3Label = if (ui.isBerxel) "DUMP" else null,
+                    onAction3 = if (ui.isBerxel) vm::triggerFrameDump else null,
                 )
             }
             item { LiveStatusStrip(ui = ui) }
             item { Spacer(Modifier.height(Gomob.spacing.s4)) }
-            item {
-                SectionList {
-                    // 「开始三维外廓扫描」入口已上移到 3D 主页 ActionTile 01；本页只关心设备本身
-                    NavRow(title = "设备详情", subtitle = "序列号 / 流模式 / 内参 / 帧统计", onClick = onOpenInfo)
-                    SettingRowDivider()
-                    NavRow(title = "成像控制", subtitle = "Color / Depth 曝光 · 去噪 · 配准", onClick = onOpenControls)
-                    SettingRowDivider()
-                    NavRow(title = "Color ↔ Depth 标定", subtitle = "外参微调 / Charuco 标定向导", onClick = onOpenCalibration)
-                    SettingRowDivider()
-                    NavRow(
-                        title = "Sonix ASIC 调试",
-                        subtitle = "M1.6.5/6 · 直发 XU vendor cmd 读寄存器",
-                        onClick = onOpenSonixDebug,
-                    )
+            // 设备详情 / 成像控制 / 标定 / Sonix 均为 Berxel 专属子页（依赖 Berxel SDK info/controls）。
+            // eYs3D 路径不产这些数据，自动识别下隐藏整张导航卡，本页专注 COLOR / DEPTH 双预览。
+            if (ui.isBerxel) {
+                item {
+                    SectionList {
+                        // 「开始三维外廓扫描」入口已上移到 3D 主页 ActionTile 01；本页只关心设备本身
+                        NavRow(title = "设备详情", subtitle = "序列号 / 流模式 / 内参 / 帧统计", onClick = onOpenInfo)
+                        SettingRowDivider()
+                        NavRow(title = "成像控制", subtitle = "Color / Depth 曝光 · 去噪 · 配准", onClick = onOpenControls)
+                        SettingRowDivider()
+                        NavRow(title = "Color ↔ Depth 标定", subtitle = "外参微调 / Charuco 标定向导", onClick = onOpenCalibration)
+                        SettingRowDivider()
+                        NavRow(
+                            title = "Sonix ASIC 调试",
+                            subtitle = "M1.6.5/6 · 直发 XU vendor cmd 读寄存器",
+                            onClick = onOpenSonixDebug,
+                        )
+                    }
                 }
             }
         }
@@ -403,11 +423,15 @@ private fun LargePreview(
     action3Label: String? = null,
     onAction3: (() -> Unit)? = null,
 ) {
+    // 画面框宽高比跟随真实帧：Berxel 640×400≈1.6；eYs3D mode25 1280×256 / 640×128≈5:1。
+    // 无帧时用 16:10 占位，避免写死 16:10 把 eYs3D 宽幅画面压成一条窄缝。
+    val aspect = bitmap?.let { if (it.height > 0) it.width.toFloat() / it.height else null }
+        ?.coerceIn(0.6f, 6f) ?: (16f / 10f)
     Box(
         Modifier
             .fillMaxWidth()
             .padding(horizontal = Gomob.spacing.s16)
-            .aspectRatio(16f / 10f)  // 640×400 = 1.6 ≈ 16:10
+            .aspectRatio(aspect)
             .clip(Gomob.shapes.r3)
             .background(Gomob.colors.bg2),
     ) {
@@ -489,30 +513,28 @@ private fun LargePreview(
 // ─── 实时状态条（fps + frame 序号 + 状态点） ─────────────────────────────────
 @Composable
 private fun LiveStatusStrip(ui: DepthCameraUiState) {
-    val streaming = ui.device is BerxelDeviceState.Streaming
-    val color = ui.color
-    val depth = ui.depth
+    val streaming = ui.sourceState is CameraSourceState.Streaming
+    val color = ui.colorStat
+    val depth = ui.depthStat
     val measuredFps = depth?.measuredFps ?: color?.measuredFps
     val fpsText = measuredFps?.let { if (it > 0) "$it fps" else "测量中" } ?: "—"
     val frameText = (depth?.frameIndex ?: color?.frameIndex)?.let { "frame#$it" } ?: "等待首帧"
-    val statusText = when (val device = ui.device) {
-        BerxelDeviceState.Idle -> "未启动"
-        BerxelDeviceState.Initializing -> "正在枚举 USB"
-        BerxelDeviceState.NoDevice -> "未检测到相机"
-        BerxelDeviceState.WaitingPermission -> "等待 USB 权限"
-        BerxelDeviceState.Opening -> "正在打开深度流"
-        is BerxelDeviceState.Error -> device.reason
-        is BerxelDeviceState.Streaming -> when {
-            depth != null && ui.streamProfile.color == null -> "深度单流 · ${depth.width}×${depth.height}"
-            color != null && depth != null && color.timestampUs == depth.timestampUs -> "RGBD 同步 ✓"
-            color != null && depth != null -> "RGBD 未同步"
+    val statusText = when (val s = ui.sourceState) {
+        CameraSourceState.Idle -> "未启动"
+        CameraSourceState.NoDevice -> "未检测到相机"
+        CameraSourceState.WaitingPermission -> "等待 USB 权限"
+        CameraSourceState.Opening -> "正在打开相机流"
+        is CameraSourceState.Error -> s.message
+        is CameraSourceState.Streaming -> when {
+            color != null && depth != null ->
+                "COLOR ${color.width}×${color.height} · DEPTH ${depth.width}×${depth.height}"
             color != null -> "彩色单流 · ${color.width}×${color.height}"
             depth != null -> "深度单流 · ${depth.width}×${depth.height}"
             else -> "等待首帧"
         }
     }
     val tone = if (streaming) Gomob.colors.accent else Gomob.colors.fg3
-    val statusColor = if (ui.device is BerxelDeviceState.Error) Gomob.colors.danger else Gomob.colors.fg3
+    val statusColor = if (ui.sourceState is CameraSourceState.Error) Gomob.colors.danger else Gomob.colors.fg3
     Box(Modifier.padding(horizontal = Gomob.spacing.s16)) {
         HairlineCard(padding = 0.dp) {
             Box(Modifier.fillMaxWidth().padding(Gomob.spacing.s12)) {
@@ -560,10 +582,30 @@ private fun NavRow(title: String, subtitle: String, onClick: () -> Unit) {
 // ─── 工具：BerxelFrameStat 短文本（三级页复用） ──────────────────────────────
 internal fun BerxelFrameStat?.shortLine(): String =
     if (this == null) "等待首帧"
-    else "frame#$frameIndex · $measuredFps fps · t=${timestampUs}μs · ${width}×${height}"
+    else "frame#$frameIndex · ${if (visualStale) "冻结" else "$measuredFps fps"} · t=${timestampUs}μs · ${width}×${height}"
 
-private fun BerxelFrameStat?.fpsSuffix(): String = when {
+private fun PreviewStat?.fpsSuffix(): String = when {
     this == null -> ""
+    stale -> " · 冻结"
     measuredFps > 0 -> " · ${measuredFps}fps"
     else -> " · 测量中"
+}
+
+// ─── 中性取流状态 → 占位文案（双相机通用） ──────────────────────────────────
+private fun CameraSourceState.colorPlaceholder(): String = when (this) {
+    CameraSourceState.Idle -> "未启动"
+    CameraSourceState.NoDevice -> "未检测到相机"
+    CameraSourceState.WaitingPermission -> "等待 USB 权限"
+    CameraSourceState.Opening -> "正在打开相机"
+    is CameraSourceState.Streaming -> "等待彩色帧"
+    is CameraSourceState.Error -> "彩色流异常"
+}
+
+private fun CameraSourceState.depthPlaceholder(): String = when (this) {
+    CameraSourceState.Idle -> "未启动"
+    CameraSourceState.NoDevice -> "未检测到相机"
+    CameraSourceState.WaitingPermission -> "等待 USB 权限"
+    CameraSourceState.Opening -> "正在打开深度流"
+    is CameraSourceState.Streaming -> "等待深度帧"
+    is CameraSourceState.Error -> message
 }

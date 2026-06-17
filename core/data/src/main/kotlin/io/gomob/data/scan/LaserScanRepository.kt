@@ -136,13 +136,14 @@ class LaserScanRepository @Inject constructor(
 
     /** 起一次扫描（请求驱动；服务端探活两单元后开始采集，立即返回 capturing）。vehicleTypeId=车型编号（可空）。 */
     suspend fun start(
-        align: String = "none",
+        align: String = "site",
+        siteJson: String? = null,
         keepRatio: Float? = null,
         inspectionId: Long? = null,
         vehicleTypeId: Int? = null,
     ): LaserStartResult {
         val resp = api.start(LaserScanStartRequest(
-            align = align, keepRatio = keepRatio, inspectionId = inspectionId, vehicleTypeId = vehicleTypeId,
+            align = align, siteJson = siteJson, keepRatio = keepRatio, inspectionId = inspectionId, vehicleTypeId = vehicleTypeId,
         ))
         return LaserStartResult(resp.scanId, resp.sessionKey, resp.status)
     }
@@ -186,6 +187,10 @@ class LaserScanRepository @Inject constructor(
     /** 下载一朵 PCD 并解析为扁平 [x,y,z,...] mm，直接喂 PointCloud3dView。 */
     suspend fun downloadCloudPoints(scanId: Long, name: String): FloatArray =
         parsePcdBinary(downloadCloudFile(scanId, name).readBytes())
+
+    /** 下载一朵 PCD 并解析为渲染数据；当 PCD 带 rgb 字段时保留每点颜色。 */
+    suspend fun downloadCloudRenderData(scanId: Long, name: String): LaserCloudRenderData =
+        parsePcdBinaryRenderData(downloadCloudFile(scanId, name).readBytes())
 
     /** 下载一朵单元 PCD（XYZI），解析为 (xyz 扁平 mm, 每点 h_angle°)。供"圈框→看每点采集角"。 */
     suspend fun downloadCloudWithAngles(scanId: Long, name: String): CloudWithAngles =
@@ -332,6 +337,7 @@ data class ScanSettings(
     val zeroSpeed: Double,
     val scanStartAngle: Double,
     val scanStopAngle: Double,
+    val scanAngle: Double? = null,
     val watchingAngle: Double,
     val lidarFilterGhost: Double,
     val lidarFilterZone: List<Double>,
@@ -368,6 +374,7 @@ private fun LaserDeviceInfo.toDomain() = DeviceFullInfo(
     scanSettings = ScanSettings(
         scanSpeed = control.scanSpeed, zeroSpeed = control.zeroSpeed,
         scanStartAngle = control.scanStartAngle, scanStopAngle = control.scanStopAngle,
+        scanAngle = control.scanAngle ?: (control.scanStopAngle - control.scanStartAngle),
         watchingAngle = control.watchingAngle, lidarFilterGhost = control.lidarFilterGhost,
         lidarFilterZone = control.lidarFilterZone, cameraFps = control.cameraFps,
     ),
@@ -381,7 +388,8 @@ private fun LaserDeviceInfo.toDomain() = DeviceFullInfo(
 
 private fun ScanSettings.toNetwork() = LaserControlSettings(
     scanSpeed = scanSpeed, zeroSpeed = zeroSpeed, scanStartAngle = scanStartAngle,
-    scanStopAngle = scanStopAngle, watchingAngle = watchingAngle, lidarFilterGhost = lidarFilterGhost,
+    scanStopAngle = scanStopAngle, scanAngle = scanAngle,
+    watchingAngle = watchingAngle, lidarFilterGhost = lidarFilterGhost,
     lidarFilterZone = lidarFilterZone, cameraFps = cameraFps,
 )
 
@@ -416,14 +424,46 @@ data class CloudWithAngles(val xyz: FloatArray, val angles: FloatArray) {
     override fun hashCode(): Int = 31 * xyz.contentHashCode() + angles.contentHashCode()
 }
 
+/** 点云渲染数据：xyz 扁平 [x,y,z,...] mm；rgb 为可选 0xRRGGBB；angles 为每点采集 h_angle°。 */
+data class LaserCloudRenderData(
+    val xyz: FloatArray,
+    val rgb: IntArray? = null,
+    val angles: FloatArray = FloatArray(0),
+) {
+    val pointCount: Int get() = xyz.size / 3
+    val hasColor: Boolean get() = rgb != null && rgb.size == pointCount
+    val hasAngles: Boolean get() = angles.size == pointCount
+
+    companion object {
+        val Empty = LaserCloudRenderData(FloatArray(0), null, FloatArray(0))
+    }
+}
+
 /**
  * 解析 server 端 EncodePCDBinary{,XYZI} 产物（DATA binary，小端 float32）。与 server internal/laser/pcd.go 对偶。
- * 支持 FIELDS "x y z"（融合云，12B/点）与 "x y z intensity"（单元云，intensity=h_angle°，16B/点）。
+ * 支持 FIELDS "x y z"、"x y z intensity"、"x y z rgb"、"x y z rgb intensity"。
  */
-internal fun parsePcdBinary(data: ByteArray): FloatArray = parsePcdBinaryWithAngles(data).xyz
+internal fun parsePcdBinary(data: ByteArray): FloatArray = parsePcdBinaryFull(data).xyz
 
 /** 同 parsePcdBinary，但额外返回每点 intensity(=h_angle°)；融合云无 intensity 时 angles 为空。 */
 internal fun parsePcdBinaryWithAngles(data: ByteArray): CloudWithAngles {
+    val r = parsePcdBinaryFull(data)
+    return CloudWithAngles(r.xyz, r.angles)
+}
+
+/** 同 parsePcdBinary，但额外返回可选每点 rgb(0xRRGGBB)。 */
+internal fun parsePcdBinaryRenderData(data: ByteArray): LaserCloudRenderData {
+    val r = parsePcdBinaryFull(data)
+    return LaserCloudRenderData(r.xyz, r.rgb, r.angles)
+}
+
+private data class ParsedPcdCloud(
+    val xyz: FloatArray,
+    val angles: FloatArray,
+    val rgb: IntArray?,
+)
+
+private fun parsePcdBinaryFull(data: ByteArray): ParsedPcdCloud {
     var points = -1
     var fields = ""
     var dataMode = ""
@@ -441,24 +481,61 @@ internal fun parsePcdBinaryWithAngles(data: ByteArray): CloudWithAngles {
         idx = lineEnd + 1
         if (dataMode.isNotEmpty()) break
     }
-    val hasIntensity = when (fields) {
-        "x y z" -> false
-        "x y z intensity" -> true
-        else -> throw IllegalArgumentException("仅支持 FIELDS \"x y z\" / \"x y z intensity\"，得 \"$fields\"")
+    val fieldNames = fields.split(Regex("\\s+")).filter { it.isNotBlank() }
+    require(fieldNames.isNotEmpty()) { "缺 FIELDS" }
+    require(fieldNames.distinct().size == fieldNames.size) { "FIELDS 有重复字段：$fields" }
+    val xIndex = fieldNames.indexOf("x")
+    val yIndex = fieldNames.indexOf("y")
+    val zIndex = fieldNames.indexOf("z")
+    require(xIndex >= 0 && yIndex >= 0 && zIndex >= 0) { "FIELDS 缺 x/y/z：$fields" }
+    val intensityIndex = fieldNames.indexOf("intensity")
+    val rgbIndex = fieldNames.indexOf("rgb")
+    val unsupported = fieldNames.filter { it !in setOf("x", "y", "z", "intensity", "rgb") }
+    require(unsupported.isEmpty()) { "不支持的 FIELDS ${unsupported.joinToString()}，得 \"$fields\"" }
+    if (intensityIndex >= 0) {
+        require(fieldNames == listOf("x", "y", "z", "intensity") ||
+            fieldNames == listOf("x", "y", "z", "rgb", "intensity") ||
+            fieldNames == listOf("x", "y", "z", "intensity", "rgb")) {
+            "intensity 仅支持 x y z intensity / x y z rgb intensity，得 \"$fields\""
+        }
+    } else {
+        require(fieldNames == listOf("x", "y", "z") ||
+            fieldNames == listOf("x", "y", "z", "rgb")) {
+            "仅支持 x y z / x y z rgb，得 \"$fields\""
+        }
     }
     require(dataMode == "binary") { "仅支持 DATA binary，得 \"$dataMode\"" }
     require(points >= 0) { "缺 POINTS" }
-    val perPt = if (hasIntensity) 4 else 3
+    val perPt = fieldNames.size
     val need = points * perPt * 4
     require(n - idx >= need) { "二进制主体不足：期望 $need 字节，剩 ${n - idx}" }
     val bb = ByteBuffer.wrap(data, idx, need).order(ByteOrder.LITTLE_ENDIAN)
     val xyz = FloatArray(points * 3)
-    val angles = if (hasIntensity) FloatArray(points) else FloatArray(0)
+    val angles = if (intensityIndex >= 0) FloatArray(points) else FloatArray(0)
+    val rgb = if (rgbIndex >= 0) IntArray(points) else null
     for (i in 0 until points) {
-        xyz[3 * i] = bb.float; xyz[3 * i + 1] = bb.float; xyz[3 * i + 2] = bb.float
-        if (hasIntensity) angles[i] = bb.float
+        var x = 0f
+        var y = 0f
+        var z = 0f
+        var h = 0f
+        var c = 0
+        for (f in fieldNames) {
+            val raw = bb.int
+            when (f) {
+                "x" -> x = java.lang.Float.intBitsToFloat(raw)
+                "y" -> y = java.lang.Float.intBitsToFloat(raw)
+                "z" -> z = java.lang.Float.intBitsToFloat(raw)
+                "intensity" -> h = java.lang.Float.intBitsToFloat(raw)
+                "rgb" -> c = raw and 0x00ff_ffff
+            }
+        }
+        xyz[3 * i] = x
+        xyz[3 * i + 1] = y
+        xyz[3 * i + 2] = z
+        if (intensityIndex >= 0) angles[i] = h
+        if (rgb != null) rgb[i] = c
     }
-    return CloudWithAngles(xyz, angles)
+    return ParsedPcdCloud(xyz, angles, rgb)
 }
 
 private fun indexOfNewline(data: ByteArray, from: Int): Int {

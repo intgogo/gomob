@@ -43,7 +43,7 @@ import kotlin.math.sqrt
 
 /**
  * 第一视角漫游标注屏（M10.4）：在某镜头点云里以"人站地面"第一视角走动——左虚拟摇杆走前后左右、
- * 右半屏拖动转头/抬头低头；进"标注"后走过的地面足迹连成路径，"完成"时凸包拟合最小面积矩形 →
+ * 右侧方向键转头/抬头低头；进"标注"后走过的地面足迹连成路径，"完成"时凸包拟合最小面积矩形 →
  * 反算为该镜头系 [ScanCropBox] → 转交顶视 [LaserCropBoxEditor] 微调（含翻转）后保存。
  *
  * 几何与服务端 cropbox.go 一致：路径 (u,v) 在 groundBasis(up) 世界原点系，与 [projectTopView]/[worldBox]
@@ -52,21 +52,22 @@ import kotlin.math.sqrt
 @Composable
 fun RoamAnnotationScreen(
     cloud: FloatArray,
+    colors: IntArray? = null,
     groundNormal: FloatArray?, // null/无效→默认 +Z（unitB 设备系近似竖直）
     onPreview: suspend (ScanCropBox) -> CropPreviewResult?,
     onSave: (ScanCropBox) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
-    // 鲁棒落点：2–98 百分位算中心/眼高/包围半径（抗离群坏数据——均值质心会被远端垃圾点拉进空域致点云出视，
-    // 这是用户"进漫游看不到点云"的真因）。upSign=1（信 groundNormal/+Z 朝上，翻转交编辑器「翻转」兜底）。
+    // 鲁棒落点：2–98 百分位算主体范围，再把人放到主体外侧、眼高按真实离地高度走。
+    // 均值质心会被远端垃圾点拉进空域；主体中心又会让第一视角站进车体，都会破坏真实感。
     val spawn = remember(cloud, groundNormal) { computeRoamSpawn(cloud, groundNormal) }
     val view = remember { PointCloudSurfaceView(context, spawn.centerZ, autoFit = true) }
 
     LaunchedEffect(Unit) {
         view.setGround(spawn.up, -spawn.floorH, show = true)
-        view.setPoints(cloud)
-        view.enterRoamMode(spawn.centerU, spawn.centerV, spawn.eyeH, spawn.radius)
+        view.setPoints(cloud, colors)
+        view.enterRoamMode(spawn.startU, spawn.startV, spawn.eyeH, spawn.radius)
     }
     androidx.compose.runtime.DisposableEffect(view) { onDispose { view.destroy() } }
 
@@ -83,86 +84,74 @@ fun RoamAnnotationScreen(
     Box(Modifier.fillMaxSize().background(Color(0xFF060912))) {
         AndroidView(factory = { view }, modifier = Modifier.fillMaxSize())
 
-        // 漫游交互层：编辑器叠层显示时整层让位——否则全屏 look-pad 会接住穿透触摸、转动隐藏的漫游相机。
+        // 漫游交互层：编辑器叠层显示时整层让位，避免隐藏的漫游输入继续积分。
         if (!editing) {
-        // look-pad（全屏，最底层 overlay）：拖动转头/抬头。摇杆/按钮在其上、各自消费指针，互不抢。
-        Box(
-            Modifier.fillMaxSize().pointerInput(Unit) {
-                detectDragGestures { change, drag ->
-                    change.consume()
-                    // dYaw 取 -drag.x：地面基 right0 实为相机左(fwd0=right0×up → camera_right=-right0)，
-                    // 不翻则左右反（用户实测）。strafe/转身同理在各自 onMove 取反。
-                    view.applyLook(dYaw = -drag.x * 0.004f, dPitch = -drag.y * 0.004f)
-                }
-            },
-        )
-
-        // 左虚拟摇杆（走动）。
-        RoamJoystick(
-            modifier = Modifier.align(Alignment.BottomStart).padding(start = 28.dp, bottom = 44.dp),
-            tint = Color(0xFF5BD6FF),
-            onMove = { strafe, forward, mag -> view.setMoveInput(-strafe, forward, mag) },
-        )
-
-        // 右转身/俯仰键盘（圆弧+箭头）：◄►按住=连续转身(yaw)、▲▼=抬头低头(pitch)，离手停。
-        // 符号已内嵌(◄左=+1/►右=-1)，无需再取反；与 look-pad 拖动叠加(拖=快速扫视)。
-        RoamTurnPad(
-            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 18.dp, bottom = 32.dp),
-            tint = Color(0xFFFFC15B),
-            onLook = { yaw, pitch -> view.setLookInput(yaw, pitch) },
-        )
-
-        // 顶部 HUD：取消 / 提示 / 标注 toggle。
-        Row(
-            Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            OverlayPill("取消") { onDismiss() }
-            Text(
-                if (annotating) "走一圈圈出车位 · 已采 $sampleCount 点" else "第一视角 · 左摇杆走动 · 右侧 ◄►转身 ▲▼抬头",
-                fontSize = 9.sp, color = Gomob.colors.fg2,
+            // 左虚拟摇杆（走动）。
+            RoamJoystick(
+                modifier = Modifier.align(Alignment.BottomStart).padding(start = 28.dp, bottom = 44.dp),
+                tint = Color(0xFF5BD6FF),
+                onMove = { strafe, forward, mag -> view.setMoveInput(-strafe, forward, mag) },
             )
-            OverlayPill(if (annotating) "标注中 ●" else "开始标注 ▴", accent = annotating) {
-                annotating = !annotating
-                view.setAnnotating(annotating)
-            }
-        }
 
-        // 标注操作（完成圈选 / 重走）：顶部居中行，避开左右两个底部摇杆。
-        if (annotating) {
-            val enough = sampleCount >= 4
+            // 右转身/俯仰键盘（圆弧+箭头）：◄►按住=连续转身(yaw)、▲▼=抬头低头(pitch)，离手停。
+            // 符号已内嵌(◄左=+1/►右=-1)，无需再取反。
+            RoamTurnPad(
+                modifier = Modifier.align(Alignment.BottomEnd).padding(end = 18.dp, bottom = 32.dp),
+                tint = Color(0xFFFFC15B),
+                onLook = { yaw, pitch -> view.setLookInput(yaw, pitch) },
+            )
+
+            // 顶部 HUD：取消 / 提示 / 标注 toggle。
             Row(
-                Modifier.align(Alignment.TopCenter).padding(top = 50.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Box(
-                    Modifier.clip(CircleShape)
-                        .background(if (enough) Gomob.colors.accentSoft else Gomob.colors.bg1)
-                        .border(BorderStroke(1.dp, if (enough) Gomob.colors.accent else Gomob.colors.line2), CircleShape)
-                        .clickable(enabled = enough) {
-                            val box = fitRoamBox(view.pathSamplesUV(), cloud, groundNormal)
-                            if (box != null) {
-                                fitted = box; editing = true
-                                annotating = false; view.setAnnotating(false)
-                                view.setMoveInput(0f, 0f, 0f); view.setLookInput(0f, 0f)
-                            }
-                        }
-                        .padding(horizontal = 24.dp, vertical = 10.dp),
-                ) {
-                    Text("完成圈选", fontSize = 14.sp, color = if (enough) Gomob.colors.accent else Gomob.colors.fg3)
-                }
-                if (sampleCount > 0) {
-                    Box(
-                        Modifier.clip(CircleShape).background(Gomob.colors.bg1)
-                            .border(BorderStroke(1.dp, Gomob.colors.line2), CircleShape)
-                            .clickable { view.resetPath(); sampleCount = 0 }
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
-                    ) { Text("重走", fontSize = 13.sp, color = Gomob.colors.fg2) }
+                OverlayPill("取消") { onDismiss() }
+                Text(
+                    if (annotating) "走一圈圈出车位 · 已采 $sampleCount 点" else "第一视角 · 左摇杆走动 · 右侧 ◄►转身 ▲▼抬头",
+                    fontSize = 9.sp, color = Gomob.colors.fg2,
+                )
+                OverlayPill(if (annotating) "标注中 ●" else "开始标注 ▴", accent = annotating) {
+                    annotating = !annotating
+                    view.setAnnotating(annotating)
                 }
             }
-        }
+
+            // 标注操作（完成圈选 / 重走）：顶部居中行，避开左右两个底部摇杆。
+            if (annotating) {
+                val enough = sampleCount >= 4
+                Row(
+                    Modifier.align(Alignment.TopCenter).padding(top = 50.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier.clip(CircleShape)
+                            .background(if (enough) Gomob.colors.accentSoft else Gomob.colors.bg1)
+                            .border(BorderStroke(1.dp, if (enough) Gomob.colors.accent else Gomob.colors.line2), CircleShape)
+                            .clickable(enabled = enough) {
+                                val box = fitRoamBox(view.pathSamplesUV(), cloud, groundNormal)
+                                if (box != null) {
+                                    fitted = box; editing = true
+                                    annotating = false; view.setAnnotating(false)
+                                    view.setMoveInput(0f, 0f, 0f); view.setLookInput(0f, 0f)
+                                }
+                            }
+                            .padding(horizontal = 24.dp, vertical = 10.dp),
+                    ) {
+                        Text("完成圈选", fontSize = 14.sp, color = if (enough) Gomob.colors.accent else Gomob.colors.fg3)
+                    }
+                    if (sampleCount > 0) {
+                        Box(
+                            Modifier.clip(CircleShape).background(Gomob.colors.bg1)
+                                .border(BorderStroke(1.dp, Gomob.colors.line2), CircleShape)
+                                .clickable { view.resetPath(); sampleCount = 0 }
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                        ) { Text("重走", fontSize = 13.sp, color = Gomob.colors.fg2) }
+                    }
+                }
+            }
         } // if (!editing)
     }
 
@@ -286,28 +275,31 @@ private fun emitStick(knob: Offset, radius: Float, onMove: (Float, Float, Float)
 
 // ───── walk → OBB 几何（凸包 + 最小面积外接矩形；纯函数，供 harness 验） ─────
 
-/** 鲁棒落点：2–98 百分位中心(u,v)+中心高 eyeH + 包围半径 + 地面 floorH + 取景 centerZ。抗离群坏数据。 */
-private class RoamSpawn(
-    val up: FloatArray, val centerU: Float, val centerV: Float,
+/** 鲁棒落点：主体外侧起点(u,v)+离地眼高 + 包围半径 + 地面 floorH + 取景 centerZ。抗离群坏数据。 */
+internal data class RoamSpawn(
+    val up: FloatArray, val startU: Float, val startV: Float,
     val eyeH: Float, val floorH: Float, val radius: Float, val centerZ: Float,
 )
 
 /**
  * 漫游落点用 [fitToCloud] 的 2–98 百分位中心（不是均值质心）——均值会被远端垃圾点拉进空域，
- * 致进漫游"看不到点云"。proj 同 [projectTopView]（同 up/基），眼高取鲁棒中心高 → 站在点云密集中段环顾。
+ * 致进漫游"看不到点云"。proj 同 [projectTopView]（同 up/基）。起点放在主体 -fwd 外侧，
+ * yaw=0 正好朝 +fwd 看回点云；眼高固定为真实人眼离地高度，而不是车体点云半高。
  */
-private fun computeRoamSpawn(cloud: FloatArray, groundNormal: FloatArray?): RoamSpawn {
+internal fun computeRoamSpawn(cloud: FloatArray, groundNormal: FloatArray?): RoamSpawn {
     val n0 = if (groundNormal != null && groundNormal.size == 3 &&
         (groundNormal[0] != 0f || groundNormal[1] != 0f || groundNormal[2] != 0f)
     ) groundNormal else floatArrayOf(0f, 0f, 1f)
     val l = sqrt(n0[0] * n0[0] + n0[1] * n0[1] + n0[2] * n0[2]).coerceAtLeast(1e-6f)
     val upFallback = floatArrayOf(n0[0] / l, n0[1] / l, n0[2] / l)
     val proj = projectTopView(cloud, groundNormal, 1)
-    if (proj.n == 0) return RoamSpawn(upFallback, 0f, 0f, 1600f, 0f, 1500f, meanZRoam(cloud))
+    if (proj.n == 0) return RoamSpawn(upFallback, 0f, -1200f, 1600f, 0f, 1500f, meanZRoam(cloud))
     // [cU,cV,cH,hU,hV,hH]：各轴 2–98 百分位罩住主体（排远端离群）。
     val fit = fitToCloud(proj)
     val radius = sqrt(fit[3] * fit[3] + fit[4] * fit[4] + fit[5] * fit[5])
-    return RoamSpawn(proj.up, fit[0], fit[1], fit[2], fit[2] - fit[5], radius, meanZRoam(cloud))
+    val floorH = fit[2] - fit[5]
+    val margin = (fit[5] * 0.25f + 700f).coerceIn(650f, 900f)
+    return RoamSpawn(proj.up, fit[0], fit[1] - fit[4] - margin, 1600f, floorH, radius + margin, meanZRoam(cloud))
 }
 
 private fun meanZRoam(cloud: FloatArray): Float {

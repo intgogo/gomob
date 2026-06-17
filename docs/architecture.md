@@ -36,6 +36,7 @@
 | `architecture/11-embedded-camera-form.md` | P100R3 内嵌手机形态设计（供电软恢复 / 位姿固定 / 分阶段路线 / 风险） | 草稿 |
 | `architecture/15-laser-scanner-integration.md` | 激光扫描设备集成（双单元 LIDAR-PTZ 采集 + 融合点云，服务端下沉） | 草稿 |
 | `architecture/16-jchy-vehicle-measurement-app.md` | JCHY 车辆外廓测量/建模层逆向（采集层之上：车型分类 + LWH/轴距/罐体/栏板/护栏测量 + gomob 差距） | 草稿 |
+| `architecture/17-laser-camera-lidar-calibration.md` | 激光站相机↔雷达标定原理（学习向：相机靶/雷达靶设计、重投影/点到平面、9 步前向模型、calib JSON、本仓现状） | 学习文档 |
 
 ## 设计原则速览
 

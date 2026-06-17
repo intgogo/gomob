@@ -12,18 +12,43 @@ import io.gomob.nativebridge.berxel.BerxelService
 import io.gomob.nativebridge.berxel.BerxelStackBackend
 import io.gomob.nativebridge.berxel.BerxelStreamProfile
 import io.gomob.nativebridge.berxel.BerxelStreamProfiles
+import io.gomob.nativebridge.camera.CameraSource
+import io.gomob.nativebridge.camera.CameraSourceProvider
+import io.gomob.nativebridge.camera.CameraSourceState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
+/** 厂商无关的预览帧统计（双相机通用，从 [io.gomob.model.ColorFrame]/[io.gomob.model.DepthFrame] 派生）。 */
+data class PreviewStat(
+    val frameIndex: Int,
+    val width: Int,
+    val height: Int,
+    val measuredFps: Int,
+    val stale: Boolean = false,
+)
+
 data class DepthCameraUiState(
+    // ─── 中性面（双相机通用，主页预览 / 状态条用） ───
+    val sourceState: CameraSourceState = CameraSourceState.Idle,
+    val label: String = "",
+    val isBerxel: Boolean = true,
+    val colorStat: PreviewStat? = null,
+    val depthStat: PreviewStat? = null,
+    // ─── HLSD8 辅助 RGB 相机（独立第二颗，仅插着时 hasRgb=true） ───
+    val hasRgb: Boolean = false,
+    val rgbLabel: String = "",
+    val rgbStat: PreviewStat? = null,
+    // ─── Berxel 专属（仅 Berxel 在场时填真值，否则默认；三级子页 + Berxel 选择器消费） ───
     val device: BerxelDeviceState = BerxelDeviceState.Idle,
     val color: BerxelFrameStat? = null,
     val depth: BerxelFrameStat? = null,
@@ -33,32 +58,83 @@ data class DepthCameraUiState(
 )
 
 /**
- * 深度相机详情子页 VM —— 进本页才启动 SDK，离开就停。
+ * 深度相机详情子页 VM —— 进本页才启动相机，离开就停。
  *
- * 设计：3D 主页 [Scan3dViewModel] 不再常驻打开相机（费电费热），改由进入详情页时启动；
- * 三级页（info / controls / calibration）也共用本 VM 的 BerxelService 单例 — 但 `onCleared`
- * 时才 stop()，所以三级页之间跳转不会断流（详情页 NavGraph 顶层未销毁本 VM）。
+ * 设计（M6.8b 双相机）：注入厂商无关的 [CameraSourceProvider]，init 取一次 [CameraSourceProvider.active]
+ * 持有整段会话（eYs3D 在场走 [io.gomob.nativebridge.camera.Eys3dCameraService]，否则回落 [BerxelService]，
+ * Berxel 路径逐位不变）。预览统一从 [CameraSource.colorFrames]/[CameraSource.depthFrames] 收（同 core:model 帧契约），
+ * [FrameRenderer] 双相机复用。Berxel 专属能力（采集后端 / 流模式 / IR / 成像控制 / 帧统计 / 标定）只在 Berxel
+ * 在场时经向下转型暴露；eYs3D 下不可达、UI 也不显示这些控件（不放假按钮）。
+ *
+ * 生命周期由 [CameraSource] 引用计数单一管控：本 VM 与 [Scan3dRecordingViewModel] 都走 acquire/release，
+ * `onCleared` 才 release()，所以三级页之间跳转不会断流。
  */
 @HiltViewModel
 class DepthCameraViewModel @Inject constructor(
-    private val berxel: BerxelService,
+    provider: CameraSourceProvider,
 ) : ViewModel() {
 
+    /** 整段会话持有的活动取流源（按进页时插着的相机判型）。 */
+    private val source: CameraSource = provider.active()
+
+    /** HLSD8 辅助 RGB 相机（独立第二颗 USB 相机）；未插着则 null。与 [source] 并行 acquire。 */
+    private val rgbSource: CameraSource? = provider.auxRgb()
+    private val hasRgb: Boolean = rgbSource != null
+
+    /** Berxel 专属面：非空才说明当前是 Berxel，专属流 / 控制 / 子页才可用。 */
+    private val berxel: BerxelService? = source as? BerxelService
+    private val isBerxel: Boolean = berxel != null
+
+    // 中性帧统计：从两源同构的 core:model 帧派生（fps 用到达间隔 EMA 平滑）。
+    private val _colorStat = MutableStateFlow<PreviewStat?>(null)
+    private val _depthStat = MutableStateFlow<PreviewStat?>(null)
+    private val _rgbStat = MutableStateFlow<PreviewStat?>(null)
+
+    /** Berxel 专属状态打包；eYs3D 时为默认常量流（不订阅任何 Berxel 流）。 */
+    private val berxelBundle: Flow<BerxelBundle> = berxel?.let { b ->
+        combine(
+            b.state, b.colorStat, b.depthStat, b.controls, b.streamProfile, b.backendMode,
+        ) { values ->
+            BerxelBundle(
+                device = values[0] as BerxelDeviceState,
+                color = values[1] as BerxelFrameStat?,
+                depth = values[2] as BerxelFrameStat?,
+                controls = values[3] as BerxelDeviceControls,
+                streamProfile = values[4] as BerxelStreamProfile,
+                backend = values[5] as BerxelStackBackend,
+            )
+        }
+    } ?: flowOf(BerxelBundle())
+
     val uiState: StateFlow<DepthCameraUiState> = combine(
-        berxel.state,
-        berxel.colorStat,
-        berxel.depthStat,
-        berxel.controls,
-        berxel.streamProfile,
-        berxel.backendMode,
-    ) { values ->
+        source.sourceState, _colorStat, _depthStat, berxelBundle, _rgbStat,
+    ) { srcState, colorStat, depthStat, bundle, rgbStat ->
+        val effectiveColorStat = if (isBerxel && bundle.color?.visualStale == true) {
+            PreviewStat(
+                frameIndex = bundle.color.frameIndex,
+                width = bundle.color.width,
+                height = bundle.color.height,
+                measuredFps = 0,
+                stale = true,
+            )
+        } else {
+            colorStat
+        }
         DepthCameraUiState(
-            device = values[0] as BerxelDeviceState,
-            color = values[1] as BerxelFrameStat?,
-            depth = values[2] as BerxelFrameStat?,
-            controls = values[3] as BerxelDeviceControls,
-            streamProfile = values[4] as BerxelStreamProfile,
-            backend = values[5] as BerxelStackBackend,
+            sourceState = srcState,
+            label = source.deviceLabel,
+            isBerxel = isBerxel,
+            colorStat = effectiveColorStat,
+            depthStat = depthStat,
+            hasRgb = hasRgb,
+            rgbLabel = rgbSource?.deviceLabel ?: "",
+            rgbStat = rgbStat,
+            device = bundle.device,
+            color = bundle.color,
+            depth = bundle.depth,
+            controls = bundle.controls,
+            streamProfile = bundle.streamProfile,
+            backend = bundle.backend,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DepthCameraUiState())
 
@@ -68,90 +144,162 @@ class DepthCameraViewModel @Inject constructor(
     private val _depthPreview = MutableStateFlow<Bitmap?>(null)
     val depthPreview: StateFlow<Bitmap?> = _depthPreview.asStateFlow()
 
-    init {
-        // 进本子页：引用计数 acquire（单一 owner 管相机生命周期，不再各自 start）。
-        // 主页不常驻；与 Scan3dRecordingViewModel 切换时计数 >0 全程保持相机不抖。
-        berxel.acquire()
+    /** HLSD8 RGB 预览位图（独立第二颗相机；hasRgb 时才有内容）。 */
+    private val _rgbPreview = MutableStateFlow<Bitmap?>(null)
+    val rgbPreview: StateFlow<Bitmap?> = _rgbPreview.asStateFlow()
 
+    @Volatile private var sourcesAcquired = false
+
+    init {
+        // RGB（HLSD8）：独立 RGB24 ColorFrame → 预览位图（与深度相机的 L'-color 区分开）。
+        rgbSource?.let { rgb ->
+            viewModelScope.launch {
+                var lastRenderMs = 0L
+                var lastArriveMs = 0L
+                var emaMs = 0.0
+                rgb.colorFrames.collect { frame ->
+                    val now = SystemClock.elapsedRealtime()
+                    emaMs = updateEma(emaMs, lastArriveMs, now)
+                    lastArriveMs = now
+                    _rgbStat.value = PreviewStat(frame.frameIndex, frame.width, frame.height, emaMs.toFps())
+                    if (lastRenderMs != 0L && now - lastRenderMs < COLOR_PREVIEW_MIN_INTERVAL_MS) return@collect
+                    lastRenderMs = now
+                    val bmp = withContext(Dispatchers.Default) { FrameRenderer.colorRgb24ToBitmap(frame) }
+                    if (bmp != null) _rgbPreview.value = bmp
+                }
+            }
+        }
+
+        // COLOR：两源同发 RGB24 ColorFrame，FrameRenderer 直接渲染；渲染节流上限 ~10fps（解码体量大）。
         viewModelScope.launch {
-            // color 已在 BerxelService 侧限速 ~10fps（COLOR_PREVIEW_DECODE_INTERVAL_MS），这里不再二次抽帧，
-            // 渲染每帧 → 预览稳定，且总解码量已在源头压住，不会饿死 native depth 解析。
-            berxel.colorFrames.collect { frame ->
+            var lastRenderMs = 0L
+            var lastArriveMs = 0L
+            var emaMs = 0.0
+            source.colorFrames.collect { frame ->
+                val now = SystemClock.elapsedRealtime()
+                emaMs = updateEma(emaMs, lastArriveMs, now)
+                lastArriveMs = now
+                _colorStat.value = PreviewStat(frame.frameIndex, frame.width, frame.height, emaMs.toFps())
+                if (lastRenderMs != 0L && now - lastRenderMs < COLOR_PREVIEW_MIN_INTERVAL_MS) return@collect
+                lastRenderMs = now
                 val bmp = withContext(Dispatchers.Default) { FrameRenderer.colorRgb24ToBitmap(frame) }
-                _colorPreview.value = bmp
+                if (bmp != null) _colorPreview.value = bmp
             }
         }
-        // 真深度（16bit mm）→ turbo 伪彩，仅非 IR 模式渲染
+        // DEPTH：两源同发 16bit mm DepthFrame → turbo 伪彩（IR 模式仅 Berxel，渲染让位给 irFrames）。
         viewModelScope.launch {
             var lastRenderMs = 0L
-            berxel.depthFrames.collect { frame ->
+            var lastArriveMs = 0L
+            var emaMs = 0.0
+            source.depthFrames.collect { frame ->
+                val now = SystemClock.elapsedRealtime()
+                emaMs = updateEma(emaMs, lastArriveMs, now)
+                lastArriveMs = now
+                _depthStat.value = PreviewStat(frame.frameIndex, frame.width, frame.height, emaMs.toFps())
                 if (_irRenderMode.value) return@collect
-                val nowMs = SystemClock.elapsedRealtime()
-                if (lastRenderMs != 0L && nowMs - lastRenderMs < DEPTH_PREVIEW_MIN_INTERVAL_MS) {
-                    return@collect
+                if (lastRenderMs != 0L && now - lastRenderMs < DEPTH_PREVIEW_MIN_INTERVAL_MS) return@collect
+                lastRenderMs = now
+                val bmp = withContext(Dispatchers.Default) {
+                    FrameRenderer.depth16ToBitmap(frame, maskByConfidence = false)
                 }
-                lastRenderMs = nowMs
-                val bmp = withContext(Dispatchers.Default) { FrameRenderer.depth16ToBitmap(frame) }
-                _depthPreview.value = bmp
+                if (bmp != null) _depthPreview.value = bmp
             }
         }
-        // IR/phase 帧（8bit 灰度，companion 交织出来的真实 IR 图）→ 灰度，仅 IR 模式渲染。
-        // Step 4（2026-05-29）：companion 0x82 交织真深度与 IR 帧，native 分流；depth 走 depthFrames，
-        // IR 走 irFrames。「切 IR」看精细 IR 图，默认看真深度。
-        viewModelScope.launch {
-            var lastRenderMs = 0L
-            berxel.irFrames.collect { frame ->
-                if (!_irRenderMode.value) return@collect
-                val nowMs = SystemClock.elapsedRealtime()
-                if (lastRenderMs != 0L && nowMs - lastRenderMs < DEPTH_PREVIEW_MIN_INTERVAL_MS) {
-                    return@collect
+        // IR/phase 灰度帧（仅 Berxel companion 交织出来）：IR 模式下渲染，让 depth 框看精细 IR 图。
+        berxel?.let { b ->
+            viewModelScope.launch {
+                var lastRenderMs = 0L
+                b.irFrames.collect { frame ->
+                    if (!_irRenderMode.value) return@collect
+                    val now = SystemClock.elapsedRealtime()
+                    if (lastRenderMs != 0L && now - lastRenderMs < DEPTH_PREVIEW_MIN_INTERVAL_MS) return@collect
+                    lastRenderMs = now
+                    val bmp = withContext(Dispatchers.Default) { FrameRenderer.depthRawAsGrey(frame) }
+                    if (bmp != null) _depthPreview.value = bmp
                 }
-                lastRenderMs = nowMs
-                val bmp = withContext(Dispatchers.Default) { FrameRenderer.depthRawAsGrey(frame) }
-                _depthPreview.value = bmp
             }
         }
     }
 
-    // ─── 控制命令（直接转发到 BerxelService） ───
-    fun setBackendMode(backend: BerxelStackBackend) = berxel.setBackendModeForDebug(backend)
-    fun setStreamProfile(profile: BerxelStreamProfile) = berxel.setStreamProfile(profile)
-    fun setRegistrationEnable(on: Boolean) = berxel.setRegistrationEnable(on)
-    fun setStreamMirror(on: Boolean) = berxel.setStreamMirror(on)
-    fun setDepthAutoExposure(on: Boolean) = berxel.setDepthAutoExposure(on)
-    fun setDepthEdgeOptimization(on: Boolean) = berxel.setDepthEdgeOptimization(on)
-    fun setDepthDenoise(on: Boolean) = berxel.setDepthDenoise(on)
-    fun setDepthTemperatureCompensation(on: Boolean) = berxel.setDepthTemperatureCompensation(on)
-    fun setColorAutoExposure(on: Boolean) = berxel.setColorAutoExposure(on)
+    /**
+     * HyperOS / Android 15 会先检查 CAMERA runtime permission，再允许 UVC USB 权限弹窗。
+     * 因此不能在 VM init 里立刻 acquire；必须等页面拿到 CAMERA 后再启动 USB 权限链。
+     */
+    fun setCameraPermissionGranted(granted: Boolean) {
+        if (granted) acquireSourcesIfNeeded() else releaseSourcesIfNeeded()
+    }
 
-    // M1.6.8 debug：NATIVE_REWRITE assembler 切帧策略 toggle
-    private val _strictFrameSize = MutableStateFlow(berxel.isDepthStrictFrameSize())
+    private fun acquireSourcesIfNeeded() {
+        if (sourcesAcquired) return
+        sourcesAcquired = true
+        // ★ 用户实测(2026-06-15)：必须**先开独立 HLSD8 RGB 相机**（补光灯/IR 投射器很可能在该模块上，开它才点灯），
+        //   再开 eYs3D 深度 —— 否则主动立体无散斑 → 深度退化成条纹。故 rgbSource 先 acquire。
+        rgbSource?.acquire()
+        source.acquire()
+    }
+
+    private fun releaseSourcesIfNeeded() {
+        if (!sourcesAcquired) return
+        sourcesAcquired = false
+        source.release()
+        rgbSource?.release()
+    }
+
+    // ─── 控制命令（仅 Berxel 有意义，null-safe 转发；eYs3D 下 UI 不暴露这些入口） ───
+    fun setBackendMode(backend: BerxelStackBackend) { berxel?.setBackendModeForDebug(backend) }
+    fun setStreamProfile(profile: BerxelStreamProfile) { berxel?.setStreamProfile(profile) }
+    fun setRegistrationEnable(on: Boolean) { berxel?.setRegistrationEnable(on) }
+    fun setStreamMirror(on: Boolean) { berxel?.setStreamMirror(on) }
+    fun setDepthAutoExposure(on: Boolean) { berxel?.setDepthAutoExposure(on) }
+    fun setDepthEdgeOptimization(on: Boolean) { berxel?.setDepthEdgeOptimization(on) }
+    fun setDepthDenoise(on: Boolean) { berxel?.setDepthDenoise(on) }
+    fun setDepthTemperatureCompensation(on: Boolean) { berxel?.setDepthTemperatureCompensation(on) }
+    fun setColorAutoExposure(on: Boolean) { berxel?.setColorAutoExposure(on) }
+
+    // M1.6.8 debug：NATIVE_REWRITE assembler 切帧策略 toggle（Berxel 专属）。
+    private val _strictFrameSize = MutableStateFlow(berxel?.isDepthStrictFrameSize() ?: false)
     val strictFrameSize: StateFlow<Boolean> = _strictFrameSize.asStateFlow()
     fun toggleStrictFrameSize() {
         val next = !_strictFrameSize.value
-        berxel.setDepthStrictFrameSize(next)
+        berxel?.setDepthStrictFrameSize(next)
         _strictFrameSize.value = next
     }
 
-    /** IR 模式：把 depth raw bytes 当 8-bit grey 渲染。
-     *  Step 4（2026-05-29）：生产路径已切到 native portable 双流，DepthFrame.data 是真 16bit mm，
-     *  default 改回 false 走 turbo 伪彩（depth16ToBitmap）。IR 灰度仅留作 LIGHT_IR 散斑预览调试 toggle。 */
+    /** IR 模式：把 depth raw bytes 当 8-bit grey 渲染（Berxel 专属调试 toggle）。 */
     private val _irRenderMode = MutableStateFlow(false)
     val irRenderMode: StateFlow<Boolean> = _irRenderMode.asStateFlow()
     fun toggleIrRenderMode() { _irRenderMode.value = !_irRenderMode.value }
 
-    fun triggerFrameDump() = berxel.triggerDump(30)
+    fun triggerFrameDump() { berxel?.triggerDump(30) }
 
     override fun onCleared() {
         super.onCleared()
-        // 离开详情页 → 引用计数 release（归 0 且宽限期内无人 acquire 才真停，释放 USB / 省电省热）。
-        // lastKnownInfo 保留在 BerxelService 里，主页继续展示
-        berxel.release()
+        // 离开详情页 → 引用计数 release（归 0 且宽限期内无人 acquire 才真停）。
+        releaseSourcesIfNeeded()
     }
 
+    private data class BerxelBundle(
+        val device: BerxelDeviceState = BerxelDeviceState.Idle,
+        val color: BerxelFrameStat? = null,
+        val depth: BerxelFrameStat? = null,
+        val controls: BerxelDeviceControls = BerxelDeviceControls(),
+        val streamProfile: BerxelStreamProfile = BerxelStreamProfiles.DEFAULT,
+        val backend: BerxelStackBackend = BerxelStackBackend.NATIVE_REWRITE,
+    )
+
     private companion object {
-        // 显示节流上限 ~30fps（对齐官方 SDK 无固定 UI 限速；native 真实出帧 25-45fps）。
-        // 背压靠 _depthFrames SharedFlow(extraBufferCapacity=1 + DROP_OLDEST)，不再用 120ms(=8fps)死限。
+        // 显示节流上限 ~30fps（depth）/ ~25fps（color 解码体量大，只取最新帧）。
         const val DEPTH_PREVIEW_MIN_INTERVAL_MS = 33L
+        const val COLOR_PREVIEW_MIN_INTERVAL_MS = 40L
     }
 }
+
+/** 到达间隔 EMA（alpha=0.3）；首帧或时钟回退时保持原值。 */
+private fun updateEma(prev: Double, lastArriveMs: Long, now: Long): Double {
+    if (lastArriveMs == 0L) return prev
+    val dt = (now - lastArriveMs).toDouble()
+    if (dt <= 0.0) return prev
+    return if (prev == 0.0) dt else prev * 0.7 + dt * 0.3
+}
+
+private fun Double.toFps(): Int = if (this > 0.0) (1000.0 / this).toInt().coerceIn(0, 120) else 0

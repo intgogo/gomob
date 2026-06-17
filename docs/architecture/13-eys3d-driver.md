@@ -214,6 +214,45 @@ native/eys3d/
 
 **★ 设备门控遗留**:`Eys3dHostSession` 的开流序列当前用 `ProvenWrongModePlan`(1280×480 错模式,实证能出流但深度退化为列恒定垃圾)。深度 **routing 已对**(core/router 单测过),只是设备 ASIC 跑错模式。**mode25 正确开流值**(reg 0xF0 值 / PROBE 分辨率 / depthType36 的 XU 线编码)需真机 usbmon diff 锁定 → 替换为 `Mode25Usb2Plan`,届时即出 apk 级深度(见 TODO M6.5 ④)。
 
+## 3bis. ★ Android 生产路径:纯 native 直驱厂商 C++ 引擎(零 Java 编排,2026-06-17)
+
+**背景**:自研独立路径(libuvc_gomob / pupil + stock libusb-1.0,§2bis 终态目标)在 Android 真机持续撞 `-EPROTO`(bulk URB 不回收,见 finding_eys3d_zero_vendor_independence)。月余未破。生产路径遂改为**复用厂商已验证的 C++ 起流引擎**:厂商 libUVCCamera.so 内部 = saki4510t UVC 栈(`UVCCamera`/`UVCPreview`/`FrameGrabber` C++ 类)+ libuvc(纯 C)+ libESPDI(控制/ZD)。Java SDK 只是把这套 C++ 引擎包成 Android API 的外壳,非技术必需 → gomob 在 native 直调这套 C++ 引擎,**零 Java 编排**。
+
+**帧出线路**(实现 `native/eys3d/android/eys3d_vendor_cpp_session.cpp`,ABI 契约 `vendor_uvc_abi.h`):
+1. `dlopen("libUVCCamera.so", RTLD_NOW|RTLD_LOCAL)` + `dlsym` 取 mangled C++ 方法(this 显式作首参当自由函数调)。
+2. over-alloc 裸内存 + 厂商 `UVCCamera()` ctor(厂商写 vtable + 内部建 1 个 `FrameGrabber` + 2 个 `UVCPreview`)。
+3. 定位内部 FrameGrabber(`[cam+0x2430]`)→ **校验** `[fg+8]==livePlyCallback`(确认 ABI offset 没漂)→ 才 repoint。
+4. `connect(vid,pid,fd,bus,dev,usbfs)` → `setVideoMode(36)` → `setInterleaveMode(false)`。
+5. repoint FrameGrabber 回调 `[fg+8]=trampoline`、ctx `[fg+0x10]=session` → 帧全 native 进 core,**绝不碰 `_jobject`**。
+6. 彩色流(离屏 ANativeWindow 满足 startPreview 非空门控)→ IR/AE → 暖机 3s → 深度流 → 保活。
+
+**唯一 Java 触点**:① `UsbManager.openDevice` 拿 usbfs fd;② `NativeBridge.bindEys3dVendorJni()` 经厂商 `JNI_OnLoad` 调 `setVM`(startPreview 抓拍线程内 `getVM()→AttachCurrentThread` 需要)。帧路径本身零 JNI。
+
+**ABI 纪律**(厂商 = NDK r12 `std::__ndk1`,gomob = NDK27 `std::__1`):不在 gomob 侧构造/析构任何 `__ndk1` 对象(shared_ptr/vector);回调里厂商 `vector<uchar>&` 当 3 指针 POD 只读(begin/end/cap);`dlopen(RTLD_LOCAL)` 隔离厂商自带 libusb100 不遮蔽 gomob libusb-1.0。
+
+**深度即 metric**:FrameGrabber 路径深度已是 metric mm(vendor `do_preview` 内 DepthFilter + 自载 ZD 表转好),直接喂 `core.OnDepthMmFrame`,**勿再套 ZD LUT**(否则二次查表错)。
+
+**踩坑订正**(均反汇编/源码实证,详见 finding):connect 参数序 `(vid,pid,fd,...)` 非 `(fd,vid,pid,...)`;usbfs = 根 `/dev/bus/usb` 非完整设备节点;`setExternalStoragePublicDirectory` 必设(connect 内 `strdup`,NULL 崩)— 现经 `configJson→options_json` 下发 app 专属目录;startPreview 需非空 ANativeWindow(`[uvcpreview+8]` 门控);未 setVM → 抓拍线程 `getVM()` 空崩。
+
+**退役**:Java `Eys3dApcCamera.kt` shim 已删(git 历史可恢复)。厂商 shim 类 `com.esp.android.usb.camera.core.*` 仍保留(bindEys3dVendorJni 的 `FindClass`/`RegisterNatives`/`setVM` 需要),已加 proguard `-keep`。
+
+**仅 arm64-v8a**:厂商 C++(libUVCCamera/libESPDI)只有 arm64-v8a;且 ABI offset(0x2430/+8/+0x10)是 64 位布局,32 位指针宽不同必失配,VINCreator 的 v7a 二进制又是另一代 SDK(缺后处理链)不可移植。故 `Eys3dCameraService` 对 `Build.SUPPORTED_64_BIT_ABIS.isEmpty()` 前置守门→32 位机即时报「需 64 位手机」(arm64 不受影响);补 v7a 需匹配版本 vendor 二进制 + 重做 32 位 struct RE,无现役 32 位扫描设备,低优先级。
+
+### §内参(intrinsics 注入)
+
+depth/color 帧的 `CameraIntrinsics` 由 `Eys3dCameraService.rsd550Intrinsics(w,h)` 按本帧分辨率从出厂矫正标定缩放给出(canonical 常量见 `native/eys3d/portable/eys3d_driver.h kRsd550RectifiedFx`):
+
+- **基准 = 单目全幅矫正左目 1280×960**:`fx=fy=1229.205`,`cx=648.0`,`cy=482.865`(rectlog_1.bin 与 VIN 两来源交叉验证一致;cx≈宽/2、cy≈高/2 即该幅中心)。矫正后无畸变。
+- mode25 各流是该全幅的**各向异性下采样**(color 1280×256:sx=1、sy=256/960;depth 640×128:sx=0.5、sy=128/960)→ 内参线性缩放 `fx·sx, fy·sy, cx·sx, cy·sy`。深度与彩色 L' 同在矫正左目坐标系。
+- **★ device-gated 残留**:垂直方向是**纯缩放**(本式假设;`SCALE_DOWN_11_BITS` 模式名 + 预览非裁切佐证)还是**裁剪带**,影响 `fy`(两模型差 ~3.75×;`fx/cx/cy` 两模型一致、稳)。**验收法(已知尺寸量测,fronto-parallel 平面拟合对 fy 全局缩放不敏感故不可用)**:对准已知真实高 `H_real` 物体,读重建点云竖直跨度 `H_recon` —— `|H_recon/H_real−1|≤~5%` 则 SCALE 模型对;若 `H_recon≈3.75×H_real` 则实为 CROP,fy 改各向同性 `fx·(W/baseW)`。等价:重建竖/横比应等真实比。
+- **终态**:`adb pull` 每台设备 ZD/rectify flash 提取真内参 + native 单一标定真理源经 JNI 下发(TODO M6.5),届时删 Kotlin 兜底常量。
+
+### harness
+
+`tests/harness/eys3d_vendor_cpp/`(device-gated,采 logcat):`run.sh` 拉起 App + 采样 → `analyze.py` 出可判定结论 —— ① 起流链 marker(零Java会话 + FrameGrabber 校验 + connect rc=0)② ourCb 帧 fps + poll 首帧 ③ valid_ratio/centerMm 质量 ④ 零 JNI(无 Java 帧路径 marker)。host 自研路径回归仍用 `tests/harness/eys3d_mode25/`。
+
 ## 4. 里程碑
 
 见 TODO.md M6:M6.1✅ → M6.2 自研取流(IF1 单流先通,判 IF2 内容)→ M6.3 Etron XU 双流 → M6.4 立体/视差(或 on-chip 深度解析)→ M6.5 metric Z(≤1%@1-2m)→ M6.6 portable 化 → M6.7 Android JNI → M6.8 真机端到端。每级一个 harness。
+
+**Android 生产路径(2026-06-17)**:绕开自研 -EPROTO 硬墙,改 native 直驱厂商 C++ 引擎出 mode25 真深度(§3bis),零 Java 编排。自研全独立路径(§2bis 终态)作在研路线保留。

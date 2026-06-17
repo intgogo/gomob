@@ -65,6 +65,10 @@ namespace {
 
 using namespace gomob::berxel::host;
 
+constexpr int kDefaultBulkXferCount = 48;
+constexpr int kBerxelCfgBaseWords = 14;
+constexpr int kBerxelCfgWords = 15;
+
 // ---- AndroidUvcDevice：IUvcDevice over libusb handle，对应 Linux host 的 UsbDevice ----
 class AndroidUvcDevice : public IUvcDevice {
 public:
@@ -201,6 +205,8 @@ struct DualSession {
     int read_len = 16384;
     int depth_read_len = 16384;
     int color_read_len = 16384;
+    int bulk_xfer_count = kDefaultBulkXferCount;
+    int depth_payload_transfer_size = 0;
     int color_payload_unit = 0;
     int keepalive_ms = 50;
     P100R3VideoMode depth_mode{2, 640, 401, 45, 222222};
@@ -1052,6 +1058,10 @@ bool setup_dual(DualSession* s,
     depth_cfg.format_index = 1;
     depth_cfg.frame_index = s->depth_mode.frame_index;
     depth_cfg.frame_interval_100ns = s->depth_mode.interval_100ns;
+    depth_cfg.max_payload_transfer_size = static_cast<uint32_t>(s->depth_payload_transfer_size);
+    if (s->depth_payload_transfer_size > 0) {
+        LOGI("companion-depth override dwMaxPayloadTransferSize=%d", s->depth_payload_transfer_size);
+    }
     UvcNegotiation depth_neg;
     if (!negotiate_uvc_stream(*s->companion_dev, depth_cfg, &depth_neg, log)) {
         LOGE("depth UVC commit failed");
@@ -1108,8 +1118,8 @@ void close_session(DualSession* s) {
 // 已在 color+depth 真机 PASS 后删除,此 core 即生产唯一实现,无分叉。
 // ─────────────────────────────────────────────────────────────────────────────
 
-// 从 14-int cfg 填 DualSession 的流模式/控制字段（fd 与 host 路径共用）。
-void berxel_set_modes_from_cfg(DualSession* s, const int32_t cfg[14]) {
+// 从 cfg 填 DualSession 的流模式/控制字段（fd 与 host 路径共用）。
+void berxel_set_modes_from_cfg(DualSession* s, const int32_t cfg[kBerxelCfgWords]) {
     s->depth_mode = P100R3VideoMode{static_cast<uint8_t>(cfg[3]),
                                     static_cast<uint16_t>(cfg[0]), static_cast<uint16_t>(cfg[1]),
                                     static_cast<uint16_t>(cfg[2]), static_cast<uint32_t>(cfg[4])};
@@ -1123,7 +1133,21 @@ void berxel_set_modes_from_cfg(DualSession* s, const int32_t cfg[14]) {
     s->color_payload_unit = 0;
     s->enable_color = cfg[12] != 0;
     s->depth_temporal_enable = cfg[13] >= 0;
+    const int cfg13_abs = cfg[13] < 0 ? -cfg[13] : cfg[13];
+    s->bulk_xfer_count = (cfg[13] == -9999)
+        ? 0
+        : ((cfg13_abs > 1 || cfg[13] == 1)
+        ? std::min(std::max(cfg13_abs, 1), 128)
+        : kDefaultBulkXferCount);
+    s->depth_payload_transfer_size = cfg[14] > 0
+        ? std::min(std::max(cfg[14], 1024), 4 * 1024 * 1024)
+        : 0;
     s->depth_frame_size = static_cast<int>(s->depth_mode.width) * static_cast<int>(s->depth_mode.height) * 2;
+    LOGI("config depth=%dx%d@%d color=%dx%d@%d enable_color=%d read_len=%d bulk_count=%d temporal=%d depth_payload=%d",
+         s->depth_mode.width, s->depth_mode.height, s->depth_mode.fps,
+         s->color_mode.width, s->color_mode.height, s->color_mode.fps,
+         (int)s->enable_color, s->read_len, s->bulk_xfer_count, (int)s->depth_temporal_enable,
+         s->depth_payload_transfer_size);
 }
 
 // 公共尾：s->master/companion(+ctx) 已就绪 → setup_dual + assembler + 线程 + bulk pump。
@@ -1152,26 +1176,27 @@ bool berxel_setup_and_launch(DualSession* s,
     s->depth_filter_thread = std::thread(depth_filter_loop, s);  // M8.2：后处理独立线程，不堵组帧/reap
     if (s->enable_color) s->color_parser_thread = std::thread(color_parser_loop, s);
     s->event_thread = std::thread(dual_event_loop, s);
-    // 2026-06-02 真机证伪 rank2:master color 0x81 URB 48→8 不解决 2510DRK44C 上 color-on 整机死
-    //   (8 URB 照样 depth_chunks=0)。⇒ 不是 URB 数量,是【并发 master color 流本身】与 companion
-    //   depth 在该机 USB stack 上互斥(depth-only 稳出 302 帧,一开 color 整机 0 帧)。
-    //   真解走 04b 时间复用(depth/color 错峰单流,不并发),非 URB 调参。故此处保持对称 48。
-    constexpr int kBulkXferCount = 48;
-    if (!submit_async_bulk(s, s->companion, 0x82, kBulkXferCount, s->depth_read_len,
-                           s->depth_xfers, s->depth_bufs, depth_xfer_cb)) {
-        LOGE("submit depth async bulk failed");
-        return false;
-    }
-    if (s->enable_color &&
-        !submit_async_bulk(s, s->master, 0x81, kBulkXferCount, s->read_len,
-                           s->color_xfers, s->color_bufs, color_xfer_cb)) {
-        LOGE("submit color async bulk failed");
-        return false;
+    // USB3/dock/手机组合上 depth-only 可能一提交大量 URB 就 NO_DEVICE；debug 路径允许降压 A/B。
+    if (s->bulk_xfer_count > 0) {
+        if (!submit_async_bulk(s, s->companion, 0x82, s->bulk_xfer_count, s->depth_read_len,
+                               s->depth_xfers, s->depth_bufs, depth_xfer_cb)) {
+            LOGE("submit depth async bulk failed");
+            return false;
+        }
+        if (s->enable_color &&
+            !submit_async_bulk(s, s->master, 0x81, s->bulk_xfer_count, s->read_len,
+                               s->color_xfers, s->color_bufs, color_xfer_cb)) {
+            LOGE("submit color async bulk failed");
+            return false;
+        }
+    } else {
+        LOGW("async bulk skipped by debug config; UVC stream committed without IN transfers");
     }
     s->log_thread = std::thread(log_loop, s);
-    LOGI("berxel_setup_and_launch ok ptr=%p enable_color=%d temporal=%d depth_raw_parse=1 depth=%dx%d@%d",
+    LOGI("berxel_setup_and_launch ok ptr=%p enable_color=%d temporal=%d depth_raw_parse=1 depth=%dx%d@%d read_len=%d bulk_count=%d",
          (void*)s, (int)s->enable_color, (int)s->depth_temporal_enable,
-         s->depth_mode.width, s->depth_mode.height, s->depth_mode.fps);
+         s->depth_mode.width, s->depth_mode.height, s->depth_mode.fps,
+         s->read_len, s->bulk_xfer_count);
     return true;
 }
 
@@ -1179,7 +1204,7 @@ bool berxel_setup_and_launch(DualSession* s,
 DualSession* berxel_open_dual(int masterFd, int companionFd,
                               const std::vector<uint8_t>& master_xu,
                               const std::vector<uint8_t>& comp_init,
-                              const int32_t cfg[14]) {
+                              const int32_t cfg[kBerxelCfgWords]) {
     auto* s = new (std::nothrow) DualSession();
     if (!s) return nullptr;
     berxel_set_modes_from_cfg(s, cfg);
@@ -1203,7 +1228,7 @@ DualSession* berxel_open_dual(int masterFd, int companionFd,
 DualSession* berxel_open_dual_host(gomob::camera::UsbContext& ctx,
                                    const std::vector<uint8_t>& master_xu,
                                    const std::vector<uint8_t>& comp_init,
-                                   const int32_t cfg[14]) {
+                                   const int32_t cfg[kBerxelCfgWords]) {
     auto* s = new (std::nothrow) DualSession();
     if (!s) return nullptr;
     berxel_set_modes_from_cfg(s, cfg);
@@ -1399,11 +1424,14 @@ int berxel_dump_color(DualSession* s, const char* path) {
     return written;
 }
 
-// options_json 二进制布局(小端): [u32 xuLen][xu][u32 initLen][init][14×i32 cfg]。
+// options_json 二进制布局(小端): [u32 xuLen][xu][u32 initLen][init][cfg]。
 bool unpack_berxel_options(const std::string& blob,
-                           std::vector<uint8_t>* xu, std::vector<uint8_t>* init, int32_t cfg[14]) {
+                           std::vector<uint8_t>* xu,
+                           std::vector<uint8_t>* init,
+                           int32_t cfg[kBerxelCfgWords]) {
     const uint8_t* p = reinterpret_cast<const uint8_t*>(blob.data());
     const size_t n = blob.size();
+    for (int i = 0; i < kBerxelCfgWords; ++i) cfg[i] = 0;
     size_t off = 0;
     auto rd_u32 = [&](uint32_t* v) -> bool {
         if (off + 4 > n) return false;
@@ -1419,8 +1447,24 @@ bool unpack_berxel_options(const std::string& blob,
     if (off + initLen > n) return false;
     init->assign(p + off, p + off + initLen);
     off += initLen;
-    if (off + 14 * 4 > n) return false;
-    for (int i = 0; i < 14; ++i) { int32_t v; std::memcpy(&v, p + off, 4); cfg[i] = v; off += 4; }
+    if (off + kBerxelCfgBaseWords * 4 > n) return false;
+    for (int i = 0; i < kBerxelCfgBaseWords; ++i) {
+        int32_t v;
+        std::memcpy(&v, p + off, 4);
+        cfg[i] = v;
+        off += 4;
+    }
+    if (off + 4 <= n) {
+        uint32_t next = 0;
+        std::memcpy(&next, p + off, 4);
+        const bool oldTailLooksLikeKeepalive = (off + 4 + static_cast<size_t>(next) == n);
+        if (!oldTailLooksLikeKeepalive) {
+            int32_t v;
+            std::memcpy(&v, p + off, 4);
+            cfg[14] = v;
+            off += 4;
+        }
+    }
     return true;
 }
 
@@ -1527,14 +1571,14 @@ class BerxelDriver : public gomob::camera::ICameraDriver {
     std::unique_ptr<gomob::camera::ICameraSession> open_host(
             gomob::camera::UsbContext& ctx, const gomob::camera::SessionConfig& cfg) override {
         // host(Linux 服务器)统一路径：libusb 枚举打开 master+companion → berxel_open_dual_host。
-        // options_json 同 open_fd 打包 [masterXu|companionInit|14-int cfg]，与 fd 路径同一双流序列。
+        // options_json 同 open_fd 打包 [masterXu|companionInit|cfg]，与 fd 路径同一双流序列。
         std::vector<uint8_t> master_xu, comp_init;
-        int32_t c14[14] = {0};
-        if (!unpack_berxel_options(cfg.options_json, &master_xu, &comp_init, c14)) {
+        int32_t c15[kBerxelCfgWords] = {0};
+        if (!unpack_berxel_options(cfg.options_json, &master_xu, &comp_init, c15)) {
             LOGE("BerxelDriver open_host: options_json 解析失败 len=%zu", cfg.options_json.size());
             return nullptr;
         }
-        DualSession* s = berxel_open_dual_host(ctx, master_xu, comp_init, c14);
+        DualSession* s = berxel_open_dual_host(ctx, master_xu, comp_init, c15);
         if (!s) { LOGE("BerxelDriver open_host: berxel_open_dual_host 失败"); return nullptr; }
         return std::make_unique<BerxelSessionAdapter>(s);
     }
@@ -1545,12 +1589,12 @@ class BerxelDriver : public gomob::camera::ICameraDriver {
             return nullptr;
         }
         std::vector<uint8_t> master_xu, comp_init;
-        int32_t c14[14] = {0};
-        if (!unpack_berxel_options(cfg.options_json, &master_xu, &comp_init, c14)) {
+        int32_t c15[kBerxelCfgWords] = {0};
+        if (!unpack_berxel_options(cfg.options_json, &master_xu, &comp_init, c15)) {
             LOGE("BerxelDriver open_fd: options_json 解析失败 len=%zu", cfg.options_json.size());
             return nullptr;
         }
-        DualSession* s = berxel_open_dual(fds[0], fds[1], master_xu, comp_init, c14);
+        DualSession* s = berxel_open_dual(fds[0], fds[1], master_xu, comp_init, c15);
         if (!s) { LOGE("BerxelDriver open_fd: berxel_open_dual 失败"); return nullptr; }
         return std::make_unique<BerxelSessionAdapter>(s);
     }

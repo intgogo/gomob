@@ -193,3 +193,30 @@ ROI 选框默认：屏幕中心 70% × 30% 的横条（VIN 钢架是横向 17 �
 ## 8. 待办
 
 详见 `TODO.md` M4.* 段。
+
+## 9. 双相机正射图扩展（2026-06-10）
+
+§1–8 假设单帧 RGBD（深度模组自带 color，已对齐到 depth）。**实测扫描机是两颗物理独立 USB 相机**
+（`dumpsys usb` 实证）：深度 Etron RS-D550(0x3438:0x0206) + **13MP RGB HLSD8(0x0C45:0x6366, Image+/Sonix,
+~4160×832 MJPEG)**。VINCreator 正射图的高分辨率真彩来源是 HLSD8，**不是**深度模组的 L'(1280×256)。
+详见 `docs/agent-memory/finding_hlsd8_rgb_second_camera_2026-06-10.md`。
+
+**几何实现**：`native/vin/ortho_rectify.{h,cpp}`（替代旧 `vin_rectify.cpp` NOT_IMPLEMENTED 桩）：
+
+```
+OrthoRectify(depth_mm,K_depth, rgb,K_rgb, rt_rgb_from_depth[12], cfg) -> OrthoResult
+```
+
+1. depth 反投影到 depth 相机系 3D 点 → RANSAC 主平面拟合（内点精修，法向朝相机）。
+2. 平面内构造正交基（up=相机 Y 在平面投影，right=up×n），以内点质心为正射网格中心。
+3. 逐正射像素：网格平面点 Q（depth 系）→ **`Q_rgb = R·Q + t`** 变到 RGB 相机系 → 投影 + 双线性采样。
+
+**关键与单相机的差异**：`R|t` 是 **HLSD8↔RS-D550 双相机外参**（两颗独立相机），来自双相机标定
+（device-gated，见 `05-calibration-pipeline.md`）。缺标定时退化 `R=I,t=0`（同相机假设）——真机有 ~baseline
+视差会偏，**仅调试用，不接假 fallback 当真结果**（第一性原理：不留退化伪路径）。
+
+**验证**：`tests/native_host/ortho_rectify_test.cpp`（合成倾斜平面 RGBD + 世界坐标编码纹理）—— 验平面拟合
+（|n·n0|=1.0/rms0.29mm）、覆盖率（91%）、外参投影正确性（中心解码-质心 0.55mm，能捕获漏用 t 的视差偏移）、
+metric 尺度（相邻正射像素世界位移比 1.008）。挂 `scripts/native-host-test.sh`。
+
+**live 拉通待办**：见 `TODO.md` M6.9.5（双相机标定 R|t + JNI/Kotlin 包装 + 全幅 RGB capture UI）。

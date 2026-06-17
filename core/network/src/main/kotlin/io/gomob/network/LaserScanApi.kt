@@ -136,6 +136,7 @@ data class LaserControlSettings(
     @SerialName("zero_speed") val zeroSpeed: Double = 0.0,
     @SerialName("scan_start_angle") val scanStartAngle: Double = 0.0,
     @SerialName("scan_stop_angle") val scanStopAngle: Double = 0.0,
+    @SerialName("scan_angle") val scanAngle: Double? = null,
     @SerialName("watching_angle") val watchingAngle: Double = 0.0,
     @SerialName("lidar_filter_ghost") val lidarFilterGhost: Double = 0.0,
     @SerialName("lidar_filter_zone") val lidarFilterZone: List<Double> = listOf(0.0, 0.0),
@@ -187,10 +188,9 @@ data class LaserScanStartRequest(
     @SerialName("inspection_id") val inspectionId: Long? = null,
     @SerialName("unit_a_ip") val unitAIp: String? = null,
     @SerialName("unit_b_ip") val unitBIp: String? = null,
-    // 默认 none(纯 union)：ICP 跨单元配准对固定双机位不稳，无强共同结构(空场/少特征)即发散，
-    // 把 B 甩出数十米。固定基线的正解是 site 标定外参(待 laserworker 接线 SiteJSON);在此之前
-    // none 给有界可渲染的 union 结果。
-    val align: String = "none", // icp|none|site
+    // 多镜头融合只允许使用工位外参；没有 site_json 时服务端会拒绝起扫。
+    val align: String = "site",
+    @SerialName("site_json") val siteJson: String? = null,
     @SerialName("keep_ratio") val keepRatio: Float? = null,
     // 车型编号（逆向 JCHY 26 型，docs/16 §4.1）：服务端据此套 carType 偏移 + 按型合规 + 落库记录。
     @SerialName("vehicle_type_id") val vehicleTypeId: Int? = null,

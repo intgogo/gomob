@@ -22,14 +22,24 @@ class CameraSourceProvider @Inject constructor(
     @ApplicationContext private val appContext: Context,
     private val berxel: BerxelService,
     private val eys3d: Eys3dCameraService,
+    private val hlsd8: Hlsd8CameraService,
 ) {
-    /** 当前活动取流源。eYs3D 在场走 eYs3D，否则（Berxel/无）走 Berxel。 */
+    /** 当前活动**深度主相机**取流源。eYs3D 在场走 eYs3D，否则（Berxel/无）走 Berxel。 */
     fun active(): CameraSource = when (detectModel()) {
         is CameraModel.Eys3d -> eys3d
         else -> berxel
     }
 
-    /** 当前识别到的相机型号（供 UI 显型号 / 路由判定）。 */
+    /**
+     * 当前**辅助 RGB 相机**取流源（HLSD8）；未插着则 null。
+     * 与 [active] 的深度主相机相互独立、可并行 acquire：RGBD 机型同时取深度 + 真彩，做正射图配准。
+     */
+    fun auxRgb(): CameraSource? {
+        val usb = appContext.getSystemService(Context.USB_SERVICE) as UsbManager
+        return if (CameraDetection.detectAuxRgb(usb) is CameraModel.Hlsd8) hlsd8 else null
+    }
+
+    /** 当前识别到的深度主相机型号（供 UI 显型号 / 路由判定）。 */
     fun detectModel(): CameraModel {
         val usb = appContext.getSystemService(Context.USB_SERVICE) as UsbManager
         return CameraDetection.detect(usb)

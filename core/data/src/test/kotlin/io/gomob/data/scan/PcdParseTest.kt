@@ -2,7 +2,6 @@ package io.gomob.data.scan
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
@@ -67,13 +66,32 @@ class PcdParseTest {
     }
 
     @Test
+    fun `XYZRGB 解析 xyz 与每点颜色`() {
+        val raw = floatArrayOf(
+            1f, 2f, 3f, java.lang.Float.intBitsToFloat(0x00ff3300),
+            4f, 5f, 6f, java.lang.Float.intBitsToFloat(0x000077ff),
+        )
+        val cloud = parsePcdBinaryRenderData(buildPcd("x y z rgb", 4, raw))
+        assertArrayEquals(floatArrayOf(1f, 2f, 3f, 4f, 5f, 6f), cloud.xyz, 1e-4f)
+        assertArrayEquals(intArrayOf(0x00ff3300, 0x000077ff), cloud.rgb!!)
+    }
+
+    @Test
+    fun `XYZRGBI 同时保留颜色与角度`() {
+        val raw = floatArrayOf(
+            1f, 2f, 3f, java.lang.Float.intBitsToFloat(0x00112233), 17f,
+        )
+        val pcd = buildPcd("x y z rgb intensity", 5, raw)
+        val render = parsePcdBinaryRenderData(pcd)
+        val angles = parsePcdBinaryWithAngles(pcd)
+        assertArrayEquals(floatArrayOf(1f, 2f, 3f), render.xyz, 1e-4f)
+        assertArrayEquals(intArrayOf(0x00112233), render.rgb!!)
+        assertArrayEquals(floatArrayOf(17f), render.angles, 1e-4f)
+        assertArrayEquals(floatArrayOf(17f), angles.angles, 1e-4f)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
     fun `不支持的 FIELDS 抛异常`() {
-        var threw = false
-        try {
-            parsePcdBinary(buildPcd("x y z rgb", 4, floatArrayOf(1f, 2f, 3f, 4f)))
-        } catch (e: IllegalArgumentException) {
-            threw = true
-        }
-        assertTrue("未知 FIELDS 应抛 IllegalArgumentException", threw)
+        parsePcdBinary(buildPcd("x y z normal", 4, floatArrayOf(1f, 2f, 3f, 4f)))
     }
 }

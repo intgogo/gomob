@@ -99,6 +99,18 @@ class RoamBoxFitTest {
     }
 
     @Test
+    fun roamSpawn_startsOutsideVehicleAtHumanEyeHeight() {
+        val cloud = vehicleCloud(0f, 0f, 1000f, 2500f, 0f, height = 1800f)
+        val proj = projectTopView(cloud, floatArrayOf(0f, 0f, 1f), 1)
+        val fit = fitToCloud(proj)
+        val spawn = computeRoamSpawn(cloud, floatArrayOf(0f, 0f, 1f))
+
+        assertEquals("漫游眼高应是离地 1.6m，而不是车体半高", 1600f, spawn.eyeH, 1f)
+        assertTrue("落脚点应在主体 -fwd 外侧", spawn.startV < fit[1] - fit[4])
+        assertTrue("地面高度应接近主体底部", spawn.floorH <= 60f)
+    }
+
+    @Test
     fun degeneratePath_returnsNull() {
         assertNull("点不足应回 null", fitRoamBox(floatArrayOf(0f, 0f, 100f, 100f), FloatArray(0), null))
         // 共线足迹（零面积）应回 null。

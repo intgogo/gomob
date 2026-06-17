@@ -88,3 +88,8 @@ build_and_run eys3d_stereo_depth_test \
     native/eys3d/portable/eys3d_driver.cpp \
     native/eys3d/portable/eys3d_depth.cpp \
     native/berxel/portable/gomob_berxel_portable.cpp
+
+# 双相机正射图几何（depth × HLSD8 RGB → 平面正射纹理）。合成 RGBD 验证 scale/投影/外参处理。
+build_and_run ortho_rectify_test \
+    tests/native_host/ortho_rectify_test.cpp \
+    native/vin/ortho_rectify.cpp

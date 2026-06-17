@@ -7,6 +7,7 @@
 // handle = ICameraSession* 转 jlong;Kotlin 持有,cameraStop 唯一释放点。
 #include <jni.h>
 #include <android/log.h>
+#include <dlfcn.h>
 
 #include <cstdint>
 #include <memory>
@@ -16,6 +17,8 @@
 #include "camera/camera_registry.h"
 #include "camera/camera_session.h"
 #include "eys3d/android/eys3d_fd_session.h"
+#include "eys3d/portable/eys3d_driver.h"        // kRsd550RectifiedFx / kRsd550BaselineMm
+#include "hlsd8/hlsd8_uvc_session.h"           // HLSD8 RGB 相机（0x0C45:0x6366，独立第二颗相机）
 #include "berxel/host/berxel_camera_adapter.h"  // M6.8b ④：MakeBerxelDriver()
 
 #define LOG_TAG "gomob_camera_jni"
@@ -39,6 +42,7 @@ CameraRegistry& Registry() {
     auto* r = new CameraRegistry();
     r->Register(std::make_shared<gomob::eys3d::android::Eys3dFdDriver>(
         /*usb3=*/false, gomob::eys3d::DepthPath::kHardwareAsic));
+    r->Register(std::make_shared<gomob::hlsd8::Hlsd8Driver>());  // HLSD8 RGB（独立第二颗相机）
     r->Register(gomob::berxel::host::MakeBerxelDriver());  // M6.8b ④
     return r;
   }();
@@ -77,6 +81,54 @@ Java_io_gomob_nativebridge_NativeBridge_cameraOpenByFds(
   if (!sess->start(SessionCallbacks{})) { LOGE("cameraOpenByFds: start failed"); return 0L; }
   LOGI("cameraOpenByFds ok %04x:%04x fds=%zu ptr=%p", vid, pid, fdv.size(), (void*)sess.get());
   return reinterpret_cast<jlong>(sess.release());  // 所有权交 Kotlin,cameraStop 释放
+}
+
+// ★★★ Java ApcCamera 路径绑定(2026-06-15 改主路):dlopen libUVCCamera.so(RTLD_LOCAL 隔离其自带
+//   libusb100,不被 gomob libusb-1.0 全局符号遮蔽) + 手动调其 JNI_OnLoad(传 vm)。
+//   JNI_OnLoad 内部 FindClass(com/esp/android/usb/camera/core/{UVCCamera,ApcCamera}) → RegisterNatives
+//   绑定 gomob 复制进来的 esp Java 类的全部 native 方法 + setVM(回调线程 AttachCurrentThread 用)。
+//   【不】System.loadLibrary("UVCCamera")(否则走 app 默认 RTLD_GLOBAL,libusb100 符号遮蔽 gomob libusb-1.0,续35)。
+//   调用时机:Kotlin 在 `new ApcCamera()` 前调一次(nativeCreate 须先被 RegisterNatives 绑定)。
+//   幂等:句柄静态缓存,JNI_OnLoad 只跑一次。返 JNI 版本号(>0 成功)/ 0 失败。
+JNIEXPORT jint JNICALL
+Java_io_gomob_nativebridge_NativeBridge_bindEys3dVendorJni(JNIEnv* env, jobject /*thiz*/) {
+  static void* handle = nullptr;
+  static jint version = 0;
+  if (handle) return version;  // 已绑定,幂等返回
+  handle = dlopen("libUVCCamera.so", RTLD_NOW | RTLD_LOCAL);
+  if (!handle) { LOGE("bindEys3dVendorJni: dlopen libUVCCamera.so 失败: %s", dlerror()); return 0; }
+  using FnOnLoad = jint (*)(JavaVM*, void*);
+  auto on_load = reinterpret_cast<FnOnLoad>(dlsym(handle, "JNI_OnLoad"));
+  if (!on_load) { LOGE("bindEys3dVendorJni: dlsym JNI_OnLoad 失败: %s", dlerror()); dlclose(handle); handle = nullptr; return 0; }
+  JavaVM* vm = nullptr;
+  if (env->GetJavaVM(&vm) != JNI_OK || !vm) { LOGE("bindEys3dVendorJni: GetJavaVM 失败"); return 0; }
+  version = on_load(vm, nullptr);  // RegisterNatives(gomob 的 esp 类)+ vendor setVM
+  if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+  LOGI("bindEys3dVendorJni: libUVCCamera JNI_OnLoad → 0x%x", version);
+  return version;
+}
+
+// 对 Java 传来的 usbfs fd 做一次 USB 端口 reset，清设备流引擎残留状态（eYs3D host proven 5 大硬约束之首）。
+// ★ reset 会触发重枚举 → 本 fd 随即失效，调用方必须 close 旧 connection 并重新 openDevice 取新 fd 再开流。
+// 成功（reset OK 或设备已 NOT_FOUND=已在重枚举）返 true。
+#include <libusb-1.0/libusb.h>
+JNIEXPORT jboolean JNICALL
+Java_io_gomob_nativebridge_NativeBridge_cameraResetByFd(JNIEnv* /*env*/, jobject /*thiz*/, jint fd) {
+  if (fd < 0) return JNI_FALSE;
+  libusb_set_option(nullptr, LIBUSB_OPTION_NO_DEVICE_DISCOVERY);
+  libusb_context* ctx = nullptr;
+  if (libusb_init(&ctx) != 0 || ctx == nullptr) return JNI_FALSE;
+  libusb_device_handle* h = nullptr;
+  if (libusb_wrap_sys_device(ctx, static_cast<intptr_t>(fd), &h) != 0 || h == nullptr) {
+    libusb_exit(ctx);
+    return JNI_FALSE;
+  }
+  const int rc = libusb_reset_device(h);
+  libusb_close(h);
+  libusb_exit(ctx);
+  LOGI("cameraResetByFd fd=%d rc=%d (%s)", fd, rc,
+       (rc == 0 || rc == LIBUSB_ERROR_NOT_FOUND) ? "ok" : "fail");
+  return (rc == 0 || rc == LIBUSB_ERROR_NOT_FOUND) ? JNI_TRUE : JNI_FALSE;
 }
 
 // 停止 + 释放(唯一释放点)。

@@ -1,0 +1,42 @@
+// 彩色点云 unlit material — 102 相机纹理投影后的 per-point RGB
+//
+// POSITION 负责几何，COLOR 由 PCD rgb 字段上传为 UBYTE4 normalized。
+// baseColor 仍保留作整体增益，默认白色，不改变相机颜色。
+material {
+    name : pointCloudColor,
+    shadingModel : unlit,
+    vertexDomain : object,
+    requires : [ position, color ],
+    depthWrite : true,
+    blending : opaque,
+    parameters : [
+        {
+            type : float4,
+            name : baseColor
+        },
+        {
+            type : float,
+            name : pointSizePx
+        }
+    ]
+}
+
+vertex {
+    void materialVertex(inout MaterialVertexInputs material) {
+        gl_PointSize = materialParams.pointSizePx;
+    }
+}
+
+fragment {
+    float3 srgbToLinear(float3 color) {
+        vec3 lo = color / 12.92;
+        vec3 hi = pow((color + 0.055) / 1.055, vec3(2.4));
+        return mix(lo, hi, step(vec3(0.04045), color));
+    }
+
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        vec4 c = getColor();
+        material.baseColor = vec4(srgbToLinear(c.rgb), c.a) * materialParams.baseColor;
+    }
+}

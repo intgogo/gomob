@@ -225,8 +225,14 @@ class BerxelNativeStack @Inject constructor(
         keepaliveMs: Int = 50,
         depthFps: Int = 45,
         colorFps: Int = 30,
+        depthWidth: Int = 640,
+        depthHeight: Int = 401,
+        depthFrameIndex: Int = 2,
         depthTemporal: Boolean = true,
         mixStrategy: String = MIX_STRATEGY_DEFAULT,
+        asyncReadLen: Int = DUAL_ASYNC_READ_LEN,
+        asyncXferCount: Int = DUAL_ASYNC_XFER_COUNT,
+        depthPayloadTransferSize: Int = 0,
     ): Long {
         if (dualHandle != 0L) {
             Log.w(TAG, "startDualNative: 已有会话 handle=$dualHandle，先 stopDualNative()")
@@ -285,30 +291,50 @@ class BerxelNativeStack @Inject constructor(
         // enableColor=false 时 color 档不起。
         val safeDepthFps = depthFps.coerceIn(5, 60)
         val safeColorFps = colorFps.coerceIn(5, 60)
+        val safeDepthWidth = depthWidth.coerceIn(320, 1280)
+        val safeDepthHeight = depthHeight.coerceIn(201, 801)
+        val safeDepthFrameIndex = depthFrameIndex.coerceIn(1, 4)
         val depthInterval = (10_000_000 / safeDepthFps)
         val colorInterval = (10_000_000 / safeColorFps)
+        val safeAsyncReadLen = asyncReadLen.coerceIn(4 * 1024, 256 * 1024)
+        val safeAsyncXferCount = if (asyncXferCount == 0) 0 else asyncXferCount.coerceIn(1, 128)
+        val safeDepthPayload = if (depthPayloadTransferSize <= 0) {
+            0
+        } else {
+            depthPayloadTransferSize.coerceIn(1024, 4 * 1024 * 1024)
+        }
         // 大单次读长（64KB）：减少 transfer/事件开销，配合 48 个在途把管子喂满。
         // cfg[13]：时域降噪开关（0/正=启用，负=关闭做 A/B）。默认启用：滑窗均值 N=8 把
         // 相邻帧抖动 ~38mm 压到 ~10mm（harness depth_temporal_quality 实测 3.73×、零偏移、密度不掉）。
+        // 新版把 bulkCount 编进 cfg[13] 的绝对值；0/-1 仍按老布局默认 48，符号继续表示 temporal。
+        val temporalAndBulkCount = if (safeAsyncXferCount == 0) {
+            -9999
+        } else if (depthTemporal) {
+            safeAsyncXferCount
+        } else {
+            -safeAsyncXferCount
+        }
         val config = intArrayOf(
-            640, 401, safeDepthFps, 2, depthInterval,
+            safeDepthWidth, safeDepthHeight, safeDepthFps, safeDepthFrameIndex, depthInterval,
             640, 400, safeColorFps, 3, colorInterval,
             keepaliveMs,
-            DUAL_ASYNC_READ_LEN,
+            safeAsyncReadLen,
             if (enableColor) 1 else 0,
-            if (depthTemporal) 0 else -1,
+            temporalAndBulkCount,
+            safeDepthPayload,
         )
         Log.i(
             TAG,
             "startDualNative masterFd=${mConn.fileDescriptor} companionFd=${cConn.fileDescriptor} " +
                 "enableColor=$enableColor mixStrategy=$normalizedMixStrategy " +
                 "masterAsset=$masterAsset companionAsset=$companionAsset " +
-                "keepaliveMs=$keepaliveMs depthFps=$safeDepthFps " +
+                "keepaliveMs=$keepaliveMs depth=${safeDepthWidth}x$safeDepthHeight@$safeDepthFps#$safeDepthFrameIndex " +
                 "colorFps=$safeColorFps temporal=$depthTemporal depthInterval=$depthInterval " +
-                "colorInterval=$colorInterval readLen=$DUAL_ASYNC_READ_LEN",
+                "colorInterval=$colorInterval readLen=$safeAsyncReadLen bulkCount=$safeAsyncXferCount " +
+                "depthPayload=$safeDepthPayload",
         )
         // M6.8b ④：经厂商无关 cameraOpenByFds 分发到 native BerxelDriver(0x0603:0x001f)。
-        // options 打包 [masterXu | companionInit | 14-int config]，BerxelDriver 解包后调 berxel_open_dual
+        // options 打包 [masterXu | companionInit | config]，BerxelDriver 解包后调 berxel_open_dual
         // （与历史 berxelDualStart 同一双流序列，逐位不变）。句柄=ICameraSession*，poll/stop 走 camera*。
         val options = packBerxelOptions(masterXu, companionInit, keepaliveXu, config)
         val h = NativeBridge.cameraOpenByFds(
@@ -329,7 +355,7 @@ class BerxelNativeStack @Inject constructor(
         return 0L
     }
 
-    /** 把 masterXu/companionInit/keepaliveXu/14-int config 打包成 BerxelDriver 的 options_json 二进制。
+    /** 把 masterXu/companionInit/keepaliveXu/config 打包成 BerxelDriver 的 options_json 二进制。
      *  布局保持旧头兼容：`[xu][init][cfg]` 后追加可选 `[ka]`。 */
     private fun packBerxelOptions(
         masterXu: ByteArray,
@@ -337,11 +363,11 @@ class BerxelNativeStack @Inject constructor(
         keepaliveXu: ByteArray,
         config: IntArray,
     ): ByteArray {
-        val size = 4 + masterXu.size + 4 + companionInit.size + 14 * 4 + 4 + keepaliveXu.size
+        val size = 4 + masterXu.size + 4 + companionInit.size + config.size * 4 + 4 + keepaliveXu.size
         val bb = java.nio.ByteBuffer.allocate(size).order(java.nio.ByteOrder.LITTLE_ENDIAN)
         bb.putInt(masterXu.size); bb.put(masterXu)
         bb.putInt(companionInit.size); bb.put(companionInit)
-        for (i in 0 until 14) bb.putInt(config.getOrElse(i) { 0 })
+        for (v in config) bb.putInt(v)
         bb.putInt(keepaliveXu.size); bb.put(keepaliveXu)
         return bb.array()
     }
@@ -919,6 +945,7 @@ class BerxelNativeStack @Inject constructor(
         const val BULK_READ_LEN = 16 * 1024
         // dual 异步路径专用大读长（不动旧同步路径的 16KB）：1280@45 高吞吐喂满管子用。
         const val DUAL_ASYNC_READ_LEN = 64 * 1024
+        const val DUAL_ASYNC_XFER_COUNT = 48
         const val OPEN_DEVICE_TIMEOUT_MS = 5_000L
 
         const val MASTER_XU5_ASSET = "berxel/iHawkP100R3_master_xu5_init.json"

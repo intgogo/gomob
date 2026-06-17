@@ -5,7 +5,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.graphics.BitmapFactory
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbManager
@@ -20,7 +19,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -38,18 +36,20 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * eYs3D / Etron RS-D550(ROSIE4, 0x3438:0x0206)取流服务（M6.8b ⑤）。
+ * eYs3D / Etron RS-D550（ROSIE4，0x3438:0x0206）取流服务。
  *
- * 与 [io.gomob.nativebridge.berxel.BerxelService] 平行：同样的引用计数生命周期 + USB 权限链，但
- * - 单节点：只需 1 个 usbfs fd（Berxel 是 master+companion 双节点）。
- * - 走 [CameraStack]（native CameraRegistry → Eys3dFdDriver，libusb wrap_sys_device + mode25 videoMode=36），
- *   深度由设备 ASIC 直出 metric mm，poll 出来即真深度，不在端侧软算。
- * - 零厂商 SDK：fd 取自 [UsbManager.openDevice]，native 用 libusb 自研栈，全程不链 eSPDI。
+ * ★★★ 2026-06-17 收口为 **纯 native 直驱厂商 C++ 引擎路径**（[CameraStack] → native [Eys3dVendorCppSession]）：
+ *   native 层 dlopen libUVCCamera.so 直调厂商 UVCCamera/UVCPreview/FrameGrabber C++ 类跑 mode25 起流链，
+ *   帧经 FrameGrabber 回调 trampoline 全 native 进 core，零 Java 编排（仅本服务 UsbManager 拿 fd）。
+ *   复用厂商已验证起流链出 mode25 真深度，规避自研 -EPROTO 硬墙。Java ApcCamera shim 已退役（见 git 历史）。
+ *   详见 finding_eys3d_zero_vendor_independence + docs/architecture/13-eys3d-driver.md。
  *
- * fd 所有权：native `libusb_wrap_sys_device` **不** dup fd，整段会话期间必须保持 [connection] 不关；
- * [stop] 里先 [CameraStack.stop] 再 close connection，是 fd 唯一释放点。
+ * PUSH→POLL 模型：vendor native 线程出帧进 native core；本服务 [startPollLoop] 轮询 [CameraStack.pollDepthMm]/
+ *   [CameraStack.pollColor] 转 [DepthFrame]/[ColorFrame] 发流。看门狗判活：出帧刷 [lastFrameMs]，超
+ *   [FRAME_TIMEOUT_MS] 无帧判死。
  *
- * ★ 现为独立服务，不与 BerxelService 共享任何状态；feature 路由按 [CameraModel] 二选一注入。
+ * USB fd 所有权：本服务 [startIndependentNative] 内 [UsbManager.openDevice] 拿 fd 交 native；
+ *   [stop] → [tearDownNative]（cameraStack.stop + usbConn.close）是唯一释放点。
  */
 @Singleton
 class Eys3dCameraService @Inject constructor(
@@ -60,6 +60,9 @@ class Eys3dCameraService @Inject constructor(
 
     private val _sourceState = MutableStateFlow<CameraSourceState>(CameraSourceState.Idle)
     override val sourceState: StateFlow<CameraSourceState> = _sourceState.asStateFlow()
+
+    // 任一路（color/depth）出帧即刷新；看门狗判活以此为准。
+    @Volatile private var lastFrameMs = 0L
 
     private val _colorFrames = MutableSharedFlow<ColorFrame>(
         replay = 0, extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST,
@@ -73,14 +76,17 @@ class Eys3dCameraService @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    private val stack = CameraStack()
-    /** open 出来的连接，必须保持开启直到 stop（native 不持有 fd 所有权）。 */
-    @Volatile private var connection: UsbDeviceConnection? = null
     @Volatile private var running = false
-    private var depthJob: Job? = null
-    private var colorJob: Job? = null
+    private var watchdogJob: Job? = null
+    private var depthFrameIdx = 0
+    private var colorFrameIdx = 0
 
-    // ─── 引用计数生命周期（与 BerxelService 同语义：导航切换时计数不归 0，相机不抖） ───
+    // ─── native 直驱厂商 C++ 引擎路径（dlopen libUVCCamera.so，零 Java 编排） ───
+    private val cameraStack = CameraStack()
+    @Volatile private var usbConn: UsbDeviceConnection? = null
+    private var pollJob: Job? = null
+
+    // ─── 引用计数生命周期（导航切换时计数不归 0，相机不抖） ───
     private val acquireCount = AtomicInteger(0)
     @Volatile private var releaseStopJob: Job? = null
 
@@ -107,7 +113,7 @@ class Eys3dCameraService @Inject constructor(
         }
     }
 
-    // ─── 启动：枚举 → 权限 → fd → CameraStack.start → poll 循环 ───
+    // ─── 启动：枚举 → 权限 → native 直驱厂商 C++ 会话 → poll + 看门狗 ───
     private fun startInternal() {
         if (running) return
         val usbManager = appContext.getSystemService(Context.USB_SERVICE) as UsbManager
@@ -116,157 +122,165 @@ class Eys3dCameraService @Inject constructor(
             _sourceState.value = CameraSourceState.NoDevice
             return
         }
+        // ★ 厂商 C++ 引擎(libUVCCamera/libESPDI)仅 arm64-v8a：32 位设备无对应 .so，dlopen 会失败。
+        //   提前给明确不支持提示，避免在 32 位机上空跑 30s 看门狗超时才报错。补 v7a 需匹配版本 vendor 二进制
+        //   + 重做 32 位 struct offset RE（vendor_uvc_abi.h 的 0x2430/+8/+0x10 是 64 位布局），低优先级。
+        if (Build.SUPPORTED_64_BIT_ABIS.isEmpty()) {
+            Log.w(TAG, "eYs3D 需 64 位设备：厂商 C++ 引擎仅 arm64-v8a")
+            _sourceState.value = CameraSourceState.Error("eYs3D 需 64 位手机（厂商深度引擎仅支持 arm64-v8a）")
+            return
+        }
         if (!usbManager.hasPermission(device)) {
             requestUsbPermission(usbManager, device)
             return  // 等 receiver granted 回调重进 startInternal
         }
         _sourceState.value = CameraSourceState.Opening
-        val conn = try {
-            usbManager.openDevice(device)
-        } catch (t: Throwable) {
-            Log.w(TAG, "openDevice 失败 ${usbLabel(device)}", t)
-            null
-        }
-        if (conn == null) {
-            _sourceState.value = CameraSourceState.Error("打开 eYs3D 失败（USB 权限 / 设备被占用？）")
-            return
-        }
-        val fd = conn.fileDescriptor
-        if (fd < 0) {
-            conn.close()
-            _sourceState.value = CameraSourceState.Error("eYs3D fd 无效（$fd）")
-            return
-        }
-        // native 单节点：fds=[fd]；configJson 暂空（mode25 默认配置由 driver 内置）。
-        if (!stack.start(CameraModel.Eys3d, intArrayOf(fd))) {
-            conn.close()
-            _sourceState.value = CameraSourceState.Error("CameraStack.start 失败（mode25 协商未通过？）")
-            return
-        }
-        connection = conn
+        if (!startIndependentNative(usbManager, device)) return
         running = true
+        lastFrameMs = SystemClock.elapsedRealtime()
+        depthFrameIdx = 0
+        colorFrameIdx = 0
         _sourceState.value = CameraSourceState.Streaming(deviceLabel, DEPTH_W, DEPTH_H)
-        Log.i(TAG, "eYs3D 开流 fd=$fd → mode25")
-        startDepthPump()
-        startColorPump()
+        Log.i(TAG, "eYs3D 开流完成（native 直驱厂商 C++，mode25 真深度）")
+        startPollLoop()
+        startWatchdog()
     }
 
-    private fun startDepthPump() {
-        depthJob = scope.launch {
-            // buffer 按最大可能深度分辨率（USB3 rectify 640×480 / mode25 640×128）分配；
-            // poll 实际写 active*2 字节，DepthFrame 用 outInfo 回报的真实 w/h。
-            val cap = MAX_DEPTH_W * MAX_DEPTH_H * 2
-            var buffer = ByteBuffer.allocateDirect(cap).order(ByteOrder.LITTLE_ENDIAN)
-            val outInfo = LongArray(4)  // [w, h, serial, host_ns]
-            var lastSerial = -1L
-            var frameIdx = 0
-            var deadMs = SystemClock.elapsedRealtime()
+    // ─── native 直驱厂商 C++ 路径：开 usbfs fd → CameraStack → native Eys3dVendorCppSession ───
+    private fun startIndependentNative(usbManager: UsbManager, device: UsbDevice): Boolean {
+        val conn = runCatching { usbManager.openDevice(device) }.getOrNull()
+        if (conn == null || conn.fileDescriptor < 0) {
+            _sourceState.value = CameraSourceState.Error("eYs3D openDevice 失败（无 USB 权限或被占用）")
+            runCatching { conn?.close() }
+            return false
+        }
+        usbConn = conn
+        // ★ vendor C++ 直驱路径需先 setVM：libUVCCamera 的 startPreview 起抓拍线程,内部 getVM()→AttachCurrentThread,
+        //   未 setVM 则 getVM()=null 崩。bindEys3dVendorJni 经 JNI_OnLoad 调 vendor setVM(本进程 JavaVM)+RegisterNatives。
+        runCatching { io.gomob.nativebridge.NativeBridge.bindEys3dVendorJni() }
+            .onFailure { Log.w(TAG, "bindEys3dVendorJni 异常", it) }
+        // ★ vendor connect 内部 strdup 此目录传给 UVCPreview（NULL 必崩）；用 app 专属外部目录（无需权限、必可写），
+        //   经 configJson → SessionConfig.options_json 下发，替代此前 native 硬编码 /storage/emulated/0/eys3d。
+        val storageDir = (appContext.getExternalFilesDir("eys3d") ?: appContext.filesDir).absolutePath
+        // CameraStack → NativeBridge.cameraOpenByFds(0x3438,0x0206,[fd]) → Eys3dFdDriver.open_fd → Eys3dVendorCppSession
+        //   （纯 native 直驱厂商 C++ 引擎，零 Java 编排）。fd 所有权留本服务（stop 关）。
+        if (!cameraStack.start(CameraModel.Eys3d, intArrayOf(conn.fileDescriptor), storageDir.toByteArray())) {
+            _sourceState.value = CameraSourceState.Error("eYs3D cameraOpenByFds 失败（看 eys3d_vcpp logcat）")
+            runCatching { conn.close() }
+            usbConn = null
+            return false
+        }
+        Log.i(TAG, "eYs3D native 直驱会话已开（fd=${conn.fileDescriptor}, storage=$storageDir）")
+        return true
+    }
+
+    // poll 循环（IO 线程）：每帧新建 direct buffer 喂 onDepthFrame（避免复用 buffer 与下一次 poll 竞争）。
+    private fun startPollLoop() {
+        pollJob?.cancel()
+        pollJob = scope.launch {
+            val outInfo = LongArray(4)
+            var polls = 0
+            var got = 0
             while (isActive && running) {
-                buffer.clear()
-                val n = stack.pollDepthMm(buffer, outInfo)
-                if (n <= 0) {
-                    if (SystemClock.elapsedRealtime() - deadMs > FRAME_TIMEOUT_MS) {
-                        markSessionDead()
-                        break
-                    }
-                    delay(8)
-                    continue
+                val buf = ByteBuffer.allocateDirect(DEPTH_W * DEPTH_H * 2).order(ByteOrder.LITTLE_ENDIAN)
+                val n = cameraStack.pollDepthMm(buf, outInfo)
+                polls++
+                if (n > 0) {
+                    got++
+                    val w = outInfo[0].toInt().let { if (it > 0) it else DEPTH_W }
+                    val h = outInfo[1].toInt().let { if (it > 0) it else DEPTH_H }
+                    buf.position(0).limit(w * h * 2)
+                    onDepthFrame(w, h, buf)
+                    if (got == 1) Log.i(TAG, "eYs3D 首帧深度到达 ${w}x$h")
                 }
-                val serial = outInfo[2]
-                if (serial == lastSerial) { delay(4); continue }
-                lastSerial = serial
-                deadMs = SystemClock.elapsedRealtime()
-                val w = outInfo[0].toInt().let { if (it > 0) it else DEPTH_W }
-                val h = outInfo[1].toInt().let { if (it > 0) it else DEPTH_H }
-                buffer.position(0).limit(n)
-                val emitted = buffer
-                buffer = ByteBuffer.allocateDirect(cap).order(ByteOrder.LITTLE_ENDIAN)
-                _depthFrames.emit(
-                    DepthFrame(
-                        timestampUs = outInfo[3] / 1000L,
-                        frameIndex = ++frameIdx,
-                        width = w,
-                        height = h,
-                        data = emitted,
-                        // 内参：eYs3D 出厂内参 / ZD 表需 device-gated flash pull，未注入前置零（不造假 fx）。
-                        intrinsics = zeroIntrinsics(w, h),
-                        registeredToColor = false,
-                    ),
-                )
+                if (polls % 300 == 0) Log.d(TAG, "pollDepthMm polls=$polls got=$got")
+                // 彩色：eYs3D 自身 L' 流（vendor uvc_any2rgb 出 RGB24 1280×256），poll 出来喂 onColorFrame。
+                val cbytes = cameraStack.pollColor()
+                if (cbytes != null && cbytes.size == COLOR_W * COLOR_H * 3) {
+                    val cbuf = ByteBuffer.allocateDirect(cbytes.size).order(ByteOrder.LITTLE_ENDIAN)
+                    cbuf.put(cbytes); cbuf.position(0).limit(cbytes.size)
+                    onColorFrame(COLOR_W, COLOR_H, cbuf)
+                }
+                delay(POLL_INTERVAL_MS)
             }
-            Log.i(TAG, "eYs3D depth pump exit frames=$frameIdx")
         }
     }
 
-    private fun startColorPump() {
-        colorJob = scope.launch {
-            var frameIdx = 0
-            var pixelsScratch: IntArray? = null
+    // 深度回调（vendor native 线程）：已转 metric mm（u16 LE）。
+    private fun onDepthFrame(w: Int, h: Int, mm: ByteBuffer) {
+        if (!running) return
+        lastFrameMs = SystemClock.elapsedRealtime()
+        _depthFrames.tryEmit(
+            DepthFrame(
+                timestampUs = SystemClock.elapsedRealtimeNanos() / 1000L,
+                frameIndex = ++depthFrameIdx,
+                width = w,
+                height = h,
+                data = mm,
+                // 内参：RS-D550 出厂矫正内参按本帧分辨率缩放（见 rsd550Intrinsics）。深度在矫正左目坐标系。
+                intrinsics = rsd550Intrinsics(w, h),
+                registeredToColor = false,
+            ),
+        )
+    }
+
+    // 彩色回调（vendor native 线程）：RGB24 下采样预览帧 → 发流 + 刷看门狗。
+    private fun onColorFrame(w: Int, h: Int, rgb24: ByteBuffer) {
+        if (!running) return
+        lastFrameMs = SystemClock.elapsedRealtime()
+        _colorFrames.tryEmit(
+            ColorFrame(
+                timestampUs = SystemClock.elapsedRealtimeNanos() / 1000L,
+                frameIndex = ++colorFrameIdx,
+                width = w,
+                height = h,
+                data = rgb24,
+                pixelType = "EYS3D_RGB24",
+                // 彩色 L' 是矫正左目（与深度同标定），内参按本帧分辨率缩放。
+                intrinsics = rsd550Intrinsics(w, h),
+            ),
+        )
+    }
+
+    private fun startWatchdog() {
+        watchdogJob?.cancel()
+        watchdogJob = scope.launch {
             while (isActive && running) {
-                // mode25 color = 1280×256 MJPG；pollColor 出 MJPEG 原始字节，端侧 BitmapFactory 解码。
-                val mjpeg = stack.pollColor()
-                if (mjpeg == null) { delay(8); continue }
-                val bmp = runCatching { BitmapFactory.decodeByteArray(mjpeg, 0, mjpeg.size) }.getOrNull()
-                if (bmp == null) { delay(8); continue }
-                val cw = bmp.width
-                val ch = bmp.height
-                val pixels = pixelsScratch?.takeIf { it.size >= cw * ch }
-                    ?: IntArray(cw * ch).also { pixelsScratch = it }
-                bmp.getPixels(pixels, 0, cw, 0, 0, cw, ch)
-                bmp.recycle()
-                val direct = ByteBuffer.allocateDirect(cw * ch * 3).order(ByteOrder.LITTLE_ENDIAN)
-                var i = 0
-                val total = cw * ch
-                while (i < total) {
-                    val argb = pixels[i]
-                    direct.put(((argb ushr 16) and 0xff).toByte())  // R
-                    direct.put(((argb ushr 8) and 0xff).toByte())   // G
-                    direct.put((argb and 0xff).toByte())            // B
-                    i++
+                delay(1_000)
+                if (running && SystemClock.elapsedRealtime() - lastFrameMs > FRAME_TIMEOUT_MS) {
+                    markSessionDead()
+                    break
                 }
-                direct.position(0).limit(cw * ch * 3)
-                _colorFrames.emit(
-                    ColorFrame(
-                        timestampUs = SystemClock.elapsedRealtimeNanos() / 1000L,
-                        frameIndex = ++frameIdx,
-                        width = cw,
-                        height = ch,
-                        data = direct,
-                        pixelType = "EYS3D_RGB24",
-                        intrinsics = zeroIntrinsics(cw, ch),
-                    ),
-                )
             }
-            Log.i(TAG, "eYs3D color pump exit frames=$frameIdx")
         }
     }
 
     private fun markSessionDead() {
-        Log.e(TAG, "eYs3D ${FRAME_TIMEOUT_MS}ms 无深度帧，判定 session 死，复位")
+        Log.e(TAG, "eYs3D ${FRAME_TIMEOUT_MS}ms 无帧，判定 session 死")
         running = false
-        stopStackAndConn()
+        tearDownNative()
         _sourceState.value = CameraSourceState.Error("eYs3D 流掉线（USB IO）— 重新插拔相机或重进本页")
+    }
+
+    // 自研 native 路径释放：停 poll → cameraStack.stop（释放 native 会话）→ 关 usbfs 连接（fd 唯一释放点）。
+    private fun tearDownNative() {
+        pollJob?.cancel(); pollJob = null
+        runCatching { cameraStack.stop() }.onFailure { Log.w(TAG, "cameraStack.stop 异常", it) }
+        runCatching { usbConn?.close() }.onFailure { Log.w(TAG, "usbConn.close 异常", it) }
+        usbConn = null
     }
 
     /** 停止 + 释放（fd 唯一释放点）。 */
     fun stop() {
-        if (!running && connection == null) {
+        if (!running && !cameraStack.isOpen) {
             _sourceState.value = CameraSourceState.Idle
             return
         }
         Log.i(TAG, "eYs3D stop")
         running = false
-        depthJob?.cancel(); depthJob = null
-        colorJob?.cancel(); colorJob = null
-        stopStackAndConn()
+        watchdogJob?.cancel(); watchdogJob = null
+        tearDownNative()
         _sourceState.value = CameraSourceState.Idle
-    }
-
-    private fun stopStackAndConn() {
-        runCatching { stack.stop() }.onFailure { Log.w(TAG, "CameraStack.stop 异常", it) }
-        // native 已 close fd 之后才能关 connection（顺序不可换：native 仍可能在用 fd）。
-        runCatching { connection?.close() }.onFailure { Log.w(TAG, "connection.close 异常", it) }
-        connection = null
     }
 
     // ─── USB 权限链（单节点 0x3438:0x0206） ───
@@ -277,8 +291,7 @@ class Eys3dCameraService @Inject constructor(
             if (intent?.action != USB_PERMISSION_ACTION) return
             val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
             Log.i(TAG, "eYs3D USB permission broadcast granted=$granted")
-            // 不盲信 broadcast（OEM 实测会 deny=false 但 system_server 已落 grant）：
-            // 只要还有人 acquire，就以 hasPermission 真值重进 startInternal。
+            // 不盲信 broadcast：只要还有人 acquire，就以 hasPermission 真值重进 startInternal。
             if (acquireCount.get() > 0) scope.launch { startInternal() }
         }
     }
@@ -313,20 +326,40 @@ class Eys3dCameraService @Inject constructor(
     private fun usbLabel(d: UsbDevice): String =
         "${d.deviceName} vid=0x${d.vendorId.toString(16)} pid=0x${d.productId.toString(16)}"
 
-    private fun zeroIntrinsics(w: Int, h: Int) = CameraIntrinsics(
-        fx = 0.0, fy = 0.0, cx = 0.0, cy = 0.0, distortion = DoubleArray(5), width = w, height = h,
-    )
+    // RS-D550 出厂矫正内参（rectlog_1.bin 提取，canonical = native/eys3d/portable/eys3d_driver.h
+    // kRsd550RectifiedFx；rectlog 与 VIN 两来源交叉验证一致）。基准 = 单目全幅矫正左目 1280×960
+    // （cx≈648/cy≈483 即该幅中心，fx=fy=1229.205 方形像素）。mode25 各流（color 1280×256 / depth 640×128）
+    // 是该全幅的【各向异性下采样】，内参按 目标分辨率/基准 线性缩放（fx·sx, fy·sy, cx·sx, cy·sy）。
+    // ★ device-gated 残留：垂直方向是纯缩放（本式假设；SCALE_DOWN 模式名 + 预览非裁切 佐证）还是裁剪带，影响 fy，
+    //   须用平面靶 harness 量测核实（见 docs/architecture/13-eys3d-driver.md §内参 + TODO M6.5）。
+    //   终态：adb pull 每台设备 ZD/rectify flash + native 单一标定真理源经 JNI 下发，届时删此 Kotlin 兜底常量。
+    private fun rsd550Intrinsics(w: Int, h: Int): CameraIntrinsics {
+        val sx = w / RSD550_CALIB_W
+        val sy = h / RSD550_CALIB_H
+        return CameraIntrinsics(
+            fx = RSD550_RECT_FX * sx, fy = RSD550_RECT_FX * sy,
+            cx = RSD550_RECT_CX * sx, cy = RSD550_RECT_CY * sy,
+            distortion = DoubleArray(5),  // 矫正后无畸变
+            width = w, height = h,
+        )
+    }
 
     private companion object {
         const val TAG = "Eys3dCameraService"
         const val USB_PERMISSION_ACTION = "io.gomob.nativebridge.camera.EYS3D_USB_PERMISSION"
         const val CAMERA_RELEASE_GRACE_MS = 600L
-        const val FRAME_TIMEOUT_MS = 3_000L
-        // mode25 深度默认分辨率（videoMode=36）。
+        const val FRAME_TIMEOUT_MS = 30_000L  // 任一路无帧判死阈;mode25 排障期放宽,稳定后回 8s
+        const val POLL_INTERVAL_MS = 33L  // ~30Hz poll（mode25 出 ~5fps，poll 快于产帧即可不漏）
+        // mode25 深度分辨率（videoMode=36，CameraModeKt.DEFAULT_ROSIE4_U2_MODE）。
         const val DEPTH_W = 640
         const val DEPTH_H = 128
-        // buffer 上限按 USB3 rectify(640×480)留余量，分辨率切换不溢出。
-        const val MAX_DEPTH_W = 640
-        const val MAX_DEPTH_H = 480
+        const val COLOR_W = 1280  // eYs3D mode25 彩色(L' 矫正参考)分辨率
+        const val COLOR_H = 256
+        // RS-D550 矫正标定（见 rsd550Intrinsics 注释）。基准全幅 1280×960。
+        const val RSD550_CALIB_W = 1280.0
+        const val RSD550_CALIB_H = 960.0
+        const val RSD550_RECT_FX = 1229.205  // 矫正焦距 px（fx=fy，方形像素）
+        const val RSD550_RECT_CX = 648.0
+        const val RSD550_RECT_CY = 482.865
     }
 }

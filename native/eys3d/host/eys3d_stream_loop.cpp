@@ -5,8 +5,17 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 
 #include "eys3d/host/eys3d_usb_device.h"
+#include "eys3d/host/eys3d_proven_replay.h"  // 逐字复刻 proven SDK arming（自动生成）
+
+#if defined(__ANDROID__)
+#include <android/log.h>
+#define EYS_LOG(...) __android_log_print(ANDROID_LOG_INFO, "eys3d_stream", __VA_ARGS__)
+#else
+#define EYS_LOG(...) std::fprintf(stderr, __VA_ARGS__)
+#endif
 
 namespace gomob::eys3d::host {
 
@@ -60,6 +69,15 @@ struct StreamState {
   int inflight = 0;
   bool stop = false;
   int64_t errs = 0;
+  // ── 诊断计数（M6.8 真机 0 帧定位）──
+  int64_t completed = 0;  // 成功完成且有数据的 transfer 数
+  int64_t bytes = 0;      // 累计收到字节
+  int64_t frames = 0;     // 组装出的完整帧数
+  int64_t last_status = 0;  // 最近一次非完成 transfer 的 status（负=libusb 错误码）
+  // ── UVC payload 头诊断（定位"吐 ~2 帧即停"）──
+  int64_t hdr_err = 0;    // bmHeaderInfo bit6=ERR 的 payload 数
+  int64_t hdr_eof = 0;    // bit1=EOF 的 payload 数
+  uint8_t last_hdr1 = 0;  // 最近 payload 的 bmHeaderInfo
 };
 
 void LIBUSB_CALL StreamCb(libusb_transfer* t) {
@@ -68,11 +86,33 @@ void LIBUSB_CALL StreamCb(libusb_transfer* t) {
     const size_t n = static_cast<size_t>(t->actual_length);
     s->pending.insert(s->pending.end(), t->buffer, t->buffer + n);
     s->pending_lens.push_back(t->actual_length);
+    ++s->completed;
+    s->bytes += static_cast<int64_t>(n);
   } else if (t->status != LIBUSB_TRANSFER_COMPLETED && t->status != LIBUSB_TRANSFER_TIMED_OUT) {
     ++s->errs;
+    s->last_status = static_cast<int64_t>(t->status);
   }
   if (!s->stop) {
-    if (libusb_submit_transfer(t) != 0) --s->inflight;
+    if (Eys3dUsb().submit_transfer(t) != 0) --s->inflight;
+  } else {
+    --s->inflight;
+  }
+}
+
+// 中断 EP 0x83 持续轮询状态：数据丢弃，只为保持 HC 对该 EP 的周期轮询（设备流维持心跳）。
+struct IntrState {
+  std::vector<libusb_transfer*> urbs;
+  std::vector<std::vector<uint8_t>> bufs;
+  int inflight = 0;
+  bool stop = false;
+  int64_t completed = 0;
+};
+
+void LIBUSB_CALL IntrCb(libusb_transfer* t) {
+  auto* s = static_cast<IntrState*>(t->user_data);
+  ++s->completed;  // 完成或超时都计一次轮询周期并重提（主动周期 IN，复刻 SDK ~3ms 节拍）
+  if (!s->stop) {
+    if (Eys3dUsb().submit_transfer(t) != 0) --s->inflight;
   } else {
     --s->inflight;
   }
@@ -87,6 +127,9 @@ void DrainAndAssemble(StreamState& s) {
     if (len < 2) continue;
     int hl = p[0];
     if (hl < 2 || hl > len) hl = (len >= 12) ? 12 : len;  // bHeaderLength 兜底
+    s.last_hdr1 = p[1];
+    if (p[1] & 0x40) ++s.hdr_err;  // ERR
+    if (p[1] & 0x02) ++s.hdr_eof;  // EOF
     const int fid = p[1] & 1;
     if (s.prev_fid >= 0 && fid != s.prev_fid) {  // FID 翻转 = 帧边界
       // frame_bytes>0(raw 定长 depth)要求精确尺寸;==0(MJPEG color 变长)只要非空即出。
@@ -96,6 +139,7 @@ void DrainAndAssemble(StreamState& s) {
         const int64_t ns = NowNs();
         if (s.is_depth) s.core->OnRawDepthFrame(s.cur.data(), s.cur.size(), ns);
         else s.core->OnColorFrame(s.cur.data(), s.cur.size(), ns);
+        ++s.frames;
       }
       s.cur.clear();
     }
@@ -160,111 +204,164 @@ void RunEys3dStreamLoop(libusb_context* ctx, libusb_device_handle* h, const Eys3
 
   // 会话开始先 reset 清残留(连续开关会卡 immediate-STALL)。reset 致重枚举时设备指针失效,
   // 此处简化:reset 失败/NOT_FOUND 仅告警,不在循环内重开避免拓扑竞态。
-  int rr = libusb_reset_device(h);
+  // ★ Android fd 路径（wrap_sys_device）严禁 reset：reset 触发端口重枚举 → 设备换地址，
+  //   但我们 wrap 的是 Java openDevice 拿到的旧 fd，重枚举后 fd 立刻失效 → 后续控制/bulk 全打到
+  //   死 handle（0 帧 + EventHub epoll hang-up + num_connects 攀升），且每次 open 都重枚举一次。
+  //   host(libusb 自枚举) 才需要 reset 清残留 STALL；Android fd 每次会话都是全新 openDevice，不需要。
+#if !defined(__ANDROID__)
+  int rr = Eys3dUsb().reset_device(h);
   if (rr != 0 && rr != LIBUSB_ERROR_NOT_FOUND) {
-    std::fprintf(stderr, "[eys3d] reset rc=%d %s\n", rr, libusb_error_name(rr));
+    std::fprintf(stderr, "[eys3d] reset rc=%d %s\n", rr, Eys3dUsb().error_name(rr));
   }
+#endif
 
   Eys3dUsbDevice dev(h);
-  if (!dev.claim(0)) { core.MarkError("claim IF0 failed"); return; }
-  dev.claim(1);
-  dev.claim(2);
+#if defined(__ANDROID__)
+  // Android：IF0/1/2 已由 Java 侧 UsbDeviceConnection.claimInterface(force=true) 认领并 detach uvcvideo。
+  //   libusb 在同一 fd 再 claim 会 BUSY（实测返 0），但 usbfs 提交 URB 只要该 fd 持有接口认领即可，
+  //   故此处不再 libusb_claim_interface，直接进开流序列（控制传输走 ep0 也不需要 claim）。
+  EYS_LOG("claim: skipped on Android (Java UsbDeviceConnection owns IF0/1/2)");
+#else
+  const bool c0 = dev.claim(0);
+  const bool c1 = dev.claim(1);
+  const bool c2 = dev.claim(2);
+  EYS_LOG("claim IF0=%d IF1=%d IF2=%d", c0, c1, c2);
+  if (!c0) { core.MarkError("claim IF0 failed"); return; }
+#endif
 
-  // ---- 回放开流序列(逐字复刻 proven;mode25 待锁定换 plan 寄存器值)----
-  auto set_cur = [&](const XuPayload& x) {
-    std::vector<uint8_t> d = x.data;
-    return dev.uvc_set_cur(x.w_value, x.w_index, d.data(), static_cast<uint16_t>(d.size()), 2000);
-  };
-  auto ctr = [&](uint8_t n) { return set_cur(MakeCounterTick(n)); };
-  // pre-XU:videoMode 读探询(proven 字面 82 f0 14)+ 写 videomode/interleave + 计数器握手。
-  const XuPayload kFwReadVm{3, 0x0300, 0x0400, {0x82, 0xF0, 0x14, 0x00}};  // proven 字面(含 0x14)
-  for (uint8_t c = 1; c <= 3; ++c) { set_cur(kFwReadVm); ctr(c); }
-  ctr(4);
-  for (uint8_t c = 5; c <= 7; ++c) { set_cur(kFwReadVm); ctr(c); }
-  ctr(8); ctr(9); ctr(10);
-  set_cur(MakeSetVideoModeReg(plan.arm.videomode_reg)); ctr(11);
-  set_cur(MakeSetInterleave(plan.arm.interleave)); ctr(12);
+  // ---- 逐字复刻 proven eSPDI SDK 开流 arming（kProvenArming：153 条控制传输，源自 usbmon 抓包，14bit 配置）----
+  //   含全 XU 能力枚举 + counter 单向递增 + entity-4 flash ZD 读握手 + IF1/IF2 PROBE 协商，末项 = COMMIT IF1。
+  //   自研旧手拼序列漏了能力枚举/PROBE GET_MIN-MAX/entity-3 读位置错位 → entity-4 flash SET_CUR STALL → bulk 0 帧。
+  //   读(payload 空)也照发：设备 flash 状态机对"该读被发过"敏感。控制响应本身慢(~2-17ms)，无需人造延时。
+  int64_t wr_ok = 0, wr_fail = 0, rd_ok = 0, rd_fail = 0;
+  std::vector<uint8_t> rbuf;
+  int idx = 0;
+  if (plan.external_arming) {
+    EYS_LOG("arming: skipped in native (done via Java controlTransfer to COMMIT IF1)");
+  } else
+  for (const auto& x : kProvenArming) {
+    uint8_t* data = nullptr;
+    uint16_t len = x.wlen;
+    if (!x.payload.empty()) {
+      rbuf = x.payload; data = rbuf.data(); len = static_cast<uint16_t>(rbuf.size());
+    } else if (x.wlen) {
+      rbuf.assign(x.wlen, 0); data = rbuf.data();
+    }
+    // ★ counter GET-back / entity-4 flash 写在 Android usbfs 下偶发协议 STALL(PIPE)，RHEL9 host 不会。
+    //   协议 STALL 在下个 SETUP 自动清(实测 STALL 后的写恢复正常) → 同笔短延后重试可推过去。
+    int rc = -1;
+    for (int attempt = 0; attempt < 4; ++attempt) {
+      rc = dev.control_transfer(x.bmreq, x.breq, x.wval, x.widx, data, len, 2000);
+      if (rc >= 0 || rc != LIBUSB_ERROR_PIPE) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(3));
+    }
+    const bool is_write = (x.bmreq & 0x80) == 0;
+    if (rc < 0) {
+      if (is_write) ++wr_fail; else ++rd_fail;
+      EYS_LOG("replay FAIL #%d: bmreq=%02x breq=%02x wval=%04x widx=%04x wlen=%u rc=%d(%s)",
+              idx, x.bmreq, x.breq, x.wval, x.widx, x.wlen, rc, Eys3dUsb().error_name(rc));
+    } else {
+      if (is_write) ++wr_ok; else ++rd_ok;
+    }
+    ++idx;
+  }
+  EYS_LOG("arming replay: writes ok=%lld fail=%lld | reads ok=%lld fail=%lld (末项=COMMIT IF1)",
+          (long long)wr_ok, (long long)wr_fail, (long long)rd_ok, (long long)rd_fail);
 
-  // VS PROBE→GET_CUR→COMMIT。PROBE 后必须 GET_CUR 回读完成握手。
-  auto probe = [&](const Eys3dStreamPlan& sp, const std::vector<uint8_t>& payload) {
-    std::vector<uint8_t> d = payload;
-    dev.uvc_set_cur(0x0100, static_cast<uint16_t>(sp.vs_interface), d.data(),
-                    static_cast<uint16_t>(d.size()), 2000);
-    std::vector<uint8_t> back(d.size());
-    dev.uvc_get_cur(0x0100, static_cast<uint16_t>(sp.vs_interface), back.data(),
-                    static_cast<uint16_t>(back.size()), 2000);
-  };
-  auto commit = [&](const Eys3dStreamPlan& sp, const std::vector<uint8_t>& payload) {
-    std::vector<uint8_t> d = payload;
-    dev.uvc_set_cur(0x0200, static_cast<uint16_t>(sp.vs_interface), d.data(),
-                    static_cast<uint16_t>(d.size()), 2000);
-  };
-  probe(plan.color, plan.color.probe_zero);
-  probe(plan.color, plan.color.probe_zero);
-  ctr(13); ctr(14); ctr(15); ctr(16); ctr(17);
-  probe(plan.color, plan.color.probe_neg);
-  probe(plan.color, plan.color.probe_neg);
-  probe(plan.depth, plan.depth.probe_zero);
-  probe(plan.depth, plan.depth.probe_zero);
-  probe(plan.depth, plan.depth.probe_neg);
-  probe(plan.depth, plan.depth.probe_neg);
-  commit(plan.color, plan.color.probe_neg);
-  commit(plan.depth, plan.depth.probe_neg);
-  set_cur(MakeSetStartTrigger());
-  ctr(18); ctr(19); ctr(20);
-  if (plan.arm.ir_current > 0) set_cur(MakeSetIrCurrent(plan.arm.ir_current));
-
-  // ---- 双端点并发异步多 URB ----
+  // ---- 双端点流状态 + 按 proven 顺序交织 bulk 提交与 COMMIT IF2 / 启动触发 / CLEAR_HALT ----
   StreamState sc, sd;
   sc.ep = plan.color.endpoint; sc.frame_bytes = plan.color.frame_bytes;
   sc.urb_size = plan.color.urb_size; sc.is_depth = false; sc.core = &core;
   sd.ep = plan.depth.endpoint; sd.frame_bytes = plan.depth.frame_bytes;
   sd.urb_size = plan.depth.urb_size; sd.is_depth = true; sd.core = &core;
-  StreamState* streams[2] = {&sc, &sd};
   const bool want[2] = {cfg.want_color, cfg.want_depth};
 
   constexpr int kNumUrb = 32;
-  for (int si = 0; si < 2; ++si) {
-    if (!want[si]) continue;
-    StreamState& s = *streams[si];
+  auto submit_stream = [&](StreamState& s) {
     s.urbs.resize(kNumUrb, nullptr);
     s.bufs.assign(kNumUrb, std::vector<uint8_t>(s.urb_size));
     for (int i = 0; i < kNumUrb; ++i) {
-      s.urbs[i] = libusb_alloc_transfer(0);
+      s.urbs[i] = Eys3dUsb().alloc_transfer(0);
       libusb_fill_bulk_transfer(s.urbs[i], h, s.ep, s.bufs[i].data(), s.urb_size, StreamCb, &s, 0);
-      if (libusb_submit_transfer(s.urbs[i]) == 0) ++s.inflight;
+      if (Eys3dUsb().submit_transfer(s.urbs[i]) == 0) ++s.inflight;
     }
+  };
+  // COMMIT IF1 已是 arming 末项 → 先挂 color bulk（必须在 COMMIT IF2 之前，all-control-first 实测 0 帧）。
+  if (want[0]) submit_stream(sc);
+  int t_cif2 = 0, t_trig = 0, t_ch1 = 0, t_ch2 = 0;
+  if (want[1]) {
+    uint8_t commit_if2[26] = {0x01, 0x00, 0x01, 0x01, 0x80, 0x84, 0x1e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                              0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x25, 0x00, 0x00, 0x0c, 0x00, 0x00};
+    t_cif2 = dev.control_transfer(0x21, 0x01, 0x0200, 0x0002, commit_if2, 26, 2000);
+    submit_stream(sd);
   }
+  { uint8_t p[4] = {0x20, 0xF5, 0x00, 0x00}; t_trig = dev.control_transfer(0x21, 0x01, 0x0300, 0x0400, p, 4, 2000); }
+  { uint8_t p[1] = {0x14}; dev.control_transfer(0x21, 0x01, 0x0a00, 0x0400, p, 1, 2000); }
+  if (want[0]) t_ch1 = dev.control_transfer(0x02, 0x01, 0x0000, 0x0081, nullptr, 0, 2000);
+  { uint8_t p[1] = {0x15}; dev.control_transfer(0x21, 0x01, 0x0a00, 0x0400, p, 1, 2000); }
+  { uint8_t p[1] = {0x16}; dev.control_transfer(0x21, 0x01, 0x0a00, 0x0400, p, 1, 2000); }
+  if (want[1]) t_ch2 = dev.control_transfer(0x02, 0x01, 0x0000, 0x0082, nullptr, 0, 2000);
+  EYS_LOG("native tail: COMMIT_IF2=%d trigger=%d clrHalt81=%d clrHalt82=%d (<0=失败)", t_cif2, t_trig, t_ch1, t_ch2);
+
+  // ★ 中断 EP 0x83 持续轮询 = 流维持心跳。proven：SDK 全程 ~3ms 轮询 0x83 贯穿整个 streaming，
+  //   稳态无任何控制写。缺它设备只吐 ~1s 缓冲(实测 ~2.3MB)即断流。数据全丢弃，只为让 HC 周期轮询该 EP。
+  IntrState intr;
+  constexpr int kNumIntr = 2;
+  intr.urbs.resize(kNumIntr, nullptr);
+  intr.bufs.assign(kNumIntr, std::vector<uint8_t>(1024));
+  for (int i = 0; i < kNumIntr; ++i) {
+    intr.urbs[i] = Eys3dUsb().alloc_transfer(0);
+    // timeout=3ms：设备 NAK 时 URB 超时→IntrCb 重提，形成 ~3ms 主动周期 IN（复刻 SDK 心跳）。
+    libusb_fill_interrupt_transfer(intr.urbs[i], h, 0x83, intr.bufs[i].data(), 1024, IntrCb, &intr, 3);
+    if (Eys3dUsb().submit_transfer(intr.urbs[i]) == 0) ++intr.inflight;
+  }
+
+  StreamState* streams[2] = {&sc, &sd};
+  EYS_LOG("streaming color(ep=0x%02x want=%d inflight=%d) depth(ep=0x%02x want=%d inflight=%d) intr(ep=0x83 inflight=%d)",
+          sc.ep, want[0], sc.inflight, sd.ep, want[1], sd.inflight, intr.inflight);
   core.MarkStreaming();
 
   // 事件循环:handle_events → 组装喂 core,直到 stop 请求或致命错误。
+  int tick = 0;
   while (!core.stop_requested()) {
     timeval tv{0, 50000};
-    libusb_handle_events_timeout(ctx, &tv);  // handle 所属 context(host 默认=nullptr;Android 具名)
+    Eys3dUsb().handle_events_timeout(ctx, &tv);  // handle 所属 context(host 默认=nullptr;Android 具名)
     for (int si = 0; si < 2; ++si) {
       if (!want[si]) continue;
       DrainAndAssemble(*streams[si]);
     }
+    if (++tick % 20 == 0) {  // ~1s 一次：定位卡在 transfer / 组装 / 心跳
+      EYS_LOG("tick color[done=%lld B=%lld f=%lld err=%lld eof=%lld h1=%02x] depth[done=%lld B=%lld f=%lld err=%lld eof=%lld h1=%02x] intr[done=%lld]",
+              (long long)sc.completed, (long long)sc.bytes, (long long)sc.frames, (long long)sc.hdr_err,
+              (long long)sc.hdr_eof, sc.last_hdr1, (long long)sd.completed, (long long)sd.bytes,
+              (long long)sd.frames, (long long)sd.hdr_err, (long long)sd.hdr_eof, sd.last_hdr1, (long long)intr.completed);
+    }
     if (sc.errs > 0 && sd.errs > 0) { core.MarkError("bulk errors on both streams"); break; }
   }
+  EYS_LOG("loop exit color[done=%lld B=%lld f=%lld e=%lld] depth[done=%lld B=%lld f=%lld e=%lld]",
+          (long long)sc.completed, (long long)sc.bytes, (long long)sc.frames, (long long)sc.errs,
+          (long long)sd.completed, (long long)sd.bytes, (long long)sd.frames, (long long)sd.errs);
 
-  // 收尾:取消 URB 并排空。
+  // 收尾:取消 URB（含中断心跳）并排空。
+  intr.stop = true;
+  for (auto* t : intr.urbs) if (t) Eys3dUsb().cancel_transfer(t);
   for (int si = 0; si < 2; ++si) {
     if (!want[si]) continue;
     StreamState& s = *streams[si];
     s.stop = true;
-    for (auto* t : s.urbs) if (t) libusb_cancel_transfer(t);
+    for (auto* t : s.urbs) if (t) Eys3dUsb().cancel_transfer(t);
   }
   for (int spin = 0; spin < 80; ++spin) {
-    bool busy = false;
+    bool busy = intr.inflight > 0;
     for (int si = 0; si < 2; ++si) if (want[si] && streams[si]->inflight > 0) busy = true;
     if (!busy) break;
     timeval tv{0, 20000};
-    libusb_handle_events_timeout(ctx, &tv);
+    Eys3dUsb().handle_events_timeout(ctx, &tv);
   }
+  for (auto* t : intr.urbs) if (t) Eys3dUsb().free_transfer(t);
   for (int si = 0; si < 2; ++si) {
     if (!want[si]) continue;
-    for (auto* t : streams[si]->urbs) if (t) libusb_free_transfer(t);
+    for (auto* t : streams[si]->urbs) if (t) Eys3dUsb().free_transfer(t);
   }
   if (core.state() != SessionState::kError) core.MarkStopped();
 }

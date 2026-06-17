@@ -22,6 +22,7 @@ sealed interface LaserScanState {
         val alignMethod: String,
         val measurement: VehicleMeasurement,
         val ground: GroundPlane,
+        val pointIntegrityWarning: String? = null,
     ) : LaserScanState
     data class Error(val msg: String) : LaserScanState
 }

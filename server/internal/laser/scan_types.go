@@ -72,7 +72,7 @@ type ScanResult struct {
 type ScanCallbacks struct {
 	OnPoints      func(PointFrame)
 	OnColorPoints func(ColorPointFrame)
-	OnImage       func(ImageFrame) // 采集中相机 RGB 预览帧（端侧小窗）；nil 则关闭预览
+	OnImage       func(ImageFrame)                         // 采集中相机 RGB 预览帧（端侧小窗）；nil 则关闭预览
 	OnStatus      func(state string, framesA, framesB int) // state: connecting|armed|scanning|fusing|done|error|cancelled
 
 	// ExpectedSweep*Deg 是当前设备配置的线性目标扫掠角，仅用于诊断日志；不再作为 live 终止/失败条件。

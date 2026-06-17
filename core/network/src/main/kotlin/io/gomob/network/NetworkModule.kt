@@ -32,7 +32,8 @@ object NetworkModule {
         hostSelection: HostSelectionInterceptor,
     ): OkHttpClient {
         val logging = HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BODY
+            // BODY 会把流式 PCD/媒体响应读成字符串，百万级点云下载会直接触发 OOM。
+            level = HttpLoggingInterceptor.Level.BASIC
         }
         return OkHttpClient.Builder()
             // 顺序: HostSelection 必须在最前 —— 改完 host:port 再走 Auth/Envelope/Logging

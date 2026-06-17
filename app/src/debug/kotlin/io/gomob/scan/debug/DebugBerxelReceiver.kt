@@ -23,6 +23,11 @@ class DebugBerxelReceiver : BroadcastReceiver() {
                 val stream = intent.getStringExtra(EXTRA_STREAM)?.lowercase()
                 val profileName = intent.getStringExtra(EXTRA_PROFILE)?.lowercase()
                 val profile = profileName?.let(BerxelStreamProfiles::fromName)
+                if (intent.hasExtra(EXTRA_BACKEND)) {
+                    parseBackend(intent.getStringExtra(EXTRA_BACKEND))?.let { backend ->
+                        berxel.setBackendModeForDebug(backend)
+                    }
+                }
                 if (intent.hasExtra(EXTRA_MASTER_RGB)) {
                     berxel.setNativeMasterStreamForDebug(intent.getBooleanExtra(EXTRA_MASTER_RGB, false))
                 }
@@ -35,10 +40,37 @@ class DebugBerxelReceiver : BroadcastReceiver() {
                 if (intent.hasExtra(EXTRA_MIX_STRATEGY)) {
                     berxel.setNativeMixStrategyForDebug(intent.getStringExtra(EXTRA_MIX_STRATEGY))
                 }
-                if (intent.hasExtra(EXTRA_BACKEND)) {
-                    parseBackend(intent.getStringExtra(EXTRA_BACKEND))?.let { backend ->
-                        berxel.setBackendModeForDebug(backend)
-                    }
+                if (intent.hasExtra(EXTRA_BULK_LEN)) {
+                    berxel.setNativeAsyncReadLenForDebug(intent.getIntExtra(EXTRA_BULK_LEN, 0))
+                }
+                if (intent.hasExtra(EXTRA_BULK_COUNT)) {
+                    berxel.setNativeAsyncXferCountForDebug(intent.getIntExtra(EXTRA_BULK_COUNT, 0))
+                }
+                if (intent.hasExtra(EXTRA_DEPTH_PAYLOAD)) {
+                    berxel.setNativeDepthPayloadForDebug(intent.getIntExtra(EXTRA_DEPTH_PAYLOAD, 0))
+                }
+                if (
+                    intent.hasExtra(EXTRA_DEPTH_WIDTH) ||
+                    intent.hasExtra(EXTRA_DEPTH_HEIGHT) ||
+                    intent.hasExtra(EXTRA_DEPTH_INDEX)
+                ) {
+                    berxel.setNativeDepthProfileForDebug(
+                        width = if (intent.hasExtra(EXTRA_DEPTH_WIDTH)) {
+                            intent.getIntExtra(EXTRA_DEPTH_WIDTH, 0)
+                        } else {
+                            null
+                        },
+                        height = if (intent.hasExtra(EXTRA_DEPTH_HEIGHT)) {
+                            intent.getIntExtra(EXTRA_DEPTH_HEIGHT, 0)
+                        } else {
+                            null
+                        },
+                        frameIndex = if (intent.hasExtra(EXTRA_DEPTH_INDEX)) {
+                            intent.getIntExtra(EXTRA_DEPTH_INDEX, 0)
+                        } else {
+                            null
+                        },
+                    )
                 }
                 if (profile != null) berxel.setStreamProfile(profile)
                 Log.i(TAG, "debug 广播启动 Berxel stream=${stream ?: "dual"} profile=${profileName ?: "default"}")
@@ -91,6 +123,12 @@ class DebugBerxelReceiver : BroadcastReceiver() {
         const val EXTRA_KA_MS = "ka_ms"
         const val EXTRA_DEPTH_FPS = "dfps"
         const val EXTRA_MIX_STRATEGY = "mix_strategy"
+        const val EXTRA_BULK_LEN = "bulk_len"
+        const val EXTRA_BULK_COUNT = "bulk_count"
+        const val EXTRA_DEPTH_PAYLOAD = "depth_payload"
+        const val EXTRA_DEPTH_WIDTH = "depth_w"
+        const val EXTRA_DEPTH_HEIGHT = "depth_h"
+        const val EXTRA_DEPTH_INDEX = "depth_idx"
         const val EXTRA_BACKEND = "backend"
         const val EXTRA_DUMP_FRAMES = "dump"
     }

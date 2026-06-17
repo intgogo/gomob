@@ -1,6 +1,7 @@
 package io.gomob.model
 
 import java.nio.ByteBuffer
+import kotlin.math.abs
 
 /**
  * iHawk 单设备的彩色帧。
@@ -50,16 +51,17 @@ data class DepthFrame(
 /**
  * iHawk 单设备的 Color + Depth 同步帧对（VIN 拓印用）。
  *
- * **不变量**：`color.timestampUs == depth.timestampUs`（来自同一物理设备同一帧序）。
- * 取得方式：BerxelService 在 reader 线程把同 frameIndex 的 color/depth 配对再 emit。
+ * `timestampDeltaUs == 0` 表示 SDK/MIX 硬同步帧；Native UVC 双流路径可发最近邻软同步帧，
+ * 此时保留 color/depth 原始时间戳，并把时间差写入 [timestampDeltaUs] 供下游按阈值取舍。
  */
 data class RgbdFramePair(
     val color: ColorFrame,
     val depth: DepthFrame,
+    val timestampDeltaUs: Long = abs(color.timestampUs - depth.timestampUs),
 ) {
     init {
-        require(color.timestampUs == depth.timestampUs) {
-            "color/depth 时间戳不一致：${color.timestampUs} vs ${depth.timestampUs}"
+        require(timestampDeltaUs == abs(color.timestampUs - depth.timestampUs)) {
+            "color/depth 时间差字段不一致：$timestampDeltaUs vs ${abs(color.timestampUs - depth.timestampUs)}"
         }
     }
 }

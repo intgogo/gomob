@@ -78,3 +78,6 @@ __pycache__/
 
 # 服务端 native C++ cmake 构建产物（liblidar_*.a / *.o / 可执行）
 server/native/**/build/
+
+# 第三方 libuvc 上游源码克隆(含自身 .git，仅用于本地重编 .so；产物 .so 已 track)
+third_party/libuvc-android/src/

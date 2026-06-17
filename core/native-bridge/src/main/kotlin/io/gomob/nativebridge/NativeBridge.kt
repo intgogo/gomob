@@ -388,6 +388,19 @@ object NativeBridge {
      */
     external fun cameraOpenByFds(vid: Int, pid: Int, fds: IntArray, configJson: ByteArray): Long
 
+    /**
+     * ★★★ Java ApcCamera 路径绑定（2026-06-15 主路）：dlopen libUVCCamera.so（RTLD_LOCAL）+ 手调其 JNI_OnLoad，
+     * 让 vendor 把 `com.esp.android.usb.camera.core.{UVCCamera,ApcCamera}` 的全部 native 方法 RegisterNatives 到
+     * gomob 复制进来的同名 Java 类上，并 setVM（回调线程用）。**必须在 `new ApcCamera()` 之前调一次**
+     * （nativeCreate 是字段初始化，须先绑定）。幂等，返回 JNI 版本号（>0 成功）/ 0 失败。
+     * ★ 不走 System.loadLibrary（避免 libusb100 符号遮蔽 gomob libusb-1.0，见 finding 续35）。
+     */
+    external fun bindEys3dVendorJni(): Int
+
+    /** 对 usbfs fd 做一次 USB 端口 reset（清 eYs3D 流引擎残留）。reset 致重枚举 → 本 fd 失效，
+     *  调用方须 close 旧 connection 后重新 openDevice 取新 fd 再开流。成功返 true。 */
+    external fun cameraResetByFd(fd: Int): Boolean
+
     /** 停止 + 释放会话（句柄 = ICameraSession*，cameraStop 是唯一释放点）。 */
     external fun cameraStop(handle: Long)
 

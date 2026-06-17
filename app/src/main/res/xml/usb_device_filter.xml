@@ -24,4 +24,10 @@
         走自研 libusb 取流(零厂商 SDK)。M6.8b 双相机自动识别。
     -->
     <usb-device vendor-id="13368" product-id="518" />
+    <!--
+        HLSD8 RGB 相机：vendor-id 3141(0x0C45, Sonix) product-id 25446(0x6366)，manufacturer "Image+"。
+        与 eYs3D 深度模组【物理独立的第二颗 USB 相机】，13MP 真彩(约 4160 宽 MJPEG)，正射图高分辨率来源。
+        标准 UVC，首次插入即自动授权，走自研 libuvc 取流(color-only)。
+    -->
+    <usb-device vendor-id="3141" product-id="25446" />
 </resources>

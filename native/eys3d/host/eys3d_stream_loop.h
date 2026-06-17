@@ -35,6 +35,10 @@ struct Eys3dOpenPlan {
   ArmConfig arm;
   Eys3dStreamPlan color;
   Eys3dStreamPlan depth;
+  // ★ Android：arming 控制序列已由 Java UsbDeviceConnection.controlTransfer 在 native 接手前做完
+  //   （libusb 异步 URB 控制路径对 counter GET 等 STALL，Java 同步 ioctl 不会）。置 true 时 native
+  //   跳过 kProvenArming 复刻，直接进 bulk 提交 + COMMIT IF2/触发/CLEAR_HALT + 事件循环。
+  bool external_arming = false;
 };
 
 // proven 但【错配置】计划(videoMode=0x02=14bit + 1280×480 YUYV color + depth 1228800B)。

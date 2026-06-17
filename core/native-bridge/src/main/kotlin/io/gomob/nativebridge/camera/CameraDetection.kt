@@ -12,14 +12,30 @@ import android.hardware.usb.UsbManager
  */
 object CameraDetection {
 
-    /** 当前连接的受支持相机型号（第一个命中）；无受支持设备 → [CameraModel.Unknown]。 */
+    /**
+     * 当前连接的**深度主相机**型号（第一个命中的深度源）；无 → [CameraModel.Unknown]。
+     * ★ 只认深度源（Berxel/eYs3D），跳过 HLSD8 RGB：HLSD8 与深度模组同时插着时不能把它误判成主相机。
+     * 辅助 RGB 相机用 [detectAuxRgb] 单独检测，二者可并存（RGBD 双相机机型）。
+     */
     fun detect(usbManager: UsbManager): CameraModel {
-        for (d in usbManager.deviceList.values) {
-            val m = CameraModel.fromUsbIds(d.vendorId, d.productId)
-            if (m.isSupported) return m
-        }
-        return CameraModel.Unknown(0, 0)
+        val depthModels = usbManager.deviceList.values
+            .map { CameraModel.fromUsbIds(it.vendorId, it.productId) }
+            .filter { it.isSupported && it.isDepthSource }
+        // ★ eYs3D(RS-D550)是当前重建主线深度相机:Berxel 与 eYs3D 同时插着时优先 eYs3D。
+        //   只插 Berxel 时仍返 Berxel(行为不变);只插 eYs3D 时返 eYs3D。
+        return depthModels.firstOrNull { it is CameraModel.Eys3d }
+            ?: depthModels.firstOrNull()
+            ?: CameraModel.Unknown(0, 0)
     }
+
+    /**
+     * 当前连接的**辅助 RGB 相机**（HLSD8）；无 → null。
+     * 与 [detect] 的深度主相机相互独立：RGBD 机型上两颗 USB 相机并存，各自取流再做正射图配准。
+     */
+    fun detectAuxRgb(usbManager: UsbManager): CameraModel? =
+        usbManager.deviceList.values
+            .map { CameraModel.fromUsbIds(it.vendorId, it.productId) }
+            .firstOrNull { it.isSupported && !it.isDepthSource }
 
     /** 所有受支持相机 USB 节点（供权限请求/fd 获取白名单）。 */
     fun supportedDevices(usbManager: UsbManager): List<UsbDevice> =

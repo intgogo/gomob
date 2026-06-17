@@ -45,6 +45,10 @@
 - [**JCHY 测量/建模层逆向 2026-06-04**](finding_jchy_measurement_layer_re_2026-06-04.md) — 漏掉的「应用软件」逆向(JCHY_simple_3.0.0,带完整 PDB):采集层之上的测量/建模。26 车型+carType 表已解密+8 阶段管线(PCL 聚类+OBB+局部 PointSIFT)+测量字典(LWH/轴距/罐体三段/栏板/护栏/容积)。gomob 全缺此层。完整架构 docs/architecture/16。
 - [**激光缩扫描角隔离不了目标→唯一解 3D 框裁剪 2026-06-05**](finding_laser_scan_angle_cannot_depth_isolate_2026-06-05.md) — 真机 scan24 实测:设备只有 pan+俯仰角度闸门、无深度闸门，限到目标立体角后背景仍留 99.3%(藏同一视线)。"圈范围→反算扫描角"物理做不到；唯一能按深度隔离的是 3D 框软件裁剪(M9.11 持久车位框,世界系定向,不依赖自动地面)。自动地面 RANSAC 又拟到天花=不可靠。
 - [**激光车位框按镜头独立框 + 第一视角漫游标注 M10 2026-06-05**](finding_laser_roam_percamera_cropbox_2026-06-05.md) — A/B/融合三窗统一轨道查看;每相机背景不同需按镜头独立存框,双框各自去背景再并集测量(纯 Go 不动 C++);第一视角漫游走一圈→拟合最小面积外接矩形 OBB 标注。坑:漫游路径坐标系须与顶视投影同源、yaw 约定三处一致;真机流畅度待复核。
+- [**几何车辆部件测量:轴距/前后悬+货箱 2026-06-17**](finding_vehicle_axle_ground_contact_2026-06-17.md) — 轴距=贴地接触带密度峰(轮唯一触地);货箱=顶高最长近顶段+rim取外长宽+恒宽z段定bed算箱深(无 DL)。陷阱:须跑 largestCluster 之前的点否则悬挂轮漏检。axle.go/cargobox.go+harness 对 100742+合成验;货箱无真值靠合成闭环。
+- [**激光 A 站(.101)相机纹理补齐 2026-06-15**](finding_laser_a_station_texture_2026-06-15.md) — 原只投影 .102(B)、A 硬涂中性灰;补 .101 采图+calib_101 投影+unit_a 带色。标定 `lidar_cli device calib` 从设备拉,两站名义安装同→config 共用、差异全在 calib JSON。
+- [**现场共享标记场自标定 A↔B site 外参 2026-06-15**](finding_laser_site_marker_calib_2026-06-15.md) — 贴 ArUco(36h11),solvePnP+cameraToWorld+umeyama 解 B→A(align=site)。一键 site-calib + 实时取景 site-framing(边扫边推 RGB 帧)。★相机仅转动出帧 0.33fps。★OpenCV 锁 4.6。
+- [**激光双机标定改 4 角点 6DoF 2026-06-17**](finding_laser_site_marker_corner_pose_2026-06-17.md) — 仅中心点 umeyama 在 ≤4/共面标记下偏 ~20°(真机融合错位 480mm,从 MinIO 拉云数值证)。改每标记 4 角点带 solvePnP 朝向→单标记即约束 6DoF,2 共面标记复原到机器精度;min_common 4→2。融合/翻转 plumbing 经验证无误。改 lidar_cli 即生效。
 - [模拟器在本机的稳定配置 2026-05-08](finding_emulator_setup_2026-05-04.md) — emulator 36.x 必须 `DISPLAY=:1 -gpu host`，并禁 netsim/虚拟 WiFi。
 - [Android 实时 WS 与 devserver 注意点](finding_android_realtime_ws_devserver_2026-05-09.md) — App WS 用 http scheme；devserver 包装器需透传 Hijacker。
 - [**本地 dev 全栈启动配方 2026-06-04**](finding_dev_stack_local_startup_2026-06-04.md) — devserver(:18808) 手动起易挂→App 全链 unexpected end of stream；附一键 build+env 拉起、dev seed shenhm/shenhm123、症状诊断。
@@ -54,6 +58,7 @@
 - [**VINCreator(eYs3D)逆向=M1.6 UVC 蓝本+双流死旁证 2026-06-01**](finding_vincreator_eys3d_uvc_blueprint_2026-06-01.md) — eYs3D/Etron(非 Berxel)蓝本：老 libusb backend 仍跑双流→旁证 P100R3 双流死真因是 OTG 供电非老栈；fd 注入/权限印证 gomob 修后版对；深度走设备直出路线 A，不移植 eYs3D 软重建。
 - [**eYs3D RS-D550 Android 接入 + mode25 config 对齐 gold（续30）2026-06-09→06-10**](finding_eys3d_android_bringup_0bytes_2026-06-09.md) — **续33 真因**：「只开 IF2 深度」是错前提，缺 IF1 彩色持续排空保活(设备只在 libuvc 真流 IF1 才出 IF2 深度)；修法=libuvc 双流，待真机验证。
 - [**HLSD8=独立第二颗 RGB 相机；gomob 双相机接入+正射图几何 2026-06-10**](finding_hlsd8_rgb_second_camera_2026-06-10.md) — 实证扫描机=两颗独立 USB 相机：RS-D550 深度+HLSD8 13MP RGB；订正——4160×832 是 HLSD8(标准 UVC)非 eYs3D color。本轮补齐双相机+正射图几何，剩真机出流/双相机标定。
+- [**eYs3D native 直驱厂商 C++ 零 Java 出真深度 2026-06-17**](finding_eys3d_zero_vendor_independence_2026-06-15.md) — 弃自研(-EPROTO 未破)，改 native 直调 UVCCamera/UVCPreview/FrameGrabber 取 mode25 真深度(仅留 UsbManager 拿 fd)；真机双流+热力图渲染、valid 50-78%；踩坑/ABI 纪律见正文。
 - [**RS-D550 真实开流序列已解码+RHEL9 能出流 2026-06-01**](finding_rsd550_open_sequence_decoded_2026-06-01.md) — 推翻"RHEL9 不兼容"——eSPDI 与自研 libusb 均已 RGBD 双流首光(零运行时 SDK)。激活靠 XU 写+计数器握手(旧 0xE0/0xE3 作废)。深度"列恒定垃圾"真因=模式配错非设备坏;M6.4 推荐 IF1 软件 stereo。
 - [Berxel P100R3 自研 SDK 交接 2026-05-29](handoff_berxel_host_sdk_2026-05-29.md) — host parity 已过；2026-05-29 完成 Android 迁移 Step 1：抽 `native/berxel/portable/` libusb-free 层 + `IUvcDevice` 接口 + 修 2 个 host bug，三验证全绿。下一步 JNI 接 `gomob_native.so`。
 - [**P100R3 companion 交织真深度+IR/phase 帧 2026-05-29**](finding_p100r3_depth_ir_interleaved_2026-05-29.md) — 订正"只推 IR raw"：0x82 交织真深度(raw/8=mm)+IR，按 pixel[0]==0x0600 分流取深度；6MB blob=温补表非散斑、重建在设备 ASIC→放弃自研结构光(路线 A)；IR 仅作单帧置信。

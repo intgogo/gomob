@@ -93,8 +93,8 @@ func TestMeasure_VendorGroundTruth(t *testing.T) {
 		// 允许覆盖会话目录
 	}
 	cases := []struct {
-		file          string
-		eL, eW, eH    float32
+		file       string
+		eL, eW, eH float32
 	}{
 		{"1.pcd", 1777, 533, 759},
 		{"2.pcd", 1775, 534, 761},

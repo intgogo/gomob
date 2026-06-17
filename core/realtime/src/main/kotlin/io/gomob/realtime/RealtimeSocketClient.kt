@@ -6,6 +6,7 @@ import io.gomob.network.TokenProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,6 +32,8 @@ class RealtimeSocketClient @Inject constructor(
 ) {
     private companion object {
         const val TAG = "RealtimeSocketClient"
+        const val INBOUND_TEXT_BUFFER = 512
+        const val EVENT_BUFFER = 512
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -41,8 +44,18 @@ class RealtimeSocketClient @Inject constructor(
     private val mutableState = MutableStateFlow(RealtimeConnectionState.Disconnected)
     val state: StateFlow<RealtimeConnectionState> = mutableState
 
-    private val mutableEvents = MutableSharedFlow<RealtimeEvent>(extraBufferCapacity = 64)
+    private val inboundTexts = Channel<String>(capacity = INBOUND_TEXT_BUFFER)
+
+    private val mutableEvents = MutableSharedFlow<RealtimeEvent>(extraBufferCapacity = EVENT_BUFFER)
     val events: SharedFlow<RealtimeEvent> = mutableEvents
+
+    init {
+        scope.launch {
+            for (text in inboundTexts) {
+                mutableEvents.emit(parseEvent(text))
+            }
+        }
+    }
 
     fun connect() {
         reconnect = true
@@ -104,17 +117,9 @@ class RealtimeSocketClient @Inject constructor(
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
-            val event = runCatching { parser.toEvent(parser.parse(text)) }
-                .getOrElse {
-                    Log.w(TAG, "实时帧解析失败: ${it.message}")
-                    RealtimeEvent.Unknown(
-                        RealtimeEnvelope(
-                            type = "parse_error",
-                            message = it.message,
-                        ),
-                    )
-                }
-            mutableEvents.tryEmit(event)
+            if (!inboundTexts.trySend(text).isSuccess) {
+                Log.w(TAG, "实时帧接收队列已满，丢弃一帧")
+            }
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -131,4 +136,16 @@ class RealtimeSocketClient @Inject constructor(
             scheduleReconnect()
         }
     }
+
+    private fun parseEvent(text: String): RealtimeEvent =
+        runCatching { parser.toEvent(parser.parse(text)) }
+            .getOrElse {
+                Log.w(TAG, "实时帧解析失败: ${it.message}")
+                RealtimeEvent.Unknown(
+                    RealtimeEnvelope(
+                        type = "parse_error",
+                        message = it.message,
+                    ),
+                )
+            }
 }
