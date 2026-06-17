@@ -116,6 +116,13 @@ type FusionDoneEvent struct {
 	RearOverhangMM   float32   `json:"rear_overhang_mm,omitempty"`
 	AxleValid        bool      `json:"axle_valid"`
 
+	// 货箱（M9.4b，几何分割+外尺寸；docs/16 §3⑥ calutePickingBox/getCarBoardDeep 等价）。
+	HasCargoBox      bool    `json:"has_cargo_box"`
+	BoxOuterLengthMM float32 `json:"box_outer_length_mm,omitempty"`
+	BoxOuterWidthMM  float32 `json:"box_outer_width_mm,omitempty"`
+	BoxDepthMM       float32 `json:"box_depth_mm,omitempty"`
+	BoxInnerWidthMM  float32 `json:"box_inner_width_mm,omitempty"`
+
 	// 地面平面（端侧视角预设的"上"方向基准；nx*x+ny*y+nz*z+d=0，法向指向点云主体侧）。
 	GroundNX    float32 `json:"ground_nx,omitempty"`
 	GroundNY    float32 `json:"ground_ny,omitempty"`
@@ -605,6 +612,7 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 	var ground GroundPlane
 	var dims Dimensions
 	var axle AxleResult
+	var cargo CargoBox
 	var compl Compliance
 	measMode := "unfused"
 	carOffset := CarTypeOffset(spec.VehicleTypeID)
@@ -657,8 +665,8 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 		}
 		// 车型 carType 偏移：选定车型把该型 (x,y,z) 偏移叠到测量区域（设备 ROI/裁剪框路径生效；地面路径暂不接）。
 		mp.CarOffset = carOffset
-		// MeasureFull 一遍出外廓 LWH + 轴距/前后悬（同一车体点、同一 OBB 帧；docs/16 §3⑥）。
-		dims, axle = MeasureFull(measCloud, mp, DefaultAxleParams())
+		// MeasureFull 一遍出外廓 LWH + 轴距/前后悬 + 货箱（同一车体点、同一 OBB 帧；docs/16 §3⑥）。
+		dims, axle, cargo = MeasureFull(measCloud, mp, DefaultAxleParams())
 		// 合规按车型套限值（当前逐型限值未录入，LimitsForVehicleType 回退通用值，见其 TODO）。
 		compl = CheckCompliance(dims, LimitsForVehicleType(spec.VehicleTypeID))
 		if !dims.Valid {
@@ -667,6 +675,10 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 		if axle.Valid {
 			r.Log.Info("轴距测量", "job", spec.JobID, "axles", axle.NumAxles,
 				"wheelbases", axle.WheelbasesMM, "front_over", axle.FrontOverhangMM, "rear_over", axle.RearOverhangMM)
+		}
+		if cargo.Valid && cargo.HasBox {
+			r.Log.Info("货箱测量", "job", spec.JobID, "outer_len", cargo.OuterLengthMM,
+				"outer_w", cargo.OuterWidthMM, "depth", cargo.DepthMM)
 		}
 	}
 
@@ -693,6 +705,7 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 			"keep_ratio":      spec.KeepRatio,
 			"measure":         dims,
 			"axle":            axle,
+			"cargo_box":       cargo,
 			"measure_mode":    measMode,
 			"vehicle_type_id": spec.VehicleTypeID,
 			"car_offset":      carOffset,
@@ -710,12 +723,12 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 	publishRes.PtsB = gotB
 	publishRes.Fused = gotFus
 	publishRes.AfterCrop = gotFus
-	r.publishDone(ctx, spec, job, publishRes, fusedKey, aKey, bKey, dims, axle, compl, ground)
+	r.publishDone(ctx, spec, job, publishRes, fusedKey, aKey, bKey, dims, axle, cargo, compl, ground)
 	return job, nil
 }
 
 func (r *Runner) publishDone(ctx context.Context, spec RunSpec, job *repo.LaserScanJob,
-	res ScanResult, fusedKey, aKey, bKey string, dims Dimensions, axle AxleResult, compl Compliance, ground GroundPlane) {
+	res ScanResult, fusedKey, aKey, bKey string, dims Dimensions, axle AxleResult, cargo CargoBox, compl Compliance, ground GroundPlane) {
 	if r.Publisher == nil {
 		return
 	}
@@ -744,6 +757,11 @@ func (r *Runner) publishDone(ctx context.Context, spec RunSpec, job *repo.LaserS
 		FrontOverhangMM:  axle.FrontOverhangMM,
 		RearOverhangMM:   axle.RearOverhangMM,
 		AxleValid:        axle.Valid,
+		HasCargoBox:      cargo.Valid && cargo.HasBox,
+		BoxOuterLengthMM: cargo.OuterLengthMM,
+		BoxOuterWidthMM:  cargo.OuterWidthMM,
+		BoxDepthMM:       cargo.DepthMM,
+		BoxInnerWidthMM:  cargo.InnerWidthMM,
 		GroundNX:         ground.NX,
 		GroundNY:         ground.NY,
 		GroundNZ:         ground.NZ,

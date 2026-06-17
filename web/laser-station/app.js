@@ -726,6 +726,10 @@ function renderMeasure() {
     rows.push(["总轴距", mm(p.total_wheelbase_mm)]);
     rows.push(["前悬/后悬", `${Math.round(p.front_overhang_mm)} / ${Math.round(p.rear_overhang_mm)} mm`]);
   }
+  if (p.has_cargo_box) {
+    rows.push(["货箱长×宽", `${Math.round(p.box_outer_length_mm)} × ${Math.round(p.box_outer_width_mm)} mm`]);
+    rows.push(["货箱深", mm(p.box_depth_mm)]);
+  }
   els.measureBody.innerHTML = rows
     .map(([k, v]) => `<span>${escapeHtml(k)}</span><strong>${escapeHtml(v)}</strong>`)
     .join("");

@@ -1007,6 +1007,7 @@ func flattenMeasureFromStats(stats json.RawMessage, v map[string]any) {
 	var s struct {
 		Measure    *Dimensions `json:"measure"`
 		Axle       *AxleResult `json:"axle"`
+		CargoBox   *CargoBox   `json:"cargo_box"`
 		Compliance *Compliance `json:"compliance"`
 	}
 	if err := json.Unmarshal(stats, &s); err != nil {
@@ -1031,6 +1032,13 @@ func flattenMeasureFromStats(stats json.RawMessage, v map[string]any) {
 		v["total_wheelbase_mm"] = s.Axle.TotalWheelbaseMM
 		v["front_overhang_mm"] = s.Axle.FrontOverhangMM
 		v["rear_overhang_mm"] = s.Axle.RearOverhangMM
+	}
+	if s.CargoBox != nil && s.CargoBox.Valid && s.CargoBox.HasBox {
+		v["has_cargo_box"] = true
+		v["box_outer_length_mm"] = s.CargoBox.OuterLengthMM
+		v["box_outer_width_mm"] = s.CargoBox.OuterWidthMM
+		v["box_depth_mm"] = s.CargoBox.DepthMM
+		v["box_inner_width_mm"] = s.CargoBox.InnerWidthMM
 	}
 }
 

@@ -99,14 +99,14 @@ func Measure(xyzMM []float32, p MeasureParams) Dimensions {
 	return d
 }
 
-// MeasureFull 跑测量管线，同时返回外廓 LWH 与 轴距/前后悬（同一车体点、同一 OBB 帧，不重复裁剪）。
-// 测量无效时 AxleResult.Valid=false。轴心检测见 axle.go（几何贴地接触带）。
-func MeasureFull(xyzMM []float32, p MeasureParams, ap AxleParams) (Dimensions, AxleResult) {
+// MeasureFull 跑测量管线，同时返回外廓 LWH + 轴距/前后悬 + 货箱（同一车体点、同一 OBB 帧，不重复裁剪）。
+// 测量无效时 AxleResult/CargoBox.Valid=false。轴心检测见 axle.go，货箱见 cargobox.go（均几何 PCL-free）。
+func MeasureFull(xyzMM []float32, p MeasureParams, ap AxleParams) (Dimensions, AxleResult, CargoBox) {
 	body, d := measureBody(xyzMM, p)
 	if !d.Valid {
-		return d, AxleResult{}
+		return d, AxleResult{}, CargoBox{}
 	}
-	return d, DetectAxles(body, d.OBBAngleDeg, ap)
+	return d, DetectAxles(body, d.OBBAngleDeg, ap), DetectCargoBox(body, d.OBBAngleDeg, DefaultCargoBoxParams())
 }
 
 // measureBody 跑裁剪→主簇→ROR→OBB+车高，返回车体点（OBB 所在帧，z=上）与外廓维度。

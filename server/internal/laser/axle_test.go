@@ -15,7 +15,7 @@ func TestAxle_VendorGroundTruth(t *testing.T) {
 	b := loadVendorPCD(t, vendorSession+"/2.pcd")
 	fused := append(append([]float32{}, a...), b...)
 
-	_, ax := MeasureFull(fused, DefaultMeasureParams(), DefaultAxleParams())
+	_, ax, _ := MeasureFull(fused, DefaultMeasureParams(), DefaultAxleParams())
 	if !ax.Valid {
 		t.Fatal("轴心检测无效")
 	}
@@ -50,7 +50,7 @@ func TestAxle_SyntheticAxles(t *testing.T) {
 	p := DefaultMeasureParams()
 	p.UseROI = false
 	p.UseROR = false // 合成壳是稀疏面，ROR 会误删；轴心检测本就走 ROR 前的簇
-	_, ax := MeasureFull(body, p, DefaultAxleParams())
+	_, ax, _ := MeasureFull(body, p, DefaultAxleParams())
 	if !ax.Valid || ax.NumAxles != 4 {
 		t.Fatalf("合成车轴检测失败 valid=%v n=%d", ax.Valid, ax.NumAxles)
 	}
