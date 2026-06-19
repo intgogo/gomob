@@ -42,20 +42,16 @@ import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.gomob.data.scan.VinResult
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
-
-// 占位 VIN（拓印纸面/字符比对/汇总 三块的演示值）。
-// ★ TODO(逐项接真)：用户将逐个指定这些块怎么接真实数据（拍照→native 正射拓印 M4 + 服务端 vin_pipeline OCR/字形比对）。
-//   当前先按原设计还原版式；顶部彩色/深度两个横条已接真实相机帧（见 VinColorPane/VinDepthPane）。
-private const val VinValue = "LFV2A21K9P5012345"
 
 /**
  * VIN 数码拓印（按原设计还原多面板版式）。
  *
  * 顶部两个横条 = 真实相机帧：彩色图（[VinCaptureViewModel.colorPreview]）+ 深度图（[VinCaptureViewModel.depthPreview]）。
- * 拓印纸面 / 单字符比对 / 汇总结论 = 原设计版式（演示数据，待逐项接真）。底部拍照栏。
+ * 拓印纸面 = 服务端原厂全保真还原签名（拍照→上传→还原回显）；单字符比对 / 汇总结论 = 真实 vin_pipeline OCR（点「确认」识别）。
  */
 @Composable
 fun ScanCaptureRoute(
@@ -67,6 +63,7 @@ fun ScanCaptureRoute(
     val rubbing by vm.rubbing.collectAsStateWithLifecycle()
     val capturing by vm.capturing.collectAsStateWithLifecycle()
     val captureMsg by vm.captureMsg.collectAsStateWithLifecycle()
+    val vinState by vm.state.collectAsStateWithLifecycle()
 
     Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
         BackHeader(title = "VIN 数码拓印", eyebrow = "三维扫描", onBack = onBack)
@@ -77,10 +74,17 @@ fun ScanCaptureRoute(
             ) {
                 item { VinDepthPane(depthBmp = depthBmp) }
                 item { VinColorPane(colorBmp = colorBmp) }
-                item { VinRubbing(rubbing = rubbing, captureMsg = captureMsg, processing = capturing) }
+                item { VinRubbing(rubbing = rubbing, captureMsg = captureMsg, processing = capturing, vinState = vinState) }
                 item { Spacer(Modifier.height(8.dp)) }
             }
-            VinCaptureBar(capturing = capturing, onShutter = vm::capture, onRetake = vm::retake)
+            VinCaptureBar(
+                capturing = capturing,
+                recognizing = vinState is VinCaptureState.Recognizing,
+                canConfirm = rubbing != null,
+                onShutter = vm::capture,
+                onRetake = vm::retake,
+                onConfirm = vm::recognize,
+            )
         }
     }
 }
@@ -185,7 +189,7 @@ private fun VinOcrFrame() {
 
 // ─── 数码拓印块：拍照 → native 正射 → 还原图显示 + 字符比对/汇总（后两块仍演示数据，待逐项接真）───
 @Composable
-private fun VinRubbing(rubbing: Bitmap?, captureMsg: String?, processing: Boolean) {
+private fun VinRubbing(rubbing: Bitmap?, captureMsg: String?, processing: Boolean, vinState: VinCaptureState) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -234,10 +238,10 @@ private fun VinRubbing(rubbing: Bitmap?, captureMsg: String?, processing: Boolea
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
             )
         }
-        // TODO(接真·OCR): VinCharCompare 改为服务端 vin_pipeline 逐字符比对结果。
-        VinCharCompare(vin = VinValue)
-        // TODO(接真·OCR): VinSummary 改为真实 verdict / 厂商库比对汇总。
-        VinSummary(vin = VinValue)
+        // 真实 vin_pipeline OCR：点「确认」后出逐字符相似度 + verdict 汇总（待识别/识别中/结果/错误四态）。
+        val result = (vinState as? VinCaptureState.Result)?.result
+        VinCharCompare(result = result, recognizing = vinState is VinCaptureState.Recognizing)
+        VinSummary(result = result, vinState = vinState)
     }
 }
 
@@ -278,10 +282,11 @@ private fun RubbingPaper(rubbing: Bitmap?) {
     }
 }
 
+// vin_pipeline 相似度可能是 0..1 或 0..100，归一到 0..100 百分比显示（≤1 视为 0..1）。
+private fun simToPct(v: Double): Float = (if (v <= 1.0) v * 100.0 else v).toFloat()
+
 @Composable
-private fun VinCharCompare(vin: String) {
-    val sims = listOf(99.4f, 98.7f, 97.2f, 96.5f, 99.1f, 98.0f, 95.4f, 97.8f, 92.1f, 98.3f, 96.7f, 91.8f, 88.3f, 94.6f, 97.5f, 96.2f, 98.9f)
-    val ocr = listOf("L", "F", "V", "2", "A", "2", "1", "K", "9", "P", "5", "0", "1", "2", "3", "4", "5")
+private fun VinCharCompare(result: VinResult?, recognizing: Boolean) {
     Column(Modifier.padding(horizontal = 8.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
             Modifier.fillMaxWidth(),
@@ -289,19 +294,32 @@ private fun VinCharCompare(vin: String) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text("单字符切割 · 字形比对 · OCR", style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.14.em), color = Gomob.colors.fg3)
-            Text("第 9 位校验", style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.06.em), color = Gomob.colors.ok)
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            vin.forEachIndexed { index, ch ->
-                VinCharCell(
-                    modifier = Modifier.weight(1f),
-                    ch = ch.toString(),
-                    ocr = ocr[index],
-                    sim = sims[index],
-                    index = index,
-                    isCheck = index == 8,
-                )
+            val (tagColor, tag) = when {
+                recognizing -> Gomob.colors.accent to "识别中…"
+                result != null -> Gomob.colors.ok to "检出 ${result.detections} · 比对 ${result.scored}"
+                else -> Gomob.colors.fg3 to "待识别"
             }
+            Text(tag, style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.06.em), color = tagColor)
+        }
+        if (result != null && result.characters.isNotEmpty()) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                result.characters.forEach { c ->
+                    VinCharCell(
+                        modifier = Modifier.weight(1f),
+                        ch = c.character,
+                        simPct = simToPct(c.similarity),
+                        index = c.index,
+                    )
+                }
+            }
+        } else {
+            Text(
+                if (recognizing) "正在识别还原签名…" else "拍照生成还原图后，点下方「确认」识别",
+                modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                textAlign = TextAlign.Center,
+                style = Gomob.type.numInline.copy(fontSize = 10.sp, letterSpacing = 0.04.em),
+                color = Gomob.colors.fg3,
+            )
         }
     }
 }
@@ -310,78 +328,48 @@ private fun VinCharCompare(vin: String) {
 private fun VinCharCell(
     modifier: Modifier,
     ch: String,
-    ocr: String,
-    sim: Float,
+    simPct: Float,
     index: Int,
-    isCheck: Boolean,
 ) {
-    val ok = sim >= 95f
-    val warn = sim >= 90f && sim < 95f
     val tone = when {
-        ok -> Gomob.colors.ok
-        warn -> Gomob.colors.warn
+        simPct >= 95f -> Gomob.colors.ok
+        simPct >= 90f -> Gomob.colors.warn
         else -> Gomob.colors.danger
     }
     Column(
         modifier = modifier
             .clip(Gomob.shapes.r1)
             .background(Gomob.colors.bg2)
-            .border(BorderStroke(1.dp, if (isCheck) Gomob.colors.okLine else Gomob.colors.line1), Gomob.shapes.r1),
+            .border(BorderStroke(1.dp, Gomob.colors.line1), Gomob.shapes.r1),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
             (index + 1).toString().padStart(2, '0'),
             modifier = Modifier
                 .fillMaxWidth()
-                .background(if (isCheck) Gomob.colors.okSoft else Gomob.colors.bg1)
+                .background(Gomob.colors.bg1)
                 .padding(vertical = 2.dp),
             textAlign = TextAlign.Center,
             style = Gomob.type.numInline.copy(fontSize = 7.sp),
-            color = if (isCheck) Gomob.colors.ok else Gomob.colors.fg3,
+            color = Gomob.colors.fg3,
         )
+        // OCR 识别字符（vin_pipeline 真返字符；缺字符显「·」）。
         Text(
-            ch,
+            ch.ifEmpty { "·" },
             modifier = Modifier
                 .fillMaxWidth()
-                .height(24.dp)
+                .height(28.dp)
                 .background(Color(0xFFE2D3A9))
-                .padding(top = 2.dp),
+                .padding(top = 4.dp),
             textAlign = TextAlign.Center,
             fontFamily = FontFamily.Monospace,
             fontWeight = FontWeight.Bold,
-            fontSize = 13.sp,
+            fontSize = 15.sp,
             color = Color(0xFF2E2417),
             maxLines = 1,
         )
         Text(
-            ch,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(24.dp)
-                .padding(top = 2.dp),
-            textAlign = TextAlign.Center,
-            fontFamily = FontFamily.Monospace,
-            fontWeight = FontWeight.Bold,
-            fontSize = 13.sp,
-            color = Gomob.colors.fg1,
-            maxLines = 1,
-        )
-        Text(
-            ocr,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(20.dp)
-                .background(if (ocr == ch) Gomob.colors.accentSoft else Gomob.colors.dangerSoft)
-                .padding(top = 1.dp),
-            textAlign = TextAlign.Center,
-            fontFamily = FontFamily.Monospace,
-            fontWeight = FontWeight.Bold,
-            fontSize = 12.sp,
-            color = if (ocr == ch) Gomob.colors.accent else Gomob.colors.danger,
-            maxLines = 1,
-        )
-        Text(
-            String.format(java.util.Locale.US, "%.1f", sim),
+            String.format(java.util.Locale.US, "%.0f", simPct),
             modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
             textAlign = TextAlign.Center,
             style = Gomob.type.numInline.copy(fontSize = 8.sp),
@@ -389,19 +377,26 @@ private fun VinCharCell(
             maxLines = 1,
         )
         Box(Modifier.fillMaxWidth().height(2.dp).background(Gomob.colors.line1)) {
-            Box(Modifier.fillMaxWidth(sim / 100f).height(2.dp).background(tone))
+            Box(Modifier.fillMaxWidth((simPct / 100f).coerceIn(0f, 1f)).height(2.dp).background(tone))
         }
     }
 }
 
 @Composable
-private fun VinSummary(vin: String) {
-    val rows = listOf(
-        SummaryItem("厂商", vin.take(3), "一汽-大众", Gomob.colors.accent),
-        SummaryItem("校验", "#9", "通过", Gomob.colors.ok),
-        SummaryItem("年份", vin[9].toString(), "2023 款", Gomob.colors.accent),
-        SummaryItem("字形", "96.4", "整体匹配", Gomob.colors.ok),
-    )
+private fun VinSummary(result: VinResult?, vinState: VinCaptureState) {
+    // verdict 状态点：pass/通过=ok，其余=danger；未识别=fg3。
+    val pass = result != null && (result.verdict.equals("pass", true) || result.verdict == "通过")
+    val (tone, label) = when {
+        result == null -> Gomob.colors.fg3 to "待识别"
+        pass -> Gomob.colors.ok to "通过"
+        else -> Gomob.colors.danger to "未通过"
+    }
+    val sub = when {
+        vinState is VinCaptureState.Error -> vinState.msg
+        vinState is VinCaptureState.Recognizing -> "识别中…"
+        result != null -> "VIN ${result.recognizedVin.ifBlank { "—" }}"
+        else -> "拍照还原后，点确认识别"
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -419,7 +414,7 @@ private fun VinSummary(vin: String) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
                 Text("汇总结论", fontSize = 10.sp, fontWeight = FontWeight.Medium, color = Gomob.colors.fg1)
                 Text(
-                    "VIN ${vin.takeLast(6)} · 正射拓印可信",
+                    sub,
                     style = Gomob.type.numInline.copy(fontSize = 8.sp, letterSpacing = 0.06.em),
                     color = Gomob.colors.fg3,
                     maxLines = 1,
@@ -427,15 +422,20 @@ private fun VinSummary(vin: String) {
                 )
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                Box(Modifier.size(5.dp).clip(CircleShape).background(Gomob.colors.ok))
-                Text("全部通过", style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.1.em), color = Gomob.colors.ok)
+                Box(Modifier.size(5.dp).clip(CircleShape).background(tone))
+                Text(label, style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.1.em), color = tone)
             }
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            SummaryCell(rows[0], Modifier.weight(1f))
-            SummaryCell(rows[1], Modifier.weight(1f))
-            SummaryCell(rows[2], Modifier.weight(1f))
-            SummaryCell(rows[3], Modifier.weight(1f))
+        if (result != null) {
+            // 只渲染 vin_pipeline 真返字段（检出/比对/字形相似/verdict），不编造厂商/年份解码。
+            val avgTone = if (simToPct(result.avgSimilarity) >= 95f) Gomob.colors.ok else Gomob.colors.warn
+            val reason = result.reasons.firstOrNull() ?: if (pass) "字形匹配" else "—"
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                SummaryCell(SummaryItem("检出", result.detections.toString(), "字符检出", Gomob.colors.accent), Modifier.weight(1f))
+                SummaryCell(SummaryItem("比对", result.scored.toString(), "已比对", Gomob.colors.accent), Modifier.weight(1f))
+                SummaryCell(SummaryItem("字形", String.format(java.util.Locale.US, "%.1f", simToPct(result.avgSimilarity)), "均值相似", avgTone), Modifier.weight(1f))
+                SummaryCell(SummaryItem("结论", result.verdict, reason, tone), Modifier.weight(1f))
+            }
         }
     }
 }
@@ -488,12 +488,15 @@ private fun SummaryCell(item: SummaryItem, modifier: Modifier = Modifier) {
     }
 }
 
-// ─── 底部拍照栏：重拍 / 快门(→正射拓印) / 确认(→OCR，待接) ───
+// ─── 底部拍照栏：重拍 / 快门(→正射拓印) / 确认(→vin_pipeline OCR) ───
 @Composable
 private fun VinCaptureBar(
     capturing: Boolean,
+    recognizing: Boolean,
+    canConfirm: Boolean,
     onShutter: () -> Unit,
     onRetake: () -> Unit,
+    onConfirm: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Box(
@@ -509,8 +512,14 @@ private fun VinCaptureBar(
         ) {
             VinRoundButton(icon = GomobIcons.Refresh, label = "重拍", onClick = onRetake)
             VinShutterButton(capturing = capturing, onClick = onShutter)
-            // TODO(接真·OCR): 「确认」接 vm.recognize()（拓印图喂 vin_pipeline）—— 待用户指定该步交互。
-            VinRoundButton(icon = GomobIcons.Check, label = "确认", primary = true, onClick = {})
+            // 确认 → vm.recognize()：还原图喂 vin_pipeline。无还原图或识别中时禁用。
+            VinRoundButton(
+                icon = GomobIcons.Check,
+                label = if (recognizing) "识别中" else "确认",
+                primary = true,
+                enabled = canConfirm && !recognizing,
+                onClick = onConfirm,
+            )
         }
     }
 }
@@ -521,14 +530,20 @@ private fun VinRoundButton(
     label: String,
     onClick: () -> Unit,
     primary: Boolean = false,
+    enabled: Boolean = true,
 ) {
+    val fg = when {
+        !enabled -> Gomob.colors.fg3
+        primary -> Gomob.colors.accent
+        else -> Gomob.colors.fg1
+    }
     Row(
         modifier = Modifier
             .height(44.dp)
             .clip(CircleShape)
-            .background(if (primary) Gomob.colors.accentSoft else Gomob.colors.bg1)
-            .border(BorderStroke(1.dp, if (primary) Gomob.colors.accent else Gomob.colors.line2), CircleShape)
-            .clickable(onClick = onClick)
+            .background(if (primary && enabled) Gomob.colors.accentSoft else Gomob.colors.bg1)
+            .border(BorderStroke(1.dp, if (primary && enabled) Gomob.colors.accent else Gomob.colors.line2), CircleShape)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -536,10 +551,10 @@ private fun VinRoundButton(
         Icon(
             icon,
             contentDescription = label,
-            tint = if (primary) Gomob.colors.accent else Gomob.colors.fg1,
+            tint = fg,
             modifier = Modifier.size(14.dp),
         )
-        Text(label, fontSize = 12.sp, color = if (primary) Gomob.colors.accent else Gomob.colors.fg1)
+        Text(label, fontSize = 12.sp, color = fg)
     }
 }
 

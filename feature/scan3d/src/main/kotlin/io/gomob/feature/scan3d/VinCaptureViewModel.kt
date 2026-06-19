@@ -99,6 +99,11 @@ class VinCaptureViewModel @Inject constructor(
     @Volatile private var latestDepth: DepthFrame? = null
     private var captureJob: Job? = null
 
+    // 服务端还原签名 PNG：拍照成功后存，「确认」时喂 vin_pipeline OCR（原厂全保真还原图，比原始 color 更利识别）。
+    // 每次新拍照 / 重拍清空，避免对陈旧图识别。
+    @Volatile private var restoredSignaturePng: ByteArray? = null
+    private var recognizeJob: Job? = null
+
     init {
         // ★ 先开 HLSD8 补光（点灯/散斑），再开 eYs3D 深度——否则主动立体无散斑 + 彩色暖机失败 → FrameGrabber 0 帧。
         rgbSource?.acquire()
@@ -155,6 +160,10 @@ class VinCaptureViewModel @Inject constructor(
         }
         _capturing.value = true
         _captureMsg.value = null
+        // 新拍照作废上一张的还原签名与 OCR 结果（回取景态，等本次还原成功再供「确认」识别）。
+        recognizeJob?.cancel()
+        restoredSignaturePng = null
+        _state.value = VinCaptureState.Preview
         captureJob = viewModelScope.launch {
             try {
                 val seq = nextSeq()
@@ -218,7 +227,8 @@ class VinCaptureViewModel @Inject constructor(
                     if (r.ok && png != null) {
                         withContext(Dispatchers.Default) { BitmapFactory.decodeByteArray(png, 0, png.size) }
                             ?.let { _rubbing.value = it }
-                        _captureMsg.value = "服务端还原 ✓ 第 $seq 张｜倾角 %.0f° 内点 %.0f%% 检出 %d".format(
+                        restoredSignaturePng = png  // 供「确认」喂 vin_pipeline OCR
+                        _captureMsg.value = "服务端还原 ✓ 第 $seq 张｜倾角 %.0f° 内点 %.0f%% 检出 %d（点确认识别）".format(
                             r.tiltDeg, r.inlierRate * 100, r.numDet)
                     } else {
                         _captureMsg.value =
@@ -239,28 +249,24 @@ class VinCaptureViewModel @Inject constructor(
 
     /**
      * VIN 字符识别（OCR + 厂家字形库比对，服务端 vin_pipeline）。
-     * TODO(逐项接真)：待用户指定后接到"确认"按钮，输入应是拓印还原图而非原始 color（更利 OCR）。
+     *
+     * 输入 = **服务端原厂全保真还原签名 PNG**（[restoredSignaturePng]，去阴影 OCR 级二值图，比原始 color 更利识别），
+     * 由「确认」按钮触发。还原未成功（未拍照 / tilt 判废 / 上传失败）时无图可识，提示先拍照，不退化喂原始 color。
      */
     fun recognize() {
         if (_state.value == VinCaptureState.Recognizing) return
-        val color = latestColor
-        if (color == null) {
-            _state.value = VinCaptureState.Error("尚无彩色帧，请确认相机已连接")
+        val png = restoredSignaturePng
+        if (png == null) {
+            _captureMsg.value = "请先拍照生成还原图，再点确认识别"
             return
         }
         _state.value = VinCaptureState.Recognizing
-        captureJob = viewModelScope.launch {
+        recognizeJob = viewModelScope.launch {
             try {
-                val bmp = withContext(Dispatchers.Default) {
-                    FrameRenderer.colorRgb24ToBitmap(color)
-                } ?: throw IllegalStateException("彩色帧解码失败")
-                val jpeg = withContext(Dispatchers.Default) {
-                    ByteArrayOutputStream().use { out ->
-                        bmp.compress(CompressFormat.JPEG, 92, out)
-                        out.toByteArray()
-                    }
-                }
-                val result = vinRepo.recognize(_vehicleModelId.value, jpeg)
+                // vin_pipeline 服务端按 magic 字节 IMDecode，PNG/JPEG 通吃；这里直传还原签名 PNG。
+                val bmp = withContext(Dispatchers.Default) { BitmapFactory.decodeByteArray(png, 0, png.size) }
+                    ?: throw IllegalStateException("还原签名解码失败")
+                val result = vinRepo.recognize(_vehicleModelId.value, png)
                 _state.value = VinCaptureState.Result(capture = bmp, result = result)
                 Log.i(TAG, "VIN 识别完成 verdict=${result.verdict} vin=${result.recognizedVin} scored=${result.scored}")
             } catch (e: Throwable) {
@@ -327,10 +333,13 @@ class VinCaptureViewModel @Inject constructor(
         return dir
     }
 
-    /** 重拍：清掉拓印图与提示，回到取景。 */
+    /** 重拍：清掉拓印图、还原签名、OCR 结果与提示，回到取景。 */
     fun retake() {
         captureJob?.cancel()
         captureJob = null
+        recognizeJob?.cancel()
+        recognizeJob = null
+        restoredSignaturePng = null
         _rubbing.value = null
         _captureMsg.value = null
         _state.value = VinCaptureState.Preview

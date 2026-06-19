@@ -360,5 +360,10 @@ JNI/契约/采集/UI 已接通，第一光用 eYs3D 自带 L' 彩色 + `R|t=单�
    经 devserver `/cv/` 前缀反代，App 只带 JWT、HMAC 由 devserver 加）→ `VinRepository.restore()`（`Envelope<VinRestoreResponse>` 解包 +
    base64→PNG 字节）→ `VinCaptureViewModel.capture()`（深度 u16/彩色 JPEG 压一次复用 → 落盘 → 端侧 `OrthoRectify` 即时占位预览 →
    **上传服务端权威签名图覆盖 `_rubbing`** + 倾角/内点/检出提示）。tilt 判废走 HTTP 200/`ok:false` 友好提示；上传失败走「已存可重试」不丢盘。
-   **待**：⑥ 还原签名接 `vin_pipeline` OCR；⑦ `yolo-obb.onnx` 入 model-registry（现 `handler.go` 默认 `.dev/vin_models`，env `VIN_OBB_MODEL` 覆盖）；
-   ⑧ 真机 + 服务端 live 端到端回线验证（device/infra-gated）。
+   服务端 HTTP 契约 `TestVinRestoreHTTPContract` 用真机 11 张数据直打 `h.VinRestore`：11/11 返合法 PNG（1200×260，tilt 1.9–7.0°）。
+6. ✅ **OCR 接 `vin_pipeline`（还原签名 → 识别）**：`VinCaptureViewModel.recognize()` 改喂**服务端还原签名 PNG**（`restoredSignaturePng`，
+   去阴影 OCR 级二值图，比原始 color 更利识别；还原未成功则提示先拍照，不退化喂 color）；`ScanCaptureScreen`「确认」按钮接 `recognize()`，
+   观察 `vm.state` 四态，`VinCharCompare`/`VinSummary` 去掉硬编码演示 VIN + 假厂商/年份解码，改渲染真 `VinResult`（逐字符 character+similarity
+   归一 0..100、verdict/检出/比对/字形均值）。`vin_pipeline` 按 magic 字节 IMDecode，PNG 通吃。`:feature:scan3d` 编译绿。
+   **待**：⑦ `yolo-obb.onnx` 入 model-registry（现 `handler.go` 默认 `.dev/vin_models`，env `VIN_OBB_MODEL` 覆盖）；
+   ⑧ 真机 live 回线（拍 → 上传还原 → 确认 OCR → 回显；**VMASK 对二值还原签名的识别质量需真机验**，服务端 vin_restore 契约已真机数据验，device/infra-gated）。
