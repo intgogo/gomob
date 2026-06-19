@@ -155,23 +155,25 @@ object NativeBridge {
     // 详见 docs/architecture/08-vin-rectify-design.md。
 
     /**
-     * 单帧 RGBD → VIN 正射拓印图。
+     * 双相机深度正射拓印：depth 反投影拟合主平面 → 把 RGB 按平面几何重采样成 1:1 正射图。
      *
-     * @param colorBgr Color 帧 BGR888（YUYV 已转过；DirectByteBuffer 零拷贝）
-     * @param depth16Mm Depth 帧 16bit mm（已 setRegistrationEnable 对齐到 Color 像素坐标；
-     *                  DirectByteBuffer 零拷贝）
-     * @param colorIntr [fx,fy,cx,cy,k1,k2,p1,p2,k3] 9 元素
-     * @param roiBox    [u_min, v_min, u_max, v_max] 像素坐标，VIN 区域
-     * @param config    [ortho_distance_mm, pixel_size_mm, out_w, out_h]
-     * @return [VinRectifyNative] 含 PNG 字节 + 拟合元数据
+     * depth 与 RGB 是**两颗物理独立相机**（depth=RS-D550，rgb=HLSD8），靠 [rtRgbFromDepth] 把平面点
+     * 从 depth 系变到 RGB 系再投影采样。单相机/未标定时传 R=I,t=0（如用 eYs3D 自带彩色，与 depth 同坐标系）。
+     *
+     * @param depth16Mm Depth 帧 16bit mm（depth 相机系；DirectByteBuffer 零拷贝，容量需 ≥ w*h*2）
+     * @param depthIntr [fx,fy,cx,cy]（depth 内参，depthWidth×depthHeight 下）
+     * @param rgb888    RGB 帧 RGB888（DirectByteBuffer 零拷贝，容量需 ≥ w*h*3）
+     * @param rgbIntr   [fx,fy,cx,cy]（RGB 内参，rgbWidth×rgbHeight 下）
+     * @param rtRgbFromDepth [r00..r22, tx, ty, tz]，P_rgb = R*P_depth + t（R 行优先 9 + t 3，mm）
+     * @param config    [pixel_size_mm, out_w, out_h, plane_dist_thresh_mm, ransac_iter, min_inlier_ratio]
+     * @return [VinOrthoNative] 裸 RGB888 + mask + 平面元数据（不含 PNG；显示用 Kotlin 组 Bitmap）
      */
-    external fun vinRectify(
-        colorBgr: ByteBuffer, colorWidth: Int, colorHeight: Int,
-        depth16Mm: ByteBuffer, depthWidth: Int, depthHeight: Int,
-        colorIntr: DoubleArray,
-        roiBox: IntArray,
+    external fun vinOrthoRectify(
+        depth16Mm: ByteBuffer, depthWidth: Int, depthHeight: Int, depthIntr: DoubleArray,
+        rgb888: ByteBuffer, rgbWidth: Int, rgbHeight: Int, rgbIntr: DoubleArray,
+        rtRgbFromDepth: FloatArray,
         config: FloatArray,
-    ): VinRectifyNative
+    ): VinOrthoNative
 
     // ===== calibration/* — iHawk Color/Depth 标定 =====
     //
@@ -448,28 +450,33 @@ object NativeBridge {
 }
 
 /**
- * VIN 拓印 native 返回结果。
+ * VIN 双相机正射拓印 native 返回结果（裸 RGB + mask，不含 PNG）。
  *
- * 字段：
- * - [pngBytes] 拓印图 PNG 编码字节
- * - [planeNormalAndD] [nx, ny, nz, d] 平面方程 n·P + d = 0
+ * 字段顺序与 jni_bridge.cpp `vinOrthoRectify` 构造调用严格对齐（[B[BII[F[FI）：
+ * - [rgb] width*height*3 RGB888，未采样处=0
+ * - [mask] width*height，255=已采样 / 0=平面外或投影越界
+ * - [width]/[height] 正射图尺寸
+ * - [planeNormalAndD] [nx, ny, nz, d]（depth 相机系，n·P + d = 0）
  * - [planeStats] [rms_residual_mm, inlier_ratio]
+ * - [covered] mask==255 的像素数
  */
-data class VinRectifyNative(
-    val pngBytes: ByteArray,
+data class VinOrthoNative(
+    val rgb: ByteArray,
+    val mask: ByteArray,
+    val width: Int,
+    val height: Int,
     val planeNormalAndD: FloatArray,
     val planeStats: FloatArray,
-    val outputWidth: Int,
-    val outputHeight: Int,
+    val covered: Int,
 ) {
-    override fun equals(other: Any?): Boolean = other is VinRectifyNative &&
-        pngBytes.contentEquals(other.pngBytes) &&
+    override fun equals(other: Any?): Boolean = other is VinOrthoNative &&
+        rgb.contentEquals(other.rgb) && mask.contentEquals(other.mask) &&
+        width == other.width && height == other.height &&
         planeNormalAndD.contentEquals(other.planeNormalAndD) &&
-        planeStats.contentEquals(other.planeStats) &&
-        outputWidth == other.outputWidth && outputHeight == other.outputHeight
-    override fun hashCode(): Int = pngBytes.contentHashCode() * 31 +
-        planeNormalAndD.contentHashCode() * 31 +
-        planeStats.contentHashCode() * 31 + outputWidth * 31 + outputHeight
+        planeStats.contentEquals(other.planeStats) && covered == other.covered
+    override fun hashCode(): Int = rgb.contentHashCode() * 31 +
+        mask.contentHashCode() * 31 + width * 31 + height * 31 +
+        planeNormalAndD.contentHashCode() * 31 + planeStats.contentHashCode() * 31 + covered
 }
 
 class NativeException(val errorCode: Int, message: String) : RuntimeException(message)

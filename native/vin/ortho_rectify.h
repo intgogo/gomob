@@ -20,9 +20,15 @@ struct OrthoConfig {
   float pixel_size_mm = 0.2f;   // 每正射像素的物理尺寸（mm/px）
   int out_w = 1024;             // 正射图宽
   int out_h = 512;              // 正射图高
-  float plane_dist_thresh_mm = 3.0f;  // RANSAC 平面内点阈
+  float plane_dist_thresh_mm = 3.0f;  // RANSAC 平面内点阈下限（实际取 max(此, 0.8%×中位深度)）
   int ransac_iter = 200;        // RANSAC 迭代
   float min_inlier_ratio = 0.5f;  // 低于此判平面拟合失败
+  // 平面拟合 ROI（深度帧比例，中心区域）：只用图像中间部位深度拟合平面 + 定输出中心，
+  // 避开背景/地面污染主平面，并让正射图对准中央目标（VIN 钢牌）。整幅传 1.0。
+  float roi_cx = 0.5f;          // ROI 中心 x（占宽比例）
+  float roi_cy = 0.5f;          // ROI 中心 y（占高比例）
+  float roi_w = 0.6f;           // ROI 宽（占宽比例）
+  float roi_h = 0.6f;           // ROI 高（占高比例）
 };
 
 // 主平面拟合结果（depth 相机系）：n·P + d = 0，n 朝向相机（单位向量）。

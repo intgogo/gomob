@@ -31,6 +31,7 @@
 #include <libusb-1.0/libusb.h>
 
 #include "reconstruction/icp.h"
+#include "vin/ortho_rectify.h"
 #include "berxel/include/gomob_berxel_protocol_sonix.h"
 
 #define LOG_TAG "gomob_native"
@@ -67,15 +68,7 @@ namespace reconstruction {
     const std::vector<uint32_t>& SessionMeshIndices(ScanSession* s);
     // IcpRegister 的真实实现在 reconstruction/icp.h，返回 IcpResult；本文件 #include 了 icp.h
 }
-namespace vin {
-    struct RectifyResult;
-    extern RectifyResult Rectify(
-        const uint8_t* color_bgr, int color_w, int color_h,
-        const uint16_t* depth_mm, int depth_w, int depth_h,
-        const double* color_intr,
-        const int* roi_box,
-        const float* config);
-}
+// vin/* 正射拓印：OrthoRectify 声明随 #include "vin/ortho_rectify.h" 引入（gomob::vin 命名空间）。
 namespace calibration {
     std::vector<float> DetectCharuco(
         const uint8_t* gray, int width, int height,
@@ -342,18 +335,107 @@ Java_io_gomob_nativebridge_NativeBridge_scanSessionMeshIndices(
     return result;
 }
 
-// ===== vin/* — 占位 =====
+// ===== vin/* — 双相机深度正射拓印（真实接 gomob::vin::OrthoRectify） =====
 
 JNIEXPORT jobject JNICALL
-Java_io_gomob_nativebridge_NativeBridge_vinRectify(
+Java_io_gomob_nativebridge_NativeBridge_vinOrthoRectify(
         JNIEnv* env, jobject /*thiz*/,
-        jobject /*colorBgr*/, jint /*colorWidth*/, jint /*colorHeight*/,
-        jobject /*depth16Mm*/, jint /*depthWidth*/, jint /*depthHeight*/,
-        jdoubleArray /*colorIntr*/, jintArray /*roiBox*/, jfloatArray /*config*/) {
-    // 当前 stub：直接抛 NativeException(NOT_IMPLEMENTED) — 让业务侧能感知接口未实施
-    // M4.* 阶段实施真实拓印逻辑
-    ThrowNativeException(env, 1, "vinRectify: not implemented yet (M4.*)");
-    return nullptr;
+        jobject depthBuf, jint depthW, jint depthH, jdoubleArray kDepth,
+        jobject rgbBuf, jint rgbW, jint rgbH, jdoubleArray kRgb,
+        jfloatArray rtRgbFromDepth, jfloatArray config) {
+    auto* depthPtr = static_cast<uint16_t*>(env->GetDirectBufferAddress(depthBuf));
+    auto* rgbPtr = static_cast<uint8_t*>(env->GetDirectBufferAddress(rgbBuf));
+    if (!depthPtr || !rgbPtr) {
+        ThrowNativeException(env, 2, "vinOrthoRectify: depth/rgb 必须是 DirectByteBuffer");
+        return nullptr;
+    }
+    if (env->GetDirectBufferCapacity(depthBuf) < static_cast<jlong>(depthW) * depthH * 2 ||
+        env->GetDirectBufferCapacity(rgbBuf) < static_cast<jlong>(rgbW) * rgbH * 3) {
+        ThrowNativeException(env, 2, "vinOrthoRectify: buffer 容量不足(depth=w*h*2, rgb=w*h*3)");
+        return nullptr;
+    }
+    if (env->GetArrayLength(kDepth) != 4 || env->GetArrayLength(kRgb) != 4 ||
+        env->GetArrayLength(rtRgbFromDepth) != 12 || env->GetArrayLength(config) < 6) {
+        ThrowNativeException(env, 2, "vinOrthoRectify: kDepth/kRgb=4, rt=12, config>=6");
+        return nullptr;
+    }
+
+    jdouble* kd = env->GetDoubleArrayElements(kDepth, nullptr);
+    jdouble* kr = env->GetDoubleArrayElements(kRgb, nullptr);
+    jfloat* rt = env->GetFloatArrayElements(rtRgbFromDepth, nullptr);
+    jfloat* cfgA = env->GetFloatArrayElements(config, nullptr);
+
+    const double k_depth[4] = {kd[0], kd[1], kd[2], kd[3]};
+    const double k_rgb[4] = {kr[0], kr[1], kr[2], kr[3]};
+    float rt12[12];
+    for (int i = 0; i < 12; ++i) rt12[i] = rt[i];
+
+    gomob::vin::OrthoConfig cfg;
+    cfg.pixel_size_mm = cfgA[0];
+    cfg.out_w = static_cast<int>(cfgA[1]);
+    cfg.out_h = static_cast<int>(cfgA[2]);
+    cfg.plane_dist_thresh_mm = cfgA[3];
+    cfg.ransac_iter = static_cast<int>(cfgA[4]);
+    cfg.min_inlier_ratio = cfgA[5];
+    // 可选 ROI（config[6..9] = roi_cx, roi_cy, roi_w, roi_h，深度帧比例）；不传则用默认中心 ROI。
+    if (env->GetArrayLength(config) >= 10) {
+        cfg.roi_cx = cfgA[6];
+        cfg.roi_cy = cfgA[7];
+        cfg.roi_w = cfgA[8];
+        cfg.roi_h = cfgA[9];
+    }
+
+    auto res = gomob::vin::OrthoRectify(depthPtr, depthW, depthH, k_depth, rgbPtr, rgbW, rgbH, k_rgb,
+                                        rt12, cfg);
+
+    env->ReleaseDoubleArrayElements(kDepth, kd, JNI_ABORT);
+    env->ReleaseDoubleArrayElements(kRgb, kr, JNI_ABORT);
+    env->ReleaseFloatArrayElements(rtRgbFromDepth, rt, JNI_ABORT);
+    env->ReleaseFloatArrayElements(config, cfgA, JNI_ABORT);
+
+    if (res.error_code != 0) {
+        // 1=平面拟合失败 → PLANE_FIT_FAIL(100)；2=无效输入 → INVALID_ARG(2)。
+        // 失败路回填诊断：res.covered=有效深度点数，res.plane.inlier_ratio=最佳平面内点率。
+        char msg[192];
+        if (res.error_code == 1) {
+            // 诊断字段：rms_mm=inlier@2×thr, n[0]=@4×thr, n[1]=@8×thr, centroid[2]=平均Z(mm)。
+            snprintf(msg, sizeof(msg),
+                     "vinOrthoRectify: 平面拟合失败 validPts=%d inlier@thr=%.2f @2x=%.2f @4x=%.2f @8x=%.2f meanZ=%.0fmm",
+                     res.covered, res.plane.inlier_ratio, res.plane.rms_mm, res.plane.n[0],
+                     res.plane.n[1], res.plane.centroid[2]);
+            ThrowNativeException(env, 100, msg);
+        } else {
+            ThrowNativeException(env, 2, "vinOrthoRectify: 无效输入");
+        }
+        return nullptr;
+    }
+
+    // 回 Kotlin VinOrthoNative(rgb, mask, width, height, planeNormalAndD[4], planeStats[2], covered)。
+    // 裸 RGB888 + mask，不在 native 编码 PNG（显示用 Kotlin 直接组 Bitmap，上传时再压）。
+    jbyteArray jrgb = env->NewByteArray(static_cast<jsize>(res.rgb.size()));
+    env->SetByteArrayRegion(jrgb, 0, static_cast<jsize>(res.rgb.size()),
+                            reinterpret_cast<const jbyte*>(res.rgb.data()));
+    jbyteArray jmask = env->NewByteArray(static_cast<jsize>(res.mask.size()));
+    env->SetByteArrayRegion(jmask, 0, static_cast<jsize>(res.mask.size()),
+                            reinterpret_cast<const jbyte*>(res.mask.data()));
+    const float planeND[4] = {res.plane.n[0], res.plane.n[1], res.plane.n[2], res.plane.d};
+    jfloatArray jplane = env->NewFloatArray(4);
+    env->SetFloatArrayRegion(jplane, 0, 4, planeND);
+    const float stats[2] = {res.plane.rms_mm, res.plane.inlier_ratio};
+    jfloatArray jstats = env->NewFloatArray(2);
+    env->SetFloatArrayRegion(jstats, 0, 2, stats);
+
+    jclass cls = env->FindClass("io/gomob/nativebridge/VinOrthoNative");
+    if (cls == nullptr) {
+        ThrowNativeException(env, 3, "VinOrthoNative class 未找到");
+        return nullptr;
+    }
+    jmethodID ctor = env->GetMethodID(cls, "<init>", "([B[BII[F[FI)V");
+    if (ctor == nullptr) {
+        ThrowNativeException(env, 3, "VinOrthoNative 构造未找到");
+        return nullptr;
+    }
+    return env->NewObject(cls, ctor, jrgb, jmask, cfg.out_w, cfg.out_h, jplane, jstats, res.covered);
 }
 
 // ===== berxel/* — Sonix XU 协议入口（M1.6.5 复现层 + M1.6.6 NDK port 准备） =====

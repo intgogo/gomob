@@ -3,6 +3,7 @@ package io.gomob.feature.scan3d
 import android.graphics.Bitmap
 import io.gomob.model.ColorFrame
 import io.gomob.model.DepthFrame
+import io.gomob.nativebridge.VinOrthoNative
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.max
@@ -110,6 +111,35 @@ internal object FrameRenderer {
         for (i in 0 until total) {
             val g = src.get().toInt() and 0xff
             pixels[i] = (0xff shl 24) or (g shl 16) or (g shl 8) or g
+        }
+        return Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
+    }
+
+    /**
+     * 把 native 双相机正射结果 [VinOrthoNative]（裸 RGB888 + mask）转成 ARGB_8888 Bitmap（拓印还原图）。
+     *
+     * mask==0（平面外/投影越界）的像素出全透明，让拓印纸面背景透出；mask==255 出真彩。
+     * 仅拍照时调一次，纯 Kotlin 足够（无需 JNI 编码 PNG）。
+     */
+    fun orthoToBitmap(result: VinOrthoNative): Bitmap? {
+        val w = result.width
+        val h = result.height
+        val total = w * h
+        if (total <= 0 || result.rgb.size < total * 3 || result.mask.size < total) return null
+        val rgb = result.rgb
+        val mask = result.mask
+        val pixels = IntArray(total)
+        var p = 0
+        for (i in 0 until total) {
+            if (mask[i].toInt() == 0) {
+                pixels[i] = 0  // 透明：未采样
+                p += 3
+            } else {
+                val r = rgb[p++].toInt() and 0xFF
+                val g = rgb[p++].toInt() and 0xFF
+                val b = rgb[p++].toInt() and 0xFF
+                pixels[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+            }
         }
         return Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
     }

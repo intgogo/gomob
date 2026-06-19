@@ -3,6 +3,7 @@
 
 #include <Eigen/Dense>
 
+#include <algorithm>
 #include <cmath>
 #include <random>
 
@@ -65,22 +66,40 @@ OrthoResult OrthoRectify(const uint16_t* depth_mm, int dw, int dh, const double 
     return res;
   }
 
-  // ① 反投影所有有效深度像素到 depth 系 3D 点。
+  // ① 反投影【中心 ROI 内】有效深度像素到 depth 系 3D 点（只用图像中间部位拟合平面/定中心）。
+  const int ru0 = std::max(0, static_cast<int>(std::lround((cfg.roi_cx - cfg.roi_w * 0.5f) * dw)));
+  const int ru1 = std::min(dw, static_cast<int>(std::lround((cfg.roi_cx + cfg.roi_w * 0.5f) * dw)));
+  const int rv0 = std::max(0, static_cast<int>(std::lround((cfg.roi_cy - cfg.roi_h * 0.5f) * dh)));
+  const int rv1 = std::min(dh, static_cast<int>(std::lround((cfg.roi_cy + cfg.roi_h * 0.5f) * dh)));
   std::vector<Vector3d> pts;
-  pts.reserve(static_cast<size_t>(dw) * dh / 2);
-  for (int v = 0; v < dh; ++v) {
-    for (int u = 0; u < dw; ++u) {
+  pts.reserve(static_cast<size_t>(std::max(1, ru1 - ru0)) * std::max(1, rv1 - rv0) / 2);
+  for (int v = rv0; v < rv1; ++v) {
+    for (int u = ru0; u < ru1; ++u) {
       const uint16_t z = depth_mm[v * dw + u];
       if (z == 0) continue;
       pts.push_back(Backproject(u, v, z, k_depth));
     }
   }
-  if (pts.size() < 16) { res.error_code = 1; return res; }
+  if (pts.size() < 16) {
+    res.error_code = 1;
+    res.covered = static_cast<int>(pts.size());  // 诊断：有效深度点数（失败路也回填）
+    return res;
+  }
 
   // ② RANSAC 主平面（固定种子，host 可复现）。
   std::mt19937 rng(12345u);
   std::uniform_int_distribution<size_t> pick(0, pts.size() - 1);
-  const double thr = cfg.plane_dist_thresh_mm;
+  // 自适应平面阈值：iHawk 精度 ≤1% 距离，深度噪声随距离线性增长（1.8m 实测 ~6-12mm，0.3m ~3mm）。
+  // 阈值 = max(cfg 下限, 0.8%×中位深度)，近距收紧、远距放宽，避免固定 3mm 在远距把整面判为外点。
+  double median_z;
+  {
+    std::vector<double> zs;
+    zs.reserve(pts.size());
+    for (const auto& p : pts) zs.push_back(p.z());
+    std::nth_element(zs.begin(), zs.begin() + zs.size() / 2, zs.end());
+    median_z = zs[zs.size() / 2];
+  }
+  const double thr = std::max(static_cast<double>(cfg.plane_dist_thresh_mm), 0.008 * median_z);
   Vector3d best_n(0, 0, 1);
   double best_d = 0;
   size_t best_inliers = 0;
@@ -102,7 +121,27 @@ OrthoResult OrthoRectify(const uint16_t* depth_mm, int dw, int dh, const double 
     }
   }
   const double inlier_ratio = static_cast<double>(best_inliers) / pts.size();
-  if (inlier_ratio < cfg.min_inlier_ratio) { res.error_code = 1; return res; }
+  if (inlier_ratio < cfg.min_inlier_ratio) {
+    res.error_code = 1;
+    res.covered = static_cast<int>(pts.size());           // 诊断：有效深度点数
+    res.plane.inlier_ratio = static_cast<float>(inlier_ratio);  // 诊断：最佳平面内点率
+    // TODO(诊断·临时): 残差分布 + 平均Z，借未用字段回传定位噪声 vs 非平面 vs 单位错。
+    int c2 = 0, c4 = 0, c8 = 0;
+    double zsum = 0;
+    for (const auto& p : pts) {
+      const double r = std::abs(best_n.dot(p) + best_d);
+      if (r <= thr * 2) ++c2;
+      if (r <= thr * 4) ++c4;
+      if (r <= thr * 8) ++c8;
+      zsum += p.z();
+    }
+    const double np = static_cast<double>(pts.size());
+    res.plane.rms_mm = static_cast<float>(c2 / np);        // inlier@2×thr
+    res.plane.n[0] = static_cast<float>(c4 / np);          // inlier@4×thr
+    res.plane.n[1] = static_cast<float>(c8 / np);          // inlier@8×thr
+    res.plane.centroid[2] = static_cast<float>(zsum / np);  // 平均 Z(mm)
+    return res;
+  }
 
   // ③ 用内点最小二乘精修平面。
   std::vector<Vector3d> inliers;
@@ -123,8 +162,9 @@ OrthoResult OrthoRectify(const uint16_t* depth_mm, int dw, int dh, const double 
   }
   const double rms = std::sqrt(sum_sq / inliers.size());
 
-  // ④ 构造平面内正交基（right/up）。up = 相机 Y 在平面内的投影；right = up×n。
-  Vector3d cam_up(0, 1, 0);
+  // ④ 构造平面内正交基（right/up）。相机 Y 朝下（图像系），真实"上"是 -Y → cam_up=(0,-1,0)，
+  //    否则输出图上下颠倒 + 左右镜像（整体 180°）。up = cam_up 在平面内投影；right = up×n。
+  Vector3d cam_up(0, -1, 0);
   Vector3d up = cam_up - cam_up.dot(n) * n;
   if (up.norm() < 1e-4) {  // 退化（平面法向 ∥ 相机 Y）：改用相机 X
     Vector3d cam_x(1, 0, 0);
