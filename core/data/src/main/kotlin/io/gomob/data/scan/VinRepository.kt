@@ -1,5 +1,6 @@
 package io.gomob.data.scan
 
+import android.util.Base64
 import io.gomob.network.ApiException
 import io.gomob.network.CVEngineApi
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -26,6 +27,25 @@ data class VinCharResult(
     val character: String,
     val similarity: Double,
     val status: String,
+)
+
+/**
+ * VIN 数码拓印还原结果（端侧领域类型）。[png] 已从服务端 base64 解码为 PNG 字节；
+ * [ok]=false 表承印面倾角 [tiltDeg]>70° 被原厂硬门判废（[png] 为 null）。
+ */
+data class VinRestoreOutcome(
+    val ok: Boolean,
+    val png: ByteArray?,
+    val width: Int,
+    val height: Int,
+    val tiltDeg: Double,
+    val widthMm: Double,
+    val heightMm: Double,
+    val inlierRate: Double,
+    val rms: Double,
+    val medZ: Double,
+    val numDet: Int,
+    val logId: String,
 )
 
 /** VIN 识别仓库：把端侧拍到的整图喂服务端 `vin_pipeline` 拿真 verdict + 字符比对。 */
@@ -61,6 +81,64 @@ class VinRepository @Inject constructor(
             scored = resp.scored,
             recognizedVin = recognized,
             characters = chars,
+        )
+    }
+
+    /**
+     * VIN 数码拓印还原（原厂全保真，全程服务端 Go cvengine）。端侧只把采集帧原样上传：
+     *
+     * @param rgbJpeg   HLSD8 彩色 JPEG 字节（服务端解码取彩色尺寸）
+     * @param depthU16  深度裸字节，u16 LE metric mm，长度 = depthW*depthH*2
+     * @param depthW/depthH 深度尺寸
+     * @param fx/fy/cx/cy   深度内参（服务端按彩色=2×深度 registration 自推彩色内参，不传彩色内参）
+     * @param deviceId  上报机型（服务端仅日志用）
+     */
+    suspend fun restore(
+        rgbJpeg: ByteArray,
+        depthU16: ByteArray,
+        depthW: Int,
+        depthH: Int,
+        fx: Double,
+        fy: Double,
+        cx: Double,
+        cy: Double,
+        deviceId: String,
+    ): VinRestoreOutcome {
+        val text = "text/plain".toMediaTypeOrNull()
+        val rgbPart = MultipartBody.Part.createFormData(
+            "image_binary_rgb1300", "rgb1300.jpg",
+            rgbJpeg.toRequestBody("image/jpeg".toMediaTypeOrNull()),
+        )
+        val depthPart = MultipartBody.Part.createFormData(
+            "image_binary_depth", "depth.u16",
+            depthU16.toRequestBody("application/octet-stream".toMediaTypeOrNull()),
+        )
+        val resp = cvEngine.vinRestore(
+            rgbPart, depthPart,
+            depthW.toString().toRequestBody(text), depthH.toString().toRequestBody(text),
+            fx.toString().toRequestBody(text), fy.toString().toRequestBody(text),
+            cx.toString().toRequestBody(text), cy.toString().toRequestBody(text),
+            deviceId.toRequestBody(text),
+        ).data ?: throw ApiException(50001, 500, "VIN 还原响应缺数据")
+
+        val png = if (resp.ok && resp.resultPngBase64.isNotEmpty()) {
+            Base64.decode(resp.resultPngBase64, Base64.DEFAULT)
+        } else {
+            null
+        }
+        return VinRestoreOutcome(
+            ok = resp.ok,
+            png = png,
+            width = resp.width,
+            height = resp.height,
+            tiltDeg = resp.tiltDeg,
+            widthMm = resp.widthMm,
+            heightMm = resp.heightMm,
+            inlierRate = resp.inlierRate,
+            rms = resp.rms,
+            medZ = resp.medZ,
+            numDet = resp.numDet,
+            logId = resp.logId,
         )
     }
 }

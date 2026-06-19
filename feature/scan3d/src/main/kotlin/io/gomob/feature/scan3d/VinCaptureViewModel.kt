@@ -3,11 +3,11 @@ package io.gomob.feature.scan3d
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Bitmap.CompressFormat
+import android.graphics.BitmapFactory
 import android.os.SystemClock
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
-import java.io.FileOutputStream
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -157,14 +157,22 @@ class VinCaptureViewModel @Inject constructor(
         _captureMsg.value = null
         captureJob = viewModelScope.launch {
             try {
-                // ① 先无条件落盘原始采集（服务端还原管线输入：HLSD8 彩色 JPEG + 深度 u16 + 内参 meta）。
-                //    每次拍摄存独立目录，供离线自测"同一 VIN 多次还原图应重合"。即使端侧预览正射失败也不丢数据。
                 val seq = nextSeq()
-                val dir = withContext(Dispatchers.IO) { saveRawCapture(depth, color, seq) }
-                _captureMsg.value = "已保存第 $seq 张 → ${dir.name}（${color.width}×${color.height}）"
+                // 共用字节：深度 u16 LE + 彩色 JPEG q95（压一次，落盘与上传复用，省一遍 13MP 编码）。
+                val depthBytes = withContext(Dispatchers.Default) { depth.toU16LeBytes() }
+                val jpeg = withContext(Dispatchers.Default) {
+                    FrameRenderer.colorRgb24ToBitmap(color)?.let { bmp ->
+                        ByteArrayOutputStream().use { out ->
+                            bmp.compress(CompressFormat.JPEG, 95, out); out.toByteArray()
+                        }
+                    }
+                }
+
+                // ① 无条件落盘原始采集（离线自测"同一 VIN 多次还原图应重合" + 上传失败可重试）。
+                val dir = withContext(Dispatchers.IO) { saveRawCapture(depth, color, depthBytes, jpeg, seq) }
                 Log.i(TAG, "raw capture saved seq=$seq dir=${dir.absolutePath}")
 
-                // ② 端侧近似正射，仅作"拍到了"的即时预览（真还原走服务端原厂全保真管线）。best-effort，失败不影响落盘。
+                // ② 端侧近似正射，仅作"拍到了"的即时占位预览（真还原走服务端原厂全保真管线，随后覆盖）。best-effort。
                 try {
                     val isHlsd8 = color.pixelType == "HLSD8_RGB24"
                     val rgbIntr = if (isHlsd8) {
@@ -190,7 +198,35 @@ class VinCaptureViewModel @Inject constructor(
                     }
                     _rubbing.value = withContext(Dispatchers.Default) { FrameRenderer.orthoToBitmap(ortho) }
                 } catch (e: Throwable) {
-                    Log.i(TAG, "端侧预览正射跳过（不影响原始落盘）: ${e.message}")
+                    Log.i(TAG, "端侧预览正射跳过（不影响落盘/上传）: ${e.message}")
+                }
+
+                // ③ 上传服务端原厂全保真还原 → 权威拓印签名图，覆盖即时预览。深度内参随传，彩色内参服务端按 2× registration 自推。
+                if (jpeg == null) {
+                    _captureMsg.value = "已存第 $seq 张（彩色编码失败，未上传）"
+                    return@launch
+                }
+                _captureMsg.value = "已存第 $seq 张，上传服务端还原中…"
+                try {
+                    val r = vinRepo.restore(
+                        jpeg, depthBytes, depth.width, depth.height,
+                        depth.intrinsics.fx, depth.intrinsics.fy,
+                        depth.intrinsics.cx, depth.intrinsics.cy,
+                        android.os.Build.MODEL,
+                    )
+                    val png = r.png
+                    if (r.ok && png != null) {
+                        withContext(Dispatchers.Default) { BitmapFactory.decodeByteArray(png, 0, png.size) }
+                            ?.let { _rubbing.value = it }
+                        _captureMsg.value = "服务端还原 ✓ 第 $seq 张｜倾角 %.0f° 内点 %.0f%% 检出 %d".format(
+                            r.tiltDeg, r.inlierRate * 100, r.numDet)
+                    } else {
+                        _captureMsg.value =
+                            "服务端判废：倾角 %.0f°>70°（请正对钢牌再拍）｜检出 %d，已存第 $seq 张".format(r.tiltDeg, r.numDet)
+                    }
+                } catch (e: Throwable) {
+                    _captureMsg.value = "上传还原失败（已存第 $seq 张可离线重试）：${e.message}"
+                    Log.w(TAG, "服务端还原失败", e)
                 }
             } catch (e: Throwable) {
                 _captureMsg.value = "保存失败：${e.message}"
@@ -255,19 +291,27 @@ class VinCaptureViewModel @Inject constructor(
      * - `meta.json`：deviceId + 彩色/深度尺寸 + 深度真内参（反投影必需）+ 时间戳 + 序号。
      * 落 `externalFiles/vin_captures/cap_<seq>_<ts>/`，adb pull 即可离线复现。
      */
-    private fun saveRawCapture(depth: DepthFrame, color: ColorFrame, seq: Int): File {
+    /** 深度帧 → u16 LE 裸字节（metric mm，0=无效），width×height×2。落盘与上传共用。 */
+    private fun DepthFrame.toU16LeBytes(): ByteArray {
+        val b = data.duplicate().apply { rewind() }
+        val n = width * height * 2
+        val a = ByteArray(minOf(n, b.remaining())); b.get(a)
+        return a
+    }
+
+    private fun saveRawCapture(
+        depth: DepthFrame,
+        color: ColorFrame,
+        depthU16: ByteArray,
+        jpeg: ByteArray?,
+        seq: Int,
+    ): File {
         val ts = System.currentTimeMillis()
         val root = File(appContext.getExternalFilesDir(null), CAPTURE_ROOT).apply { mkdirs() }
         val dir = File(root, "cap_%03d_%d".format(seq, ts)).apply { mkdirs() }
 
-        depth.data.duplicate().apply { rewind() }.let { b ->
-            val n = depth.width * depth.height * 2
-            val a = ByteArray(minOf(n, b.remaining())); b.get(a)
-            File(dir, "depth.yuv").writeBytes(a)
-        }
-        FrameRenderer.colorRgb24ToBitmap(color)?.let { cb ->
-            FileOutputStream(File(dir, "rgb1300.jpg")).use { cb.compress(CompressFormat.JPEG, 95, it) }
-        }
+        File(dir, "depth.yuv").writeBytes(depthU16)
+        if (jpeg != null) File(dir, "rgb1300.jpg").writeBytes(jpeg)
         File(dir, "meta.json").writeText(
             """
             {

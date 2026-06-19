@@ -355,4 +355,10 @@ JNI/契约/采集/UI 已接通，第一光用 eYs3D 自带 L' 彩色 + `R|t=单�
    运行期 `LD_LIBRARY_PATH` 须含 `/usr/local/lib64`(opencv_world.so.405)。
 4. **标定**：实测 registered（彩色=深度2× 零视差）→ 重合零标定即成；HLSD8 高清标定(M6.9.5b)仅提清晰度，非必需。
    metric 真尺度（原厂 px/mm 路）需 eYs3D depth 真标定（关联 M6.5/depth 50-1000mm 门）。
-5. App：`capture()` 已存原始；后续接「上传 → 服务端还原 → 回显 restored」。
+5. ✅ **App 上传 → 服务端还原 → 回显已拉通**（端侧三模块 `compileDebugKotlin` 含 KSP 绿）：
+   `CVEngineApi.vinRestore`（multipart `image_binary_rgb1300`+`image_binary_depth`+`depth_w/h`+`fx/fy/cx/cy`+`device_id`，
+   经 devserver `/cv/` 前缀反代，App 只带 JWT、HMAC 由 devserver 加）→ `VinRepository.restore()`（`Envelope<VinRestoreResponse>` 解包 +
+   base64→PNG 字节）→ `VinCaptureViewModel.capture()`（深度 u16/彩色 JPEG 压一次复用 → 落盘 → 端侧 `OrthoRectify` 即时占位预览 →
+   **上传服务端权威签名图覆盖 `_rubbing`** + 倾角/内点/检出提示）。tilt 判废走 HTTP 200/`ok:false` 友好提示；上传失败走「已存可重试」不丢盘。
+   **待**：⑥ 还原签名接 `vin_pipeline` OCR；⑦ `yolo-obb.onnx` 入 model-registry（现 `handler.go` 默认 `.dev/vin_models`，env `VIN_OBB_MODEL` 覆盖）；
+   ⑧ 真机 + 服务端 live 端到端回线验证（device/infra-gated）。
