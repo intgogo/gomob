@@ -365,5 +365,9 @@ JNI/契约/采集/UI 已接通，第一光用 eYs3D 自带 L' 彩色 + `R|t=单�
    去阴影 OCR 级二值图，比原始 color 更利识别；还原未成功则提示先拍照，不退化喂 color）；`ScanCaptureScreen`「确认」按钮接 `recognize()`，
    观察 `vm.state` 四态，`VinCharCompare`/`VinSummary` 去掉硬编码演示 VIN + 假厂商/年份解码，改渲染真 `VinResult`（逐字符 character+similarity
    归一 0..100、verdict/检出/比对/字形均值）。`vin_pipeline` 按 magic 字节 IMDecode，PNG 通吃。`:feature:scan3d` 编译绿。
-   **待**：⑦ `yolo-obb.onnx` 入 model-registry（现 `handler.go` 默认 `.dev/vin_models`，env `VIN_OBB_MODEL` 覆盖）；
-   ⑧ 真机 live 回线（拍 → 上传还原 → 确认 OCR → 回显；**VMASK 对二值还原签名的识别质量需真机验**，服务端 vin_restore 契约已真机数据验，device/infra-gated）。
+7. ✅ **模型部署走 model-registry（代码就绪）**：yolo-obb 改与 VMASK 同机制由 registry 提供，不再特殊 lazy 加载。
+   - `loader.go` 加 `metadata.kind="com"` 分支 → `core.RegisterComONNX`（std 取 `metadata.std`，缺省 1/255）；dev 旁路 `GOMOB_CVENGINE_MODELS="VINOBB:com=/path"` 已支持。
+   - `handler.go ensureVinObbModel` 优先复用启动期 loader 注册的 `VINOBB`（`h.models.Get`），仅纯本地无 registry 时才从 `VIN_OBB_MODEL`/默认 `.dev` 兜底。
+   - `go build ./...` 绿、loader/restore `go vet` 净、HTTP 契约 httptest 仍 11/11（兜底未坏）。
+   - **ops 播种**（infra-gated，需 MinIO+registry 在跑）：`scripts/seed-vinobb-model.sh`（mc 上传 onnx → `POST /admin/v1/models` kind=com → activate），再把 `VINOBB` 加进生产 `GOMOB_CVENGINE_MODEL_NAMES` 重启。
+   **待**：⑧ 真机 live 回线（拍 → 上传还原 → 确认 OCR → 回显；**VMASK 对二值还原签名的识别质量需真机验**，服务端 vin_restore 契约已真机数据验，device/infra-gated）。

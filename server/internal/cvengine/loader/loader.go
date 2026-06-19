@@ -6,7 +6,7 @@
 //	                              → MinIO 直拉（已签名走 PresignedGetObject 不行 — 内部服务直连）
 //	                              → 缓存到 GOMOB_CVENGINE_MODEL_CACHE 目录
 //	                              → SHA256 校验
-//	                              → core.RegisterMaskONNX 或 RegisterONNX（按 metadata.kind）
+//	                              → core.RegisterMaskONNX / RegisterComONNX / RegisterONNX（按 metadata.kind: mask|com|general）
 //
 // M-S10.5 加 NATS 订阅 model.version.activated，事件来时调本包 Reload(name)。
 package loader
@@ -28,6 +28,7 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 
 	"io.gomob/server/internal/cvengine/core"
+	"io.gomob/server/internal/cvengine/gocv"
 	"io.gomob/server/internal/cvengine/modelregistryclient"
 )
 
@@ -167,6 +168,17 @@ func (l *Loader) LoadByName(ctx context.Context, name string) Result {
 		}
 		if err := l.cfg.Registry.RegisterMaskONNX(r.Tag, cached, opts); err != nil {
 			r.Error = fmt.Errorf("RegisterMaskONNX: %w", err)
+			return r
+		}
+	case "com":
+		// 通用原始输出模型（gocv.CreateORTCom，吐扁平 []float32，后处理调用方做；如 yolo-obb VIN 字符 OBB）。
+		// std 归一系数：metadata.std 优先；缺省 1/255（÷255，与端侧 yolo-obb 预处理一致）。mean 默认 0。
+		std := meta.Std
+		if std <= 0 {
+			std = 1.0 / 255.0
+		}
+		if err := l.cfg.Registry.RegisterComONNX(r.Tag, cached, std, gocv.Scalar{}); err != nil {
+			r.Error = fmt.Errorf("RegisterComONNX: %w", err)
 			return r
 		}
 	default:

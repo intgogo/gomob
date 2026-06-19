@@ -951,15 +951,22 @@ func (h *Handler) VinPipeline(w http.ResponseWriter, r *http.Request) {
 // vin_restore —— VIN 数码拓印还原（深度去透视 + OBB 正射 + 去阴影二值化 → OCR 级签名 PNG）
 // ============================================================================
 
-// 默认 yolo-obb 模型路径（env VIN_OBB_MODEL 覆盖）。harness/真机数据均放此处。
+// dev 旁路默认 yolo-obb 路径（env VIN_OBB_MODEL 覆盖）。无 model-registry/MinIO 的纯本地开发/harness 用。
 const defaultVinObbModelPath = "/root/lilw/gomob/.dev/vin_models/yolo-obb.onnx"
 
-// vinObbTag —— yolo-obb 模型在 registry 里的 tag。
+// vinObbTag —— yolo-obb 模型在 model-registry / cv-engine 里的 tag（与 model name 同一字符串）。
+// 生产部署：把它加进 GOMOB_CVENGINE_MODEL_NAMES，启动期 loader 从 registry→MinIO 拉（metadata.kind="com"）。
 const vinObbTag = "VINOBB"
 
-// ensureVinObbModel 懒加载 yolo-obb 模型一次（KindCom）。已加载或加载过则直接返回。
+// ensureVinObbModel 确保 yolo-obb（KindCom）已注册，懒执行一次。
+//
+// 优先复用启动期 loader 从 model-registry / GOMOB_CVENGINE_MODELS dev 旁路注册的 VINOBB（与 VMASK 同机制）；
+// 仅当未注册（纯本地开发，无 registry/MinIO）时才从 VIN_OBB_MODEL / 默认 .dev 路径懒加载兜底。
 func (h *Handler) ensureVinObbModel() error {
 	h.obbOnce.Do(func() {
+		if _, err := h.models.Get(vinObbTag); err == nil {
+			return // 已由 loader 注册，直接复用
+		}
 		path := os.Getenv("VIN_OBB_MODEL")
 		if path == "" {
 			path = defaultVinObbModelPath
@@ -967,7 +974,7 @@ func (h *Handler) ensureVinObbModel() error {
 		// std=1/255 mean=0 → ÷255 归一，与端侧 yolo-obb 预处理一致。
 		h.obbErr = h.models.RegisterComONNX(vinObbTag, path, 1.0/255.0, gocv.Scalar{})
 		if h.obbErr != nil {
-			h.log.Error("yolo-obb 模型加载失败", "err", h.obbErr, "path", path)
+			h.log.Error("yolo-obb 模型加载失败（dev 旁路）", "err", h.obbErr, "path", path)
 		}
 	})
 	return h.obbErr
