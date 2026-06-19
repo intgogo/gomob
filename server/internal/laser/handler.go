@@ -153,6 +153,10 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /v1/scans/laser/crop-box", h.PutCropBox)
 	mux.HandleFunc("POST /v1/scans/laser/{id}/crop-preview", h.CropPreview)
 
+	// 空工位背景（路 B 背景相减）：查本工位是否已采集背景。采集用 POST /v1/scans/laser?mark_as_background=...
+	// （即普通扫描 + 标记），重采直接覆盖同 key，故无需 DELETE。
+	mux.HandleFunc("GET /v1/scans/laser/background", h.GetBackground)
+
 	// 设备控制面板（原厂功能键）。用 literal 子资源 + ?unit=a|b 查询参，避开与 {id}/cloud/{name}
 	// 通配的路由歧义（literal 段比 {id} 更具体，不 panic）。
 	mux.HandleFunc("GET /v1/scans/laser/device-status", h.DeviceStatus)               // 状态信息
@@ -213,14 +217,15 @@ func (h *Handler) expectedSweepDeg(ctx context.Context, ip, tag string) (float32
 // --- 请求/响应体 ---
 
 type startReq struct {
-	InspectionID  *int64             `json:"inspection_id"`
-	UnitAIP       string             `json:"unit_a_ip"`
-	UnitBIP       string             `json:"unit_b_ip"`
-	Align         string             `json:"align"`
-	SiteJSON      string             `json:"site_json"`
-	KeepRatio     *float32           `json:"keep_ratio"`
-	VehicleTypeID *int               `json:"vehicle_type_id"` // 逆向 JCHY 车型编号（docs/16 §4.1）；缺省=未选
-	RegionFilter  *PointRegionFilter `json:"region_filter"`
+	InspectionID     *int64             `json:"inspection_id"`
+	UnitAIP          string             `json:"unit_a_ip"`
+	UnitBIP          string             `json:"unit_b_ip"`
+	Align            string             `json:"align"`
+	SiteJSON         string             `json:"site_json"`
+	KeepRatio        *float32           `json:"keep_ratio"`
+	VehicleTypeID    *int               `json:"vehicle_type_id"` // 逆向 JCHY 车型编号（docs/16 §4.1）；缺省=未选
+	RegionFilter     *PointRegionFilter `json:"region_filter"`
+	MarkAsBackground bool               `json:"mark_as_background"` // true=把本次融合云存为本工位空工位背景，不测量
 }
 
 type startResp struct {
@@ -369,6 +374,7 @@ func (h *Handler) StartScan(w http.ResponseWriter, r *http.Request) {
 		ExpectedSweepADeg: expectedA,
 		ExpectedSweepBDeg: expectedB,
 		RegionFilter:      regionFilter,
+		MarkAsBackground:  req.MarkAsBackground,
 	}
 	// 注册活动会话（cancel = CancelScan 协作取消 cgo 采集；设备 SCAN_STOP 由 runner 的 defer Gate.Stop 兜底）。
 	h.sessions.set(job.ID, active)
@@ -880,6 +886,24 @@ func (h *Handler) PutCropBox(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bay_key": h.bayKey(), "unit": unit})
 }
 
+// GetBackground GET /v1/scans/laser/background。返回本工位是否已采集空工位背景（背景相减抠车的前提）。
+// 仅做对象存在性探测（GetObject 的 Stat=HEAD，不下载 24MB 点云）。
+func (h *Handler) GetBackground(w http.ResponseWriter, r *http.Request) {
+	if callerUserID(r) == 0 {
+		writeErr(w, http.StatusUnauthorized, "需要鉴权")
+		return
+	}
+	resp := map[string]any{"bay_key": h.bayKey(), "set": false}
+	if h.reader != nil {
+		if rc, size, err := h.reader.GetObject(r.Context(), backgroundObjectKey(h.bayKey())); err == nil {
+			_ = rc.Close()
+			resp["set"] = true
+			resp["bytes"] = size
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // CropPreview POST /v1/scans/laser/{id}/crop-preview  body=CropBox。
 // 用候选框裁某次扫描的融合云并测量，回 {in_points,total_points,measurement}，供拖框实时预览（不落库）。
 func (h *Handler) CropPreview(w http.ResponseWriter, r *http.Request) {
@@ -1005,14 +1029,25 @@ func flattenMeasureFromStats(stats json.RawMessage, v map[string]any) {
 		return
 	}
 	var s struct {
-		Measure    *Dimensions     `json:"measure"`
-		Axle       *AxleResult     `json:"axle"`
-		CargoBox   *CargoBox       `json:"cargo_box"`
-		Overlay    *VehicleOverlay `json:"overlay"`
-		Compliance *Compliance     `json:"compliance"`
+		Measure     *Dimensions     `json:"measure"`
+		Axle        *AxleResult     `json:"axle"`
+		CargoBox    *CargoBox       `json:"cargo_box"`
+		Overlay     *VehicleOverlay `json:"overlay"`
+		Compliance  *Compliance     `json:"compliance"`
+		MeasureMode string          `json:"measure_mode"`
+		BgSet       bool            `json:"bg_set"`
+		BgCaptured  bool            `json:"bg_captured"`
 	}
 	if err := json.Unmarshal(stats, &s); err != nil {
 		return
+	}
+	// 抠车隔离方式（背景相减/裁剪框/无隔离），供端侧测量面板按情况给提示。
+	if s.MeasureMode != "" {
+		v["meas_mode"] = s.MeasureMode
+	}
+	v["background_set"] = s.BgSet
+	if s.BgCaptured {
+		v["background_captured"] = true
 	}
 	if s.Measure != nil && s.Measure.Valid {
 		v["measure_valid"] = true

@@ -1290,3 +1290,17 @@ label {
 .ov-dot.ov-v { background: #4fd1ff; }
 .ov-dot.ov-c { background: #ffd54a; }
 .ov-dot.ov-a { background: #ff7a6b; }
+
+/* 顶栏空工位背景采集状态小标（路 B 背景相减）：默认未采集=暗，已采集=绿。 */
+.bg-chip {
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  white-space: nowrap;
+  align-self: center;
+  background: rgba(240, 190, 90, 0.16);
+  color: #f0be5a;
+  border: 1px solid rgba(240, 190, 90, 0.45);
+}
+.bg-chip.ok { background: rgba(110, 211, 176, 0.16); color: #6fd3b0; border-color: rgba(110, 211, 176, 0.5); }
+.bg-chip[hidden] { display: none; }

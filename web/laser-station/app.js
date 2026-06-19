@@ -18,6 +18,8 @@ const els = {
   addCamera: $("addCameraBtn"),
   keepRatio: $("keepRatioInput"),
   startScan: $("startScanBtn"),
+  captureBg: $("captureBgBtn"),
+  bgStatusChip: $("bgStatusChip"),
   scanMeta: $("scanMeta"),
   scanBanner: $("scanBanner"),
   scanBannerTitle: $("scanBannerTitle"),
@@ -344,6 +346,7 @@ const app = {
   restoreSerial: 0,
   fusedCount: 0,
   fusionUnavailable: false,
+  capturingBackground: false, // 本次扫描是采集空工位背景（非测量）
   measure: null,
   overlay: null,
   deviceStatuses: { a: null, b: null },
@@ -716,11 +719,18 @@ function renderMeasure() {
   const done = app.scanState === "done" && Boolean(app.activeScanId);
   // 融合成功但测不出：面板仍出现并给原因，让"自动测量"可见、可排查（不静默隐藏）。
   if ((!p || !p.measure_valid)) {
-    if (!done) { panel.hidden = true; return; }
+    if (!done || app.capturingBackground) { panel.hidden = true; return; }
     panel.hidden = false;
     let reason = "未能自动测量 · 请圈定车位框，或确保点云完整覆盖车辆";
     let badge = "需圈车位框";
-    if (app.fusionUnavailable) { reason = "工位未标定，无法融合测量"; badge = "未标定"; }
+    if (app.fusionUnavailable) {
+      reason = "工位未标定，无法融合测量";
+      badge = "未标定";
+    } else if (p && p.meas_mode === "no_isolation") {
+      // 融合云=整个房间，没有背景/车位框无法把车抠出来 → 指向「采集空工位背景」。
+      reason = "未采集空工位背景 · 点右上「采集空工位背景」扫一次空工位，之后自动抠车测量（或圈定车位框）";
+      badge = "需采集背景";
+    }
     els.measureBody.innerHTML = `<span>状态</span><strong>${escapeHtml(reason)}</strong>`;
     els.measureCompliance.textContent = badge;
     els.measureCompliance.className = "measure-badge warn";
@@ -994,6 +1004,19 @@ function handleRealtime(envelope) {
     app.scanState = "done";
     app.fusionUnavailable = isRawScanPayload(payload);
     app.fusedCount = Number(payload.points || 0);
+    // 采集空工位背景：不是测量，给成功提示并刷新背景状态，不走测量面板。
+    if (payload.background_captured) {
+      app.capturingBackground = false;
+      app.measure = null;
+      app.overlay = null;
+      app.overlayDirty = true;
+      renderMeasure();
+      renderScanMeta();
+      showToast(`✓ 空工位背景已采集（${(Number(payload.points || 0) / 10000).toFixed(0)} 万点）· 之后扫描将自动抠车`);
+      refreshBackgroundStatus();
+      downloadFinalClouds(payload).catch(() => {});
+      return;
+    }
     app.measure = payload; // 始终留 payload：测得出显数字，测不出据此给原因
     app.overlay = payload.overlay || null; // 世界系车体框/货箱框/轴线，融合视图叠加
     app.overlayDirty = true;
@@ -1444,7 +1467,8 @@ function readColorComponent(view, offset, size = 1, type = "U") {
   return Number.isFinite(v) ? Math.max(0, Math.min(255, Math.round(v))) : 0;
 }
 
-async function startScan() {
+async function startScan(opts = {}) {
+  const markAsBackground = Boolean(opts.markAsBackground);
   const camA = cameraByRole("a");
   const camB = cameraByRole("b");
   if (!camA || !camB) {
@@ -1465,7 +1489,14 @@ async function startScan() {
     showToast("启用区域墙过滤前，请先完成多镜头融合标定");
     return;
   }
-  if (rawOnly) {
+  // 采集空工位背景必须能融合（背景=融合云世界系），未标定则拦下。
+  if (markAsBackground && rawOnly) {
+    showToast("采集背景需要先完成多镜头融合标定");
+    return;
+  }
+  if (markAsBackground) {
+    showToast("正在扫描空工位作为背景 · 请确保工位内没有车辆");
+  } else if (rawOnly) {
     showToast("当前工位未标定，本次只采集分镜点云，无法融合");
   }
   app.restoreSerial++;
@@ -1488,6 +1519,8 @@ async function startScan() {
       keep_ratio: Number(els.keepRatio.value || 1),
     };
     if (regionFilter) body.region_filter = regionFilter;
+    if (markAsBackground) body.mark_as_background = true;
+    app.capturingBackground = markAsBackground;
     const resp = await api("/v1/scans/laser", { method: "POST", body: JSON.stringify(body) });
     app.activeScanId = resp.scan_id;
     app.activeSessionKey = resp.session_key;
@@ -1546,6 +1579,37 @@ async function toggleScan() {
     return;
   }
   await startScan();
+}
+
+// 采集空工位背景：扫描一次空场地存为本工位背景（路 B 背景相减抠车的前提）。
+async function captureBackground() {
+  if (scanActionMode() === "stop") {
+    showToast("请先结束当前扫描，再采集空工位背景");
+    return;
+  }
+  if (!window.confirm("采集空工位背景：请先确保工位内【没有车辆/人】，再扫描一次空场地。\n之后每次扫描会自动减掉房间、抠出车再测量。是否开始？")) {
+    return;
+  }
+  await startScan({ markAsBackground: true });
+}
+
+// 刷新本工位背景采集状态到顶栏小标。
+async function refreshBackgroundStatus() {
+  const chip = els.bgStatusChip;
+  if (!chip) return;
+  try {
+    const r = await api("/v1/scans/laser/background", { method: "GET" });
+    chip.hidden = false;
+    if (r && r.set) {
+      chip.textContent = "背景已采集";
+      chip.classList.add("ok");
+    } else {
+      chip.textContent = "未采集背景";
+      chip.classList.remove("ok");
+    }
+  } catch (err) {
+    chip.hidden = true;
+  }
 }
 
 function resetClouds({ force = false } = {}) {
@@ -4200,6 +4264,7 @@ function bindEvents() {
     refreshDevice({ silent: true });
   });
   els.startScan.addEventListener("click", toggleScan);
+  if (els.captureBg) els.captureBg.addEventListener("click", captureBackground);
   els.refreshDevice.addEventListener("click", refreshDevice);
   els.applySettings.addEventListener("click", applySettings);
   els.scanStart.addEventListener("input", updateScanAngleHint);
@@ -4421,6 +4486,7 @@ async function init() {
   await refreshStationDeviceStatuses({ silent: true });
   await restoreActiveScan({ silent: true });
   await loadLastScan(); // 无进行中扫描时，默认载入上次扫描结果
+  refreshBackgroundStatus(); // 顶栏显示本工位是否已采集空工位背景
   restoreCalibrationState();
   restoreRegionState();
   startDeviceStatusPolling();

@@ -81,6 +81,8 @@ func main() {
 
 	jobs := repo.NewLaserScanRepo(pool)
 	runner := laser.NewRunner(jobs, clouds, publisher, logger.New("laser.runner"))
+	// 空工位背景相减（路 B）：runner 用同一 MinIO 实例读回背景融合云做相减抠车（背景采集存在固定 key）。
+	runner.Reader = clouds
 	// 持久车位框（M9.11）：runner 测量优先用框、handler 提供 get/put/preview，同一实例。
 	cropBoxes := laser.NewDBCropBoxStore(repo.NewLaserCropBoxRepo(pool))
 	runner.CropBoxes = cropBoxes

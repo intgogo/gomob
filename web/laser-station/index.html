@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>3D 扫描工位管理台</title>
-    <link rel="stylesheet" href="./styles.css?v=20260617-measure-br" />
+    <link rel="stylesheet" href="./styles.css?v=20260617-bg-subtract" />
   </head>
   <body>
     <div class="app-shell">
@@ -22,6 +22,8 @@
           <em id="activeCameraLabel">A 192.168.9.101 / B 192.168.9.102</em>
         </div>
         <div class="topbar-actions">
+          <span id="bgStatusChip" class="bg-chip" hidden></span>
+          <button id="captureBgBtn" title="扫描空工位作为背景；之后每次扫描自动减掉房间、抠出车">采集空工位背景</button>
           <button id="startScanBtn" class="primary">开始扫描</button>
           <button data-open-panel="station">配置</button>
         </div>
@@ -311,6 +313,6 @@
     </div>
 
     <div id="toast" class="toast"></div>
-    <script type="module" src="./app.js?v=20260617-measure-br"></script>
+    <script type="module" src="./app.js?v=20260617-bg-subtract"></script>
   </body>
 </html>

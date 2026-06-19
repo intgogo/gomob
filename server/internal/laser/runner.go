@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"os"
@@ -108,6 +109,13 @@ type FusionDoneEvent struct {
 	Compliant    bool     `json:"compliant"`
 	Violations   []string `json:"violations,omitempty"`
 
+	// 抠车隔离方式诊断（路 B 背景相减）：measMode=bg_subtract/crop_box/no_isolation/background_captured。
+	// BackgroundCaptured=本次是采集空工位背景（非测量）；BackgroundSet=本工位已有背景可减；FgPoints=减后前景点数。
+	MeasMode           string `json:"meas_mode,omitempty"`
+	BackgroundCaptured bool   `json:"background_captured,omitempty"`
+	BackgroundSet      bool   `json:"background_set,omitempty"`
+	FgPoints           int    `json:"fg_points,omitempty"`
+
 	// 轴距/前后悬（M9.4，几何贴地接触带检测；docs/16 §3⑥ caluteDeepWheel 等价）。
 	NumAxles         int       `json:"num_axles,omitempty"`
 	WheelbasesMM     []float32 `json:"wheelbases_mm,omitempty"`
@@ -183,6 +191,7 @@ func (nopSink) Image(ImageFrame)        {}
 type Runner struct {
 	Jobs      JobStore
 	Clouds    CloudStore
+	Reader    CloudReader  // 可空：按 object key 读回点云（取空工位背景做相减）；注入同一 MinIO 实例
 	Publisher Publisher    // 可空（不发 NATS）
 	Gate      DeviceGate   // 可空（replay/test）
 	CropBoxes CropBoxStore // 可空（无则回退自动地面测量）：持久车位框，按 bayKey=unit_a_ip 取
@@ -271,6 +280,10 @@ type RunSpec struct {
 	ExpectedSweepBDeg float32 // 当前 unitB 配置的线性目标扫掠角，仅用于诊断日志
 
 	RegionFilter PointRegionFilter // 可选：工位区域墙过滤，只保留墙内点云。
+
+	// MarkAsBackground：把本次扫描的融合云存为本工位「空工位背景」（按 bayKey=UnitAIP），不做测量。
+	// 固定安装下扫一次空工位即可，之后每次扫描自动减掉背景、抠出车（背景相减，见 background.go）。
+	MarkAsBackground bool
 }
 
 // Run 阻塞执行一次扫描会话，返回完成后的 job。失败置 repo.Fail；被取消（用户 stop）则不改
@@ -619,73 +632,100 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 	var overlay VehicleOverlay
 	var compl Compliance
 	measMode := "unfused"
+	bgCaptured := false
+	bgSet := false
+	fgPts := 0
 	carOffset := CarTypeOffset(spec.VehicleTypeID)
-	if rawOnly {
+	switch {
+	case rawOnly:
 		r.Log.Info("工位未标定，已跳过融合和外廓测量", "job", spec.JobID, "pts_a", gotA, "pts_b", gotB)
-	} else {
+	case spec.MarkAsBackground:
+		// 采集空工位背景：把这次的融合云存为本工位背景（按 bayKey=UnitAIP，稳定 key），不测量。
+		// 固定安装 → 扫一次空工位即可，之后每次扫描自动减掉背景抠车（background.go）。
+		key, perr := r.Clouds.PutCloud(ctx, backgroundSessionKey(spec.UnitAIP), backgroundCloudName, cloudFus)
+		if perr != nil {
+			r.Log.Warn("存空工位背景失败", "job", spec.JobID, "err", perr)
+			measMode = "background_capture_failed"
+		} else {
+			r.Log.Info("已采集空工位背景", "job", spec.JobID, "bay", spec.UnitAIP, "pts", gotFus, "key", key)
+			bgCaptured = true
+			bgSet = true
+			measMode = "background_captured"
+		}
+	default:
 		// 地面检测：融合后 RANSAC 拟合地面平面。一份数据两用：① 端侧视角预设的"上"方向基准；
-		// ② 测量参考系（设备坐标原点随底座而变，硬编码 ROI 不通用 → 用真实地面做参考系）。
-		// 非致命——检不到只记 valid=false，端侧回退 +Z，测量回退原厂设备系 ROI 路径。
+		// ② 背景相减/裁剪框后用地面正交基测量（高度从地面量起）。非致命——检不到只记 valid=false。
 		ground = DetectGround(cloudFus, DefaultGroundParams())
 		if !ground.Valid {
 			r.Log.Warn("地面检测失败(点云稀疏?)", "job", spec.JobID, "inlier_ratio", ground.InlierRatio)
 		}
 
-		// M9.11/M9.6/M9.10 测量：融合后对 fused 云算车长/宽/高 + GB7258 合规。优先级：
-		//   ① 持久车位框(CropBox)——用户一次圈定、世界系定向、按深度隔离背景，不依赖自动地面（首选）；
-		//   ② 地面相对——自动地面有效时坐标系无关路径（高度 band + 地面投影 OBB）；
-		//   ③ 原厂设备系 ROI——回退基线（JCHY 真值 ≤2.5%）。
-		// 非致命——测量无效不让 job 失败，只记 measure_valid=false（docs/16 §3⑥/§8）。
+		// 抠车隔离优先级（融合云=整房间，必须先把车从房间空间隔离出来才能测量；docs/16 §6.3 原厂亦靠固定裁剪框）：
+		//   ① 持久车位框(CropBox)——用户显式一次圈定、世界系定向（最高优先，尊重显式意图）；
+		//   ② 空工位背景相减(bg_subtract)——固定安装下减掉静态房间，前景=车，全自动（路 B 主路）；
+		//   ③ 无隔离——不拿房间尺寸冒充车，标 measure_valid=false 提示采集背景/圈框（诚实闸，不再 device_roi 误测）。
 		mp := DefaultMeasureParams()
-		measMode = "device_roi"
+		measMode = "no_isolation"
 		measCloud := cloudFus
+		doMeasure := false
 		boxA, okA := r.loadCropBox(ctx, spec.UnitAIP, "a")
 		boxB, okB := r.loadCropBox(ctx, spec.UnitAIP, "b")
+		bgXYZ, bgOK := r.loadBackground(ctx, spec.UnitAIP)
+		bgSet = bgOK
 		switch {
 		case okA && okB:
 			// 按镜头双框：各单元云按各自框去背景 → unitB 经 B→A 并入世界系 → 对隔离并集测量。
-			// 每台相机看到的背景不同，分别在各自点云空间裁剪，比单一世界框隔离更干净。
 			measCloud = append(CropToBox(cloudA, boxA), transformPoints(CropToBox(cloudB, boxB), res.BToA)...)
 			if ground.Valid {
-				// 并集已隔离到车体；用地面正交基测量（坐标系无关，高度从地面量起）。
 				mp = GroundMeasureParams([3]float32{ground.NX, ground.NY, ground.NZ}, ground.D, 30, 5000)
 			} else {
-				mp = CropBoxMeasureParams(boxA) // 无地面：退回 A 框系定向测量。
+				mp = CropBoxMeasureParams(boxA)
 			}
-			measMode = "crop_box_dual"
+			measMode, doMeasure = "crop_box_dual", true
 		case okA:
-			// 仅 A 框（含历史单框迁移数据）：A 框 == 世界系，裁融合云测量（权威路径不变）。
 			mp = CropBoxMeasureParams(boxA)
-			measMode = "crop_box"
+			measMode, doMeasure = "crop_box", true
 		case okB && ground.Valid:
-			// 仅 B 框 + 有地面：B 云按 B 框去背景 → 经 B→A 入世界系 → 地面相对测量（A 框缺时用 B 的部分外廓，
-			// 不静默丢弃 B 标注）。无地面则无法把 B 框定向到世界系，落到下方 device_roi 回退。
 			measCloud = transformPoints(CropToBox(cloudB, boxB), res.BToA)
 			mp = GroundMeasureParams([3]float32{ground.NX, ground.NY, ground.NZ}, ground.D, 30, 5000)
-			measMode = "crop_box_b"
-		case ground.Valid:
-			mp = GroundMeasureParams([3]float32{ground.NX, ground.NY, ground.NZ}, ground.D, 30, 5000)
-			measMode = "ground"
+			measMode, doMeasure = "crop_box_b", true
+		case bgOK:
+			// 背景相减（路 B 主路）：从融合云减掉静态房间，前景=车，再测量。两云同 unit_a 世界系（固定安装）。
+			fg := SubtractBackground(cloudFus, bgXYZ, DefaultBackgroundParams())
+			fgPts = len(fg) / 3
+			measCloud = fg
+			if ground.Valid {
+				mp = GroundMeasureParams([3]float32{ground.NX, ground.NY, ground.NZ}, ground.D, 30, 5000)
+			} else {
+				mp = DefaultMeasureParams()
+				mp.UseROI = false // 前景已隔离到车，直接整云主簇→OBB
+			}
+			measMode, doMeasure = "bg_subtract", true
+		default:
+			// 无车位框、无背景：没有任何空间隔离手段 → 不把房间尺寸当车测（诚实闸，提示前端采集背景/圈框）。
+			r.Log.Info("无隔离手段(无空工位背景/无车位框)，跳过测量，提示先采集背景", "job", spec.JobID, "fused", gotFus)
 		}
-		// 车型 carType 偏移：选定车型把该型 (x,y,z) 偏移叠到测量区域（设备 ROI/裁剪框路径生效；地面路径暂不接）。
-		mp.CarOffset = carOffset
-		// MeasureFull 一遍出外廓 LWH + 轴距/前后悬 + 货箱（同一车体点、同一 OBB 帧；docs/16 §3⑥）。
-		dims, axle, cargo = MeasureFull(measCloud, mp, DefaultAxleParams())
-		// 合规按车型套限值（当前逐型限值未录入，LimitsForVehicleType 回退通用值，见其 TODO）。
+		if doMeasure {
+			// 车型 carType 偏移叠到测量区域（裁剪框路径生效；地面/背景路径暂不接）。
+			mp.CarOffset = carOffset
+			// MeasureFull 一遍出外廓 LWH + 轴距/前后悬 + 货箱（同一车体点、同一 OBB 帧；docs/16 §3⑥）。
+			dims, axle, cargo = MeasureFull(measCloud, mp, DefaultAxleParams())
+			if !dims.Valid {
+				r.Log.Warn("测量无效(点云退化?)", "job", spec.JobID, "mode", measMode, "fused", res.Fused, "body", dims.BodyPts, "fg", fgPts)
+			}
+			if axle.Valid {
+				r.Log.Info("轴距测量", "job", spec.JobID, "axles", axle.NumAxles,
+					"wheelbases", axle.WheelbasesMM, "front_over", axle.FrontOverhangMM, "rear_over", axle.RearOverhangMM)
+			}
+			if cargo.Valid && cargo.HasBox {
+				r.Log.Info("货箱测量", "job", spec.JobID, "outer_len", cargo.OuterLengthMM,
+					"outer_w", cargo.OuterWidthMM, "depth", cargo.DepthMM)
+			}
+			// 叠加几何：把分割结果(车体框/货箱框/轴线)按融合云世界系导出，供网页 3D 叠加（docs/16 §3⑥）。
+			overlay = BuildVehicleOverlay(measCloud, mp, DefaultAxleParams(), DefaultCargoBoxParams())
+		}
+		// 合规按车型套限值（测量无效时 CheckCompliance 返回不可判定 + 说明）。
 		compl = CheckCompliance(dims, LimitsForVehicleType(spec.VehicleTypeID))
-		if !dims.Valid {
-			r.Log.Warn("测量无效(点云退化?)", "job", spec.JobID, "mode", measMode, "fused", res.Fused, "body", dims.BodyPts)
-		}
-		if axle.Valid {
-			r.Log.Info("轴距测量", "job", spec.JobID, "axles", axle.NumAxles,
-				"wheelbases", axle.WheelbasesMM, "front_over", axle.FrontOverhangMM, "rear_over", axle.RearOverhangMM)
-		}
-		if cargo.Valid && cargo.HasBox {
-			r.Log.Info("货箱测量", "job", spec.JobID, "outer_len", cargo.OuterLengthMM,
-				"outer_w", cargo.OuterWidthMM, "depth", cargo.DepthMM)
-		}
-		// 叠加几何：把分割结果(车体框/货箱框/轴线)按融合云世界系导出，供网页 3D 叠加（docs/16 §3⑥）。
-		overlay = BuildVehicleOverlay(measCloud, mp, DefaultAxleParams(), DefaultCargoBoxParams())
 	}
 
 	bToA, _ := json.Marshal(res.BToA)
@@ -714,6 +754,9 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 			"cargo_box":       cargo,
 			"overlay":         overlay,
 			"measure_mode":    measMode,
+			"bg_set":          bgSet,
+			"bg_captured":     bgCaptured,
+			"fg_pts":          fgPts,
 			"vehicle_type_id": spec.VehicleTypeID,
 			"car_offset":      carOffset,
 			"compliance":      compl,
@@ -730,51 +773,57 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 	publishRes.PtsB = gotB
 	publishRes.Fused = gotFus
 	publishRes.AfterCrop = gotFus
-	r.publishDone(ctx, spec, job, publishRes, fusedKey, aKey, bKey, dims, axle, cargo, overlay, compl, ground)
+	r.publishDone(ctx, spec, job, publishRes, fusedKey, aKey, bKey, dims, axle, cargo, overlay, compl, ground,
+		measMode, bgCaptured, bgSet, fgPts)
 	return job, nil
 }
 
 func (r *Runner) publishDone(ctx context.Context, spec RunSpec, job *repo.LaserScanJob,
-	res ScanResult, fusedKey, aKey, bKey string, dims Dimensions, axle AxleResult, cargo CargoBox, overlay VehicleOverlay, compl Compliance, ground GroundPlane) {
+	res ScanResult, fusedKey, aKey, bKey string, dims Dimensions, axle AxleResult, cargo CargoBox, overlay VehicleOverlay, compl Compliance, ground GroundPlane,
+	measMode string, bgCaptured, bgSet bool, fgPts int) {
 	if r.Publisher == nil {
 		return
 	}
 	evt := FusionDoneEvent{
-		Kind:             "laser",
-		JobID:            job.ID,
-		SessionKey:       spec.SessionKey,
-		InspectionID:     spec.InspectionID,
-		OwnerUserID:      spec.OwnerUserID,
-		ResultObjectKey:  fusedKey,
-		UnitAObjectKey:   aKey,
-		UnitBObjectKey:   bKey,
-		Points:           res.Fused,
-		PtsA:             res.PtsA,
-		PtsB:             res.PtsB,
-		AlignMethod:      res.Align,
-		LengthMM:         dims.LengthMM,
-		WidthMM:          dims.WidthMM,
-		HeightMM:         dims.HeightMM,
-		MeasureValid:     dims.Valid,
-		Compliant:        compl.Compliant,
-		Violations:       compl.Violations,
-		NumAxles:         axle.NumAxles,
-		WheelbasesMM:     axle.WheelbasesMM,
-		TotalWheelbaseMM: axle.TotalWheelbaseMM,
-		FrontOverhangMM:  axle.FrontOverhangMM,
-		RearOverhangMM:   axle.RearOverhangMM,
-		AxleValid:        axle.Valid,
-		HasCargoBox:      cargo.Valid && cargo.HasBox,
-		BoxOuterLengthMM: cargo.OuterLengthMM,
-		BoxOuterWidthMM:  cargo.OuterWidthMM,
-		BoxDepthMM:       cargo.DepthMM,
-		BoxInnerWidthMM:  cargo.InnerWidthMM,
-		Overlay:          overlayPtr(overlay),
-		GroundNX:         ground.NX,
-		GroundNY:         ground.NY,
-		GroundNZ:         ground.NZ,
-		GroundD:          ground.D,
-		GroundValid:      ground.Valid,
+		Kind:               "laser",
+		JobID:              job.ID,
+		SessionKey:         spec.SessionKey,
+		InspectionID:       spec.InspectionID,
+		OwnerUserID:        spec.OwnerUserID,
+		ResultObjectKey:    fusedKey,
+		UnitAObjectKey:     aKey,
+		UnitBObjectKey:     bKey,
+		Points:             res.Fused,
+		PtsA:               res.PtsA,
+		PtsB:               res.PtsB,
+		AlignMethod:        res.Align,
+		LengthMM:           dims.LengthMM,
+		WidthMM:            dims.WidthMM,
+		HeightMM:           dims.HeightMM,
+		MeasureValid:       dims.Valid,
+		Compliant:          compl.Compliant,
+		Violations:         compl.Violations,
+		MeasMode:           measMode,
+		BackgroundCaptured: bgCaptured,
+		BackgroundSet:      bgSet,
+		FgPoints:           fgPts,
+		NumAxles:           axle.NumAxles,
+		WheelbasesMM:       axle.WheelbasesMM,
+		TotalWheelbaseMM:   axle.TotalWheelbaseMM,
+		FrontOverhangMM:    axle.FrontOverhangMM,
+		RearOverhangMM:     axle.RearOverhangMM,
+		AxleValid:          axle.Valid,
+		HasCargoBox:        cargo.Valid && cargo.HasBox,
+		BoxOuterLengthMM:   cargo.OuterLengthMM,
+		BoxOuterWidthMM:    cargo.OuterWidthMM,
+		BoxDepthMM:         cargo.DepthMM,
+		BoxInnerWidthMM:    cargo.InnerWidthMM,
+		Overlay:            overlayPtr(overlay),
+		GroundNX:           ground.NX,
+		GroundNY:           ground.NY,
+		GroundNZ:           ground.NZ,
+		GroundD:            ground.D,
+		GroundValid:        ground.Valid,
 	}
 	if err := r.Publisher.Publish(ctx, TopicFusionDone, evt); err != nil {
 		r.Log.Warn("发布 scan.fusion_done(laser) 失败", "err", err, "job", job.ID)
@@ -885,6 +934,55 @@ func (r *Runner) loadCropBox(ctx context.Context, unitAIP, unit string) (CropBox
 		return CropBox{}, false
 	}
 	return box, true
+}
+
+// backgroundCloudName 空工位背景融合云的对象名（稳定，不随 session 变）。
+const backgroundCloudName = "fused"
+
+// backgroundSessionKey 把工位标识(bayKey=unit_a_ip)映射成稳定的背景对象前缀（与按 session 的扫描云隔开）。
+func backgroundSessionKey(bayKey string) string {
+	return "background/" + sanitizeObjectSeg(bayKey)
+}
+
+// backgroundObjectKey 返回本工位空工位背景融合云的对象键（稳定，跨扫描复用，故能存一次减多次）。
+func backgroundObjectKey(bayKey string) string {
+	return LaserObjectKey(backgroundSessionKey(bayKey), backgroundCloudName)
+}
+
+// sanitizeObjectSeg 把 IP 等里不适合做对象键路径段的字符（冒号/斜杠/空格…）换成 '_'。
+func sanitizeObjectSeg(s string) string {
+	return strings.Map(func(c rune) rune {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '.', c == '-', c == '_':
+			return c
+		default:
+			return '_'
+		}
+	}, s)
+}
+
+// loadBackground 取本工位空工位背景融合云([x,y,z,...] mm)；无 Reader / 未采集(对象不存在) / 取错 →
+// ok=false（非致命：测量回退诚实闸=提示采集背景）。
+func (r *Runner) loadBackground(ctx context.Context, bayKey string) ([]float32, bool) {
+	if r.Reader == nil || bayKey == "" {
+		return nil, false
+	}
+	rc, _, err := r.Reader.GetObject(ctx, backgroundObjectKey(bayKey))
+	if err != nil {
+		return nil, false // 多数是未采集（对象不存在），非致命，不刷 warn
+	}
+	defer rc.Close()
+	raw, err := io.ReadAll(rc)
+	if err != nil {
+		r.Log.Warn("读空工位背景失败", "err", err, "bay", bayKey)
+		return nil, false
+	}
+	xyz, err := DecodePCDBinary(raw)
+	if err != nil || len(xyz) < 3 {
+		r.Log.Warn("解析空工位背景失败", "err", err, "bay", bayKey, "bytes", len(raw))
+		return nil, false
+	}
+	return xyz, true
 }
 
 func mustJSON(v any) json.RawMessage {
