@@ -35,12 +35,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"io.gomob/server/internal/cvengine/core"
 	"io.gomob/server/internal/cvengine/gocv"
 	"io.gomob/server/internal/cvengine/judge"
 	"io.gomob/server/internal/cvengine/proc"
+	"io.gomob/server/internal/cvengine/restore"
 	"io.gomob/server/internal/cvengine/shapecmp"
 	"io.gomob/server/internal/cvengine/shaperefclient"
 	"io.gomob/server/internal/cvengine/vinrefclient"
@@ -55,6 +57,10 @@ type Handler struct {
 	vinRef      *vinrefclient.Client
 	shapeRef    *shaperefclient.Client
 	models      *core.Registry
+
+	// VIN 还原用 yolo-obb 模型：懒加载一次复用（onnxruntime session 建一次即可）。
+	obbOnce sync.Once
+	obbErr  error
 }
 
 func NewHandler() *Handler {
@@ -86,6 +92,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 		h.required(http.HandlerFunc(h.VinDetectYolo)))
 	mux.Handle("POST /cv/ocr/v1/vin_pipeline",
 		h.required(http.HandlerFunc(h.VinPipeline)))
+	mux.Handle("POST /cv/ocr/v1/vin_restore",
+		h.required(http.HandlerFunc(h.VinRestore)))
 	mux.Handle("POST /cv/v1/shape_compare",
 		h.required(http.HandlerFunc(h.ShapeCompare)))
 }
@@ -936,6 +944,147 @@ func (h *Handler) VinPipeline(w http.ResponseWriter, r *http.Request) {
 		Reasons:        reasons,
 		Characters:     results,
 		LogID:          logID,
+	})
+}
+
+// ============================================================================
+// vin_restore —— VIN 数码拓印还原（深度去透视 + OBB 正射 + 去阴影二值化 → OCR 级签名 PNG）
+// ============================================================================
+
+// 默认 yolo-obb 模型路径（env VIN_OBB_MODEL 覆盖）。harness/真机数据均放此处。
+const defaultVinObbModelPath = "/root/lilw/gomob/.dev/vin_models/yolo-obb.onnx"
+
+// vinObbTag —— yolo-obb 模型在 registry 里的 tag。
+const vinObbTag = "VINOBB"
+
+// ensureVinObbModel 懒加载 yolo-obb 模型一次（KindCom）。已加载或加载过则直接返回。
+func (h *Handler) ensureVinObbModel() error {
+	h.obbOnce.Do(func() {
+		path := os.Getenv("VIN_OBB_MODEL")
+		if path == "" {
+			path = defaultVinObbModelPath
+		}
+		// std=1/255 mean=0 → ÷255 归一，与端侧 yolo-obb 预处理一致。
+		h.obbErr = h.models.RegisterComONNX(vinObbTag, path, 1.0/255.0, gocv.Scalar{})
+		if h.obbErr != nil {
+			h.log.Error("yolo-obb 模型加载失败", "err", h.obbErr, "path", path)
+		}
+	})
+	return h.obbErr
+}
+
+type vinRestoreResp struct {
+	OK            bool    `json:"ok"`
+	ResultPNGB64  string  `json:"result_png_base64,omitempty"`
+	Width         int     `json:"width"`
+	Height        int     `json:"height"`
+	TiltDeg       float64 `json:"tilt_deg"`
+	WidthMM       float64 `json:"width_mm"`
+	HeightMM      float64 `json:"height_mm"`
+	ThetaDeg      float64 `json:"theta_deg"`
+	InlierRate    float64 `json:"inlier_rate"`
+	RMS           float64 `json:"rms"`
+	MedZ          float64 `json:"med_z"`
+	NumDet        int     `json:"num_det"`
+	DeviceID      string  `json:"device_id,omitempty"`
+	LogID         string  `json:"log_id"`
+}
+
+// VinRestore —— 收彩色 rgb1300 + depth.yuv + 深度内参，出 OCR 级二值签名 PNG。
+//
+// 入参（multipart / form / base64）：
+//
+//	image_binary_rgb1300   彩色 JPEG（必填）
+//	image_binary_depth     深度原始字节（小端 u16 mm，dw×dh）（必填）
+//	depth_w / depth_h      深度宽高（必填，照端侧 meta.json depth.w / depth.h）
+//	fx / fy / cx / cy      深度内参（必填，各向异性 fx,fy）
+//	device_id / log_id     可选
+//
+// 出参 JSON：result_png_base64 / width / height / tilt_deg / ok / log_id ...
+//
+// 失败：
+//
+//	10001  参数缺失 / 解析错
+//	40701  yolo-obb 模型未就绪（路径不存在 / onnxruntime 加载失败）
+//	42201  tilt>70（承印面过斜，原厂硬门）→ ok=false
+//	50001  还原内部错（深度点不足 / 无 OBB / 平面奇异等）
+func (h *Handler) VinRestore(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(64 << 20); err != nil && err != http.ErrNotMultipart {
+		httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest, "multipart 解析失败: "+err.Error()))
+		return
+	}
+
+	rgb, err := readImagePart(r, "image_binary_rgb1300")
+	if err != nil || len(rgb) == 0 {
+		httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest, "image_binary_rgb1300 缺失"))
+		return
+	}
+	depth, err := readImagePart(r, "image_binary_depth")
+	if err != nil || len(depth) == 0 {
+		httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest, "image_binary_depth 缺失"))
+		return
+	}
+
+	dw, derr := strconv.Atoi(r.FormValue("depth_w"))
+	dh, herr := strconv.Atoi(r.FormValue("depth_h"))
+	if derr != nil || herr != nil || dw <= 0 || dh <= 0 {
+		httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest, "depth_w / depth_h 非法"))
+		return
+	}
+	fx, fxe := strconv.ParseFloat(r.FormValue("fx"), 64)
+	fy, fye := strconv.ParseFloat(r.FormValue("fy"), 64)
+	cx, cxe := strconv.ParseFloat(r.FormValue("cx"), 64)
+	cy, cye := strconv.ParseFloat(r.FormValue("cy"), 64)
+	if fxe != nil || fye != nil || cxe != nil || cye != nil || fx <= 0 || fy <= 0 {
+		httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest, "fx/fy/cx/cy 非法（fx,fy 必须>0）"))
+		return
+	}
+
+	deviceID := r.FormValue("device_id")
+	logID := r.FormValue("log_id")
+	if logID == "" {
+		logID = "vin_restore_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+
+	// 懒加载模型
+	if err := h.ensureVinObbModel(); err != nil {
+		httpx.WriteError(w, httpx.NewError(40701, http.StatusNotFound,
+			"yolo-obb 模型未就绪: "+err.Error()))
+		return
+	}
+
+	png, meta, rerr := restore.Restore(h.models, vinObbTag, rgb, depth, dw, dh, fx, fy, cx, cy)
+	if rerr != nil {
+		if rerr == restore.ErrTiltTooLarge {
+			httpx.OK(w, vinRestoreResp{
+				OK:       false,
+				TiltDeg:  meta.TiltDeg,
+				NumDet:   meta.NumDet,
+				DeviceID: deviceID,
+				LogID:    logID,
+			})
+			return
+		}
+		h.log.Warn("VinRestore 还原失败", "err", rerr, "log_id", logID, "tilt", meta.TiltDeg, "ndet", meta.NumDet)
+		httpx.WriteError(w, httpx.NewError(50001, http.StatusInternalServerError, "还原失败: "+rerr.Error()))
+		return
+	}
+
+	httpx.OK(w, vinRestoreResp{
+		OK:           true,
+		ResultPNGB64: base64.StdEncoding.EncodeToString(png),
+		Width:        meta.OutW,
+		Height:       meta.OutH,
+		TiltDeg:      meta.TiltDeg,
+		WidthMM:      meta.WidthMM,
+		HeightMM:     meta.HeightMM,
+		ThetaDeg:     meta.ThetaDeg,
+		InlierRate:   meta.InlierRate,
+		RMS:          meta.RMS,
+		MedZ:         meta.MedZ,
+		NumDet:       meta.NumDet,
+		DeviceID:     deviceID,
+		LogID:        logID,
 	})
 }
 

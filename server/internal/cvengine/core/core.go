@@ -36,6 +36,9 @@ const (
 	// KindMask yolo 实例分割：gocv.CreateORTMask（直接用 onnxruntime + std/mean 预处理 + 自带 RunMask）。
 	// VMASK / LTMASK 等用这个。
 	KindMask Kind = "mask"
+	// KindCom 通用原始输出模型：gocv.CreateORTCom（onnxruntime 直链，吐扁平 []float32，
+	// 后处理由调用方自己做）。yolo-obb（VIN 字符 OBB，输出 [1,6,8400]）用这个。
+	KindCom Kind = "com"
 )
 
 // Status 一条模型条目的运行时状态。
@@ -186,6 +189,69 @@ func (r *Registry) RegisterMaskONNX(tag, path string, opts MaskOptions) error {
 	return nil
 }
 
+// RegisterComONNX 加载通用原始输出模型（gocv.CreateORTCom 路径）。
+//
+// 用于 yolo-obb 这类「模型只吐原始张量、后处理在 Go 里做」的情形。
+// iSize / iChan 传 0 让 onnxruntime 从 input shape 自动推（yolo-obb 固定 1×3×640×640）。
+//
+// std=1/255、mean=0 等价于把 0..255 像素归一到 0..1（与端侧 ÷255 预处理一致）。
+// 失败语义同 RegisterMaskONNX。
+func (r *Registry) RegisterComONNX(tag, path string, std float64, mean gocv.Scalar) error {
+	tag = strings.TrimSpace(strings.ToUpper(tag))
+	if tag == "" {
+		return errors.New("tag 必填")
+	}
+	st := Status{Tag: tag, Kind: KindCom, Path: path}
+
+	fi, err := os.Stat(path)
+	if err != nil {
+		st.Error = fmt.Sprintf("stat: %v", err)
+		r.put(tag, &Entry{status: st})
+		return err
+	}
+	st.SizeBytes = fi.Size()
+
+	weights, err := os.ReadFile(path)
+	if err != nil {
+		st.Error = fmt.Sprintf("read: %v", err)
+		r.put(tag, &Entry{status: st})
+		return err
+	}
+
+	// iSize/iChan = 0 → 从模型 input shape 自动推断（CreateORTCom 内部 ORTSession_GetInputShapes）。
+	net := gocv.CreateORTCom(0, 0, weights, image.Point{}, 0, std, mean)
+	if net == nil || net.Empty() {
+		st.Error = "CreateORTCom 失败（onnxruntime 加载或 input shape 推断失败）"
+		st.OpenCVEmpty = true
+		r.put(tag, &Entry{status: st})
+		return errors.New(st.Error)
+	}
+
+	st.Loaded = true
+	st.LoadedAt = time.Now().UTC().Format(time.RFC3339Nano)
+
+	if old := r.replace(tag, &Entry{net: net, status: st}); old != nil && old.net != nil {
+		_ = old.net.Release()
+	}
+	return nil
+}
+
+// RunCom 跑 KindCom 模型；从注册表拿 net 后调 gocv.RunCom，返回原始 []float32 张量。
+//
+// blob 必须由调用方用 gocv.BlobFromImage 造好（NCHW，已含归一/swapRB/尺寸）。
+func (r *Registry) RunCom(tag string, blob gocv.Mat) ([]float32, error) {
+	r.mu.RLock()
+	e, ok := r.entries[strings.ToUpper(tag)]
+	r.mu.RUnlock()
+	if !ok || e.net == nil {
+		return nil, ErrNotFound
+	}
+	if e.status.Kind != KindCom {
+		return nil, ErrWrongKind
+	}
+	return gocv.RunCom(e.net, blob), nil
+}
+
 // Get 拿底层 gocv.Net；未注册或加载失败返 ErrNotFound。
 func (r *Registry) Get(tag string) (*gocv.Net, error) {
 	r.mu.RLock()
@@ -284,12 +350,15 @@ func (r *Registry) LoadFromEnv(envValue string) []Status {
 
 		tag := strings.ToUpper(strings.TrimSpace(left))
 		kind := KindGeneral
-		// TAG:mask=path → kind=mask
+		// TAG:mask=path → kind=mask；TAG:com=path → kind=com
 		if colon := strings.IndexByte(left, ':'); colon > 0 {
 			tag = strings.ToUpper(strings.TrimSpace(left[:colon]))
 			k := strings.ToLower(strings.TrimSpace(left[colon+1:]))
-			if k == string(KindMask) {
+			switch k {
+			case string(KindMask):
 				kind = KindMask
+			case string(KindCom):
+				kind = KindCom
 			}
 		}
 
@@ -310,6 +379,9 @@ func (r *Registry) LoadFromEnv(envValue string) []Status {
 		switch kind {
 		case KindMask:
 			_ = r.RegisterMaskONNX(tag, path, DefaultMaskOptions(classes...))
+		case KindCom:
+			// 通用原始输出：默认 std=1/255、mean=0（÷255 归一），与端侧 yolo-obb 预处理一致。
+			_ = r.RegisterComONNX(tag, path, 1.0/255.0, gocv.Scalar{})
 		default:
 			_ = r.RegisterONNX(tag, path)
 		}

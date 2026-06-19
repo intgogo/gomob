@@ -219,4 +219,140 @@ OrthoRectify(depth_mm,K_depth, rgb,K_rgb, rt_rgb_from_depth[12], cfg) -> OrthoRe
 （|n·n0|=1.0/rms0.29mm）、覆盖率（91%）、外参投影正确性（中心解码-质心 0.55mm，能捕获漏用 t 的视差偏移）、
 metric 尺度（相邻正射像素世界位移比 1.008）。挂 `scripts/native-host-test.sh`。
 
-**live 拉通待办**：见 `TODO.md` M6.9.5（双相机标定 R|t + JNI/Kotlin 包装 + 全幅 RGB capture UI）。
+### 9.1 端侧接线（2026-06-18，code-complete 待真机验证）
+
+JNI/契约/采集/UI 已接通，第一光用 eYs3D 自带 L' 彩色 + `R|t=单位阵`跑通全链路：
+
+- **JNI** `native/jni/jni_bridge.cpp::vinOrthoRectify`：删 `vinRectify` 的 `NOT_IMPLEMENTED` 桩，零拷贝
+  `GetDirectBufferAddress` 取 depth/rgb → 调 `gomob::vin::OrthoRectify` → 回裸 RGB888+mask+plane（**不在 native 编 PNG**）。
+  同时删死桩 `native/vin/vin_rectify.cpp`。
+- **契约** `NativeBridge.vinOrthoRectify(depth16Mm+depthIntr[4] / rgb888+rgbIntr[4] / rtRgbFromDepth[12] / config[6])`
+  → `VinOrthoNative(rgb,mask,width,height,planeNormalAndD[4],planeStats[2],covered)`。config=
+  `[pixel_size_mm,out_w,out_h,plane_dist_thresh_mm,ransac_iter,min_inlier_ratio]`。
+- **采集** `VinCaptureViewModel.capture()`：配对最近 depth + eYs3D L' → `vinOrthoRectify` → `FrameRenderer.orthoToBitmap`
+  （mask==0 透明）→ 显示在 `RubbingPaper`。OCR 路留 `recognize()` 待接。
+- **第一光为何用 L'**：L' 与深度是**同一矫正左目**（`Eys3dCameraService` 两帧均 `rsd550Intrinsics` 同标定），
+  `R|t=单位阵`几何成立、**非假兜底**；HLSD8 高清需真标定（见 §9.2）。
+
+### 9.2 标定计算上服务端（架构决策 2026-06-18）
+
+终态彩色源 = **HLSD8 13MP**（清晰度远胜 L'）。HLSD8 与 RS-D550 是两颗独立 USB 相机，flash 无任何外参，
+`R|t`(HLSD8↔depth) 必须自标定。**决策：标定计算放服务端，app 只采集图像对上传**（用户拍板）：
+
+- **为何上云**：native 集成 OpenCV(+ArUco) 成本高（Android 侧只有 Berxel OpenCV3 无干净 aruco；`native/calibration`
+  是桩）。而 **cvengine 容器已带 OpenCV 4.6 + ArUco/calib3d**（`server/Dockerfile.cvengine`、`server/scripts/laser-cgo-setup.sh`），
+  契合「端拍云算」重建主线。native 保持零 OpenCV；正射 `OrthoRectify`（纯 Eigen）留端侧每拍快算。
+- **可复用基建**：① 设备标定持久化 `server/migrations/0009_devices.up.sql`（`devices` + `device_calibrations`，版本化、
+  sha256、`GET /v1/devices/{id}/calibrations/latest`）已存在；② 激光管线已有 ArUco-36h11 + solvePnP 相机间外参
+  （lidar core，与用户 15cm ArUco 靶同 dict）；③ 标定**外参/内参与距离无关**，可在 50–80cm 舒服距离标、用于 VIN 近距，
+  且**不用深度流**（只需 HLSD8 彩色 + eYs3D L' 两张 2D 图，depth 在 L' 同坐标系 → `R|t`(HLSD8←L')=`R|t`(HLSD8←depth)）。
+- **标定算法**：两机同拍 ArUco 板 → 各 solvePnP 得 `T_cam_from_board` → 合成
+  `T_HLSD8_from_L' = T_HLSD8_from_board · (T_L'_from_board)^-1`；HLSD8 内参由同批多视角 `calibrateCamera`/`stereoCalibrate` 出。
+- **待建**：服务端 stereo 标定端点（复用 cvengine OpenCV4.6 aruco + lidar solvePnP）+ app 标定采集页（复用既有
+  「Color↔Depth 标定」入口/`CalibrationScreen` 框架，采 N≥10 组多姿态上传）+ 端侧持久化 `K_hlsd8`/`R|t`。
+  落地后 `capture()` 改喂 HLSD8 + 加载标定，**正射代码不变**。
+
+**live 拉通进度**：见 `TODO.md` M6.9.5（① 第一光 L'+单位阵 ✅ code-complete 待真机；② 服务端标定 + HLSD8 切换 待建）。
+详见 `docs/agent-memory/finding_vin_rectify_serverside_calib_2026-06-18.md`。
+
+## 10. 还原算法全量上服务端 + 原厂逆向规格（架构决策 2026-06-18）
+
+> 用户拍板两条：①「具体的拍完照之后的后处理还原逻辑和算法，根据原厂逆向工程来对齐」；
+> ②「把还原相关的算法都放到服务端去」。决策：**整条还原管线移到服务端**，端侧只「拍 + 存原始 + 上传」；
+> 运行时 = **扩 Go cvengine（gocv）**；保真度 = **直接上原厂全保真**（不做简化 MVP）。
+> 端侧旧 `native/vin/ortho_rectify.{h,cpp}` + JNI `vinOrthoRectify` 降级为「拍到了」即时近似预览，不再是真还原路径。
+
+### 10.1 原厂真理源 = VINCreator APK 逆向
+
+原厂 = `VINCreator_standard_target34_v1.4.11`（`/root/WindowsR/berxel/sdk/` 下 APK；eYs3D 非 Berxel）。
+逆向工具：NDK `llvm-objdump`（host binutils 无 aarch64 后端）+ `androguard 4.0.1`（dex 反编）。
+4 月那份 `Tools/VinRectifyDemo/vin_rectify_demo.cpp` + `docs/VIN_RGBD_Rectification_Design.md` 是**旧逆向移植/设计稿**
+（单相机 registered 假设 `cx=x*colorW/depthW`、forward splat + hole fill），**非原厂真源码**，不作对齐基准。
+
+**原厂还原 = 重型 OpenCV + ONNX 管线**，端侧不该扛 → 服务端是对的家。两层：
+
+**A. Java/Kotlin 侧（`classes.dex`，已完整反编）**
+- `com.esp.uvc.main.CameraPresenter.performImageRestoration(base, sub)`：编排入口。读
+  `<base>/result/<sub>/` 下 `*_rgb1300.jpg`(HLSD8 彩色) + `*_depth.yuv`(深度 16bit) → YOLO OBB →
+  打包 regions[] → `CreatorNative.processAll(...)` → `*_restored.jpg`。返回码 0=成功 / 60=校验完成 /
+  61=校验失败 / 其它=错误。
+- `processAll` 真签名（由 `processAll$default` 桥还原，默认 brightness=0/contrast=0/gamma=1.0f）：
+  `processAll(deviceID, rgbPath, depthPath, outPath, "/VIN/param"目录, regions[], 站名, 操作员, 记录VIN, "front"|"rear", brightness:int, contrast:int, gamma:float)`。
+  `"front"|"rear"` = `bIsRotated180` → **后置 VIN 的 180° 翻转**（不是端侧 `(0,-1,0)` 硬凑）。
+- `com.esp.uvc.main.ONNXDetector`（纯 Kotlin，全 recovered）：
+  - 模型 `assets/model/yolo-obb.onnx`（YOLO11s-OBB，输入 `images[1,3,640,640]`，输出 `output0[1,6,8400]`，单类 `number`）。
+  - `preprocess`：letterbox 640×640、pad=114、/255、NCHW RGB、**无 mean/std**；记 `ratio/padX/padY`。
+  - `postprocess`：`output[1,6,8400]` 转置→每行 `[cx,cy,w,h,score,angleRad]`；**score≥0.5** 保留；
+    去 letterbox 还原到原图坐标；`createRotatedCorners(cx,cy,w,h,angleDeg)`→`sortCorners`(按 x+y/x−y 排 TL/TR/BR/BL)；
+    `rotatedNms` IoU>0.4（Sutherland-Hodgman 多边形裁剪算旋转 IoU）。
+  - `DetectionRegion.toNativePackedArray(true)` = **9 floats** `[TLx,TLy,TRx,TRy,BRx,BRy,BLx,BLy,angleDeg]`，
+    坐标在 **rgb1300 像素系**，`angleDeg=computeOrientationDegrees`(取长轴朝向，归一化 [-90,90))；
+    regions[] = 各字符 9 floats 拼接。本版 `deskewAngleDeg=0`、rawRegions==restoreRegions==regions。
+
+**B. native 侧（`libcreator_jni.so`，OpenCV C++；2026-06-18 工作流逐函数反汇编 + 对抗校验，高置信）**
+
+> ⚠ 订正早期臆测：`picshadow` **不是去阴影**、`postProcessV3G` **不是亮度/对比度/gamma**——两者都是**几何/裁剪**函数。
+> 真正的二值化/去阴影/gamma 在**上游**（`GetSignature3G`/`CaptchaRecog` 一带，尚未逐函数逆向）。
+
+`ImageRestorerFunc::restoreImageFlow`(总入口,0x37f48c) 真实数据流：
+1. `readDepthYuv` → u16。深度单位：camMode==1 走视差 `Z=(f·50)/(raw·0.125)`，否则 **raw 直接当 mm**。失败码 -2。
+2. 检测签名/铭牌框 4 角（`IsCheckImageForOrigin`/m_param 两路；199/200 哨兵收缩+clamp）。命中置 `outCheckFlag`。
+3. **点云**：4 角按 **Z=248** 反投影出采样矩形，矩形内**逐像素**采深度，过门 **50mm<z<1000mm**，反投影
+   `Xw=(u−cx)·z/fx, Yw=(cy−v)·z/fx, Zw=z`（Y 翻转、**X/Y 都用 fx**）。点云 <100 → 判废**码 36**。
+4. **RANSAC 平面 `z=ax+by+d`**（最少 **50** 次迭代，maxIter 447；3 点分支 CV_32F+solve(LU)，精修分支 CV_64F+SVD；
+   点到面距 `|ax+by+d−z|/√(a²+b²+1)`，阈值 = 全局 float@0xce0 待取）。
+5. **倾角门**：`tilt=acos(1/√(a²+b²+1))·180/π`，**|tilt|>70° 判废码 34**。
+6. `GetRotationMatrixForPlane`：**R = RotY(θy)·RotX(θx)**，`θx=−atan2(b,1)`、`θy=atan2(a,√(b²+1))`（弧度，无 π/180）；
+   `RotX=[[1,0,0],[0,c,−s],[0,s,c]]`、`RotY=[[c,0,s],[0,1,0],[−s,0,c]]`，CV_64F。
+7. **metric 画布**：`scale`(px/mm) 按 `g_nRecMode` = 1→20 / 2→25 / else→10；4 角经 `GetPlaneXYZ`(像素射线∩平面解 3×3,CV_32F)
+   +`GetRotatedXY`(`R·(P−T)+T`,CV_64F) 投到平面 2D，min/max 各加边距{±10,±5}，`outW/H=int(1+(max−min)·scale)`，
+   **上限 40000×10000 → 码 40**。
+8. 128 灰底画布 + `getPerspectiveTransform(src4角, dst画布角)`(DECOMP_LU) + `warpPerspective`(主路径动态尺寸；
+   `PerspectiveTrans` 固定 300×300+INTER_CUBIC **只 CaptchaRecog 用**)。
+9. `postProcessV3G`(img,region,W,H,centering,gamma=1.0f,flip=false)：**四角合法性裁剪**——合法角(5≤x≤W−5,5≤y≤H−5)
+   ≥3→`minAreaRect`+`getRotationMatrix2D`去斜；<3→`cropImage`(128 灰底居中 ROI)。**无光度运算**。
+10. `picshadow`(img,rect)：**对已二值化图(前景==0黑)按黑像素行/列投影取最长连续行带 + 累计>10 定左右界，裁紧致框+5px**，
+    原地 clone 替换。**无任何滤波/形态学**。→ 写 `result_temp.jpg` → `IsCheckImage`/`IsCheckImageForOrigin`(码 62)。
+
+`CCameraModel`（标定 bin + 畸变）：
+- `LoadBinStereoParas`：bin **硬校验 camCount==3**；字段偏移 cx@0 cy@8 fx@0x10 fy@0x18，畸变条 5 double/40B，外参条 3 double/24B，
+  两 256B 保留块 + 256B map1/map2；末段 11 个 int 立体头。**我们自标定输出须按此布局**（或绕开，见 §10.3）。
+- 畸变模型 = **任意阶纯偶次径向 `Σk_i·r^{2i}` + Brown 切向(p1,p2) + 前置 FOV/atan 角度映射**（`xn'=fx·xn·atan(r/fx)/r`），
+  `UndistortionPointByLM` 用 MINPACK lmdif 迭代求逆（非 OpenCV 标准 5 参，不能用 `undistortPoints`）。
+- `setCharRegionsFromYolo`：JNI 自适应解 stride(8/9)；每字符 size=avgW·avgH(>1 才纳入)；全有效角拼 `minAreaRect` 求 VIN 整体框，
+  过长宽比门(W≥20,H≥10,W/H≥2)直接用，否则「倍角圆均值」估主方向反旋取轴对齐框；4 角(z=10000 占位)写入相机模型置 `g_vinReady`。
+
+### 10.2 端侧采集契约（已落地，2026-06-18）
+
+`VinCaptureViewModel.capture()` 改为**先无条件落盘原始采集**（端侧近似正射降为 best-effort 预览）：
+- 落 `externalFiles/vin_captures/cap_<seq>_<ts>/`：`rgb1300.jpg`(HLSD8 JPEG q95) + `depth.yuv`(u16 LE metric mm) +
+  `meta.json`(deviceId + 彩色/深度尺寸 + **深度真内参**[反投影必需] + colorPixelType + ts + seq)。
+- 每拍独立目录、序号续号，`adb pull` 取走脱机自测。
+
+**首批真机数据（2510DRK44C，落 `.dev/vin_captures/`，11 张/2 块板）**：
+- 板1 cap_001-006 = `☆LA99FRP32G0LTH013☆`（清晰/基本正对）；板2 cap_007-011 = 另一串（偏暗+反光+带角度）。
+- 彩色 **1280×256**（pixelType=HLSD8_RGB24，**非 13MP 全分辨率**；待查 HLSD8 是否能出更高模式，影响 OCR 上限）；
+  深度 640×128、内参 fx=614.6025/fy=163.894/cx=324/cy=64.382（各向异性）、有效 79~81%、板距 ~1850mm。
+- ⚠ **彩色=深度精确 2×**（同 5:1 aspect）：离线实测证 **registered（同光路、无视差、零标定可行）**——按「color 内参=2×depth、外参单位阵」
+  反向正射，VIN **零重影**、几何正确。HLSD8 高清标定路（M6.9.5b）非重合必需，仅为提清晰度。
+- ⚠ **深度尺度疑似过标定 ~3×**：实测板距中位 ~1850mm，但**原厂深度有效门是 50mm<z<1000mm**（设计要求距板 30-60cm）。
+  我们读 1850 → 要么 eYs3D 深度过标定 ~3×、要么真拍远了。**对重合不致命**（按 OBB 宽归一化已规避；原厂走 metric px/mm 则需真尺度）。
+  待核：用已知尺寸物量测 eYs3D depth 真尺度（关联 M6.5 flash 内参）。
+
+### 10.3 落地计划
+
+1. **离线还原 harness ✅ 成型且达标**（`tests/harness/vin_restore/`：`run.sh`+`restore_obb.py`+`obb.py`+`analyze.py`，Python cv2+onnxruntime）：
+   深度 RANSAC 平面 z=ax+by+d → 倾角>70°门 → 摆正 → `yolo-obb.onnx` VIN OBB(number 框,排星) 四角单应正射(逐像素 remap)
+   → **原厂 GetSignature3G 去阴影二值化(`adaptiveThreshold` GAUSSIAN/BINARY/blockSize=131/C=15 + erode(CROSS3)/dilate(RECT5)/去小斑/CLOSE+OPEN)**。
+   `analyze.py` 用 EUCLIDEAN ECC 测同 VIN 几何残余(主指标)。**实测结论=正常：同 VIN 各张几何重合，中位残余 0.44~0.48%(4~5px/1000)、旋转<0.6°，
+   六张叠加成锐利可读 `☆LA99FRP32G0LTH013☆`**；板2 强反光被超大窗自适应阈值根除→清晰可读。
+2. ✅ **原厂真去阴影已落定**：`GetSignature3G` 的 `adaptiveThreshold(blockSize=131,C=15)` 是唯一去阴影/二值化算子(非 CLAHE/gamma)，
+   blockSize 远大于笔画→去金属反光梯度。`picshadow`=黑像素投影内容裁剪(留作 Go 端口 `picshadow_crop` 参照；harness 主锚定用 OBB 单应框已排星，故未叠用)。
+3. ✅ **Go cvengine 端口已落地**（`server/internal/cvengine/restore/` + `POST /cv/ocr/v1/vin_restore`）：纯 Go 无新 cgo——
+   OBB 走 `gocv.CreateORTCom` 取原始 [1,6,8400] 张量 Go 侧解码（新增 `gocv.RunCom` 桥 + core `KindCom`）；平面 `z=ax+by+d` 用 `gocv.Solve`
+   (SVD-free)；四角单应 8×8 `Solve`（`GetPerspectiveTransform` 仅整型）；去阴影 `adaptiveThreshold(131,15)`。`go build` 绿；
+   11 张真机自验 Go vs Python **7/11 逐像素一致、最大差 0.106%**(RNG 种子差,内容同)，Go 出图跑同一 analyze=正常(中位残余 0.48%)。
+   运行期 `LD_LIBRARY_PATH` 须含 `/usr/local/lib64`(opencv_world.so.405)。
+4. **标定**：实测 registered（彩色=深度2× 零视差）→ 重合零标定即成；HLSD8 高清标定(M6.9.5b)仅提清晰度，非必需。
+   metric 真尺度（原厂 px/mm 路）需 eYs3D depth 真标定（关联 M6.5/depth 50-1000mm 门）。
+5. App：`capture()` 已存原始；后续接「上传 → 服务端还原 → 回显 restored」。

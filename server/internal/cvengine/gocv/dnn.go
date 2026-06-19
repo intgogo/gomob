@@ -1233,3 +1233,23 @@ func RunDB(net *Net, img Mat, confThreshold float32) ([]RotatedRect, []float32) 
 	out := <-data.OutChan
 	return out.RRects, out.Scores
 }
+
+// RunCom 跑「通用原始输出」模型（CreateORTCom 路径），返回扁平的 []float32 原始张量。
+//
+// 与 RunMask / RunYolo 等专用 helper 不同：本函数不做任何后处理，
+// 调用方拿到的就是 onnxruntime 吐出的原始输出（如 yolo-obb 的 [1,6,8400]=50400 个 float），
+// 由调用方自行 reshape / 解码。
+//
+// blob 必须是调用方用 BlobFromImage 造好的 NCHW 4D blob（已含 ÷std、swapRB、尺寸归一）。
+// 因为 ComIn.InputBlob 是包内 cgo C.Mat 类型，外部包无法直接构造 ComIn，故由本 helper 在包内桥接。
+func RunCom(net *Net, blob Mat) []float32 {
+	data := ComIn{
+		InputBlob: blob.p,
+		OutChan:   make(chan ComOut),
+	}
+	defer close(data.OutChan)
+
+	net.inChan <- data
+	out := <-data.OutChan
+	return out.Val
+}

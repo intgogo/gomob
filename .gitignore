@@ -73,8 +73,9 @@ __pycache__/
 # 本地 agent 状态/设置（不入库）
 .claude/
 
-# Go 编译产物（laserworker 可执行）
+# Go 编译产物（laserworker / cvengine 可执行）
 /server/laserworker
+/server/cvengine
 
 # 服务端 native C++ cmake 构建产物（liblidar_*.a / *.o / 可执行）
 server/native/**/build/
