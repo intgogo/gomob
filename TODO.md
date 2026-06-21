@@ -334,9 +334,6 @@
 | M11.9 | **MessageRepository 去 Noop 默认参**：删 `realtimeRepository` 默认值，~30 处测试显式传 Fake。 | 生产强制注入真实现，无可缺省误读。 | `core/data/.../MessageRepository.kt` |
 | M11.10 | **拒接通知服务端**：新增 `MessageRepository.declineCall` + `MessageApi` 端点 + 服务端 `call_decline` fanout（grep `TODO(structural call-decline)`）。 | 被叫拒接后主叫停止振铃，写 call_logs（reason=rejected）。 | `feature/message/.../IncomingCallOverlay.kt` |
 | M11.11 | **core/media 空模块**：下沉真实现（接 LiveKit Android SDK）或删依赖（grep `TODO(deferred-structural)`）。 | MediaRoomClient 接真实 LiveKit room，或模块 / 依赖移除。 | TODO M5.4 |
-| M11.12 | **LiveKitWebhook 事件入库**：repo 加 `FindLiveSessionByProviderRoom` + 事件落地（验签已实现，grep `TODO(deferred-structural M-media)`）。 | 已验签 webhook 事件持久化驱动 live_session 状态。 | `server/internal/api/media.go` |
-| M11.13 | **cvengine 推理 goroutine 退出**：`gocv/dnn.go` Net 加 done channel，Release 时 close 让 `for{<-net.inChan}` 退出再释 C 资源（grep `TODO(G14-thread)`）；之后 runMaskGuarded 才能做 mid-flight 抢占超时。 | 模型热更 / 关停无 goroutine + ORT session 泄漏。 | `server/internal/cvengine/core/core.go` |
-| M11.14 | **worker JetStream 迁移**：core-NATS→JetStream durable consumer + `Nats-Msg-Id` 去重 + inspection_id 幂等（grep `TODO(jetstream)`）。 | 事件丢失 / 重投不致永久卡 scanning；harness 验幂等。 | `server/internal/worker/handler.go` |
 | M11.15 | **eYs3D 三取流实验路径隔离**：build flag / 独立目标物理隔离 FdSession/pupil/mode25（当前 `kUseVendorCpp` 门控已不可达但代码带 USB 副作用）。 | 实验路径不入生产编译，主路径仅 vendor-cpp。 | `docs/architecture/13-eys3d-driver.md` |
 
 ## M12 tests-quality 整改遗留（2026-06-21，harness 闭环质量补扫）
