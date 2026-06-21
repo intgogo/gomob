@@ -310,3 +310,35 @@
 | M10.6 | ✅ **harness + 文档 + 记忆**：`tests/harness/laser_roam_cropbox`(run.sh+analyze.py 跑 RoamBoxFitTest→正常/异常)；agent-memory finding；本节。 | ✅ `./dev.sh harness laser_roam_cropbox` → 正常(4/4)。 | finding_laser_roam_percamera_cropbox |
 
 **剩（真机复核，开发期无连接设备，已以编译+单测+host harness 兜底）**：① 第一视角走动手感/速度(1500mm·s⁻¹)、look-pad+摇杆双指同时分流是否干净；② 走一圈拟合框质量(真实稀疏云)；③ 镜头 B 在自身设备系标注 + b 框测量端到端；④ 双框 `crop_box_dual` 在真车上的隔离效果。
+
+## M11 全量代码审查整改遗留（2026-06-20，引用 gogame review 策略全量扫描）
+
+> 全量扫描确认 71 条已处置：**57 真修** + **7 demo-data 加标记**（按用户决策保留观感，greppable `TODO(demo-data R1)`）+ **9 结构性降级**（留 TODO）。
+> 验证：`./dev.sh build` 成功（Android+native）、`go build/vet` 净、native host harness 全过、编辑包 `go test` 全过（2 个 cvengine 测试因本机缺 `libonnxruntime.so` 仅加载失败，非代码）。完整明细见 `.dev/code-review/report.md`（临时产物，gitignored）。
+> 本节 = 本轮未做完、需后续接线/部署/结构重构的尾巴。
+
+### M11.A 接线 / 部署必做（无结构改动，补一处即生效）
+
+| ID | 任务 | 验收 | 文档 |
+|----|------|------|------|
+| M11.1 | **CRIT 内参终态**：把 P100R3 出厂 156B 内参 blob 经 JNI 下发到 NATIVE_REWRITE 深度/彩色帧（grep `TODO(intrinsics-R4)`），替换当前 fx≤0「拒绝出帧」降级。 | NATIVE 路径产出 fx>0 真内参 RGBD 对，重建点云无 Inf/NaN 且近距可量测 ≤1%@1-2m。 | `docs/agent-memory/finding_p100r3_device_params_offline_only_2026-05-27.md` |
+| M11.2 | **laserstationweb 部署变量**：注入 `GOMOB_LASER_STATION_PASSWORD`（≥16 高熵），绑回环 / 置于反代+鉴权后。 | 无变量进程拒启；LAN 不可直连工位台；弱口令登录被拒。 | `server/cmd/laserstationweb/main.go` |
+| M11.3 | **auth dev 接线**：dev 启动处调 `auth.EnableBearerDirect(true)`（生产不调）；可选 `gateway/server.go:46` 公开路由改 `PerIP`。 | dev Bearer 直连可用、生产被拒；公开路由限流按客户端 IP。 | `server/internal/auth/middleware.go` |
+| M11.4 | **laser 审计落库**：laserworker main 注入 `SetAuditRecorder(audit.NewPG(pool))`。 | 非 admin 调 MarkAsBackground/DeviceCalib 返 403 且审计入库（非仅日志）。 | `server/internal/laser/handler.go` |
+| M11.5 | **Room schema 基线 + migration 测试入 CI**：`core/database/schemas/*.json` 基线已生成入库，补 MigrationTestHelper 接 CI。 | CI 跑 Room migration 漂移检测通过。 | `core/database/build.gradle.kts` |
+| M11.6 | **网络 TLS 入口**：feature/auth 加 https/wss 切换或服务发现回写 `ServerEndpoint.tls`（数据模型已支持）。 | 可切 https/wss 并连通，release cleartext 策略下不被阻断。 | `core/network/.../ServerEndpointStore.kt` |
+
+### M11.B 结构性重构遗留（跨模块 / 动基础设施，需专项）
+
+| ID | 任务 | 验收 | 文档 |
+|----|------|------|------|
+| M11.7 | **MessageDao 原子化**：DAO 改 abstract class + room-ktx `withTransaction`，markDelivered（改 PK）与会话摘要更新原子；同步改 FakeMessageDao / 测试。 | 投递+摘要更新单事务，断电 / 并发无摘要悬空；测试过。 | `core/database/.../MessageDao.kt` |
+| M11.8 | **删 MIGRATION_1_2 死链** + 从 `DatabaseModule.addMigrations` 摘除。 | 移除后 Room 构建 / 迁移正常，无残留死链。 | `core/database/.../DatabaseMigrations.kt` |
+| M11.9 | **MessageRepository 去 Noop 默认参**：删 `realtimeRepository` 默认值，~30 处测试显式传 Fake。 | 生产强制注入真实现，无可缺省误读。 | `core/data/.../MessageRepository.kt` |
+| M11.10 | **拒接通知服务端**：新增 `MessageRepository.declineCall` + `MessageApi` 端点 + 服务端 `call_decline` fanout（grep `TODO(structural call-decline)`）。 | 被叫拒接后主叫停止振铃，写 call_logs（reason=rejected）。 | `feature/message/.../IncomingCallOverlay.kt` |
+| M11.11 | **core/media 空模块**：下沉真实现（接 LiveKit Android SDK）或删依赖（grep `TODO(deferred-structural)`）。 | MediaRoomClient 接真实 LiveKit room，或模块 / 依赖移除。 | TODO M5.4 |
+| M11.12 | **LiveKitWebhook 事件入库**：repo 加 `FindLiveSessionByProviderRoom` + 事件落地（验签已实现，grep `TODO(deferred-structural M-media)`）。 | 已验签 webhook 事件持久化驱动 live_session 状态。 | `server/internal/api/media.go` |
+| M11.13 | **cvengine 推理 goroutine 退出**：`gocv/dnn.go` Net 加 done channel，Release 时 close 让 `for{<-net.inChan}` 退出再释 C 资源（grep `TODO(G14-thread)`）；之后 runMaskGuarded 才能做 mid-flight 抢占超时。 | 模型热更 / 关停无 goroutine + ORT session 泄漏。 | `server/internal/cvengine/core/core.go` |
+| M11.14 | **worker JetStream 迁移**：core-NATS→JetStream durable consumer + `Nats-Msg-Id` 去重 + inspection_id 幂等（grep `TODO(jetstream)`）。 | 事件丢失 / 重投不致永久卡 scanning；harness 验幂等。 | `server/internal/worker/handler.go` |
+| M11.15 | **eYs3D 三取流实验路径隔离**：build flag / 独立目标物理隔离 FdSession/pupil/mode25（当前 `kUseVendorCpp` 门控已不可达但代码带 USB 副作用）。 | 实验路径不入生产编译，主路径仅 vendor-cpp。 | `docs/architecture/13-eys3d-driver.md` |
+| M11.16 | **TsdfStats 字段 widen**：`tsdf.h` `allocated_voxels/integrated_voxels` int→int64/size_t（grep `TODO(tsdf-stats)`，grid_dim>1290 截断，真机≤512 临界）。 | 大网格统计回写不截断。 | `native/reconstruction/tsdf.h` |
