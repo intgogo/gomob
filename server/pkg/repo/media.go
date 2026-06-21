@@ -228,6 +228,60 @@ func (r *MediaRepo) CreateLiveSession(ctx context.Context, session *LiveSession)
 	return nil
 }
 
+// FindLiveSessionByProviderRoom 按 LiveKit provider room 名反查 live_session（经 media_rooms 关联）。
+// 无命中返 ErrNotFound（对齐本包既有用法），webhook 侧据此判定"未知房间"并仅记日志后 ACK。
+func (r *MediaRepo) FindLiveSessionByProviderRoom(ctx context.Context, providerRoom string) (*LiveSession, error) {
+	const q = `
+		SELECT live_sessions.id, live_sessions.media_room_id, live_sessions.inspection_id,
+		       live_sessions.publisher_id, live_sessions.station_id, live_sessions.title,
+		       live_sessions.status, live_sessions.started_at, live_sessions.ended_at,
+		       live_sessions.latest_snapshot_asset_id, live_sessions.metadata, live_sessions.created_at
+		FROM live_sessions
+		JOIN media_rooms ON live_sessions.media_room_id = media_rooms.id
+		WHERE media_rooms.provider_room = $1
+		LIMIT 1`
+	var s LiveSession
+	var inspectionID, stationID, snapshotID sql.NullInt64
+	var startedAt, endedAt sql.NullTime
+	if err := r.pool.QueryRow(ctx, q, providerRoom).Scan(
+		&s.ID, &s.MediaRoomID, &inspectionID, &s.PublisherID, &stationID,
+		&s.Title, &s.Status, &startedAt, &endedAt, &snapshotID, &s.Metadata, &s.CreatedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	s.InspectionID = nullInt64Ptr(inspectionID)
+	s.StationID = nullInt64Ptr(stationID)
+	s.LatestSnapshotAssetID = nullInt64Ptr(snapshotID)
+	s.StartedAt = nullTimePtr(startedAt)
+	s.EndedAt = nullTimePtr(endedAt)
+	return &s, nil
+}
+
+// MarkLiveSessionLive 把 created 态会话推进到 live（room_started webhook 驱动，幂等）。
+// 仅当当前 status='created' 时生效；已 live/ended 的重复事件不回退，RowsAffected=0 即无操作。
+func (r *MediaRepo) MarkLiveSessionLive(ctx context.Context, id int64) error {
+	const q = `
+		UPDATE live_sessions
+		SET status='live', started_at=COALESCE(started_at, now())
+		WHERE id=$1 AND status='created'`
+	_, err := r.pool.Exec(ctx, q, id)
+	return err
+}
+
+// EndLiveSession 收尾会话（room_finished webhook 驱动，幂等）。
+// 仅当 status<>'ended' 时生效，避免重复事件覆盖 ended_at。
+func (r *MediaRepo) EndLiveSession(ctx context.Context, id int64) error {
+	const q = `
+		UPDATE live_sessions
+		SET status='ended', ended_at=now()
+		WHERE id=$1 AND status<>'ended'`
+	_, err := r.pool.Exec(ctx, q, id)
+	return err
+}
+
 func (r *MediaRepo) ListLiveSessions(ctx context.Context, status string, limit int) ([]LiveSession, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 50

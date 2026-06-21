@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"unsafe"
 )
 
@@ -127,6 +128,8 @@ type Net struct {
 	std          C.double
 	imageMean    C.Scalar
 	inChan       chan interface{}
+	done         chan struct{} // 通知 worker goroutine 退出
+	releaseOnce  sync.Once     // 保证 Release 幂等, 仅 close(done) 一次
 	classes      []string
 	maxInputSize image.Point // for dynamic input shape, the max input size is used to limit max image size
 }
@@ -241,6 +244,13 @@ func ParseNetTarget(target string) NetTargetType {
 
 // Release Net
 func (net *Net) Release() error {
+	// 先通知 worker goroutine 退出, 再释放 C 侧 Net, 避免在途推理 UAF;
+	// sync.Once 保证幂等; done 为 nil 表示未起 worker (如 Empty 的 Net), 不 close。
+	net.releaseOnce.Do(func() {
+		if net.done != nil {
+			close(net.done)
+		}
+	})
 	C.Net_Release((C.Net)(net.p))
 	net.p = nil
 	return nil
@@ -732,6 +742,7 @@ func CreateYolo(gpuId int, classes []string, cfgs, weights []byte) *Net {
 		inputWidth, inputHeight, inputChannel := ParseDarknet(string(cfgs[:]))
 		net.SetParams(image.Point{X: inputWidth, Y: inputHeight}, inputChannel, 1.0/255.0, NewScalar(0, 0, 0, 0))
 		net.inChan = make(chan interface{})
+		net.done = make(chan struct{})
 		net.classes = classes
 
 		outputLayerNames := C.CStrings{}
@@ -741,27 +752,31 @@ func CreateYolo(gpuId int, classes []string, cfgs, weights []byte) *Net {
 		c <- &net
 
 		for {
-			inData := <-net.inChan
-			data := inData.(YoloIn)
+			select {
+			case inData := <-net.inChan:
+				data := inData.(YoloIn)
 
-			cBoxes := C.Rects{}
-			cIds := C.IntVector{}
-			cScores := C.FloatVector{}
+				cBoxes := C.Rects{}
+				cIds := C.IntVector{}
+				cScores := C.FloatVector{}
 
-			C.Net_RunYolo((C.Net)(net.p), data.InputBlob, data.InputSize, data.InputScale, outputLayerNames,
-				C.float(data.ConfThreshold), C.float(data.NMSThreshold), &cBoxes, &cIds, &cScores)
+				C.Net_RunYolo((C.Net)(net.p), data.InputBlob, data.InputSize, data.InputScale, outputLayerNames,
+					C.float(data.ConfThreshold), C.float(data.NMSThreshold), &cBoxes, &cIds, &cScores)
 
-			out := YoloOut{
-				Boxes:  toGoRects(cBoxes),
-				Ids:    toGoInts(cIds),
-				Scores: toGoFloats(cScores),
+				out := YoloOut{
+					Boxes:  toGoRects(cBoxes),
+					Ids:    toGoInts(cIds),
+					Scores: toGoFloats(cScores),
+				}
+
+				C.Rects_Release(cBoxes)
+				C.IntVector_Release(cIds)
+				C.FloatVector_Release(cScores)
+
+				data.OutChan <- out
+			case <-net.done:
+				return
 			}
-
-			C.Rects_Release(cBoxes)
-			C.IntVector_Release(cIds)
-			C.FloatVector_Release(cScores)
-
-			data.OutChan <- out
 		}
 	}()
 
@@ -940,6 +955,7 @@ func CreateClassify(gpuId int, framework string, cfgs, weights []byte, classes [
 
 		net.SetParams(image.Point{X: inputWidth, Y: inputHeight}, inputChannel, std, mean)
 		net.inChan = make(chan interface{})
+		net.done = make(chan struct{})
 		net.classes = classes
 
 		outputLayerNames := C.CStrings{}
@@ -949,21 +965,25 @@ func CreateClassify(gpuId int, framework string, cfgs, weights []byte, classes [
 		c <- &net
 
 		for {
-			inData := <-net.inChan
-			data := inData.(ClassifyIn)
+			select {
+			case inData := <-net.inChan:
+				data := inData.(ClassifyIn)
 
-			cIds := C.IntVector{}
-			cScores := C.FloatVector{}
+				cIds := C.IntVector{}
+				cScores := C.FloatVector{}
 
-			C.Net_RunClassify((C.Net)(net.p), data.InputBlob, outputLayerNames, &cIds, &cScores)
-			out := ClassifyOut{
-				Ids:    toGoInts(cIds),
-				Scores: toGoFloats(cScores),
+				C.Net_RunClassify((C.Net)(net.p), data.InputBlob, outputLayerNames, &cIds, &cScores)
+				out := ClassifyOut{
+					Ids:    toGoInts(cIds),
+					Scores: toGoFloats(cScores),
+				}
+				C.IntVector_Release(cIds)
+				C.FloatVector_Release(cScores)
+
+				data.OutChan <- out
+			case <-net.done:
+				return
 			}
-			C.IntVector_Release(cIds)
-			C.FloatVector_Release(cScores)
-
-			data.OutChan <- out
 		}
 	}()
 
@@ -1028,6 +1048,7 @@ func CreateMetric(gpuId int, weights []byte, clusters int, iSize image.Point, iC
 
 		net.SetParams(iSize, iChan, std, mean)
 		net.inChan = make(chan interface{})
+		net.done = make(chan struct{})
 
 		outputLayerNames := C.CStrings{}
 		C.Net_GetOutputLayerNames(C.Net(net.p), &outputLayerNames)
@@ -1036,19 +1057,23 @@ func CreateMetric(gpuId int, weights []byte, clusters int, iSize image.Point, iC
 		c <- &net
 
 		for {
-			inData := <-net.inChan
-			data := inData.(MetricIn)
+			select {
+			case inData := <-net.inChan:
+				data := inData.(MetricIn)
 
-			res := C.FloatVector{}
+				res := C.FloatVector{}
 
-			C.Net_RunMetric((C.Net)(net.p), data.InputBlob, outputLayerNames, C.int(clusters), &res)
+				C.Net_RunMetric((C.Net)(net.p), data.InputBlob, outputLayerNames, C.int(clusters), &res)
 
-			out := MetricOut{
-				Embeddings: toGoFloats(res),
+				out := MetricOut{
+					Embeddings: toGoFloats(res),
+				}
+				C.FloatVector_Release(res)
+
+				data.OutChan <- out
+			case <-net.done:
+				return
 			}
-			C.FloatVector_Release(res)
-
-			data.OutChan <- out
 		}
 	}()
 
@@ -1106,6 +1131,7 @@ func CreateNetCom(framework string, gpuId int, cfgs, weights []byte, iSize image
 
 		net.SetParams(iSize, iChan, std, mean)
 		net.inChan = make(chan interface{})
+		net.done = make(chan struct{})
 
 		outputLayerNames := C.CStrings{}
 		C.Net_GetOutputLayerNames(C.Net(net.p), &outputLayerNames)
@@ -1114,19 +1140,23 @@ func CreateNetCom(framework string, gpuId int, cfgs, weights []byte, iSize image
 		c <- &net
 
 		for {
-			inData := <-net.inChan
-			data := inData.(ComIn)
+			select {
+			case inData := <-net.inChan:
+				data := inData.(ComIn)
 
-			res := C.FloatVector{}
+				res := C.FloatVector{}
 
-			C.Net_RunInference((C.Net)(net.p), data.InputBlob, outputLayerNames, &res)
+				C.Net_RunInference((C.Net)(net.p), data.InputBlob, outputLayerNames, &res)
 
-			out := ComOut{
-				Val: toGoFloats(res),
+				out := ComOut{
+					Val: toGoFloats(res),
+				}
+				C.FloatVector_Release(res)
+
+				data.OutChan <- out
+			case <-net.done:
+				return
 			}
-			C.FloatVector_Release(res)
-
-			data.OutChan <- out
 		}
 	}()
 

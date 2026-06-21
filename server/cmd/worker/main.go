@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"io.gomob/server/internal/worker"
 	"io.gomob/server/pkg/audit"
@@ -59,6 +60,29 @@ func main() {
 	}
 	defer nc.Close()
 
+	// JetStream 上下文 + 幂等建流：inspection.> 全部事件落 FileStorage 持久化，
+	// worker 用 durable consumer 消费，崩溃/重启不丢事件（M11.14）。
+	js, err := jetstream.New(nc)
+	if err != nil {
+		log.Error("JetStream 初始化失败", "err", err)
+		os.Exit(1)
+	}
+	streamCtx, streamCancel := context.WithTimeout(rootCtx, 10*time.Second)
+	// Retention 用 LimitsPolicy（默认）：流按存储/条数/时间上限保留，消息被 Ack 后不立即删，
+	// 供消费进度回放与排障。不用 WorkQueuePolicy，因为 inspection.> 也会捕获经核心 NATS 发布的
+	// preliminary_done（无对应 JetStream 消费者），WorkQueue 下这类消息会因永不被 Ack 而无限堆积。
+	_, err = js.CreateOrUpdateStream(streamCtx, jetstream.StreamConfig{
+		Name:      worker.StreamName,
+		Subjects:  []string{"inspection.>"},
+		Retention: jetstream.LimitsPolicy,
+		Storage:   jetstream.FileStorage,
+	})
+	streamCancel()
+	if err != nil {
+		log.Error("JetStream 建流失败", "err", err, "stream", worker.StreamName)
+		os.Exit(1)
+	}
+
 	pub := pubsub.NewNATSPublisher(nc)
 
 	// HTTP 客户端：若设了 GOMOB_HMAC_SECRET，自动给 cvengine 调用加签（M-S10.2c）。
@@ -73,6 +97,7 @@ func main() {
 
 	w, err := worker.New(worker.Config{
 		NATSConn:        nc,
+		JS:              js,
 		Pool:            pool,
 		CVEngineTarget:  envOr("GOMOB_CVENGINE_TARGET", "http://127.0.0.1:18810"),
 		HTTPClient:      cvHTTP,

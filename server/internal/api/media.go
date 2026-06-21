@@ -473,15 +473,45 @@ func (h *Handler) LiveKitWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 验签通过 → 事件可信。落地到对应 live_session 需要按 provider room 名反查会话并
-	// 追加事件流，这依赖一个 repo 侧新方法（MediaRepo.RecordLiveSessionEvent / FindLiveSessionByProviderRoom），
-	// 跨出本次改动文件范围（pkg/repo/media.go）。
-	// TODO(deferred-structural M-media): 在 pkg/repo/media.go 增 FindLiveSessionByProviderRoom +
-	// 事件流落地（live_session_events 表），把已验签事件写库；当前先记构造化日志，确保事件不丢观测。
-	// 终态见 docs/architecture（media/livekit 专题）。这里 ACK 2xx 是 webhook 正确语义（非 2xx 会触发 LiveKit 重试）。
+	// 验签通过 → 事件可信。按 event 类型驱动对应 live_session 状态机：
+	// room_started → 会话置 live；room_finished → 会话收尾 ended（并同步 media_room 状态）。
+	// 二者都按 provider room 名反查会话；未知房间/无关事件仅记日志。
+	// 任何分支都返回 2xx ACK —— webhook 语义下非 2xx 会触发 LiveKit 重试，这里事件已观测/已处理。
+	//
+	// TODO(deferred-structural M-media): 事件流明细表（live_session_events，记录每条 webhook 的全量负载/时序）
+	// 仍待引入；当前只把状态推进落到 live_sessions，逐事件审计流是后续结构改动。
 	h.log.Info("livekit webhook 已验签",
 		"event", ev.Event, "room", ev.Room.Name,
 		"participant", ev.Participant.Identity, "id", ev.ID)
+
+	switch ev.Event {
+	case "room_started", "room_finished":
+		session, err := h.media.FindLiveSessionByProviderRoom(r.Context(), ev.Room.Name)
+		if err != nil {
+			if err == repo.ErrNotFound {
+				h.log.Info("livekit webhook 房间无对应 live_session，仅 ACK",
+					"event", ev.Event, "room", ev.Room.Name)
+				break
+			}
+			h.log.Error("livekit webhook 反查 live_session 失败", "err", err, "room", ev.Room.Name)
+			break
+		}
+		if ev.Event == "room_started" {
+			if err := h.media.MarkLiveSessionLive(r.Context(), session.ID); err != nil {
+				h.log.Error("livekit webhook 置 live_session=live 失败", "err", err, "session", session.ID)
+			}
+		} else {
+			if err := h.media.EndLiveSession(r.Context(), session.ID); err != nil {
+				h.log.Error("livekit webhook 置 live_session=ended 失败", "err", err, "session", session.ID)
+			}
+			// 会话所属 media_room 一并收尾，保持两张表状态一致。
+			if err := h.media.SetRoomStatus(r.Context(), session.MediaRoomID, "ended", nil); err != nil && err != repo.ErrNotFound {
+				h.log.Error("livekit webhook 置 media_room=ended 失败", "err", err, "room_id", session.MediaRoomID)
+			}
+		}
+	default:
+		// participant_joined / track_published 等：暂不驱动状态机，已记日志即满足观测。
+	}
 
 	httpx.OK(w, map[string]any{"received": true, "event": ev.Event})
 }

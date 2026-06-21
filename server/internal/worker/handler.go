@@ -32,6 +32,7 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"io.gomob/server/pkg/audit"
 	"io.gomob/server/pkg/logger"
@@ -43,6 +44,11 @@ const (
 	TopicScanCompleted   = "inspection.scan_completed"
 	TopicPreliminaryDone = "inspection.preliminary_done"
 
+	// StreamName JetStream 流名；Subjects = inspection.> 覆盖本服务全部 inspection 事件。
+	StreamName = "GOMOB_INSPECTION"
+	// ConsumerScanCompleted scan_completed 的 durable consumer 名（重启复用同一消费进度）。
+	ConsumerScanCompleted = "worker-scan-completed"
+
 	// 总分阈值 — 与厂家库平均相似度判定 verdict
 	verdictPassThreshold    = 0.85
 	verdictWarningThreshold = 0.60
@@ -50,7 +56,8 @@ const (
 
 // Config 全部依赖。
 type Config struct {
-	NATSConn       *nats.Conn
+	NATSConn       *nats.Conn          // 底层连接（重连/探活仍依赖它）
+	JS             jetstream.JetStream // JetStream 上下文，durable consumer 消费/生产
 	Pool           *pgxpool.Pool
 	CVEngineTarget string       // http://127.0.0.1:18810
 	HTTPClient     *http.Client // 默认 30s timeout
@@ -104,6 +111,7 @@ type PreliminaryDoneEvent struct {
 // Worker 业务句柄。
 type Worker struct {
 	cfg   Config
+	js    jetstream.JetStream
 	insps *repo.InspectionRepo
 	mc    *minio.Client
 	log   *slog.Logger
@@ -112,6 +120,9 @@ type Worker struct {
 func New(cfg Config) (*Worker, error) {
 	if cfg.NATSConn == nil {
 		return nil, errors.New("NATSConn 必填")
+	}
+	if cfg.JS == nil {
+		return nil, errors.New("JS（JetStream）必填")
 	}
 	if cfg.Pool == nil {
 		return nil, errors.New("Pool 必填")
@@ -131,37 +142,73 @@ func New(cfg Config) (*Worker, error) {
 	}
 	return &Worker{
 		cfg:   cfg,
+		js:    cfg.JS,
 		insps: repo.NewInspectionRepo(cfg.Pool),
 		mc:    mc,
 		log:   cfg.Log,
 	}, nil
 }
 
-// Run 订阅 NATS 主题，阻塞返。ctx 取消时取消订阅 + drain。
+// Run 用 JetStream durable consumer 消费 scan_completed，阻塞返。ctx 取消时停消费。
 //
-// TODO(jetstream): 当前用 core-NATS（fire-and-forget，无持久化/无重投/无幂等）。
-// 一旦 worker 崩溃或 handle 报错（cv-engine 抖动、MinIO 拉取失败），事件即永久丢失，
-// 对应 inspection 会卡在 scanning 永不进 preliminary（现阶段零真实生产者所以未暴露）。
-// 终态：迁 JetStream durable consumer（AckExplicit + 重试上限 + DLQ），生产侧带 Nats-Msg-Id
-// 做 server 去重 + worker 侧 inspection_id 幂等落库，使"丢事件→卡 scanning"不可能发生。
-// 属基础设施改造，不在本轮范围；此处仅订阅失败显式返错，handle 失败逐条 Error 告警兜底。
+// 已迁 JetStream（M11.14）：相比旧 core-NATS（fire-and-forget，无持久化/无重投/无幂等），
+// 现在事件落 FileStorage 持久化，durable consumer "worker-scan-completed" 记录消费进度，
+// worker 崩溃/重启从未 Ack 的消息续投；handle 成功才 Ack，失败 Nak 触发重投，
+// AckExplicit + MaxDeliver=5 给重投上限避免毒丸消息无限循环。handle 对 inspection_id
+// 幂等（scanning→preliminary 已是终态时 Transition 容错），重投安全。
+// 生产侧用 PublishScanCompleted 带 Nats-Msg-Id（scan-<inspection_id>）做 server 端去重，
+// 共同保证"丢事件→卡 scanning"不可能发生。
 func (w *Worker) Run(ctx context.Context) error {
-	sub, err := w.cfg.NATSConn.Subscribe(TopicScanCompleted, func(msg *nats.Msg) {
+	cons, err := w.js.CreateOrUpdateConsumer(ctx, StreamName, jetstream.ConsumerConfig{
+		Durable:       ConsumerScanCompleted,
+		FilterSubject: TopicScanCompleted,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		MaxDeliver:    5,
+		AckWait:       2 * time.Minute,
+	})
+	if err != nil {
+		return fmt.Errorf("create consumer: %w", err)
+	}
+
+	cc, err := cons.Consume(func(msg jetstream.Msg) {
 		jobCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		if err := w.handle(jobCtx, msg.Data); err != nil {
-			// core-NATS 无重投：这里只能告警，事件已无法重放（见上方 TODO(jetstream)）。
-			w.log.Error("处理失败（core-NATS 无重投，事件丢失，inspection 可能卡 scanning）",
-				"err", err, "data", string(msg.Data[:min(200, len(msg.Data))]))
+		if err := w.handle(jobCtx, msg.Data()); err != nil {
+			data := msg.Data()
+			w.log.Error("处理失败，Nak 触发 JetStream 重投（上限 MaxDeliver=5）",
+				"err", err, "data", string(data[:min(200, len(data))]))
+			_ = msg.Nak()
+			return
+		}
+		if err := msg.Ack(); err != nil {
+			// Ack 失败：消息会因 AckWait 超时被重投，handle 幂等保证安全。
+			w.log.Warn("Ack 失败，将在 AckWait 超时后重投", "err", err)
 		}
 	})
 	if err != nil {
-		return fmt.Errorf("subscribe: %w", err)
+		return fmt.Errorf("consume: %w", err)
 	}
-	defer func() { _ = sub.Unsubscribe() }()
-	w.log.Info("worker 已订阅", "topic", TopicScanCompleted)
+	defer cc.Stop()
+	w.log.Info("worker 已用 JetStream durable consumer 订阅",
+		"stream", StreamName, "consumer", ConsumerScanCompleted, "subject", TopicScanCompleted)
 
 	<-ctx.Done()
+	return nil
+}
+
+// PublishScanCompleted 向 JetStream 发布 scan_completed 事件（供生产者复用）。
+//
+// 用 WithMsgID("scan-<inspection_id>") 让 JetStream 做 server 端去重：同一 inspection
+// 的重复发布在去重窗口内只入流一次，避免重复触发预审。
+func PublishScanCompleted(ctx context.Context, js jetstream.JetStream, ev ScanCompletedEvent) error {
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return fmt.Errorf("marshal scan_completed: %w", err)
+	}
+	msgID := "scan-" + strconv.FormatInt(ev.InspectionID, 10)
+	if _, err := js.Publish(ctx, TopicScanCompleted, data, jetstream.WithMsgID(msgID)); err != nil {
+		return fmt.Errorf("publish scan_completed: %w", err)
+	}
 	return nil
 }
 

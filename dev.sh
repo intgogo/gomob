@@ -192,9 +192,13 @@ ensure_server_containers() {
         -p "${GOMOB_PORT_REDIS}:6379" \
         -v gomob-redis-data:/data \
         docker.io/library/redis:7-alpine
+    # JetStream 启用 (-js) + 文件存储落 named volume (-sd /data)，
+    # worker 用 durable consumer 持久消费 inspection.scan_completed，崩溃/重启不丢事件。
     ensure_one_container gomob-nats "$GOMOB_PORT_NATS" 4222 \
         -p "${GOMOB_PORT_NATS}:4222" -p "${GOMOB_PORT_NATS_MON}:8222" \
-        docker.io/library/nats:2-alpine
+        -v gomob-nats-data:/data \
+        docker.io/library/nats:2-alpine \
+        -js -sd /data
     # MinIO 凭据必须跟 server/cmd/devserver/main.go:342-343 的默认值对齐 (gomob/gomob_dev_minio)，
     # 否则 asset handler 初始化时 bucket exists check 报 Access Key not exists → upload 返回 503。
     ensure_one_container gomob-minio "$GOMOB_PORT_MINIO" 9000 \
