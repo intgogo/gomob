@@ -40,25 +40,30 @@ build_only() {
 build_and_run eys3d_host_session_smoke \
     tests/native_host/eys3d_host_session_smoke.cpp \
     native/eys3d/host/eys3d_host_session.cpp \
+    native/eys3d/host/eys3d_usb_api.cpp \
     native/eys3d/host/eys3d_stream_loop.cpp \
     "${PORTABLE_SRCS[@]}"
 
-# Android fd 会话/驱动 smoke(坏 fd 优雅降级,真机出帧门控)
-build_and_run eys3d_fd_session_smoke \
-    tests/native_host/eys3d_fd_session_smoke.cpp \
-    native/eys3d/android/eys3d_fd_session.cpp \
-    native/eys3d/host/eys3d_stream_loop.cpp \
-    "${PORTABLE_SRCS[@]}"
+# eys3d_fd_session_smoke 不在 host 跑:Eys3dFdSession 是生产不可达的实验分发器
+# (open_fd 由 kUseVendorCpp=true 永走 Eys3dVendorCppSession,本类从不实例化,见
+#  eys3d_fd_session.cpp Run() 的 TODO(R3) 与 TODO.md M11.15),且其分发的
+#  eys3d_vendor_cpp_session.cpp 依赖 android/native_window.h + 厂商 FrameGrabber SDK,
+#  无法 host 编译。不为生产死代码强行 host 编译 / 造厂商假桩(那是更大的伪造)。
+# 活路径由上面的 eys3d_host_session_smoke(真跑)+ 下面的 eys3d_mode25_stream(编译)覆盖;
+# 待 M11.15 用 build flag 物理隔离实验路径后,再定 fd/pupil/vendor 的测试形态。
+# (orphan 测试源 tests/native_host/eys3d_fd_session_smoke.cpp 一并随 M11.15 处置)
 
 # host 取流工具(需真机才出帧,这里仅编译保证不腐化)
 build_only eys3d_replay_stream \
     native/eys3d/host/eys3d_replay_stream.cpp \
+    native/eys3d/host/eys3d_usb_api.cpp \
     native/berxel/portable/gomob_berxel_portable.cpp
 
 # mode25 真机流验证工具(自研 Eys3dHostSession + Mode25Usb2Plan,仅编译)
 build_only eys3d_mode25_stream \
     native/eys3d/host/eys3d_mode25_stream.cpp \
     native/eys3d/host/eys3d_host_session.cpp \
+    native/eys3d/host/eys3d_usb_api.cpp \
     native/eys3d/host/eys3d_stream_loop.cpp \
     "${PORTABLE_SRCS[@]}"
 

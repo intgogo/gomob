@@ -9,10 +9,12 @@
   - chamfer (mesh → ground_truth)：每 mesh 顶点找最近 ground_truth 点，距离平均 / 最大
   - 表面覆盖率（暂用顶点数 / 期望表面三角数 比例近似）
 
-Verdict:
-  - 正常 (PASS): chamfer_mean < 1.5 * voxel_mm AND mean_dist 偏差 < 0.5 * voxel_mm
-  - 警告 (WARN): chamfer_mean < 3.0 * voxel_mm
-  - 异常 (FAIL): 否则
+Verdict（与 verdict() 实现一致；旧文案 1.5×/3.0× 已过时，订正）:
+  - 正常 (PASS): chamfer_mean < 3.0 * voxel_mm AND mean_dist 偏差 < 0.5 * voxel_mm
+  - 警告 (WARN): chamfer_mean < 5.0 * voxel_mm AND mean_dist 偏差 < 1.0 * voxel_mm
+  - 异常 (FAIL): 否则（ICP 漂移 / TSDF 切系统问题）
+
+退码: 0 = 无 FAIL（含 WARN）, 1 = 有 FAIL 或 case 存在但无可分析输出, 2 = 用法错误。
 
 输入：
   python3 analyze.py [<root_dir>]   默认 .dev/scan-quality
@@ -165,6 +167,11 @@ def main() -> int:
         r["__case__"] = case.name
         results.append(r)
 
+    if not results:
+        print(f"ERR: {root} 下有 case_* 目录但均无可分析输出（mesh/ground_truth/stats 缺失）",
+              file=sys.stderr)
+        return 1
+
     # 表格
     print()
     print(f"{'case':<30} {'voxel':>5} {'frames':>6} {'verts':>7} {'tris':>6} {'kf':>3} "
@@ -187,8 +194,11 @@ def main() -> int:
 
     print()
     print(f"summary: total={len(results)} pass={len(results)-fails-warns} warn={warns} fail={fails}")
-    # measurement harness：FAIL 是 advisory，不阻断 build；exit 0 总是。
-    # 真实精度 regression 通过手工对比 baseline / 长期趋势监控。
+    # R6 闭环：FAIL（chamfer ≥ 5×voxel 或半径误差 ≥ 1×voxel = ICP 漂移 / TSDF 退化）必须让
+    # harness 变红（exit 1），否则重建精度 regression 会拿绿灯过提交前检查；WARN（3-5×voxel
+    # 边缘）仍 exit 0 但醒目，不阻断。
+    if fails:
+        return 1
     return 0
 
 

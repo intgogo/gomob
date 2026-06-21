@@ -2,7 +2,13 @@
 
 #include <libusb-1.0/libusb.h>
 
+#if defined(__ANDROID__)
 #include <android/log.h>
+#else
+// host 兜底(无 NDK):__android_log_print 映射到 stderr,保持 host smoke 可编译(对齐 eys3d_stream_loop.cpp)
+#include <cstdio>
+#define __android_log_print(prio, tag, ...) std::fprintf(stderr, __VA_ARGS__)
+#endif
 #include <dlfcn.h>
 #include <unistd.h>
 

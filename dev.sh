@@ -9,7 +9,8 @@
 #   ./dev.sh run          install + 启动 MainActivity
 #   ./dev.sh up           一键启动开发服务栈 + ASR + 后台 devserver + adb reverse
 #   ./dev.sh test         跑全部单元测试（:test）
-#   ./dev.sh ci           简化 CI 链路：lint + test + assemble
+#   ./dev.sh native-test  native host 测试自动门（5 个 host-test runner 真编译真跑真判）
+#   ./dev.sh ci           简化 CI 链路：lint + test + assemble + native host 测试
 #   ./dev.sh clean        清理 build / .dev/
 #   ./dev.sh reverse      给当前 adb 设备配置本机 devserver / LiveKit 端口反向代理
 #   ./dev.sh log          实时跟 logcat（仅 gomob.* / gomob_native）
@@ -381,8 +382,18 @@ case "$cmd" in
     test)
         "$GRADLEW" test "$@" 2>&1 | tee "$DEV_DIR/test.log"
         ;;
+    native-test)
+        # native host 自动门:5 个 host-test runner 真编译真跑真判(scripts/host-tests-all.sh)
+        set -o pipefail
+        "$PROJ_DIR/scripts/host-tests-all.sh" 2>&1 | tee "$DEV_DIR/native-test.log"
+        ;;
     ci)
-        "$GRADLEW" lint test assembleDebug "$@" 2>&1 | tee "$DEV_DIR/ci.log"
+        # gradle + native host 自动门;任一失败 ci 即非零(pipefail 让 | tee 不吞退码)
+        set -o pipefail
+        rc=0
+        "$GRADLEW" lint test assembleDebug "$@" 2>&1 | tee "$DEV_DIR/ci.log" || rc=$?
+        "$PROJ_DIR/scripts/host-tests-all.sh" 2>&1 | tee "$DEV_DIR/native-test.log" || rc=$?
+        exit "$rc"
         ;;
     clean)
         "$GRADLEW" clean
