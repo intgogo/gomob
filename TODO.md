@@ -342,3 +342,27 @@
 | M11.14 | **worker JetStream 迁移**：core-NATS→JetStream durable consumer + `Nats-Msg-Id` 去重 + inspection_id 幂等（grep `TODO(jetstream)`）。 | 事件丢失 / 重投不致永久卡 scanning；harness 验幂等。 | `server/internal/worker/handler.go` |
 | M11.15 | **eYs3D 三取流实验路径隔离**：build flag / 独立目标物理隔离 FdSession/pupil/mode25（当前 `kUseVendorCpp` 门控已不可达但代码带 USB 副作用）。 | 实验路径不入生产编译，主路径仅 vendor-cpp。 | `docs/architecture/13-eys3d-driver.md` |
 | M11.16 | **TsdfStats 字段 widen**：`tsdf.h` `allocated_voxels/integrated_voxels` int→int64/size_t（grep `TODO(tsdf-stats)`，grid_dim>1290 截断，真机≤512 临界）。 | 大网格统计回写不截断。 | `native/reconstruction/tsdf.h` |
+
+## M12 tests-quality 整改遗留（2026-06-21，harness 闭环质量补扫）
+
+> 补扫 56 harness + 29 native_host，对抗式证伪确认 30 条（CRIT 2 / MED 6 / LOW 22）。
+> **本轮已修**：① `scan_quality/analyze.py` 算出 FAIL 却恒 exit 0 → FAIL→exit1 + 空结果守卫 + 订正过时 docstring（CRIT）；② `eys3d-host-test.sh` 漏 `eys3d_usb_api.cpp` 致整条链接失败 → 补回 3 个 build（CRIT）；③ native 自动门 `scripts/host-tests-all.sh` + `dev.sh native-test`/`ci` 接入 5 个 host-test runner（此前零 CI）。
+> 完整明细见 `.dev/code-review/tests-quality-report.md`（临时产物，gitignored）。下列为剩余 MED/LOW。
+
+### M12.A 判定门 / 隔离（MED，虚假信心或互相干扰）
+
+| ID | 任务 | 验收 | 文档 |
+|----|------|------|------|
+| M12.1 | **警告档吞退码三态化**：vin_restore / eys3d_mode25 / vehicle_axle / berxel_mix_replay / cv_engine_smoke / worker_vin_pipeline 把 FAIL/WARN 吞成 exit 0（与 scan_quality 同病）。改 FAIL→exit1、WARN→exit0（醒目）、缺真值兜底场景显式 exit1 不静默过。 | 各 harness 注入 regression / 坏数据时 exit 非零；WARN 仍 0。 | `.dev/code-review/tests-quality-report.md` |
+| M12.2 | **服务端 harness 隔离**：vinref_lifecycle / cv_vin_compare / cv_vin_pipeline / cv_vinref_compare / vinref_compare_quality 硬编码同组端口 + 对共享 gomob-pg 全表 DELETE + redis FLUSHDB（并发互杀、清开发者本机库）。改唯一前缀 / 独立 schema 或一次性容器 + 端口参数化。 | 两 harness 可并行不互毁；不动开发者主库数据。 | `.dev/code-review/tests-quality-report.md` |
+| M12.3 | **native 断言脆化**：berxel 系全靠 `assert()`（`-DNDEBUG` 即恒过 print-only）→ 改不依赖 NDEBUG 的显式 check + 非零退码；eys3d_fd_session_smoke / eys3d_host_session_smoke 的 `Check(...,true)` 永真占位、cv_yolo_detect 合成图 `0>=0` 永真 → 换真实判据。 | 关键断言在 `-DNDEBUG` 下仍生效；无永真占位。 | `.dev/code-review/tests-quality-report.md` |
+
+### M12.B 卫生 / 可移植（LOW）
+
+| ID | 任务 | 验收 | 文档 |
+|----|------|------|------|
+| M12.4 | **机器特定绝对路径参数化**：depth_flying_pixel / depth_temporal_quality / depth_ir_guided / cv_models_smoke / cv_yolo_detect / cv_modelregistry_load / cv_vin_pipeline / eys3d_depth_test / vehicle_axle 硬编码 `/root/lilw/...` 解释器 / 模型 / 真值。改环境变量 + 默认探测，缺则 loud-fail。 | 换机 / CI 不改源即可跑或明确报缺资产。 | — |
+| M12.5 | **时序 flaky 收敛**：cv_vinref_compare / vinref_lifecycle / cv_vin_compare / model_canary_switch / cv_engine_smoke / cv_hmac_auth / cv_models_smoke / shaperef_lifecycle 固定 sleep 等就绪 + curl 无超时。改轮询健康检查 + `curl --max-time`。 | 慢机不假失败；hang 不挂死 CI。 | — |
+| M12.6 | **假采样 / 契约手工复刻**：scan_bundle_roundtrip 在 Python 手工复刻 Kotlin 布局而非用真产物 → 改用真产物校验；device_realtime_interaction host-sim（已诚实披露，低优）记录在案。 | 契约 harness 用真实序列化产物对比。 | — |
+| M12.7 | **文案 / 阈值漂移订正**：scan_multiview_quality、vin_restore 的 docstring / 打印文案与实际阈值不符（scan_quality 本轮已订正）。统一单一真相。 | 文案与代码阈值一致。 | — |
+| M12.8 | **logs_upload must 清单 + vin_restore 产物落点**：logs_upload 只遍历实际行判过、缺 must 场景清单（负路径漏 record 静默过）→ 加 must 清单；vin_restore 产物用相对路径不支持 OUTPUT_DIR → 支持 OUTPUT_DIR 覆盖落 .dev。 | 缺 must 场景报异常；vin_restore 可 OUTPUT_DIR 覆盖。 | — |
