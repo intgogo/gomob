@@ -57,6 +57,10 @@ class IncomingCallOverlayViewModel @Inject constructor(
     private val _pending = MutableStateFlow<IncomingCallInvite?>(null)
     val pending: StateFlow<IncomingCallInvite?> = _pending.asStateFlow()
 
+    // 已被用户处理（接听/拒绝）的邀请标识，避免 combine 因 currentUserId 等上游重新发射时
+    // 把同一条已处置的来电再次弹出。以 (conversationId, serverSeq) 作为来电唯一标识。
+    private var handledInviteKey: Pair<Long, Long>? = null
+
     init {
         viewModelScope.launch {
             combine(
@@ -66,9 +70,33 @@ class IncomingCallOverlayViewModel @Inject constructor(
                 .collectLatest { (invite, currentUserId) ->
                     // 自己主动 createCallInvite 时 server 也会 fanout 给 sender，过滤掉。
                     if (invite.senderId != null && invite.senderId == currentUserId) return@collectLatest
+                    // 已处置过的同一条来电不再重弹（上游可能因 currentUserId 变化重新发射）。
+                    if (invite.identityKey() == handledInviteKey) return@collectLatest
                     _pending.value = invite
                 }
         }
+    }
+
+    private fun IncomingCallInvite.identityKey(): Pair<Long, Long> = conversationId to serverSeq
+
+    /** 用户点拒绝：标记已处置、关闭浮窗，并通知服务端取消主叫振铃。 */
+    fun decline() {
+        val invite = _pending.value
+        _pending.value = null
+        if (invite == null) return
+        handledInviteKey = invite.identityKey()
+        // TODO(structural call-decline): 当前 data/network/server 层尚无“拒接通知”端到端通道，
+        // 拒接只在本端关闭浮窗 + 去重防重弹，主叫会持续振铃直至超时。终态需新增
+        // MessageRepository.declineCall(conversationId, reason="rejected") → MessageApi
+        // → 服务端 call_decline 事件 fanout 给主叫；本组无法跨改 data/network 模块，留待结构化整改。
+        // 一旦 repository 暴露 declineCall，在此 viewModelScope.launch { repository.declineCall(...) } 调用。
+    }
+
+    /** 用户点接听：标记已处置并关闭浮窗（实际接通走外部 onAccept → LiveKit）。 */
+    fun accept() {
+        val invite = _pending.value
+        handledInviteKey = invite?.identityKey()
+        _pending.value = null
     }
 
     fun dismiss() {
@@ -132,7 +160,7 @@ fun IncomingCallOverlay(
                     .size(38.dp)
                     .clip(CircleShape)
                     .background(Color(0xFFEF4444))
-                    .clickable { viewModel.dismiss() },
+                    .clickable { viewModel.decline() },
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(Icons.Filled.CallEnd, contentDescription = "拒绝", tint = Color.White, modifier = Modifier.size(18.dp))
@@ -145,7 +173,7 @@ fun IncomingCallOverlay(
                     .background(Color(0xFF22C55E))
                     .clickable {
                         onAccept(invite)
-                        viewModel.dismiss()
+                        viewModel.accept()
                     },
                 contentAlignment = Alignment.Center,
             ) {

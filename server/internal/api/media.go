@@ -3,9 +3,13 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -436,8 +440,93 @@ func (h *Handler) ListLiveSessions(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, map[string]any{"items": out})
 }
 
-func (h *Handler) LiveKitWebhook(w http.ResponseWriter, _ *http.Request) {
-	httpx.OK(w, map[string]any{"received": true})
+// LiveKitWebhook 接收 LiveKit server 的 webhook 回调（room_started / participant_joined /
+// track_published 等）。LiveKit 的验签方式：请求体由 Authorization 头携带一个 HS256 JWT，
+// JWT 的 sha256 claim = base64(SHA256(body))，签名密钥 = APISecret。这里完整复用 issueLiveKitToken
+// 同款 jwt + HS256 设施做真实验签；事件入库落地见下方 TODO（依赖 repo 侧新方法，本轮不做结构改动）。
+//
+// LiveKit 未配置（无 API_KEY/API_SECRET）时无法验签：返回 501 Not Implemented，绝不返回 200
+// 假装已处理 —— 否则会把未经鉴别的外部 POST 当成可信事件处理（伪造房间/参与者）。
+func (h *Handler) LiveKitWebhook(w http.ResponseWriter, r *http.Request) {
+	cfg := currentLiveKitConfig()
+	if !cfg.configured() {
+		httpx.WriteError(w, httpx.NewError(40501, http.StatusNotImplemented,
+			"LiveKit 未配置：无法验证 webhook 签名（需 GOMOB_LIVEKIT_API_KEY/API_SECRET）"))
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // webhook body 上限 1MB
+	if err != nil {
+		httpx.WriteError(w, httpx.ErrBadParam)
+		return
+	}
+
+	if err := verifyLiveKitWebhook(cfg, r.Header.Get("Authorization"), body); err != nil {
+		h.log.Warn("livekit webhook 验签失败", "err", err)
+		httpx.WriteError(w, httpx.ErrTokenInvalid)
+		return
+	}
+
+	var ev liveKitWebhookEvent
+	if err := json.Unmarshal(body, &ev); err != nil {
+		httpx.WriteError(w, httpx.ErrBadParam)
+		return
+	}
+
+	// 验签通过 → 事件可信。落地到对应 live_session 需要按 provider room 名反查会话并
+	// 追加事件流，这依赖一个 repo 侧新方法（MediaRepo.RecordLiveSessionEvent / FindLiveSessionByProviderRoom），
+	// 跨出本次改动文件范围（pkg/repo/media.go）。
+	// TODO(deferred-structural M-media): 在 pkg/repo/media.go 增 FindLiveSessionByProviderRoom +
+	// 事件流落地（live_session_events 表），把已验签事件写库；当前先记构造化日志，确保事件不丢观测。
+	// 终态见 docs/architecture（media/livekit 专题）。这里 ACK 2xx 是 webhook 正确语义（非 2xx 会触发 LiveKit 重试）。
+	h.log.Info("livekit webhook 已验签",
+		"event", ev.Event, "room", ev.Room.Name,
+		"participant", ev.Participant.Identity, "id", ev.ID)
+
+	httpx.OK(w, map[string]any{"received": true, "event": ev.Event})
+}
+
+// liveKitWebhookEvent 是 LiveKit webhook 负载的子集（只取落地需要的字段）。
+type liveKitWebhookEvent struct {
+	Event string `json:"event"`
+	Room  struct {
+		Name string `json:"name"`
+	} `json:"room"`
+	Participant struct {
+		Identity string `json:"identity"`
+	} `json:"participant"`
+	ID        string `json:"id"`
+	CreatedAt int64  `json:"createdAt"`
+}
+
+// verifyLiveKitWebhook 校验 LiveKit webhook 的 Authorization JWT：
+//   - 签名密钥 = APISecret（HS256，与 issueLiveKitToken 一致）
+//   - JWT 的 sha256 claim 必须 = base64-std(SHA256(body))，绑定请求体防重放/篡改
+func verifyLiveKitWebhook(cfg liveKitConfig, authHeader string, body []byte) error {
+	tokenStr := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+	if tokenStr == "" {
+		return errors.New("缺少 Authorization 头")
+	}
+	claims := jwt.MapClaims{}
+	_, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (any, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("非预期签名算法：%v", t.Header["alg"])
+		}
+		return []byte(cfg.APISecret), nil
+	}, jwt.WithValidMethods([]string{"HS256"}))
+	if err != nil {
+		return fmt.Errorf("JWT 校验失败：%w", err)
+	}
+	wantHash, ok := claims["sha256"].(string)
+	if !ok || wantHash == "" {
+		return errors.New("JWT 缺少 sha256 claim")
+	}
+	sum := sha256.Sum256(body)
+	gotHash := base64.StdEncoding.EncodeToString(sum[:])
+	if subtle.ConstantTimeCompare([]byte(gotHash), []byte(wantHash)) != 1 {
+		return errors.New("body sha256 与 JWT claim 不匹配")
+	}
+	return nil
 }
 
 func (h *Handler) createMediaRoom(ctx context.Context, uid int64, req createMediaRoomReq) (*repo.MediaRoom, string, error) {

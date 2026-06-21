@@ -319,7 +319,12 @@ public:
             cleanup_done_ = false;
         }
         pairer_.reset();
-        keepalive_stats_ = BulkStats{};
+        // KeepaliveStats 含 atomic 不可整体赋值,逐字段重置。
+        keepalive_stats_.chunks.store(0);
+        keepalive_stats_.errors.store(0);
+        keepalive_stats_.consecutive_errors.store(0);
+        keepalive_stats_.first_error.store(0);
+        keepalive_stats_.starved.store(false);
         running_.store(true);
 
         if (!config_.enable_color && !config_.enable_depth) {
@@ -388,6 +393,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(mu_);
             if (stats_.state != P100R3SessionState::kFailed &&
+                stats_.state != P100R3SessionState::kKeepaliveStarved &&
                 stats_.state != P100R3SessionState::kIdle) {
                 stats_.state = P100R3SessionState::kStopped;
             }
@@ -552,7 +558,8 @@ private:
                 seed = master_payloads.back();
             }
         }
-        keepalive_thread_ = std::thread(master_keepalive_loop,
+        // 用 atomic 版 keepalive:跨线程计数防撕裂读,连续超时饿死时升级失败停流。
+        keepalive_thread_ = std::thread(master_keepalive_loop_atomic,
                                         std::ref(*master_),
                                         seed,
                                         config_.keepalive_interval_ms,
@@ -775,9 +782,22 @@ private:
 
         running_.store(false);
         if (keepalive_thread_.joinable()) keepalive_thread_.join();
+        const bool keepalive_starved = keepalive_stats_.starved.load();
         {
             std::lock_guard<std::mutex> lock(mu_);
-            stats_.keepalive = keepalive_stats_;
+            // KeepaliveStats(atomic) → BulkStats(可拷贝快照),逐字段读出。
+            stats_.keepalive.chunks = keepalive_stats_.chunks.load();
+            stats_.keepalive.errors = keepalive_stats_.errors.load();
+            stats_.keepalive.first_error = keepalive_stats_.first_error.load();
+            // keepalive 饿死 = 设备已停响应,属失败终态。覆盖此前拉流线程因
+            // running_ 被置 false 而误记的 kBulkError(那只是饿死的症状)。
+            if (keepalive_starved) {
+                stats_.state = P100R3SessionState::kKeepaliveStarved;
+                stats_.stop_reason = P100R3SessionStopReason::kKeepaliveStarved;
+                if (stats_.error_message.empty()) {
+                    stats_.error_message = "master keepalive 连续超时饿死,设备停止响应";
+                }
+            }
         }
         if (config_.send_master_stop && master_) {
             std::vector<XuPayload> payloads;
@@ -805,7 +825,7 @@ private:
     mutable std::mutex mu_;
     mutable std::mutex pairer_mu_;
     P100R3DualSessionStats stats_;
-    BulkStats keepalive_stats_;
+    KeepaliveStats keepalive_stats_;  // keepalive 线程并发写,主线程读 → atomic 计数防撕裂
     RgbdFramePairer pairer_;
     std::atomic<bool> running_{false};
     std::unique_ptr<UsbContext> context_;

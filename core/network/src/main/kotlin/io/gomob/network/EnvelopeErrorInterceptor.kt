@@ -55,7 +55,17 @@ internal class EnvelopeErrorInterceptor(
             // 仅当请求实际带了 Authorization header 时，40102 才是"会话过期"。
             // 未登录态的请求（如 LogSyncManager 启动期间）也会被 server 拒成 40102，
             // 但语义上不是用户会话过期，不能触发 LoginScreen 弹"登录已过期"。
-            if (apiErr.isAuthExpired && !request.header("Authorization").isNullOrBlank()) {
+            val priorAuth = request.header("Authorization")
+            if (apiErr.isAuthExpired && !priorAuth.isNullOrBlank()) {
+                // access token 过期：先用 refresh token 静默续期并重发原请求；
+                // 仅当续期失败（refresh 也过期/不存在）才真正 expireSession 触发重新登录。
+                val newAccess = tokenProvider.refreshAccessToken()
+                if (!newAccess.isNullOrBlank() && "Bearer $newAccess" != priorAuth) {
+                    val retried = request.newBuilder()
+                        .header("Authorization", "Bearer $newAccess")
+                        .build()
+                    return chain.proceed(retried)
+                }
                 tokenProvider.onAuthExpired(apiErr.message)
             }
             throw apiErr

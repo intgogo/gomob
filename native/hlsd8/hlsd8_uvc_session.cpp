@@ -268,7 +268,8 @@ CameraCapabilities Hlsd8Driver::capabilities() const {
   c.has_confidence = false;
   c.has_ir = false;
   c.depth_is_metric_onchip = false;
-  // 真实分辨率开流时按描述符自动选（最大 MJPEG）；此处给 UI 占位档（已知约 4160 宽幅）。
+  // 真实分辨率开流时按描述符自动选**最小** MJPEG 帧（压低带宽让 eYs3D 并发取流，见 Run() ①）；
+  // 此处仅给 UI 一个占位档（设备最大约 4160 宽幅），与实际协商分辨率无关。
   c.color_profiles.push_back(StreamProfile{4160, 832, 0, StreamProfile::Format::kMjpeg, "HLSD8 MJPEG(auto)"});
   return c;
 }

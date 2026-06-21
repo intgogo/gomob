@@ -1,5 +1,6 @@
 package io.gomob.network
 
+import dagger.Lazy
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -28,9 +29,17 @@ object NetworkModule {
     @Provides
     @Singleton
     fun provideOkHttp(
-        tokenProvider: TokenProvider,
+        // 用 dagger.Lazy 打断依赖环:provideOkHttp→OkHttp→Retrofit→AuthApi→TokenProviderImpl→TokenProvider。
+        // TokenProviderImpl 注入 AuthApi(走本 OkHttp)做静默续期,直接注 TokenProvider 会成环;
+        // 三个消费者都只在请求期(intercept/authenticate)用 token,故包一层 lazy 委托,图构建期不实例化。
+        tokenProvider: Lazy<TokenProvider>,
         hostSelection: HostSelectionInterceptor,
     ): OkHttpClient {
+        val lazyToken = object : TokenProvider {
+            override fun currentAccessToken(): String? = tokenProvider.get().currentAccessToken()
+            override fun refreshAccessToken(): String? = tokenProvider.get().refreshAccessToken()
+            override fun onAuthExpired(message: String) = tokenProvider.get().onAuthExpired(message)
+        }
         val logging = HttpLoggingInterceptor().apply {
             // BODY 会把流式 PCD/媒体响应读成字符串，百万级点云下载会直接触发 OOM。
             level = HttpLoggingInterceptor.Level.BASIC
@@ -38,9 +47,12 @@ object NetworkModule {
         return OkHttpClient.Builder()
             // 顺序: HostSelection 必须在最前 —— 改完 host:port 再走 Auth/Envelope/Logging
             .addInterceptor(hostSelection)
-            .addInterceptor(AuthInterceptor(tokenProvider))
-            .addInterceptor(EnvelopeErrorInterceptor(tokenProvider))
+            .addInterceptor(AuthInterceptor(lazyToken))
+            .addInterceptor(EnvelopeErrorInterceptor(lazyToken))
             .addInterceptor(logging)
+            // 裸 HTTP 401 → 用 refresh token 静默续期重发；续期失败才会话过期。
+            // envelope code==40102 由 EnvelopeErrorInterceptor 内联续期，两者共用 refreshAccessToken。
+            .authenticator(TokenAuthenticator(lazyToken))
             // ping/healthz 路径短，统一短超时让 UI 反馈快
             .connectTimeout(5, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)

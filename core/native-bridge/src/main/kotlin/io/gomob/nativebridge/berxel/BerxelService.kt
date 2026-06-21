@@ -199,7 +199,8 @@ class BerxelService @Inject constructor(
      * 设备控制项快照。所有 set* 方法都把"应用的值"写回 [_controls]，UI 双向绑定。
      *
      * 设计：SDK 没有 getter，我们这一侧记录"我们告诉过 SDK 的最后一个值"。设备拔出 / 重连后
-     * [stopInternal] 重置到默认值；下次开流 [applyDefaultControls] 把默认值同步到 SDK。
+     * [stopInternal] 重置到默认值；开流后 **depth 出首帧（流已稳定）** 才由 [applyDefaultControls]
+     * 把默认值同步到 SDK（不能在 startStreams 后立刻写，P100R3 OTG 早写会触发物理重枚举）。
      */
     private val _controls = MutableStateFlow(BerxelDeviceControls())
     val controls: StateFlow<BerxelDeviceControls> = _controls.asStateFlow()
@@ -212,6 +213,8 @@ class BerxelService @Inject constructor(
     @Volatile private var readerRunning = false
     @Volatile private var loggedFirstColorFrame = false
     @Volatile private var loggedFirstDepthFrame = false
+    // SDK 路径：控制项（温补/去噪/registration 等）默认值是否已在「流稳定后」下发过（每个 session 一次）。
+    @Volatile private var defaultControlsApplied = false
     private val sdkColorFpsMeter = FrameRateMeter()
     private val sdkDepthFpsMeter = FrameRateMeter()
     private var mixReader: Thread? = null
@@ -2130,6 +2133,7 @@ class BerxelService @Inject constructor(
 
             loggedFirstColorFrame = false
             loggedFirstDepthFrame = false
+            defaultControlsApplied = false
             resetSdkFpsMeters()
             readerRunning = true
             if (mode == StartupStreamMode.DUAL) {
@@ -2494,6 +2498,13 @@ class BerxelService @Inject constructor(
             "$kind first frame ${frame.width}x${frame.height}@${frame.fps} " +
                 "idx=${frame.frameIndex} t=${frame.timeStamp} size=$dataSize pixel=$pixelTypeName",
         )
+        // MED(R1): applyDefaultControls 曾是死代码 → 温补/去噪等"默认 ON"实际从未下发。
+        // 不能在 startStreams 后立刻写（P100R3 OTG 上早写控制项会触发控制传输失败 + 物理重枚举，
+        // 见上文 "skip initial Berxel controls sync"）。改为「depth 流出首帧 = 已稳定」后下发一次。
+        if (kind == StreamKind.DEPTH && !defaultControlsApplied) {
+            defaultControlsApplied = true
+            scope.launch { applyDefaultControls() }
+        }
     }
 
     /**
@@ -2506,6 +2517,12 @@ class BerxelService @Inject constructor(
      * - 配对成功 → 清两边 pending 并 emit 到 [_rgbdPairs]
      */
     private fun tryEmitPair(color: ColorFrame?, depth: DepthFrame?) {
+        // HIGH(R1): SDK 路径内参缺失时 depth 内参为 0（见 defaultIntrinsics 注释）。
+        // 与 NATIVE 路径同口径：fx<=0 的 depth 不进重建/VIN，宁可不出点云也不产 Inf/NaN。
+        if (depth != null && !intrinsicsUsableForReconstruction(depth.intrinsics)) {
+            Log.w(TAG, "SDK depth 内参无效 fx=${depth.intrinsics.fx} → 拒绝配对（防 Inf/NaN）")
+            return
+        }
         val pair: RgbdFramePair? = synchronized(pairLock) {
             when {
                 color != null -> {
@@ -2542,6 +2559,21 @@ class BerxelService @Inject constructor(
      * 暴露真实时间差，供 VIN / fusion 按阈值决定是否采用。
      */
     private fun tryEmitNativeNearestPair(color: ColorFrame? = null, depth: DepthFrame? = null) {
+        // CRIT(R4): NATIVE_REWRITE 路径不开 SDK BerxelHawkDevice，拿不到出厂内参（fx 恒 0）。
+        // 下游反投影/TSDF/端云融合按 fx 做除法 → fx<=0 直接产 Inf/NaN，污染尺度与外参。
+        // 这里是产生重建/VIN 数据的唯一出口：内参无效（fx<=0）的帧一律不配对、不下发，
+        // 宁可不出点云也绝不出 Inf/NaN。预览（_depthFrames turbo 伪彩，不做反投影）不受影响。
+        // 终态：把出厂 156B 内参 blob（adb pull <SN>_params.bin 找 offset，见
+        // docs/agent-memory finding_p100r3_device_params_offline_only_2026-05-27）接进 NATIVE
+        // 路径下发真实内参后，本守卫自然放行。TODO(intrinsics-R4)：接出厂 blob 内参源。
+        depth?.let {
+            if (!intrinsicsUsableForReconstruction(it.intrinsics)) {
+                if (nativePairEmitCount == 0) {
+                    Log.w(TAG, "NATIVE depth 内参无效 fx=${it.intrinsics.fx} → 拒绝配对（防 Inf/NaN）；待接出厂 blob")
+                }
+                return
+            }
+        }
         var logDeltaUs: Long? = null
         val pair = synchronized(nativePairLock) {
             if (color != null) pendingNativeColor = color
@@ -2586,13 +2618,27 @@ class BerxelService @Inject constructor(
         }
     }
 
-    /** 内参缺失时的桩：fx/fy 用 width 0.8 倍当近似（够 UI 显示用，不进算法）。 */
+    /**
+     * 内参缺失占位（fx=fy=0 = 明确无效标记，不是近似值）。
+     *
+     * HIGH(R1): 旧实现 fx=w*0.8 伪造焦距并能绕过下游 fx<=0 守卫 → 污染重建/VIN 尺度。
+     * 已删伪造：缺内参时 fx/fy 返 0，[intrinsicsUsableForReconstruction] 据此拦截，
+     * 下游绝不会拿到貌似合法实为乱编的焦距。cx/cy 仍给画面中心仅供预览渲染用（不进算法）。
+     * 终态：接出厂 156B 内参 blob（见 finding_p100r3_device_params_offline_only_2026-05-27）。
+     */
     private fun defaultIntrinsics(w: Int, h: Int): CameraIntrinsics = CameraIntrinsics(
-        fx = w * 0.8, fy = w * 0.8,
+        fx = 0.0, fy = 0.0,
         cx = w * 0.5, cy = h * 0.5,
         distortion = DoubleArray(5),
         width = w, height = h,
     )
+
+    /**
+     * 内参是否可用于反投影/重建/正射等会对 fx/fy 做除法的算法。
+     * fx<=0 或 fy<=0 = 无效（缺标定 / NATIVE 路径未接出厂 blob），下游必须拒绝以防 Inf/NaN。
+     */
+    private fun intrinsicsUsableForReconstruction(intr: CameraIntrinsics): Boolean =
+        intr.fx > 0.0 && intr.fy > 0.0
 
     private fun resetSdkFpsMeters() {
         sdkColorFpsMeter.reset()
@@ -2605,6 +2651,7 @@ class BerxelService @Inject constructor(
         readerRunning = false
         loggedFirstColorFrame = false
         loggedFirstDepthFrame = false
+        defaultControlsApplied = false
         resetSdkFpsMeters()
         joinReaderThread(mixReader, 500)
         joinReaderThread(colorReader, 500)
@@ -2775,8 +2822,9 @@ class BerxelService @Inject constructor(
     // ───── 设备控制命令 (UI 双向绑定 + scope.launch 投到 IO) ─────────────────────
 
     /**
-     * 一次性把 [_controls] 当前快照同步到 SDK。
-     * 在 `startStreams` 成功后调，让 UI 里的开关默认值真的生效到设备。
+     * 一次性把 [_controls] 当前快照同步到 SDK，让 UI 里的开关默认值真的生效到设备。
+     * 调用点 = [logFirstFrame] 里 depth 出首帧（流已稳定）后，每 session 一次（[defaultControlsApplied] 守门）。
+     * 不在 `startStreams` 后立刻调：P100R3 OTG 上早写控制项会触发控制传输失败 + 物理重枚举。
      */
     private fun applyDefaultControls() {
         val dev = device ?: return

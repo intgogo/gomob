@@ -136,32 +136,24 @@ bool Eys3dVendorCppSession::start(const gomob::camera::SessionCallbacks& cb) {
   return true;
 }
 
-bool Eys3dVendorCppSession::BuildZdLut() {
-  std::vector<uint8_t> buf(8192, 0);
-  int actual = 0;
-  int file_index = abi_.cam_get_current_file_index ? abi_.cam_get_current_file_index(cam_) : -1;
-  if (file_index < 0 || file_index > 9) file_index = 1;  // USB2 & depth128 → 1（兜底）
-  int rc = abi_.cam_get_zd_table(cam_, buf.data(), static_cast<int>(buf.size()), &actual, file_index);
-  VLOG("GetZDTable rc=%d actual=%d fileIndex=%d", rc, actual, file_index);
-  if (actual < 4) return false;
-  const int entries = actual / 2;  // 大端 u16，按视差索引
-  const int n = entries < 2048 ? entries : 2048;
-  zd_lut_.assign(2048, 0);
-  for (int d = 0; d < n; ++d) zd_lut_[d] = static_cast<uint16_t>((buf[d * 2] << 8) | buf[d * 2 + 1]);
-  VLOG("ZD LUT 建好 entries=%d LUT[100]=%u LUT[500]=%u LUT[1000]=%u (大端;若值异常试小端)", n,
-       zd_lut_[100], zd_lut_[500], zd_lut_[1000]);
-  return true;
-}
-
 void Eys3dVendorCppSession::OnVendorFrame(void* depth_vec, int dW, int dH, void* color_vec, int cW,
                                           int cH, int serial) {
   const int64_t n = ++cb_frames_;
   const int64_t host_ns = NowNs();
 
-  // ---- color：RGB24 字节透传 ----
+  // ---- color：字节透传（MJPEG 压缩帧，size 即压缩字节数，不能按 w*h*bpp 算）----
+  //   core_.OnColorFrame 内部按 cfg_.color.width/height 给帧打标签;故须用回调真实 cW/cH 做一致性门控,
+  //   回调几何与配置不符时丢弃并告警(否则会把异常分辨率帧错标成配置分辨率喂下游)。
   const uint8_t* color = VecData(color_vec);
   const size_t color_sz = VecSize(color_vec);
-  if (color && color_sz > 0) core_.OnColorFrame(color, color_sz, host_ns);
+  if (color && color_sz > 0) {
+    if (cW == cfg_.color.width && cH == cfg_.color.height) {
+      core_.OnColorFrame(color, color_sz, host_ns);
+    } else if (n <= 5 || n % 30 == 0) {
+      VLOGE("ourCb #%lld color 几何不符 回调 %dx%d 期望 %dx%d sz=%zu → 丢弃", (long long)n, cW, cH,
+            cfg_.color.width, cfg_.color.height, color_sz);
+    }
+  }
 
   // ---- depth：FrameGrabber 路径已是 metric mm（vendor do_preview 内 DepthFilter + 自载 ZD 表转好），直接喂，勿再套 LUT ----
   const uint8_t* draw = VecData(depth_vec);
@@ -232,7 +224,8 @@ void Eys3dVendorCppSession::Run() {
   // 4) arming：mode25 + 关交织（IR/AE 待彩色起流后设，对齐 Java）
   if (abi_.cam_set_video_mode) VLOG("setVideoMode(36) rc=%d", abi_.cam_set_video_mode(cam_, kVideoModeMode25));
   if (abi_.cam_set_interleave_mode) abi_.cam_set_interleave_mode(cam_, false);
-  BuildZdLut();
+  // ZD LUT 已删:FrameGrabber 路径深度 do_preview 内自载 ZD 表转好 metric mm(见 OnVendorFrame),
+  //   我方不再消费视差→mm LUT;原 BuildZdLut 仅做无人读的 GetZDTable USB 往返,纯浪费控制传输,移除。
 
   // 5) repoint FrameGrabber 回调 → 我们的 trampoline（在 Open 前，worker 未起，安全）
   old_fg_cb_ = cur_cb;

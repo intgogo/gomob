@@ -247,7 +247,10 @@ fun ConversationRoute(
         if (text.isNotEmpty()) {
             // 发送时把仍存在 draft 里的 @name 与 pendingMentions 匹配；其余文本里出现但
             // 未在 pending 集合的 @ 串当普通文字（避免误把 "@xxx" 文字内容当成提及）。
-            val activeMentions = pendingMentions.filter { ref -> text.contains("@${ref.name}") }
+            // 用边界匹配（@name 后必须是空白/标点/结尾），避免短名前缀误命中更长的同前缀名。
+            val activeMentions = pendingMentions
+                .filter { ref -> text.containsMention(ref.name) }
+                .distinctBy { it.userId }
             viewModel.send(text, quoteDraft?.quote, activeMentions)
             draft = ""
             quoteDraft = null
@@ -910,5 +913,25 @@ private fun InlineStatus(
             .padding(Gomob.spacing.s16),
     ) {
         StatusTag(text = text, tone = tone, showDot = tone != StatusTone.Neutral)
+    }
+}
+
+/**
+ * 判断文本里是否含有对 [name] 的 @ 提及。要求 "@name" 整体出现且其后是分界字符
+ * （空白 / 标点 / 字符串结尾），避免短名作为更长同前缀名的子串被误匹配
+ * （如 "@李" 不应命中 "@李明"）。
+ */
+private fun String.containsMention(name: String): Boolean {
+    if (name.isEmpty()) return false
+    val token = "@$name"
+    var from = 0
+    while (true) {
+        val idx = indexOf(token, from)
+        if (idx < 0) return false
+        val end = idx + token.length
+        val next = if (end < length) this[end] else null
+        // 下一个字符不是字母/数字/下划线（即名字本体不会继续延展）即视为命中。
+        if (next == null || !(next.isLetterOrDigit() || next == '_')) return true
+        from = idx + 1
     }
 }

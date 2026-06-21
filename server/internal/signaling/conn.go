@@ -31,6 +31,9 @@ const (
 	maxMessageSize = 512 << 10
 	// send chan 缓冲；满了说明客户端慢，主动关连接
 	sendBufSize = 64
+	// 单连接并发 dispatch 上限：业务 handler 多走 DB，无界 go dispatch 会被慢客户端
+	// 刷爆 goroutine 并占满连接池；超限时阻塞 readLoop（背压到 TCP），不再无限放量。
+	maxInflightDispatch = 16
 )
 
 // Envelope —— signaling 协议帧。所有 client↔server 消息都用这个外壳。
@@ -76,16 +79,19 @@ type Conn struct {
 	closeOnce sync.Once
 	frameSeq  int64
 	log       *slog.Logger
+	// inflight 是 per-conn dispatch 并发信号量；容量 = maxInflightDispatch。
+	inflight chan struct{}
 }
 
 func newConn(ws *websocket.Conn, userID int64, role string, log *slog.Logger) *Conn {
 	return &Conn{
-		UserID: userID,
-		Role:   role,
-		ws:     ws,
-		send:   make(chan Envelope, sendBufSize),
-		closed: make(chan struct{}),
-		log:    log,
+		UserID:   userID,
+		Role:     role,
+		ws:       ws,
+		send:     make(chan Envelope, sendBufSize),
+		closed:   make(chan struct{}),
+		log:      log,
+		inflight: make(chan struct{}, maxInflightDispatch),
 	}
 }
 
@@ -130,8 +136,17 @@ func (c *Conn) readLoop(ctx context.Context, dispatch func(context.Context, *Con
 			}
 			return
 		}
-		// dispatch 不阻塞 read（业务可能慢；起子 goroutine）
-		go dispatch(ctx, c, env)
+		// dispatch 不阻塞 read（业务可能慢；起子 goroutine），但带 per-conn 并发上限：
+		// 信号量满则在此阻塞（背压到 ReadJSON），杜绝单连接无界 go dispatch 刷爆 goroutine / DB 池。
+		select {
+		case <-c.closed:
+			return
+		case c.inflight <- struct{}{}:
+		}
+		go func(e Envelope) {
+			defer func() { <-c.inflight }()
+			dispatch(ctx, c, e)
+		}(env)
 	}
 }
 

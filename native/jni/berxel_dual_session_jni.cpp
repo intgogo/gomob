@@ -165,6 +165,12 @@ struct DualSession {
     std::vector<std::vector<uint8_t>> depth_bufs;
     std::vector<std::vector<uint8_t>> color_bufs;
 
+    // BulkStats 诊断计数跨线程访问：写者 = event_thread(depth/color_xfer_cb) + 解析线程
+    // (sync_*_assembler_stats) + keepalive 线程；读者 = log_thread / get_stats。int64 计数无原子性,
+    // 旧版无锁是 data race(撕裂读 + 写写竞争)。BulkStats 定义在 portable 头(host/Android 共用)不便改原子,
+    // 故在本文件加 stats_mu 守所有 BulkStats 读写区。注:keepalive_stats 的写在 portable 层
+    // master_keepalive_loop 内无法在此加锁,本文件只能守其读侧(单写者 int64,最坏撕裂读,不影响逻辑)。
+    std::mutex stats_mu;
     BulkStats keepalive_stats;
     BulkStats depth_stats;
     BulkStats color_stats;
@@ -489,9 +495,12 @@ void LIBUSB_CALL depth_xfer_cb(libusb_transfer* xfer) {
     switch (xfer->status) {
     case LIBUSB_TRANSFER_COMPLETED:
         if (xfer->actual_length > 0) {
-            s->depth_stats.chunks++;
-            s->depth_stats.bytes += xfer->actual_length;
-            log_bulk_chunk_sample("depth", s->depth_stats, xfer->buffer, xfer->actual_length);
+            {
+                std::lock_guard<std::mutex> stk(s->stats_mu);
+                s->depth_stats.chunks++;
+                s->depth_stats.bytes += xfer->actual_length;
+                log_bulk_chunk_sample("depth", s->depth_stats, xfer->buffer, xfer->actual_length);
+            }
             bool notify = false;
             {
                 std::lock_guard<std::mutex> lk(s->depth_q_mu);
@@ -510,16 +519,19 @@ void LIBUSB_CALL depth_xfer_cb(libusb_transfer* xfer) {
         }
         break;
     case LIBUSB_TRANSFER_NO_DEVICE:
-        note_xfer_error("depth", s->depth_stats, xfer);
+        { std::lock_guard<std::mutex> stk(s->stats_mu); note_xfer_error("depth", s->depth_stats, xfer); }
         notify_async_stop(s);
         return;
     case LIBUSB_TRANSFER_CANCELLED:
         return;  // close 流程取消，不重提交
     default:
-        note_xfer_error("depth", s->depth_stats, xfer);
+        { std::lock_guard<std::mutex> stk(s->stats_mu); note_xfer_error("depth", s->depth_stats, xfer); }
         break;
     }
-    if (s->running.load()) resubmit_or_stop(s, xfer, "depth", s->depth_stats);
+    if (s->running.load()) {
+        std::lock_guard<std::mutex> stk(s->stats_mu);
+        resubmit_or_stop(s, xfer, "depth", s->depth_stats);
+    }
 }
 
 // depth 解析线程：从队列取 chunk 跑 assembler，按 0x0600/0x0500 标记分流 depth/IR。
@@ -682,9 +694,12 @@ void LIBUSB_CALL color_xfer_cb(libusb_transfer* xfer) {
     switch (xfer->status) {
     case LIBUSB_TRANSFER_COMPLETED:
         if (xfer->actual_length > 0) {
-            s->color_stats.chunks++;
-            s->color_stats.bytes += xfer->actual_length;
-            log_bulk_chunk_sample("color", s->color_stats, xfer->buffer, xfer->actual_length);
+            {
+                std::lock_guard<std::mutex> stk(s->stats_mu);
+                s->color_stats.chunks++;
+                s->color_stats.bytes += xfer->actual_length;
+                log_bulk_chunk_sample("color", s->color_stats, xfer->buffer, xfer->actual_length);
+            }
             bool notify = false;
             {
                 std::lock_guard<std::mutex> lk(s->color_q_mu);
@@ -703,16 +718,19 @@ void LIBUSB_CALL color_xfer_cb(libusb_transfer* xfer) {
         }
         break;
     case LIBUSB_TRANSFER_NO_DEVICE:
-        note_xfer_error("color", s->color_stats, xfer);
+        { std::lock_guard<std::mutex> stk(s->stats_mu); note_xfer_error("color", s->color_stats, xfer); }
         notify_async_stop(s);
         return;
     case LIBUSB_TRANSFER_CANCELLED:
         return;
     default:
-        note_xfer_error("color", s->color_stats, xfer);
+        { std::lock_guard<std::mutex> stk(s->stats_mu); note_xfer_error("color", s->color_stats, xfer); }
         break;
     }
-    if (s->running.load()) resubmit_or_stop(s, xfer, "color", s->color_stats);
+    if (s->running.load()) {
+        std::lock_guard<std::mutex> stk(s->stats_mu);
+        resubmit_or_stop(s, xfer, "color", s->color_stats);
+    }
 }
 
 bool looks_like_uvc_payload_header_at(const std::vector<uint8_t>& data, size_t offset) {
@@ -835,6 +853,7 @@ void color_parser_loop(DualSession* s) {
 void sync_depth_assembler_stats(DualSession* s) {
     if (!s || !s->depth_assembler) return;
     const UvcRawFrameAssemblerStats st = s->depth_assembler->stats();
+    std::lock_guard<std::mutex> stk(s->stats_mu);
     s->depth_stats.frames = st.frames;
     s->depth_stats.frame_drops = st.frame_drops;
     s->depth_stats.uvc_headers = st.uvc_headers;
@@ -846,6 +865,7 @@ void sync_depth_assembler_stats(DualSession* s) {
 void sync_color_assembler_stats(DualSession* s) {
     if (!s || !s->color_assembler) return;
     const UvcMjpegFrameAssemblerStats st = s->color_assembler->stats();
+    std::lock_guard<std::mutex> stk(s->stats_mu);
     s->color_stats.frames = st.frames;
     s->color_stats.frame_drops = st.frame_drops;
     s->color_stats.uvc_headers = st.uvc_headers;
@@ -927,6 +947,17 @@ void log_loop(DualSession* s) {
             std::lock_guard<std::mutex> lk(s->color_q_mu);
             cq_hwm = s->color_q_hwm; cq_drops = s->color_q_drops;
         }
+        // BulkStats 跨线程,取锁快照后再格式化日志(LOGI 在锁外,避免持锁做 I/O)。
+        // keepalive_stats 写者在 portable 层不持本锁,这里读它属最坏撕裂读(诊断量,容忍)。
+        BulkStats ds, cs;
+        int64_t ka_ok, ka_err;
+        {
+            std::lock_guard<std::mutex> stk(s->stats_mu);
+            ds = s->depth_stats;
+            cs = s->color_stats;
+            ka_ok = s->keepalive_stats.chunks;
+            ka_err = s->keepalive_stats.errors;
+        }
         LOGI("RUN depth_seq=%llu ir_skipped=%llu depth_bad_marker=%llu depth_aligned=%llu pairs=%lld "
              "center_median=%.1fmm valid=%.3f pair_p50_delta_ns=%lld "
              "depth_frames=%lld depth_chunks=%lld depth_drops=%lld depth_partial=%lld depth_err=%lld "
@@ -938,21 +969,21 @@ void log_loop(DualSession* s) {
              (unsigned long long)bad_marker, (unsigned long long)aligned_planes,
              (long long)ps.pairs, median_mm, valid_ratio,
              (long long)ps.last_host_delta_ns,
-             (long long)s->depth_stats.frames,
-             (long long)s->depth_stats.chunks,
-             (long long)s->depth_stats.frame_drops,
-             (long long)s->depth_stats.partial_frame_drops,
-             (long long)s->depth_stats.errors,
-             (long long)s->color_stats.frames,
-             (long long)s->color_stats.chunks,
-             (long long)s->color_stats.frame_drops,
-             (long long)s->color_stats.completed_by_eof,
-             (long long)s->color_stats.completed_by_fid,
-             (long long)s->color_stats.completed_by_jpeg_eoi,
-             (long long)s->color_stats.bytes,
-             (long long)s->color_stats.errors,
-             (long long)s->keepalive_stats.chunks, (long long)s->keepalive_stats.errors,
-             s->depth_stats.first_error, s->color_stats.first_error,
+             (long long)ds.frames,
+             (long long)ds.chunks,
+             (long long)ds.frame_drops,
+             (long long)ds.partial_frame_drops,
+             (long long)ds.errors,
+             (long long)cs.frames,
+             (long long)cs.chunks,
+             (long long)cs.frame_drops,
+             (long long)cs.completed_by_eof,
+             (long long)cs.completed_by_fid,
+             (long long)cs.completed_by_jpeg_eoi,
+             (long long)cs.bytes,
+             (long long)cs.errors,
+             (long long)ka_ok, (long long)ka_err,
+             ds.first_error, cs.first_error,
              q_now, q_hwm, (long long)q_drops, cq_hwm, (long long)cq_drops,
              fq_hwm, (long long)fq_drops);
     }
@@ -1367,15 +1398,19 @@ void berxel_get_stats(DualSession* s, int64_t out[16]) {
     { std::lock_guard<std::mutex> lk(s->pairer_mu); ps = s->pairer.stats(); }
     uint64_t seq = 0;
     { std::lock_guard<std::mutex> lk(s->frame_mu); seq = s->depth_seq; }
-    out[0] = s->depth_stats.frames;  out[1] = s->depth_stats.chunks;
-    out[2] = s->depth_stats.bytes;   out[3] = s->depth_stats.errors;
-    out[4] = s->color_stats.frames;  out[5] = s->color_stats.chunks;
-    out[6] = s->color_stats.bytes;   out[7] = s->color_stats.errors;
+    {
+        // BulkStats 跨线程,锁内快照(keepalive_stats 写者在 portable 层不持本锁,容忍撕裂读)。
+        std::lock_guard<std::mutex> stk(s->stats_mu);
+        out[0] = s->depth_stats.frames;  out[1] = s->depth_stats.chunks;
+        out[2] = s->depth_stats.bytes;   out[3] = s->depth_stats.errors;
+        out[4] = s->color_stats.frames;  out[5] = s->color_stats.chunks;
+        out[6] = s->color_stats.bytes;   out[7] = s->color_stats.errors;
+        out[14] = s->keepalive_stats.chunks;
+    }
     out[8] = ps.pairs;               out[9] = ps.last_host_delta_ns;
     out[10] = ps.mean_abs_host_delta_ns; out[11] = ps.max_abs_host_delta_ns;
     out[12] = static_cast<int64_t>(ps.last_color_frame_number);
     out[13] = static_cast<int64_t>(ps.last_depth_frame_number);
-    out[14] = s->keepalive_stats.chunks;
     out[15] = static_cast<int64_t>(seq);
 }
 

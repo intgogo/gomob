@@ -457,6 +457,10 @@ internal fun parsePcdBinaryRenderData(data: ByteArray): LaserCloudRenderData {
     return LaserCloudRenderData(r.xyz, r.rgb, r.angles)
 }
 
+// 单帧 PCD 点数硬上界：防恶意/损坏头声明天量点数导致 Int 溢出或 OOM。
+// 5000 万远超单帧激光点云物理量级，留足余量同时保证 points*3 与字节数计算不溢出 Int。
+private const val MAX_PCD_POINTS = 50_000_000
+
 private data class ParsedPcdCloud(
     val xyz: FloatArray,
     val angles: FloatArray,
@@ -506,10 +510,14 @@ private fun parsePcdBinaryFull(data: ByteArray): ParsedPcdCloud {
     }
     require(dataMode == "binary") { "仅支持 DATA binary，得 \"$dataMode\"" }
     require(points >= 0) { "缺 POINTS" }
+    // POINTS 上界：恶意/损坏头声明天量点数会让下面 FloatArray(points*3) / 字节数计算溢出 Int → 负数或
+    // OOM。单帧激光点云物理上不可能上亿点，给 5000 万硬上界足够余量；超界直接拒绝而非崩溃。
+    require(points <= MAX_PCD_POINTS) { "POINTS=$points 超上界 $MAX_PCD_POINTS" }
     val perPt = fieldNames.size
-    val need = points * perPt * 4
+    // 用 Long 计算字节数，避免 points*perPt*4 在 Int 域溢出后绕回造成 require 误通过。
+    val need = points.toLong() * perPt * 4L
     require(n - idx >= need) { "二进制主体不足：期望 $need 字节，剩 ${n - idx}" }
-    val bb = ByteBuffer.wrap(data, idx, need).order(ByteOrder.LITTLE_ENDIAN)
+    val bb = ByteBuffer.wrap(data, idx, need.toInt()).order(ByteOrder.LITTLE_ENDIAN)
     val xyz = FloatArray(points * 3)
     val angles = if (intensityIndex >= 0) FloatArray(points) else FloatArray(0)
     val rgb = if (rgbIndex >= 0) IntArray(points) else null

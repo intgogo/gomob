@@ -14,14 +14,21 @@
 # 可覆盖的环境变量见下方默认值。
 set -euo pipefail
 
+# 开发栈宿主端口/凭据单一真理源（19000 / gomob / gomob_dev_minio），避免与生产/旧 minioadmin 漂移。
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "${SCRIPT_DIR}/lib/dev-ports.sh" ]; then
+  # shellcheck source=scripts/lib/dev-ports.sh
+  source "${SCRIPT_DIR}/lib/dev-ports.sh"
+fi
+
 MODEL="${MODEL:-.dev/vin_models/yolo-obb.onnx}"
 VERSION="${VERSION:-v1}"
 NAME="${NAME:-VINOBB}"
 
-# MinIO（与 loader.go / asset 服务同 bucket）
-MINIO_ENDPOINT="${MINIO_ENDPOINT:-127.0.0.1:9000}"
-MINIO_ACCESS_KEY="${MINIO_ACCESS_KEY:-minioadmin}"
-MINIO_SECRET_KEY="${MINIO_SECRET_KEY:-minioadmin}"
+# MinIO（与 loader.go / asset 服务同 bucket / 同端口段；凭据对齐 docker-compose 的 gomob/gomob_dev_minio）
+MINIO_ENDPOINT="${MINIO_ENDPOINT:-${GOMOB_DEFAULT_MINIO_ENDPOINT:-127.0.0.1:19000}}"
+MINIO_ACCESS_KEY="${MINIO_ACCESS_KEY:-${GOMOB_MINIO_ACCESS_KEY:-gomob}}"
+MINIO_SECRET_KEY="${MINIO_SECRET_KEY:-${GOMOB_MINIO_SECRET_KEY:-gomob_dev_minio}}"
 BUCKET="${BUCKET:-gomob-assets}"
 OBJECT_KEY="${OBJECT_KEY:-models/vinobb/yolo-obb-${VERSION}.onnx}"
 

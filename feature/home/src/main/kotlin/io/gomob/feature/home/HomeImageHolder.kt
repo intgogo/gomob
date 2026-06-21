@@ -21,6 +21,4 @@ internal object HomeImageHolder {
     }
 
     fun take(token: String): Bitmap? = store.remove(token)
-
-    fun peek(token: String): Bitmap? = store[token]
 }

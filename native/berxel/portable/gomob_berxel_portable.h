@@ -127,6 +127,21 @@ struct BulkStats {
     int64_t duration_ms = 0;
 };
 
+// master keepalive 专用计数。keepalive 线程与会话主线程并发访问这些计数,
+// BulkStats 全程按值拷贝(不能整体改 atomic,否则破坏大量赋值/返回),
+// 故 keepalive 单独用 atomic 计数,避免 32 位平台 int64 撕裂读。
+struct KeepaliveStats {
+    std::atomic<int64_t> chunks{0};            // 成功 set_cur 次数
+    std::atomic<int64_t> errors{0};            // 累计失败次数
+    std::atomic<int64_t> consecutive_errors{0};// 当前连续失败次数(成功清零)
+    std::atomic<int> first_error{0};           // 首个错误码
+    std::atomic<bool> starved{false};          // 连续失败超阈值 → keepalive 饿死,会话需失败
+};
+
+// keepalive 连续失败超过该阈值即判定饿死(master XU keepalive 是 firmware 硬约束,
+// 长期失败意味着设备已停止响应,继续报 streaming 是饿死期间的假状态)。
+constexpr int64_t kKeepaliveStarvedThreshold = 10;
+
 using LogFn = std::function<void(const std::string&)>;
 
 struct UvcFrameInfo {
@@ -310,6 +325,7 @@ enum class P100R3SessionState {
     kStopping,
     kStopped,
     kFailed,
+    kKeepaliveStarved,  // master keepalive 连续超时饿死,设备已停止响应,属失败终态
 };
 
 enum class P100R3SessionStopReason {
@@ -319,6 +335,7 @@ enum class P100R3SessionStopReason {
     kCallbackStop,
     kBulkError,
     kSetupFailed,
+    kKeepaliveStarved,  // master keepalive 连续超时饿死触发的停流
 };
 
 const char* p100r3_session_state_name(P100R3SessionState state);
@@ -658,12 +675,26 @@ bool negotiate_uvc_stream(IUvcDevice& device,
                           UvcNegotiation* out,
                           LogFn log = {});
 
+// 历史签名(BulkStats):demo / probe / 旧 JNI 路径仍在用,保留不破坏外部调用方。
+// 此重载不做饿死升级,仅累计计数(非线程安全的 int64,单写者最坏撕裂读)。
 void master_keepalive_loop(IUvcDevice& master,
                            XuPayload seed,
                            int interval_ms,
                            std::atomic<bool>& running,
                            BulkStats& stats,
                            LogFn log = {});
+
+// 新函数(KeepaliveStats):atomic 计数防 32 位撕裂读,且连续失败超阈值时
+// 置 starved + running=false 升级失败,避免饿死期间拉流线程继续报 streaming。
+// 端云双流会话(host SDK / JNI 新路径)应改用此函数。
+// 注:刻意不与上面同名重载,否则 std::thread(master_keepalive_loop, ...)
+// 取重载函数地址会歧义,破坏现有 demo / probe / JNI 调用方。
+void master_keepalive_loop_atomic(IUvcDevice& master,
+                                  XuPayload seed,
+                                  int interval_ms,
+                                  std::atomic<bool>& running,
+                                  KeepaliveStats& stats,
+                                  LogFn log = {});
 
 // 解析 XU payload JSON 文本（不读文件，Android 可传 asset bytes）。
 std::vector<XuPayload> parse_xu_payloads(const std::string& text,

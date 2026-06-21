@@ -25,7 +25,9 @@ class HostSelectionInterceptor @Inject constructor(
                 req.url.newBuilder()
                     .host(ep.ip)
                     .port(ep.port)
-                    .scheme("http")
+                    // scheme 跟随 endpoint.tls：dev 默认 http，生产可切 https；
+                    // 现有已配置 host 的 tls 维持原值，不破坏 dev 明文连通。
+                    .scheme(ep.httpScheme)
                     .build()
             )
             .build()

@@ -106,7 +106,13 @@ data class StereoExtrinsics(
         translation.contentHashCode() * 31 + rmsReprojectionPx.hashCode()
 }
 
-/** 标定结果完整契约，落 Room + 跨会话复用，按 [deviceSerial] 唯一。 */
+/**
+ * 标定结果完整契约，按 [deviceSerial] 唯一。
+ *
+ * 现状：纯内存 / 进程内传递的数据契约，**当前未持久化**——core:database 里没有对应 Entity/DAO。
+ * (历史注释曾写"落 Room"，但从未落地，已订正避免误读。) 跨会话复用的持久化方案待定，
+ * 终态见 docs/architecture(标定持久化专题)；真要落库时在 core:database 补 Entity + DAO + migration。
+ */
 data class CalibrationResult(
     val deviceSerial: String,
     val colorIntrinsics: CameraIntrinsics,
@@ -146,7 +152,11 @@ data class Pose6D(
 }
 
 /**
- * 三维外廓扫描会话元信息（持久化到 Room + 文件落 getFilesDir()/scans/<id>/）。
+ * 三维外廓扫描会话元信息。
+ *
+ * 现状：纯内存数据契约，**当前未持久化到 Room**——core:database 无对应 Entity/DAO，
+ * 仅约定了下列文件落 getFilesDir()/scans/<id>/。(历史注释曾写"持久化到 Room"，从未落地，已订正。)
+ * 终态要做会话历史列表时再在 core:database 补 Entity/DAO/migration。
  *
  * 文件布局：
  *   scans/<id>/cloud.ply      — 高密度点云

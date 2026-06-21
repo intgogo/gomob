@@ -324,6 +324,13 @@ void RunEys3dPupilMjpegSession(int fd, gomob::eys3d::Eys3dSessionCore& core);
 //   实现于 eys3d_mode25_libuvc_session.cpp。
 void RunEys3dMode25LibuvcSession(int fd, gomob::eys3d::Eys3dSessionCore& core);
 
+// TODO(R3, deferred-structural): 本 Run() 下属三条取流路径(proven stream-loop / 独立 mode25 libuvc /
+//   pupil MJPEG + vendor libuvc YUYV 基线)均为「自研零厂商」在研实验路径,生产不可达 —— 唯一构造点
+//   Eys3dFdDriver::open_fd 由 kUseVendorCpp=true 永远走 Eys3dVendorCppSession 分支,本类不会被实例化。
+//   实验路径仍带真实 USB 副作用(claim_interface/control_transfer/bulk submit)+依赖 libuvc_lusb100 资产,
+//   不应被默认链路触发。终态:用独立 build flag / 独立编译目标把整条实验路径物理隔离出生产二进制
+//   (见 docs/architecture/13-eys3d-driver.md「自研独立路径」与 finding_eys3d_zero_vendor_independence)。
+//   本轮不做结构隔离,仅在入口标注;实际不可达由 open_fd 的 kUseVendorCpp 门控保证。
 void Eys3dFdSession::Run() {
   if (fd_ < 0) { core_.MarkError("invalid fd"); return; }
 

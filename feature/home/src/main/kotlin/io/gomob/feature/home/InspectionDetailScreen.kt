@@ -24,6 +24,8 @@ import io.gomob.designsystem.theme.Gomob
 
 private data class FieldRow(val label: String, val value: String, val isMono: Boolean = false)
 
+// TODO(demo-data R1): 这是占位假数据,未接真实工单详情 Repository;InspectionDetailRoute 的 inspectionId 当前仅显示在标题、未用于查库。
+//   终态:按 inspectionId 拉真实预审报告(车辆基础字段 / 不予通过原因 / AI 预审),见 feature/home 接工单详情接口。
 private val DEMO_FIELDS = listOf(
     FieldRow("VIN", "LSVHM133022221761", isMono = true),
     FieldRow("车型号", "SVW7186LJD", isMono = true),

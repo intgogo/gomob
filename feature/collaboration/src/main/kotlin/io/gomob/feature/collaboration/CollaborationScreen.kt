@@ -90,6 +90,7 @@ private val LIVE_STREAMS = listOf(
     LiveStream("L4", "吴敏", "滨江区检测站", "01:42", warn = false),
 )
 
+// TODO(demo-data R1): 近期录像列表为占位假数据，未接真实录像/分享统计 API。
 private val RECORDINGS = listOf(
     Recording("R1", "VIN 复核全流程", "沈海明", "06:18", views = 87, time = "今日 09:12"),
     Recording("R2", "ODB 异常处置范例", "陈工", "12:04", views = 132, time = "昨日 16:48"),
@@ -106,6 +107,7 @@ private data class Case(
     val views: Int,
 )
 
+// TODO(demo-data R1): 公开案例库为占位假数据，未接真实案例库统计 API。
 private val CASES = listOf(
     Case("C1", "篡改铭牌识别要点", "合规", StatusTone.Danger, "杭州西湖区", 312),
     Case("C2", "改装件年检判定", "外观", StatusTone.Warn, "杭州余杭区", 218),
@@ -130,6 +132,7 @@ fun CollaborationRoute(
     }
 
     Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
+        // TODO(demo-data R1): 复核“127 待办”、案例“780 案例”徽标为占位假数据，未接真实统计 API。
         val (eyebrow, badge, badgeTone) = when (sub) {
             0 -> Triple("团队 · 实时第一视角直播", "${liveSessions.size} 在线", StatusTone.Accent)
             1 -> Triple("团队 · 抽查复核 / 工单分发", "127 待办", StatusTone.Warn)
@@ -363,6 +366,8 @@ private fun RecordingRow(r: Recording) {
 // 抽查复核 — 4 KPI + 趋势柱图 + 开始复核 CTA + 即时预警三段比例条
 // jsx coop.jsx 主体内容
 // ============================================================================
+// TODO(demo-data R1): 抽查复核 KPI / 趋势柱图 / 即时预警三段比例条均为硬编码占位假数据，
+// 未接真实复核统计 API（今日/待/历史复核量、近 7 日趋势、预警分布）。终态由后端统计接口回填。
 private val REVIEW_TREND = listOf(18, 22, 15, 17, 24, 31, 21)
 private val REVIEW_DAYS = listOf("一", "二", "三", "四", "五", "六", "七")
 

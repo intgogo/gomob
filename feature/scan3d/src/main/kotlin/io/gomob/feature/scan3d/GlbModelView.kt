@@ -80,13 +80,29 @@ internal class GlbSurfaceView(context: android.content.Context) : SurfaceView(co
         loadedPath = glbFile.absolutePath
     }
 
-    /** 离场释放:停渲染循环 + 释放当前 GLB 的 GPU 资源(模型/纹理/几何)。 */
+    /**
+     * 离场释放:停渲染循环 + 释放当前 GLB 的 GPU 资源(模型/纹理/几何) +
+     * 销毁方向光实体与 Filament Engine。
+     *
+     * ModelViewer 自身不会在销毁时释放它创建的 Engine,只 destroyModel 会导致反复回看时
+     * Engine + sunLight 持续累积泄漏。这里显式:从场景摘除 → 销毁 light 组件 + 实体 →
+     * 最后 engine.destroy()(Engine 必须最后销毁,它持有上面所有资源的底层句柄)。
+     */
     fun destroy() {
         if (destroyed) return
         destroyed = true
         running = false
         choreographer.removeFrameCallback(frameCallback)
+        val engine = modelViewer.engine
         modelViewer.destroyModel()
+        if (sunLight != 0) {
+            modelViewer.scene.removeEntity(sunLight)
+            engine.lightManager.destroy(sunLight)
+            EntityManager.get().destroy(sunLight)
+            sunLight = 0
+        }
+        // Engine 最后销毁:释放 renderer/scene/view/swapChain/camera 及全部 GPU 资源。
+        engine.destroy()
     }
 
     private fun addSunLight() {

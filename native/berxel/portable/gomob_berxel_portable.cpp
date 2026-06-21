@@ -729,6 +729,7 @@ const char* p100r3_session_state_name(P100R3SessionState state) {
         case P100R3SessionState::kStopping: return "stopping";
         case P100R3SessionState::kStopped: return "stopped";
         case P100R3SessionState::kFailed: return "failed";
+        case P100R3SessionState::kKeepaliveStarved: return "keepalive_starved";
     }
     return "unknown";
 }
@@ -741,6 +742,7 @@ const char* p100r3_session_stop_reason_name(P100R3SessionStopReason reason) {
         case P100R3SessionStopReason::kCallbackStop: return "callback_stop";
         case P100R3SessionStopReason::kBulkError: return "bulk_error";
         case P100R3SessionStopReason::kSetupFailed: return "setup_failed";
+        case P100R3SessionStopReason::kKeepaliveStarved: return "keepalive_starved";
     }
     return "unknown";
 }
@@ -2061,6 +2063,74 @@ void master_keepalive_loop(IUvcDevice& master,
     }
     log_line(log, std::string("keepalive loop exit iters=") + std::to_string(iter) +
                   " ok=" + std::to_string(stats.chunks) + " errs=" + std::to_string(stats.errors));
+}
+
+// KeepaliveStats 版:atomic 计数 + 饿死升级。详见头文件说明。
+void master_keepalive_loop_atomic(IUvcDevice& master,
+                                  XuPayload seed,
+                                  int interval_ms,
+                                  std::atomic<bool>& running,
+                                  KeepaliveStats& stats,
+                                  LogFn log) {
+    if (seed.data.size() < 14) {
+        log_line(log, "master keepalive seed too short");
+        return;
+    }
+    uint32_t counter = read_le32(&seed.data[10]);
+    uint64_t iter = 0;
+    while (running.load()) {
+        counter += 0x36;
+        write_le32(&seed.data[10], counter);
+        int rc = master.uvc_set_cur(seed.w_value,
+                                    seed.w_index,
+                                    seed.data.data(),
+                                    static_cast<uint16_t>(seed.data.size()),
+                                    500);
+        if (rc < 0) {
+            const int64_t errs = stats.errors.fetch_add(1) + 1;
+            const int64_t consec = stats.consecutive_errors.fetch_add(1) + 1;
+            int expected = 0;
+            stats.first_error.compare_exchange_strong(expected, rc);
+            // 诊断：前 5 次错误逐条打 rc + name，之后每 200 次一条，定位 keepalive 停摆原因
+            if (errs <= 5 || errs % 200 == 0) {
+                log_line(log, std::string("set_cur err rc=") + std::to_string(rc) +
+                              " (" + usb_error_name(rc) + ") errs=" + std::to_string(errs) +
+                              " consec=" + std::to_string(consec) +
+                              " ok=" + std::to_string(stats.chunks.load()));
+            }
+            // 连续失败超阈值 = master keepalive 饿死,设备已停响应。
+            // 必须升级为失败并停流,否则拉流线程会在饿死期间继续报 streaming(假状态)。
+            if (consec >= kKeepaliveStarvedThreshold) {
+                stats.starved.store(true);
+                running.store(false);
+                log_line(log, std::string("master keepalive STARVED: consec=") +
+                              std::to_string(consec) + " >= " +
+                              std::to_string(kKeepaliveStarvedThreshold) +
+                              ", first_err=" + std::to_string(stats.first_error.load()) +
+                              " -> 升级失败停流");
+                break;
+            }
+        } else {
+            stats.chunks.fetch_add(1);
+            stats.consecutive_errors.store(0);
+            std::vector<uint8_t> back(seed.data.size());
+            int grc = master.uvc_get_cur(seed.w_value,
+                                         seed.w_index,
+                                         back.data(),
+                                         static_cast<uint16_t>(back.size()),
+                                         500);
+            if (grc < 0 && stats.chunks.load() <= 5) {
+                log_line(log, std::string("get_cur err rc=") + std::to_string(grc) +
+                              " (" + usb_error_name(grc) + ")");
+            }
+        }
+        ++iter;
+        std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
+    }
+    log_line(log, std::string("keepalive loop exit iters=") + std::to_string(iter) +
+                  " ok=" + std::to_string(stats.chunks.load()) +
+                  " errs=" + std::to_string(stats.errors.load()) +
+                  " starved=" + std::to_string(stats.starved.load() ? 1 : 0));
 }
 
 std::vector<XuPayload> parse_xu_payloads(const std::string& text,

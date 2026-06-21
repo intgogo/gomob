@@ -27,15 +27,23 @@ internal class VoiceRecorder(
         if (recording) return
         val dir = File(cacheDir, "voice_records").also { it.mkdirs() }
         val file = File.createTempFile("gomob_voice_", ".m4a", dir)
-        val next = MediaRecorder().apply {
-            setAudioSource(MediaRecorder.AudioSource.MIC)
-            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            setAudioSamplingRate(44_100)
-            setAudioEncodingBitRate(96_000)
-            setOutputFile(file.absolutePath)
-            prepare()
-            start()
+        val next = MediaRecorder()
+        try {
+            next.apply {
+                setAudioSource(MediaRecorder.AudioSource.MIC)
+                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                setAudioSamplingRate(44_100)
+                setAudioEncodingBitRate(96_000)
+                setOutputFile(file.absolutePath)
+                prepare()
+                start()
+            }
+        } catch (t: Throwable) {
+            // prepare/start 抛异常时回收 MediaRecorder 与临时文件，避免句柄/文件泄漏。
+            next.runCatching { release() }
+            file.delete()
+            throw t
         }
         outputFile = file
         recorder = next

@@ -72,13 +72,27 @@ func (l *Limiter) Middleware(keyFn func(r *http.Request) string, next http.Handl
 	})
 }
 
-// PerUserOrIP 默认 keyFn：受保护路径按 user_id；公开路径按 remote IP。
+// PerUserOrIP 默认 keyFn：受保护路径按 user_id；否则按 remote IP。
+//
+// 安全前提：只在 withJWT 之后挂载本 keyFn，此时 HeaderUserID 一定是
+// gateway 校验 JWT 后注入的真实 user_id（withJWT 入口已无条件剥离客户端
+// 自带的同名头）。若挂在 withJWT 之前，HeaderUserID 仍是客户端可控的，
+// 攻击者可任意伪造 user_id 绕过限流——此时必须改用 PerIP。
 //
 // 实际生产用 X-Forwarded-For（须信任前置 proxy）；M-S1 直接用 RemoteAddr。
 func PerUserOrIP(r *http.Request) string {
 	if uid := r.Header.Get(HeaderUserID); uid != "" {
 		return "user_" + uid
 	}
+	return "ip_" + clientIP(r)
+}
+
+// PerIP 公开路由专用 keyFn：只按客户端 IP 配额，绝不读任何客户端可伪造的头。
+//
+// 公开路由（login/register）在 withJWT 里只做剥离不做注入，因此限流维度
+// 不能依赖 HeaderUserID（已被剥离为空，且本就客户端可控）；统一按 IP 限流，
+// 防止攻击者通过伪造 user_id 把限流键打散来绕过公开路由配额。
+func PerIP(r *http.Request) string {
 	return "ip_" + clientIP(r)
 }
 

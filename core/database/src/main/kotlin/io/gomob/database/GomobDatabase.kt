@@ -19,7 +19,9 @@ import io.gomob.database.message.MessageEntity
         LiveSessionEntity::class,
     ],
     version = 5,
-    exportSchema = false,
+    // exportSchema=true：把每个版本 schema 落 schemas/<version>.json（schemaLocation 见 build.gradle.kts），
+    // 作为 MigrationTestHelper 的真理源，让 migration 有自动化验证依据。
+    exportSchema = true,
 )
 abstract class GomobDatabase : RoomDatabase() {
     abstract fun conversationDao(): ConversationDao

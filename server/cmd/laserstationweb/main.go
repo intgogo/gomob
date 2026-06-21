@@ -26,13 +26,16 @@ import (
 const sessionCookieName = "gomob_laser_station_session"
 
 type webServer struct {
-	webDir string
-	secret []byte
-	now    func() time.Time
+	webDir   string
+	secret   []byte
+	password string // 高熵登录口令，从环境变量读取，无内置默认
+	now      func() time.Time
 }
 
 func main() {
-	addr := flag.String("addr", envOr("GOMOB_LASER_STATION_ADDR", "0.0.0.0:5177"), "监听地址")
+	// 默认绑回环：本台直接发 admin 网关 JWT，LAN 可达即冒充，故不暴露到 0.0.0.0；
+	// 需要远程访问时显式设 GOMOB_LASER_STATION_ADDR 并置于反代/鉴权之后。
+	addr := flag.String("addr", envOr("GOMOB_LASER_STATION_ADDR", "127.0.0.1:5177"), "监听地址（默认绑回环，勿直接暴露公网）")
 	webDirArg := flag.String("web-dir", os.Getenv("GOMOB_LASER_STATION_WEB_DIR"), "网页目录")
 	flag.Parse()
 
@@ -44,12 +47,16 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	password, err := loginPassword()
+	if err != nil {
+		log.Fatal(err)
+	}
 	gatewayTarget, err := gatewayTargetURL()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	s := &webServer{webDir: webDir, secret: secret, now: time.Now}
+	s := &webServer{webDir: webDir, secret: secret, password: password, now: time.Now}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/login", s.login)
 	mux.HandleFunc("/logout", s.logout)
@@ -112,8 +119,8 @@ func (s *webServer) login(w http.ResponseWriter, r *http.Request) {
 			s.renderLogin(w, "表单解析失败")
 			return
 		}
-		if !passwordOK(r.FormValue("password"), s.now()) {
-			s.renderLogin(w, "动态密码不正确")
+		if !s.passwordOK(r.FormValue("password")) {
+			s.renderLogin(w, "口令不正确")
 			return
 		}
 		s.setSession(w)
@@ -202,13 +209,23 @@ func (s *webServer) sign(value string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func expectedPassword(t time.Time) string {
-	return "3d" + t.Format("0102")
+// loginPassword 从环境变量读高熵登录口令；未设置或过弱则拒绝启动，绝不内置可推算的弱默认。
+func loginPassword() (string, error) {
+	pw := os.Getenv("GOMOB_LASER_STATION_PASSWORD")
+	if pw == "" {
+		return "", fmt.Errorf("必须设置 GOMOB_LASER_STATION_PASSWORD（高熵口令）；本台登录即发 admin 网关 JWT，禁止内置弱默认。生成示例：openssl rand -base64 24")
+	}
+	if len([]rune(pw)) < 16 {
+		return "", fmt.Errorf("GOMOB_LASER_STATION_PASSWORD 过弱（需 ≥16 字符）；生成示例：openssl rand -base64 24")
+	}
+	return pw, nil
 }
 
-func passwordOK(input string, t time.Time) bool {
-	want := expectedPassword(t)
-	return subtle.ConstantTimeCompare([]byte(input), []byte(want)) == 1
+func (s *webServer) passwordOK(input string) bool {
+	if s.password == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(input), []byte(s.password)) == 1
 }
 
 func nextLocalDay(t time.Time) time.Time {
@@ -332,11 +349,11 @@ var loginPage = template.Must(template.New("login").Parse(`<!doctype html>
   <body>
     <main>
       <h1>3D 扫描工位</h1>
-      <p>请输入动态密码进入管理台。</p>
+      <p>请输入管理口令进入管理台。</p>
       {{if .Message}}<div class="message">{{.Message}}</div>{{end}}
       <form method="post" action="/login">
         <label>
-          动态密码
+          管理口令
           <input name="password" type="password" autocomplete="current-password" autofocus>
         </label>
         <button type="submit">登录</button>

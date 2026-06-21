@@ -365,6 +365,7 @@ private fun FlowSectionHeader(onOpenHistory: () -> Unit) {
 
 private data class FilterCount(val label: String, val n: Int, val active: Boolean = false)
 
+// TODO(demo-data R1): 这是占位假数据,未接真实统计 Repository(工单分类计数);终态见 feature/profile 接 ProfileRepository。
 private val FILTER_COUNTS = listOf(
     FilterCount("全部", 170, active = true),
     FilterCount("异常", 78),
@@ -421,6 +422,7 @@ private data class FlowRowData(
     val status: FlowStatus,
 )
 
+// TODO(demo-data R1): 这是占位假数据,未接真实工单流水 Repository;终态见 feature/profile 接 ProfileRepository / 后端 /v1 工单列表。
 private val FLOW_ROWS = listOf(
     FlowRowData("12:42", "LSVHM98277661003", "丰田系列 · 小型汽车 · 浙A88K90",
         listOf(FlowTag("已通过", FlowStatus.Ok)), FlowStatus.Ok),

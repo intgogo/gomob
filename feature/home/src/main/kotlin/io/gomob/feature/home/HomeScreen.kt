@@ -593,6 +593,7 @@ private fun UserMessageBubble(prompt: String, turnNumber: Int, image: Bitmap? = 
 
 @Composable
 private fun VehicleDossierCard() {
+    // TODO(demo-data R1): 这是占位假数据,未接真实车辆档案数据源(VIN 识别结果 / 车辆库);终态见 feature/home 接车辆档案接口。
     val rows = listOf(
         "VIN" to "LSVHM133022221761",
         "车型号" to "SVW7186LJD",
@@ -941,6 +942,7 @@ internal data class AgentCapability(
     val icon: ImageVector,
 )
 
+// TODO(demo-data R1): 这是占位假数据(智能体能力清单),未接真实智能体注册/配置数据源;终态见 feature/home 接 agent 能力配置接口。
 internal val AGENT_CAPABILITIES = listOf(
     AgentCapability(
         k = "01",
@@ -1062,6 +1064,7 @@ private fun CapabilityRow(
 // ─── 历史会话 ──────────────────────────────────────────────────────────────
 private data class HistoryItem(val title: String, val snippet: String, val ts: String, val turns: Int)
 
+// TODO(demo-data R1): 这是占位假数据(历史会话列表),未接真实会话历史 Repository;终态见 feature/home 接会话历史接口。
 private val HISTORY_ITEMS = listOf(
     HistoryItem("本周 OBD 异常分布分析", "共识别 56 起，集中在 P0420/P0171…", "昨天 17:24", 12),
     HistoryItem("复核 LSVHM412...", "判定为误报，建议放行", "昨天 11:08", 6),

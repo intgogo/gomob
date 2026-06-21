@@ -15,18 +15,23 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import android.widget.Toast
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.HairlineCard
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
 import io.gomob.designsystem.theme.Gomob
 
+// TODO(demo-data R1): 整个复核详情为静态占位假数据，未按 reviewId 拉取真实工单，也未接裁决 API。
+// 终态应按 reviewId 调用复核工单详情接口（周历 / 异常清单 / 审核结果 / 车架号图均来自后端），
+// 并把下方“结果正确 / 结果错误”按钮接裁决提交接口。见 docs/architecture 协作复核章节。
 private val WEEK_DAYS = listOf(23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33)
 private val DAY_DOTS = listOf(
     DayDot(1, false), DayDot(2, false), DayDot(3, true), DayDot(4, false),
@@ -149,23 +154,32 @@ fun ReviewDetailRoute(reviewId: String, onBack: () -> Unit) {
                 .padding(Gomob.spacing.s16),
             horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
         ) {
+            // TODO(demo-data R1): 三个裁决按钮尚未接复核裁决提交接口；当前点击仅提示“未实现”，
+            // 不做静默无效操作。终态应提交 (reviewId, 裁决结果) 到后端并返回上一页。
+            val context = LocalContext.current
+            val notImplemented = {
+                Toast.makeText(context, "复核裁决暂未实现", Toast.LENGTH_SHORT).show()
+            }
             DecisionButton(
                 modifier = Modifier.weight(1f),
                 text = "结果正确",
                 fill = Gomob.colors.okSoft,
                 fg = Gomob.colors.ok,
+                onClick = notImplemented,
             )
             DecisionButton(
                 modifier = Modifier.weight(1f),
                 text = "结果错误",
                 fill = Gomob.colors.dangerSoft,
                 fg = Gomob.colors.danger,
+                onClick = notImplemented,
             )
             DecisionButton(
                 modifier = Modifier.weight(1f),
                 text = "跳过",
                 fill = Gomob.colors.bg2,
                 fg = Gomob.colors.fg2,
+                onClick = notImplemented,
             )
         }
     }
@@ -189,13 +203,14 @@ private fun DecisionButton(
     text: String,
     fill: Color,
     fg: Color,
+    onClick: () -> Unit,
 ) {
     Box(
         modifier
             .height(Gomob.spacing.touchMin)
             .clip(Gomob.shapes.r2)
             .background(fill)
-            .clickable {},
+            .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Text(text, style = Gomob.type.body, color = fg)

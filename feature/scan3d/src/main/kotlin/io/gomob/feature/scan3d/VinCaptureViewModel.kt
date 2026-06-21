@@ -78,6 +78,12 @@ class VinCaptureViewModel @Inject constructor(
     private val _rubbing = MutableStateFlow<Bitmap?>(null)
     val rubbing: StateFlow<Bitmap?> = _rubbing.asStateFlow()
 
+    // R5: 当前 [rubbing] 是否为「端侧近似预览」(IDENTITY_RT + 估算焦距，未标定)。
+    // true = 即时占位预览（HLSD8 焦距估算/外参取单位阵，不冒充真实标定）；
+    // false = 服务端原厂全保真还原已覆盖（权威）。UI 据此打"未标定/估算"角标。
+    private val _previewEstimated = MutableStateFlow(false)
+    val previewEstimated: StateFlow<Boolean> = _previewEstimated.asStateFlow()
+
     // 拍照进行中（防重入 + UI 转圈）。
     private val _capturing = MutableStateFlow(false)
     val capturing: StateFlow<Boolean> = _capturing.asStateFlow()
@@ -182,6 +188,8 @@ class VinCaptureViewModel @Inject constructor(
                 Log.i(TAG, "raw capture saved seq=$seq dir=${dir.absolutePath}")
 
                 // ② 端侧近似正射，仅作"拍到了"的即时占位预览（真还原走服务端原厂全保真管线，随后覆盖）。best-effort。
+                // R5: 焦距来源 = HLSD8 未标定时按 width×HLSD8_FOCAL_FACTOR 估算、外参取 IDENTITY_RT，
+                // 均为近似，非真实标定；下面把 [previewEstimated] 置 true，UI 据此标"估算"，被服务端权威覆盖前不冒充标定。
                 try {
                     val isHlsd8 = color.pixelType == "HLSD8_RGB24"
                     val rgbIntr = if (isHlsd8) {
@@ -206,6 +214,7 @@ class VinCaptureViewModel @Inject constructor(
                         )
                     }
                     _rubbing.value = withContext(Dispatchers.Default) { FrameRenderer.orthoToBitmap(ortho) }
+                    _previewEstimated.value = true  // 估算焦距 + IDENTITY_RT 的端侧预览，待服务端覆盖
                 } catch (e: Throwable) {
                     Log.i(TAG, "端侧预览正射跳过（不影响落盘/上传）: ${e.message}")
                 }
@@ -226,7 +235,7 @@ class VinCaptureViewModel @Inject constructor(
                     val png = r.png
                     if (r.ok && png != null) {
                         withContext(Dispatchers.Default) { BitmapFactory.decodeByteArray(png, 0, png.size) }
-                            ?.let { _rubbing.value = it }
+                            ?.let { _rubbing.value = it; _previewEstimated.value = false }  // 服务端权威覆盖，清估算角标
                         restoredSignaturePng = png  // 供「确认」喂 vin_pipeline OCR
                         _captureMsg.value = "服务端还原 ✓ 第 $seq 张｜倾角 %.0f° 内点 %.0f%% 检出 %d（点确认识别）".format(
                             r.tiltDeg, r.inlierRate * 100, r.numDet)

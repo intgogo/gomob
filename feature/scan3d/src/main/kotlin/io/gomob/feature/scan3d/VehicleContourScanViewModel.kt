@@ -104,6 +104,10 @@ class VehicleContourScanViewModel @Inject constructor(
     private val _capturing = MutableStateFlow(false)
     val capturing: StateFlow<Boolean> = _capturing.asStateFlow()
 
+    /** 最近一次采集尝试时 color/depth 的时间戳差(us),供 UI/调试观测同步质量;-1 = 尚无。 */
+    private val _lastSyncDeltaUs = MutableStateFlow(-1L)
+    val lastSyncDeltaUs: StateFlow<Long> = _lastSyncDeltaUs.asStateFlow()
+
     val deviceState: StateFlow<CameraSourceState> = source.sourceState
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), CameraSourceState.Idle)
 
@@ -160,6 +164,16 @@ class VehicleContourScanViewModel @Inject constructor(
             Log.w(TAG, "采集跳过：尚无 color/depth 帧")
             return
         }
+        // 时间戳门控:color/depth 必须落在同一同步窗口内才配对,否则是时间错配帧——
+        // 配准/融合会把不同瞬间的纹理贴到几何上(运动 → 鬼影/偏移)。超阈值软丢弃(不进 Error 态,
+        // 留在采集态供用户稳住设备重试)并上报 delta,绝不静默用错配帧毒化 bundle。
+        val deltaUs = kotlin.math.abs(color.timestampUs - depth.timestampUs)
+        if (deltaUs > PAIR_SYNC_TOLERANCE_US) {
+            Log.w(TAG, "采集丢弃：color/depth 时间错配 Δ=${deltaUs}us > ${PAIR_SYNC_TOLERANCE_US}us")
+            _lastSyncDeltaUs.value = deltaUs
+            return
+        }
+        _lastSyncDeltaUs.value = deltaUs
         _capturing.value = true
         captureJob = viewModelScope.launch {
             try {
@@ -343,5 +357,12 @@ class VehicleContourScanViewModel @Inject constructor(
         private const val MAX_DEPTH_MM = 8000
         private const val MIN_SHOTS = 2
         private const val FUSION_TIMEOUT_MS = 180_000L
+
+        /**
+         * color/depth 配对同步容差(us)。Berxel MIX 模式 color@30fps + depth@45fps,
+         * 单帧间隔约 22~33ms;取 ~半个 depth 周期(15ms)作为同一瞬间的判定窗口,
+         * 超出即视为时间错配帧丢弃。
+         */
+        private const val PAIR_SYNC_TOLERANCE_US = 15_000L
     }
 }

@@ -210,6 +210,10 @@ func (h *Handler) handleNonStream(
 	if err != nil {
 		status = classifyCallStatus(err)
 		errMsg = err.Error()
+		// correctness：非流式整体失败，客户端没拿到任何内容 → 回滚已扣配额。
+		if h.quota != nil && !h.quota.Disabled() {
+			h.quota.Refund(r.Context(), uid, tpl.ID)
+		}
 	}
 	h.recordCall(r.Context(), uid, tpl, provider.Name(), usage, status, errMsg, requestID)
 	if err != nil {
@@ -253,7 +257,10 @@ func (h *Handler) handleStream(
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
+	// 首 chunk 是否已产出：用于配额"按内容计费"——首 chunk 前失败需回滚已扣配额。
+	gotChunk := false
 	usage, err := provider.ChatStream(ctx, req, func(c Chunk) bool {
+		gotChunk = true
 		// 发 delta；客户端断开时 Write 返回 error，我们停止
 		if _, werr := fmt.Fprintf(w, "event: delta\ndata: %s\n\n", mustJSON(map[string]any{"content": c.Content})); werr != nil {
 			cancel()
@@ -272,6 +279,12 @@ func (h *Handler) handleStream(
 		} else {
 			status = classifyCallStatus(err)
 			errMsg = err.Error()
+		}
+		// correctness：首 chunk 之前失败（鉴权失败 / 上游不可用 / 立即超时），
+		// 客户端一个 token 都没收到，不应占用当日配额 → 回滚已扣计数。
+		// 已产出过 chunk 的失败（流到一半断）保留计费，因为内容已部分交付。
+		if !gotChunk && h.quota != nil && !h.quota.Disabled() {
+			h.quota.Refund(ctx, uid, tpl.ID)
 		}
 	}
 	h.recordCall(ctx, uid, tpl, provider.Name(), usage, status, errMsg, requestID)

@@ -122,6 +122,10 @@ class MessageRepository @Inject constructor(
     private val conversationDao: ConversationDao,
     private val messageDao: MessageDao,
     private val json: Json,
+    // TODO(R7 终态): 去掉这个默认 NoopRealtimeMessageTransport——生产恒由 Hilt 注入真实现，默认值只服务
+    //   测试便利，却让人误读"实时通道可缺省"，缺省时所有实时收发静默降级成 no-op，难排查。
+    //   终态：删默认参，测试处显式传 Fake/Noop。本轮不删：约 30 个调用点全在 out-of-scope 的
+    //   MessageRepositoryTest.kt(并行 agent 持有)依赖此默认，删了会断测试编译。等测试一并改时落地。
     private val realtimeRepository: RealtimeMessageTransport = NoopRealtimeMessageTransport,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)

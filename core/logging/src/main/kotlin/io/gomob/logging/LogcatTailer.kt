@@ -60,7 +60,8 @@ class LogcatTailer(
                 val entry = parseLine(line) ?: continue
                 val filtered = filterEntry(entry, suppressLogUploadHttp)
                 suppressLogUploadHttp = filtered.suppressLogUploadHttp
-                filtered.entry?.let { emit(it) }
+                // 通用 PII 脱敏:对所有 tag 的最终输出生效,不只 okhttp。
+                filtered.entry?.let { emit(redactPii(it)) }
             }
         } finally {
             // cancel 时杀子进程 (destroyForcibly 才能立即 kill；destroy 是 SIGTERM 在某些设备上不立即生效)
@@ -100,6 +101,23 @@ class LogcatTailer(
         } else {
             entry
         }
+
+    /**
+     * 通用 PII / 凭据脱敏 —— 对所有 tag 的日志正文生效 (不只 okhttp)。
+     *
+     * 覆盖常见敏感串:Bearer/Authorization token、邮箱、手机号、身份证号、
+     * 以及 token/password/secret/access_token 等键值对。命中即替换为 <redacted>,
+     * 既保留日志的可读结构又不把明文凭据/隐私上传到服务端。
+     */
+    private fun redactPii(entry: LogEntryDto): LogEntryDto {
+        val original = entry.msg
+        if (original.isEmpty()) return entry
+        var msg = original
+        for (rule in PII_RULES) {
+            msg = rule.first.replace(msg, rule.second)
+        }
+        return if (msg == original) entry else entry.copy(msg = msg)
+    }
 
     private fun shouldDropNoisyOkHttp(msg: String): Boolean {
         if (msg.contains(LOG_UPLOAD_PATH)) return true
@@ -175,6 +193,25 @@ class LogcatTailer(
         )
 
         private val LEVELS = setOf("V", "D", "I", "W", "E", "F")
+
+        private const val REDACTED = "<redacted>"
+
+        /**
+         * 通用 PII / 凭据脱敏规则 (正则 -> 替换串)。按顺序对每条日志正文逐条 replace。
+         * 仅匹配高置信特征,避免误伤普通文本 (如纯数字坐标不在身份证/手机号格式内)。
+         */
+        private val PII_RULES: List<Pair<Regex, String>> = listOf(
+            // Authorization / Bearer token (含 header 与内联出现)
+            Regex("(?i)\\b(authorization|bearer)\\b\\s*[:=]?\\s*\\S+") to "${'$'}1 $REDACTED",
+            // token / password / secret / access_token / refresh_token = 值 ("k":"v" / k=v / k: v)
+            Regex("(?i)\\b(access[_-]?token|refresh[_-]?token|id[_-]?token|token|password|passwd|pwd|secret|api[_-]?key|apikey)\\b\\s*[\"']?\\s*[:=]\\s*[\"']?[^\\s\"',}]+") to "${'$'}1=$REDACTED",
+            // 邮箱
+            Regex("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}") to REDACTED,
+            // 中国大陆手机号 (11 位, 1 开头第二位 3-9), 用边界避免截断长数字串
+            Regex("(?<!\\d)1[3-9]\\d{9}(?!\\d)") to REDACTED,
+            // 18 位身份证号 (末位可为 X)
+            Regex("(?<!\\d)\\d{17}[\\dXx](?!\\d)") to REDACTED,
+        )
 
         // build SN 作 device_serial 默认；不是用户隐私（只是物理设备型号 + 序列）
         private val defaultSerial: String? by lazy {

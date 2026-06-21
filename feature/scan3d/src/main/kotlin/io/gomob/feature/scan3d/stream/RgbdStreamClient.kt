@@ -34,6 +34,9 @@ import java.util.concurrent.atomic.AtomicLong
  * ⚠️ 未在安卓设备实测 (本环境无 SDK/设备)。验证: 接好 UI 开关后 `./dev.sh install` 推真机, 连 gorob
  *    `cmd/robot-edge --addr :8111`, 看 robot-edge 日志"RGBD 融合"帧数增长 + Pico4 `/vr` 实时点云生长。
  */
+// TODO(R6): 本类零调用方且未在真机实测 —— 尚未接入任何 UI 入口/开关, start()/stop() 当前无人触发,
+//   gorob robot-edge `/rgbd` 端到端融合也未真机联调验证。保留不删(终态见上方链路注释 + gorob proto/rgbd.proto)。
+//   联调步骤见类头 ⚠️ 段:接好 UI 开关 → ./dev.sh install → 连 robot-edge → 看融合帧增长 + Pico4 /vr 点云生长。
 class RgbdStreamClient(
     private val url: String,
     private val scope: CoroutineScope,

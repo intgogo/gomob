@@ -187,6 +187,9 @@ func main() {
 	shutdownCtx, sc := context.WithTimeout(context.Background(), 5*time.Second)
 	defer sc()
 	_ = srv.Shutdown(shutdownCtx)
+	// 先停 HTTP 不再收新请求，再释放模型 net（C++ onnxruntime / opencv session）。
+	// 经在途引用计数：若仍有在途推理，net 延迟到归零才真正 Release，避免 UAF。
+	h.Models().ReleaseAll()
 	log.Info("退出完成")
 }
 

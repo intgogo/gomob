@@ -40,8 +40,8 @@ import (
 )
 
 const (
-	TopicScanCompleted    = "inspection.scan_completed"
-	TopicPreliminaryDone  = "inspection.preliminary_done"
+	TopicScanCompleted   = "inspection.scan_completed"
+	TopicPreliminaryDone = "inspection.preliminary_done"
 
 	// 总分阈值 — 与厂家库平均相似度判定 verdict
 	verdictPassThreshold    = 0.85
@@ -50,38 +50,38 @@ const (
 
 // Config 全部依赖。
 type Config struct {
-	NATSConn        *nats.Conn
-	Pool            *pgxpool.Pool
-	CVEngineTarget  string         // http://127.0.0.1:18810
-	HTTPClient      *http.Client   // 默认 30s timeout
-	Audit           audit.Recorder
-	Publisher       pubsub.Publisher
+	NATSConn       *nats.Conn
+	Pool           *pgxpool.Pool
+	CVEngineTarget string       // http://127.0.0.1:18810
+	HTTPClient     *http.Client // 默认 30s timeout
+	Audit          audit.Recorder
+	Publisher      pubsub.Publisher
 
 	// MinIO 直接拉字符 alpha 字节（与 vin-ref 同 bucket）
-	MinIOEndpoint   string
-	MinIOAccessKey  string
-	MinIOSecretKey  string
-	MinIOUseSSL     bool
-	Bucket          string
+	MinIOEndpoint  string
+	MinIOAccessKey string
+	MinIOSecretKey string
+	MinIOUseSSL    bool
+	Bucket         string
 
-	Log             *slog.Logger
+	Log *slog.Logger
 }
 
 // CharacterScan worker 收到的事件里，每个字符的扫描快照（端侧已分割模式）。
 type CharacterScan struct {
-	Position       int    `json:"position"`        // 1..17
-	Character      string `json:"character"`       // 检测到的字符（非合法 VIN 字符返 ""）
+	Position       int    `json:"position"`         // 1..17
+	Character      string `json:"character"`        // 检测到的字符（非合法 VIN 字符返 ""）
 	AlphaObjectKey string `json:"alpha_object_key"` // MinIO key（worker 直拉）
 }
 
 // ScanCompletedEvent NATS 入参。两种 ingest 模式：
 //
-//	1. FullImageObjectKey 非空（M-S10.2b 后的主路径）：
-//	   端侧只需上传整张 VIN 区域拍照图，worker 拉到后整张丢 cv-engine /cv/ocr/v1/vin_pipeline
-//	   走完 检测 → 字符 mask → 厂家库对照 → 聚合 verdict 全流程。
-//	2. Characters[] 非空（端侧已分割模式）：
-//	   端侧自己跑了 yolo / 字符分割，每位拿到 alpha_object_key；worker 逐字符调
-//	   /cv/ocr/v1/vin_character_compare_with_ref 比对。
+//  1. FullImageObjectKey 非空（M-S10.2b 后的主路径）：
+//     端侧只需上传整张 VIN 区域拍照图，worker 拉到后整张丢 cv-engine /cv/ocr/v1/vin_pipeline
+//     走完 检测 → 字符 mask → 厂家库对照 → 聚合 verdict 全流程。
+//  2. Characters[] 非空（端侧已分割模式）：
+//     端侧自己跑了 yolo / 字符分割，每位拿到 alpha_object_key；worker 逐字符调
+//     /cv/ocr/v1/vin_character_compare_with_ref 比对。
 //
 // 同时给两个会优先走 vin_pipeline；都为空 → handle 报错。
 type ScanCompletedEvent struct {
@@ -103,10 +103,10 @@ type PreliminaryDoneEvent struct {
 
 // Worker 业务句柄。
 type Worker struct {
-	cfg    Config
-	insps  *repo.InspectionRepo
-	mc     *minio.Client
-	log    *slog.Logger
+	cfg   Config
+	insps *repo.InspectionRepo
+	mc    *minio.Client
+	log   *slog.Logger
 }
 
 func New(cfg Config) (*Worker, error) {
@@ -130,20 +130,29 @@ func New(cfg Config) (*Worker, error) {
 		return nil, fmt.Errorf("minio: %w", err)
 	}
 	return &Worker{
-		cfg:    cfg,
-		insps:  repo.NewInspectionRepo(cfg.Pool),
-		mc:     mc,
-		log:    cfg.Log,
+		cfg:   cfg,
+		insps: repo.NewInspectionRepo(cfg.Pool),
+		mc:    mc,
+		log:   cfg.Log,
 	}, nil
 }
 
 // Run 订阅 NATS 主题，阻塞返。ctx 取消时取消订阅 + drain。
+//
+// TODO(jetstream): 当前用 core-NATS（fire-and-forget，无持久化/无重投/无幂等）。
+// 一旦 worker 崩溃或 handle 报错（cv-engine 抖动、MinIO 拉取失败），事件即永久丢失，
+// 对应 inspection 会卡在 scanning 永不进 preliminary（现阶段零真实生产者所以未暴露）。
+// 终态：迁 JetStream durable consumer（AckExplicit + 重试上限 + DLQ），生产侧带 Nats-Msg-Id
+// 做 server 去重 + worker 侧 inspection_id 幂等落库，使"丢事件→卡 scanning"不可能发生。
+// 属基础设施改造，不在本轮范围；此处仅订阅失败显式返错，handle 失败逐条 Error 告警兜底。
 func (w *Worker) Run(ctx context.Context) error {
 	sub, err := w.cfg.NATSConn.Subscribe(TopicScanCompleted, func(msg *nats.Msg) {
 		jobCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		if err := w.handle(jobCtx, msg.Data); err != nil {
-			w.log.Error("处理失败", "err", err, "data", string(msg.Data[:min(200, len(msg.Data))]))
+			// core-NATS 无重投：这里只能告警，事件已无法重放（见上方 TODO(jetstream)）。
+			w.log.Error("处理失败（core-NATS 无重投，事件丢失，inspection 可能卡 scanning）",
+				"err", err, "data", string(msg.Data[:min(200, len(msg.Data))]))
 		}
 	})
 	if err != nil {
@@ -354,11 +363,11 @@ func (w *Worker) handleViaCharacters(ctx context.Context, ev *ScanCompletedEvent
 	// audit
 	if w.cfg.Audit != nil {
 		afterRaw, _ := audit.Encode(map[string]any{
-			"verdict":  verdict,
-			"avg":      avg,
-			"scored":   scored,
-			"total":    len(ev.Characters),
-			"reasons":  reasons,
+			"verdict": verdict,
+			"avg":     avg,
+			"scored":  scored,
+			"total":   len(ev.Characters),
+			"reasons": reasons,
 		})
 		_ = w.cfg.Audit.Record(ctx, audit.Entry{
 			Action:   "worker.preliminary_done",
@@ -419,12 +428,12 @@ func (w *Worker) fetchObject(ctx context.Context, key string) ([]byte, error) {
 
 // VinPipelineResp cv-engine /cv/ocr/v1/vin_pipeline 响应里 worker 关心的子集。
 type VinPipelineResp struct {
-	Verdict        string   `json:"verdict"`
-	Reasons        []string `json:"reasons"`
-	AvgSimilarity  float64  `json:"avg_similarity"`
-	MinSimilarity  float64  `json:"min_similarity"`
-	Detections     int      `json:"detections"`
-	Scored         int      `json:"scored"`
+	Verdict       string   `json:"verdict"`
+	Reasons       []string `json:"reasons"`
+	AvgSimilarity float64  `json:"avg_similarity"`
+	MinSimilarity float64  `json:"min_similarity"`
+	Detections    int      `json:"detections"`
+	Scored        int      `json:"scored"`
 }
 
 // callVinPipeline 把整张 VIN 拍照图喂 cv-engine 一次拿到 verdict + 全套字符结果。
@@ -513,8 +522,8 @@ func (w *Worker) compareWithRef(ctx context.Context, vmid int64, character strin
 		return 0, err
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
-	req.Header.Set("X-Gomob-User-Id", "0")          // worker 内部调用，gateway 注入约定
-	req.Header.Set("X-Gomob-Roles", "inspector")    // 任意非空角色都过 require_auth
+	req.Header.Set("X-Gomob-User-Id", "0")       // worker 内部调用，gateway 注入约定
+	req.Header.Set("X-Gomob-Roles", "inspector") // 任意非空角色都过 require_auth
 	resp, err := w.cfg.HTTPClient.Do(req)
 	if err != nil {
 		return 0, err

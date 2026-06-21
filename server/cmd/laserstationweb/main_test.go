@@ -11,10 +11,26 @@ import (
 	"io.gomob/server/pkg/token"
 )
 
-func TestExpectedPassword(t *testing.T) {
-	got := expectedPassword(time.Date(2026, 6, 8, 12, 0, 0, 0, time.Local))
-	if got != "3d0608" {
-		t.Fatalf("password=%q", got)
+func TestLoginPasswordRejectsWeakOrMissing(t *testing.T) {
+	t.Setenv("GOMOB_LASER_STATION_PASSWORD", "")
+	if _, err := loginPassword(); err == nil {
+		t.Fatal("未设置口令应拒绝启动")
+	}
+	t.Setenv("GOMOB_LASER_STATION_PASSWORD", "short")
+	if _, err := loginPassword(); err == nil {
+		t.Fatal("过弱口令应拒绝启动")
+	}
+	t.Setenv("GOMOB_LASER_STATION_PASSWORD", "a-sufficiently-long-high-entropy-secret")
+	pw, err := loginPassword()
+	if err != nil {
+		t.Fatalf("合规口令应通过: %v", err)
+	}
+	s := &webServer{password: pw}
+	if !s.passwordOK("a-sufficiently-long-high-entropy-secret") {
+		t.Fatal("正确口令应通过校验")
+	}
+	if s.passwordOK("wrong") {
+		t.Fatal("错误口令不应通过校验")
 	}
 }
 

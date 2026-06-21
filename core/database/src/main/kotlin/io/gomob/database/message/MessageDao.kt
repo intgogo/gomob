@@ -64,6 +64,15 @@ interface MessageDao {
     @Upsert
     suspend fun upsertMessage(item: MessageEntity)
 
+    // TODO(db thread/原子性 终态): markDelivered 用 `UPDATE OR REPLACE` 改 PK localKey→'s:serverId'，
+    //   若目标 's:serverId' 行已被 server 同步路径写入，OR REPLACE 会静默删掉那条已存在行，而
+    //   conversation.lastMessageLocalKey 可能正指向它→摘要悬空；且 repository 里 markDelivered 后
+    //   再调 ConversationDao.recordLastMessage 跨 DAO 非事务，半途失败也会摘要不一致。
+    //   终态修法：把 MessageDao 改 abstract class 拆出 deleteCollidingServerRow + applyDelivered 用
+    //   @Transaction 合并；跨 DAO 部分用 RoomDatabase.withTransaction 在 MessageRepository 包裹
+    //   markDelivered+recordLastMessage。本轮不改：abstract class 化会破坏 out-of-scope 测试里的
+    //   `class FakeMessageDao : MessageDao`(并行 agent 持有该测试文件)，跨 DAO 事务需 core:data 加
+    //   room-ktx 依赖(build.gradle.kts 同样 out-of-scope)。等测试 Fake + 依赖一并改时落地。
     @Query(
         """
         UPDATE OR REPLACE messages

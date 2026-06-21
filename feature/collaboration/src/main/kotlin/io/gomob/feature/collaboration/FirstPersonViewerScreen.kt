@@ -2,6 +2,7 @@ package io.gomob.feature.collaboration
 
 import android.app.Application
 import android.view.ViewGroup
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -49,6 +50,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.graphics.Brush
@@ -99,6 +101,8 @@ fun FirstPersonViewerRoute(
     onOpenInspector: (String) -> Unit = {},
     viewModel: FirstPersonViewerViewModel = hiltViewModel(),
 ) {
+    // TODO(demo-data R1): 这是占位假主播身份(姓名/工号/观看数),未接 MediaSession + ws 推送的真实
+    // publisher metadata,恒回退首条假数据;终态从 join 后的 ViewerLiveState/ws 元数据取真实身份。
     val s = STREAM_DETAILS[streamId] ?: STREAM_DETAILS.values.first()
     val mediaState by viewModel.state.collectAsStateWithLifecycle()
     val remoteTrack by viewModel.remoteTrack.collectAsStateWithLifecycle()
@@ -112,6 +116,7 @@ fun FirstPersonViewerRoute(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
+    val context = LocalContext.current
 
     Box(
         Modifier
@@ -198,15 +203,17 @@ fun FirstPersonViewerRoute(
         )
 
         // ---- 底部：评论输入栏 + 麦克风（抖音风） ----
+        // R3: 评论/语音后端(ws live_annotations / 录音上传)未实现。为避免静默吞掉用户输入,
+        // 这里把两个控件禁用并提示"未实现",不伪造发送成功。终态接 ws 实时评论 + 语音消息后再开放。
         CommentBar(
             value = commentDraft,
+            enabled = false,
             onValueChange = { commentDraft = it },
             onSend = {
-                // TODO: 接 ws 推送实时评论 / live_annotations
-                commentDraft = ""
+                Toast.makeText(context, "实时评论功能尚未实现", Toast.LENGTH_SHORT).show()
             },
             onRecordVoice = {
-                // TODO: 接录音 + 发语音消息
+                Toast.makeText(context, "语音功能尚未实现", Toast.LENGTH_SHORT).show()
             },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -390,6 +397,7 @@ private fun CommentBar(
     onSend: () -> Unit,
     onRecordVoice: () -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     Row(
         modifier = modifier,
@@ -402,35 +410,48 @@ private fun CommentBar(
                 .weight(1f)
                 .height(40.dp)
                 .clip(RoundedCornerShape(20.dp))
-                .background(Color.Black.copy(alpha = 0.62f))
+                .background(Color.Black.copy(alpha = if (enabled) 0.62f else 0.40f))
+                // R3: 后端未就绪时禁用真实输入,点击直接提示未实现,不静默吞输入
+                .then(
+                    if (enabled) Modifier
+                    else Modifier.clickable(onClick = onSend),
+                )
                 .padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(Modifier.weight(1f)) {
-                BasicTextField(
-                    value = value,
-                    onValueChange = onValueChange,
-                    singleLine = true,
-                    textStyle = TextStyle(
-                        color = Color.White,
-                        fontSize = 14.sp,
-                    ),
-                    cursorBrush = SolidColor(Color(0xFF2DD4BF)),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(
-                        onSend = { if (value.isNotBlank()) onSend() },
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                if (value.isEmpty()) {
+                if (enabled) {
+                    BasicTextField(
+                        value = value,
+                        onValueChange = onValueChange,
+                        singleLine = true,
+                        textStyle = TextStyle(
+                            color = Color.White,
+                            fontSize = 14.sp,
+                        ),
+                        cursorBrush = SolidColor(Color(0xFF2DD4BF)),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(
+                            onSend = { if (value.isNotBlank()) onSend() },
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (value.isEmpty()) {
+                        Text(
+                            "说点什么...",
+                            color = Color.White.copy(alpha = 0.68f),
+                            fontSize = 14.sp,
+                        )
+                    }
+                } else {
                     Text(
-                        "说点什么...",
-                        color = Color.White.copy(alpha = 0.68f),
+                        "评论功能暂未开放",
+                        color = Color.White.copy(alpha = 0.50f),
                         fontSize = 14.sp,
                     )
                 }
             }
-            if (value.isNotBlank()) {
+            if (enabled && value.isNotBlank()) {
                 Spacer(Modifier.width(8.dp))
                 Box(
                     Modifier
@@ -454,14 +475,14 @@ private fun CommentBar(
             Modifier
                 .size(40.dp)
                 .clip(CircleShape)
-                .background(Color.Black.copy(alpha = 0.62f))
+                .background(Color.Black.copy(alpha = if (enabled) 0.62f else 0.40f))
                 .clickable(onClick = onRecordVoice),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 Icons.Filled.Mic,
                 contentDescription = "按住说话",
-                tint = Color.White,
+                tint = Color.White.copy(alpha = if (enabled) 1f else 0.50f),
                 modifier = Modifier.size(20.dp),
             )
         }
@@ -712,6 +733,8 @@ internal data class StreamDetail(
     val watchers: Int,
 )
 
+// TODO(demo-data R1): 以下整张表是占位假数据,未接 ws 推送的真实 publisher metadata,
+// 终态由直播 join 后服务端下发的查验员身份替换(见上方 FirstPersonViewerRoute 的 R1 标注)。
 private val STREAM_DETAILS = mapOf(
     "L1" to StreamDetail(
         id = "L1",

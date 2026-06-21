@@ -1933,9 +1933,16 @@ function num(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
+// 破坏性命令需二次确认（软重启会中断当前扫描 / 在线状态）。
+const DESTRUCTIVE_COMMANDS = {
+  SOFT_REBOOT: "软重启会中断当前扫描并使设备短暂离线，确定执行？",
+};
+
 async function sendCommand(cmd) {
   const cam = selectedCamera();
   if (!cam) return;
+  const confirmMsg = DESTRUCTIVE_COMMANDS[cmd];
+  if (confirmMsg && !window.confirm(confirmMsg)) return;
   try {
     await api(`/v1/scans/laser/device-command?ip=${encodeURIComponent(cam.ip)}`, {
       method: "POST",
@@ -3261,7 +3268,7 @@ function renderCalibration() {
   for (const pair of app.calibration.pairs) {
     const row = document.createElement("div");
     row.className = "pair-row";
-    row.innerHTML = `<strong>${pair.label}</strong><code>A ${fmtPoint(pair.a)}\nB ${fmtPoint(pair.b)}</code>`;
+    row.innerHTML = `<strong>${escapeHtml(pair.label)}</strong><code>A ${fmtPoint(pair.a)}\nB ${fmtPoint(pair.b)}</code>`;
     els.calibPairs.append(row);
   }
   if (app.calibration.pendingA) {

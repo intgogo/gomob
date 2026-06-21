@@ -1,8 +1,11 @@
 package io.gomob.feature.auth
 
+import android.content.Context
+import android.content.pm.ApplicationInfo
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import io.gomob.common.net.Ipv4AddressDraft
 import io.gomob.data.auth.AuthRepository
 import io.gomob.data.auth.TokenStore
@@ -23,9 +26,10 @@ import javax.inject.Inject
 import kotlin.system.measureTimeMillis
 
 data class LoginUiState(
-    // dev seed 账号 — DB 里 shenhm / shenhm123 真实存在;真上线前由注册流程替换
-    val username: String = "shenhm",
-    val password: String = "shenhm123",
+    // 账密默认空串;仅 debug 构建由 LoginViewModel.init 预填 dev seed 账号 (DEV_SEED_*)。
+    // release 包不预填,必须由用户输入真实凭据 (seed 账号 / 口令请在上线前由注册流程替换)。
+    val username: String = "",
+    val password: String = "",
     val rememberMe: Boolean = true,
     val loading: Boolean = false,
     val errorMessage: String? = null,
@@ -62,13 +66,25 @@ data class EndpointEditorState(
 
 @HiltViewModel
 class LoginViewModel @Inject constructor(
+    @ApplicationContext private val appContext: Context,
     private val authRepo: AuthRepository,
     private val endpointStore: ServerEndpointStore,
     private val tokenStore: TokenStore,
     private val gatewayDiscoveryClient: GatewayDiscoveryClient,
 ) : ViewModel() {
 
-    private val _state = MutableStateFlow(LoginUiState())
+    /**
+     * 运行时 debug 门控 — 等价于 BuildConfig.DEBUG (debug 构建该 flag 置位, release 不置位)。
+     * 用 ApplicationInfo 而非 BuildConfig 是因为本模块未开启 buildConfig 生成。
+     */
+    private val isDebuggable: Boolean =
+        (appContext.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+
+    private val _state = MutableStateFlow(
+        // 仅 debug 预填 dev seed 账密;release 保持空串由用户输入。
+        if (isDebuggable) LoginUiState(username = DEV_SEED_USERNAME, password = DEV_SEED_PASSWORD)
+        else LoginUiState(),
+    )
     val state: StateFlow<LoginUiState> = _state.asStateFlow()
 
     init {
@@ -106,9 +122,12 @@ class LoginViewModel @Inject constructor(
      *
      * Why: 开发服务端没起 / 跨网段不可达时，硬件相关功能（Berxel / 标定 / 扫描）
      * 的验证不应被登录鉴权阻塞。通过登录页 DEV badge 长按触发，**不向用户暴露**。
-     * 真上线前 release 包应剥掉此入口。
+     *
+     * 安全门控：仅 debug 构建生效 (isDebuggable)。release 包内调用直接 no-op，
+     * 即便 DEV badge 长按入口被触发也无法写入假 token 绕过鉴权。
      */
     fun devBypassLogin() {
+        if (!isDebuggable) return
         viewModelScope.launch {
             tokenStore.save(access = "dev-bypass-access", refresh = "dev-bypass-refresh")
             _state.update { it.copy(loggedIn = true, errorMessage = null) }
@@ -293,5 +312,10 @@ class LoginViewModel @Inject constructor(
 
     private companion object {
         const val PROBE_TIMEOUT_MS = 3_000L
+
+        // dev seed 账密 — DB 里真实存在,仅 debug 构建预填登录框方便联调。
+        // TODO: 上线前由真实注册流程替换该 seed 账号口令,不要在生产 DB 保留弱口令。
+        const val DEV_SEED_USERNAME = "shenhm"
+        const val DEV_SEED_PASSWORD = "shenhm123"
     }
 }

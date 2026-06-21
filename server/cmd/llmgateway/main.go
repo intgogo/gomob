@@ -2,9 +2,10 @@
 //
 // 详见 docs/architecture/server/00-server-overview.md §6.v / 02-api-contract.md §15。
 //
-// Provider 选择：
+// Provider 选择（R2 修复：不再静默用假数据）：
 //   - GOMOB_DEEPSEEK_API_KEY 设置 → 启用 DeepSeek（默认 provider）
-//   - 未设置 → mock provider（默认）；模板里指定的 deepseek 也会 fallback 到 mock
+//   - 无 key 且未设 GOMOB_LLM_MOCK=1 → fail-fast 退出（拒绝假数据伪装真实链路）
+//   - 显式 GOMOB_LLM_MOCK=1 → 允许 mock provider，启动日志醒目告警禁止生产用
 //
 // Failover 链（M-S11.7）：
 //   - GOMOB_LLM_FALLBACK_CHAIN="deepseek,mock" 时把 default provider 包成 FallbackProvider
@@ -21,7 +22,8 @@
 //
 //	GOMOB_LLM_HTTP_ADDR             监听地址（默认 :18811）
 //	GOMOB_DB_DSN                    PG 连接串
-//	GOMOB_DEEPSEEK_API_KEY          DeepSeek API key（空 → 用 mock）
+//	GOMOB_DEEPSEEK_API_KEY          DeepSeek API key（空且未开 mock → fail-fast）
+//	GOMOB_LLM_MOCK                  =1 显式启用 mock provider（返回假数据，仅限本地/测试）
 //	GOMOB_DEEPSEEK_ENDPOINT         覆盖默认 endpoint（一般不动）
 //	GOMOB_DEEPSEEK_MODEL            覆盖默认 model（默认 deepseek-chat）
 //	GOMOB_LLM_TIMEOUT               provider 调用超时（默认 60s）
@@ -63,8 +65,13 @@ func main() {
 	}
 	defer pool.Close()
 
-	// 构造 provider registry
-	mock := llmgateway.NewMockProvider()
+	// 构造 provider registry。
+	//
+	// R2 修复：不再"无 key 静默走 mock"伪装真实链路。
+	//   - 有 GOMOB_DEEPSEEK_API_KEY → 启用 DeepSeek（默认 provider）。
+	//   - 无 key：默认 fail-fast 退出；只有显式 GOMOB_LLM_MOCK=1 才允许纯 mock，
+	//     且启动日志醒目告警"返回的是假数据"，杜绝生产误用。
+	mockEnabled := envBool("GOMOB_LLM_MOCK", false)
 	var registry *llmgateway.Registry
 	if key := os.Getenv("GOMOB_DEEPSEEK_API_KEY"); key != "" {
 		ds := llmgateway.NewDeepSeekProvider(llmgateway.DeepSeekConfig{
@@ -73,11 +80,21 @@ func main() {
 			Model:    os.Getenv("GOMOB_DEEPSEEK_MODEL"),
 			Timeout:  parseDuration("GOMOB_LLM_TIMEOUT", 60*time.Second),
 		})
-		registry = llmgateway.NewRegistry(ds, mock) // DeepSeek 默认；mock 备用
-		log.Info("provider", "default", "deepseek", "fallback", "mock")
+		// 仅在显式开启 mock 时把它挂为备用，避免"key 失效悄悄回落假数据"。
+		if mockEnabled {
+			registry = llmgateway.NewRegistry(ds, llmgateway.NewMockProvider())
+			log.Info("provider", "default", "deepseek", "fallback", "mock(显式 GOMOB_LLM_MOCK=1)")
+		} else {
+			registry = llmgateway.NewRegistry(ds)
+			log.Info("provider", "default", "deepseek")
+		}
+	} else if mockEnabled {
+		registry = llmgateway.NewRegistry(llmgateway.NewMockProvider())
+		log.Warn("⚠ 仅启用 MOCK provider（GOMOB_LLM_MOCK=1）：返回的是假数据，禁止用于生产！")
 	} else {
-		registry = llmgateway.NewRegistry(mock)
-		log.Warn("GOMOB_DEEPSEEK_API_KEY 未设置，仅启用 mock provider")
+		log.Error("GOMOB_DEEPSEEK_API_KEY 未设置且未开启 GOMOB_LLM_MOCK；拒绝静默用假数据启动。" +
+			"配置真实 key，或显式 GOMOB_LLM_MOCK=1 跑 mock。")
+		os.Exit(1)
 	}
 
 	// M-S11.7 failover 链：把 default provider 替换为 FallbackProvider 包装链
@@ -171,6 +188,22 @@ func parseDuration(key string, def time.Duration) time.Duration {
 		}
 	}
 	return def
+}
+
+// envBool 解析布尔环境变量；接受 1/true/yes/on（大小写不敏感）为真。
+func envBool(key string, def bool) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if v == "" {
+		return def
+	}
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return def
+	}
 }
 
 func envAtoi(key string, def int) int {

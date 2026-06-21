@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"io.gomob/server/pkg/audit"
+	"io.gomob/server/pkg/rbac"
 	"io.gomob/server/pkg/repo"
 )
 
@@ -90,8 +92,9 @@ type Handler struct {
 	log      *slog.Logger
 	sessions *sessionRegistry
 
-	reader    CloudReader  // PCD 下载（可空 → 下载端点 501）
-	cropBoxes CropBoxStore // 持久车位框存储（可空 → crop-box 端点 501）
+	reader    CloudReader    // PCD 下载（可空 → 下载端点 501）
+	cropBoxes CropBoxStore   // 持久车位框存储（可空 → crop-box 端点 501）
+	audit     audit.Recorder // 标定级操作审计（可空 → 只 log 不落审计表）
 
 	// 可注入点（默认指向真实现）。
 	probe   Prober
@@ -114,6 +117,33 @@ func (h *Handler) SetCloudReader(r CloudReader) { h.reader = r }
 
 // SetCropBoxStore 注入持久车位框存储（与 runner.CropBoxes 同实例）。
 func (h *Handler) SetCropBoxStore(s CropBoxStore) { h.cropBoxes = s }
+
+// SetAuditRecorder 注入审计记录器（标定级操作审计）。可空。
+func (h *Handler) SetAuditRecorder(rec audit.Recorder) { h.audit = rec }
+
+// isAdmin 判定调用方是否 admin（标定级/破坏性操作要求）。
+func isAdmin(r *http.Request) bool {
+	return r.Header.Get("X-Gomob-Roles") == rbac.RoleAdmin
+}
+
+// recordAudit 记一条审计（recorder 为空则只 debug log，不致命）。
+func (h *Handler) recordAudit(r *http.Request, action, target string, after map[string]any) {
+	if h.audit == nil {
+		h.log.Info("标定级操作（未配置审计表，仅日志）", "action", action, "target", target, "user", callerUserID(r))
+		return
+	}
+	afterRaw, _ := audit.Encode(after)
+	ac, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	go func() {
+		defer cancel()
+		_ = h.audit.Record(ac, audit.Entry{
+			UserID:   callerUserID(r),
+			Action:   action,
+			Target:   target,
+			AfterRaw: afterRaw,
+		})
+	}()
+}
 
 // NewHandler 建生产 handler。pub 可空（不发 NATS）。
 func NewHandler(cfg Config, lr LaserRepo, runner *Runner, pub Publisher, log *slog.Logger) *Handler {
@@ -244,6 +274,12 @@ func (h *Handler) StartScan(w http.ResponseWriter, r *http.Request) {
 	var req startReq
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&req) // 空体 → 全默认
+	}
+	// MarkAsBackground 会把本次融合云覆盖为本工位「空工位背景」基准（标定级操作，
+	// 影响之后所有背景相减抠车）。限 admin，且审计；普通 inspector 不得覆盖基准。
+	if req.MarkAsBackground && !isAdmin(r) {
+		writeErr(w, http.StatusForbidden, "采集/覆盖空工位背景基准需 admin 角色")
+		return
 	}
 	ipA := orStr(req.UnitAIP, h.cfg.DefaultUnitAIP)
 	ipB := orStr(req.UnitBIP, h.cfg.DefaultUnitBIP)
@@ -387,6 +423,15 @@ func (h *Handler) StartScan(w http.ResponseWriter, r *http.Request) {
 			h.log.Info("扫描结束（非成功）", "job", job.ID, "err", err)
 		}
 	})
+
+	if req.MarkAsBackground {
+		h.recordAudit(r, "laser.mark_background", "bay:"+ipA, map[string]any{
+			"scan_id":     job.ID,
+			"session_key": sessionKey,
+			"unit_a_ip":   ipA,
+			"unit_b_ip":   ipB,
+		})
+	}
 
 	writeJSON(w, http.StatusCreated, startResp{ScanID: job.ID, SessionKey: sessionKey, Status: repo.LaserScanStatusCapturing})
 }
@@ -804,6 +849,11 @@ func (h *Handler) DeviceCalib(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "需要鉴权")
 		return
 	}
+	// 破坏性：覆写设备存储标定，错值会废掉整台设备的测量。限 admin + 审计。
+	if !isAdmin(r) {
+		writeErr(w, http.StatusForbidden, "覆写设备标定参数需 admin 角色")
+		return
+	}
 	dev, ip, ok := h.resolveUnit(r)
 	if !ok {
 		writeErr(w, http.StatusBadRequest, "unit 须为 a|b")
@@ -818,13 +868,27 @@ func (h *Handler) DeviceCalib(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "下发标定失败("+ip+"): "+err.Error())
 		return
 	}
+	h.recordAudit(r, "laser.device_calib", "unit:"+ip, map[string]any{"unit_ip": ip})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "unit_ip": ip})
 }
 
 // --- 持久车位框端点（M9.11；服务端持久化，非设备写，无需设备审批）---
 
-// bayKey 当前装机点标识 = 默认 unit_a_ip（固定 master 单元标识车位）。
-func (h *Handler) bayKey() string { return h.cfg.DefaultUnitAIP }
+// bayKeyFromReq 按请求里的工位标识取装机点键（与 runner 用 unit_a_ip 作 bayKey 对齐）。
+// 多工位共用一个 laserworker 时，crop-box/background 必须按各自工位取键，否则张冠李戴。
+// ?unit_a_ip= 显式给出则用之（须合法 IPv4）；缺省回退默认工位（向后兼容单工位部署）。
+// 第二返回值 false 表示传了 unit_a_ip 但非法 IPv4，调用方应拒绝。
+func (h *Handler) bayKeyFromReq(r *http.Request) (string, bool) {
+	raw := r.URL.Query().Get("unit_a_ip")
+	if raw == "" {
+		return h.cfg.DefaultUnitAIP, true
+	}
+	ip, ok := normalizeOptionalIPv4(raw)
+	if !ok || ip == "" {
+		return "", false
+	}
+	return ip, true
+}
 
 // cropUnit 从 ?unit=a|b 解析车位框单元，缺省 a（向后兼容单框语义；a 框在世界系、b 框在 unitB 设备系）。
 func cropUnit(r *http.Request) string {
@@ -846,14 +910,19 @@ func (h *Handler) GetCropBox(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotImplemented, "未配置车位框存储")
 		return
 	}
+	bayKey, ok := h.bayKeyFromReq(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "unit_a_ip 必须是 IPv4")
+		return
+	}
 	unit := cropUnit(r)
-	box, ok, err := h.cropBoxes.GetCropBox(r.Context(), h.bayKey(), unit)
+	box, has, err := h.cropBoxes.GetCropBox(r.Context(), bayKey, unit)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "取车位框失败: "+err.Error())
 		return
 	}
-	resp := map[string]any{"bay_key": h.bayKey(), "unit": unit, "set": ok}
-	if ok {
+	resp := map[string]any{"bay_key": bayKey, "unit": unit, "set": has}
+	if has {
 		resp["box"] = box
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -869,6 +938,11 @@ func (h *Handler) PutCropBox(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotImplemented, "未配置车位框存储")
 		return
 	}
+	bayKey, ok := h.bayKeyFromReq(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "unit_a_ip 必须是 IPv4")
+		return
+	}
 	var box CropBox
 	if err := json.NewDecoder(r.Body).Decode(&box); err != nil {
 		writeErr(w, http.StatusBadRequest, "解析车位框失败: "+err.Error())
@@ -879,11 +953,11 @@ func (h *Handler) PutCropBox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	unit := cropUnit(r)
-	if err := h.cropBoxes.SaveCropBox(r.Context(), h.bayKey(), unit, box); err != nil {
+	if err := h.cropBoxes.SaveCropBox(r.Context(), bayKey, unit, box); err != nil {
 		writeErr(w, http.StatusInternalServerError, "保存车位框失败: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bay_key": h.bayKey(), "unit": unit})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bay_key": bayKey, "unit": unit})
 }
 
 // GetBackground GET /v1/scans/laser/background。返回本工位是否已采集空工位背景（背景相减抠车的前提）。
@@ -893,9 +967,14 @@ func (h *Handler) GetBackground(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "需要鉴权")
 		return
 	}
-	resp := map[string]any{"bay_key": h.bayKey(), "set": false}
+	bayKey, ok := h.bayKeyFromReq(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "unit_a_ip 必须是 IPv4")
+		return
+	}
+	resp := map[string]any{"bay_key": bayKey, "set": false}
 	if h.reader != nil {
-		if rc, size, err := h.reader.GetObject(r.Context(), backgroundObjectKey(h.bayKey())); err == nil {
+		if rc, size, err := h.reader.GetObject(r.Context(), backgroundObjectKey(bayKey)); err == nil {
 			_ = rc.Close()
 			resp["set"] = true
 			resp["bytes"] = size

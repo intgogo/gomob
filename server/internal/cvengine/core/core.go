@@ -8,8 +8,8 @@
 //
 // 后续阶段（M-S10.4）：
 //
-//	- RegisterONNX 不再读本地文件，改成调 model-registry 拉 active 版本 → asset 下载 .onnx → 加载
-//	- 订阅 NATS model.version.activated 触发热更（旧 Net.Release() + 新 RegisterONNX）
+//   - RegisterONNX 不再读本地文件，改成调 model-registry 拉 active 版本 → asset 下载 .onnx → 加载
+//   - 订阅 NATS model.version.activated 触发热更（旧 Net.Release() + 新 RegisterONNX）
 //
 // 当前 API 形态保持稳定，未来切到 NATS / model-registry 时业务包（ivv）调用面不变。
 package core
@@ -43,11 +43,11 @@ const (
 
 // Status 一条模型条目的运行时状态。
 type Status struct {
-	Tag         string `json:"tag"`         // 业务标签（VMASK / VMET / TOCR ...）
-	Kind        Kind   `json:"kind"`        // general / mask
-	Path        string `json:"path"`        // 本地文件路径（M-S10.4 后会变成 asset object_key）
-	Loaded      bool   `json:"loaded"`      // 加载是否成功
-	SizeBytes   int64  `json:"size_bytes"`  // 模型文件大小
+	Tag         string `json:"tag"`        // 业务标签（VMASK / VMET / TOCR ...）
+	Kind        Kind   `json:"kind"`       // general / mask
+	Path        string `json:"path"`       // 本地文件路径（M-S10.4 后会变成 asset object_key）
+	Loaded      bool   `json:"loaded"`     // 加载是否成功
+	SizeBytes   int64  `json:"size_bytes"` // 模型文件大小
 	LoadedAt    string `json:"loaded_at,omitempty"`
 	Error       string `json:"error,omitempty"`
 	OpenCVEmpty bool   `json:"opencv_empty,omitempty"` // 加载没报错但 net.Empty() 仍为 true 的异常
@@ -55,10 +55,67 @@ type Status struct {
 	Classes []string `json:"classes,omitempty"`
 }
 
-// Entry 内部条目：Net + Status。
+// Entry 内部条目：Net + Status + 在途推理引用计数。
+//
+// inflight 防热更 UAF：RunMask / RunCom 取到 net 后会脱离 Registry.mu 跑较长的 cgo 推理，
+// 此时若 replace 把旧 entry 顶掉并立即 Release，C++ 侧 net 被销毁 → 在途推理读已释放内存（UAF）。
+// 故推理前 acquire（inflight++），推理后 release（inflight--）；replace 顶掉旧 entry 时
+// 只有 inflight==0 才立即 Release，否则把释放责任交给最后一个 release 的推理者（延迟到归零）。
 type Entry struct {
 	net    *gocv.Net
 	status Status
+
+	mu       sync.Mutex // 仅保护 inflight / released（不与 Registry.mu 嵌套加锁顺序冲突）
+	inflight int        // 当前在途推理数
+	released bool       // replace/ReleaseAll 已请求释放；归零后真正 Release
+}
+
+// acquire 在途推理 +1；entry 已被请求释放（net 即将/已失效）返 false。
+func (e *Entry) acquire() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.released || e.net == nil {
+		return false
+	}
+	e.inflight++
+	return true
+}
+
+// release 在途推理 -1；若已被请求释放且归零，真正 Release 底层 net。
+func (e *Entry) release() {
+	e.mu.Lock()
+	e.inflight--
+	var net *gocv.Net
+	if e.released && e.inflight <= 0 && e.net != nil {
+		net = e.net
+		e.net = nil
+	}
+	e.mu.Unlock()
+	// 取出后置于锁外释放（C.Net_Release 可能较慢，且不需持锁）
+	if net != nil {
+		_ = net.Release()
+	}
+}
+
+// requestRelease 标记释放：无在途推理立即 Release，否则延迟到最后一个推理归零。
+// 返回是否已立即释放（仅用于调试 / 测试断言，调用方可忽略）。
+func (e *Entry) requestRelease() {
+	e.mu.Lock()
+	if e.released {
+		e.mu.Unlock()
+		return
+	}
+	e.released = true
+	doNow := e.inflight <= 0 && e.net != nil
+	var net *gocv.Net
+	if doNow {
+		net = e.net
+		e.net = nil
+	}
+	e.mu.Unlock()
+	if doNow {
+		_ = net.Release()
+	}
 }
 
 // Registry 全局模型注册表。
@@ -78,9 +135,9 @@ var ErrNotFound = errors.New("model tag 未注册或加载失败")
 //
 // 失败语义：
 //
-//	- path 不存在 / 不可读 → 返 error，并记录 status.Error；entry 保留以便 /cv/v1/models 暴露失败原因
-//	- ReadNet 返 net.Empty() == true → 视作加载失败，opencv_empty=true，net 不进入注册表
-//	- 加载成功 → loaded=true
+//   - path 不存在 / 不可读 → 返 error，并记录 status.Error；entry 保留以便 /cv/v1/models 暴露失败原因
+//   - ReadNet 返 net.Empty() == true → 视作加载失败，opencv_empty=true，net 不进入注册表
+//   - 加载成功 → loaded=true
 func (r *Registry) RegisterONNX(tag, path string) error {
 	tag = strings.TrimSpace(strings.ToUpper(tag))
 	if tag == "" {
@@ -110,21 +167,21 @@ func (r *Registry) RegisterONNX(tag, path string) error {
 	st.Loaded = true
 	st.LoadedAt = time.Now().UTC().Format(time.RFC3339Nano)
 
-	// 旧 entry 释放
-	if old := r.replace(tag, &Entry{net: &net, status: st}); old != nil && old.net != nil {
-		_ = old.net.Release()
+	// 旧 entry 释放：经 requestRelease 走在途引用计数，避免热更与在途推理竞态导致 UAF。
+	if old := r.replace(tag, &Entry{net: &net, status: st}); old != nil {
+		old.requestRelease()
 	}
 	return nil
 }
 
 // MaskOptions yolo mask 模型配置（用于 CreateORTMask 的预处理参数）。
 type MaskOptions struct {
-	Classes []string     // 类名列表，例如 VMASK = ["vin"]
-	IWidth  int          // 输入宽（0 让 onnxruntime 从模型 input shape 自动推）
-	IHeight int          // 输入高（同上）
-	IChan   int          // 输入通道（0 自动）
-	Std     float64      // 归一化 std（默认 1.0）
-	Mean    gocv.Scalar  // 归一化 mean（默认 0）
+	Classes []string    // 类名列表，例如 VMASK = ["vin"]
+	IWidth  int         // 输入宽（0 让 onnxruntime 从模型 input shape 自动推）
+	IHeight int         // 输入高（同上）
+	IChan   int         // 输入通道（0 自动）
+	Std     float64     // 归一化 std（默认 1.0）
+	Mean    gocv.Scalar // 归一化 mean（默认 0）
 }
 
 // DefaultMaskOptions 给 VMASK 一类 yolo seg 默认值（与 gosmart .ini 缺省一致）。
@@ -183,8 +240,8 @@ func (r *Registry) RegisterMaskONNX(tag, path string, opts MaskOptions) error {
 	st.Loaded = true
 	st.LoadedAt = time.Now().UTC().Format(time.RFC3339Nano)
 
-	if old := r.replace(tag, &Entry{net: net, status: st}); old != nil && old.net != nil {
-		_ = old.net.Release()
+	if old := r.replace(tag, &Entry{net: net, status: st}); old != nil {
+		old.requestRelease()
 	}
 	return nil
 }
@@ -230,8 +287,8 @@ func (r *Registry) RegisterComONNX(tag, path string, std float64, mean gocv.Scal
 	st.Loaded = true
 	st.LoadedAt = time.Now().UTC().Format(time.RFC3339Nano)
 
-	if old := r.replace(tag, &Entry{net: net, status: st}); old != nil && old.net != nil {
-		_ = old.net.Release()
+	if old := r.replace(tag, &Entry{net: net, status: st}); old != nil {
+		old.requestRelease()
 	}
 	return nil
 }
@@ -249,6 +306,12 @@ func (r *Registry) RunCom(tag string, blob gocv.Mat) ([]float32, error) {
 	if e.status.Kind != KindCom {
 		return nil, ErrWrongKind
 	}
+	// acquire 期间持有在途引用：即便此刻热更 replace 顶掉本 entry，底层 net 也延迟到归零才 Release，
+	// 不会在 gocv.RunCom 跑 cgo 推理时被销毁（UAF 防护）。
+	if !e.acquire() {
+		return nil, ErrNotFound
+	}
+	defer e.release()
 	return gocv.RunCom(e.net, blob), nil
 }
 
@@ -289,14 +352,23 @@ func (r *Registry) LoadedCount() int {
 }
 
 // ReleaseAll 关停时调用：把所有 net 释放。
+//
+// 经 requestRelease 走在途引用计数：关停瞬间若仍有在途推理，net 延迟到归零才真正 Release，避免 UAF。
+//
+// TODO(G14-thread): 每个 KindMask/KindGeneral Net 在 gocv/dnn.go 里起了一个 `for { <-net.inChan }`
+// 串行化推理 goroutine（onnxruntime 非线程安全），该 goroutine 无退出路径 ——
+// Net.Release 只释放 C++ 侧 net，Go 侧 goroutine 仍阻塞在 channel recv 上永不退出（goroutine + ORT session 泄漏）。
+// 终态：在 gocv.Net 加 done channel，Release 时 close(done) 让推理 goroutine select 退出后再释放 C 资源。
+// 该修复需改 internal/cvengine/gocv/dnn.go（本轮 G14 范围外，结构性改动，单列）。
 func (r *Registry) ReleaseAll() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	entries := make([]*Entry, 0, len(r.entries))
 	for _, e := range r.entries {
-		if e.net != nil {
-			_ = e.net.Release()
-			e.net = nil
-		}
+		entries = append(entries, e)
+	}
+	r.mu.Unlock()
+	for _, e := range entries {
+		e.requestRelease()
 	}
 }
 
@@ -411,6 +483,12 @@ func (r *Registry) RunMask(tag string, img gocv.Mat, confThreshold, maskThreshol
 		err = ErrWrongKind
 		return
 	}
+	// acquire 防热更 UAF：见 RunCom 注释。
+	if !e.acquire() {
+		err = ErrNotFound
+		return
+	}
+	defer e.release()
 	var ids []int
 	contours, rrects, ids, scores = gocv.RunMask(e.net, img, confThreshold, maskThreshold, nmsThreshold, rudeScale)
 	classes = gocv.GetClasses(e.net, ids)

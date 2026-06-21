@@ -85,6 +85,8 @@ private fun InspectionSharePickerContent(
 ) {
     var filter by rememberSaveable { mutableStateOf(InspectionFilter.All) }
     val consumeClicks = remember { MutableInteractionSource() }
+    // TODO(demo-data R1): inspectionShareCandidates 是占位假流水,未接真实查验流水仓,
+    // 却被真实分享发送链路消费;终态从查验记录 Repository 拉真实可分享流水(见下方列表 R1 标注)。
     val rows = remember(filter) {
         inspectionShareCandidates.filter { filter.matches(it) }
     }
@@ -299,6 +301,8 @@ private fun StatusTone.toDotColor(): Color = when (this) {
     StatusTone.Neutral -> Gomob.colors.fg3
 }
 
+// TODO(demo-data R1): 以下 6 条是占位假查验流水,未接真实流水仓,仅供分享 UI 演示;
+// 终态由查验记录 Repository 提供真实可分享流水(见上方 InspectionSharePickerContent 的 R1 标注)。
 private val inspectionShareCandidates = listOf(
     InspectionShareCard(
         inspectionId = "LSVHM98277661003",

@@ -46,7 +46,6 @@ class Eys3dVendorCppSession : public gomob::camera::ICameraSession {
  private:
   void Run();              // dlopen→连接→arming→起流→保活
   void Teardown();         // 停流 + 释放厂商对象
-  bool BuildZdLut();       // GetZDTable → mm LUT[2048]
 
   int fd_ = -1;
   gomob::camera::SessionConfig cfg_;
@@ -65,8 +64,6 @@ class Eys3dVendorCppSession : public gomob::camera::ICameraSession {
   void* color_win_ = nullptr;     // ANativeWindow*（reader 所有，随 reader 释放）
   void* depth_win_ = nullptr;
 
-  std::vector<uint16_t> zd_lut_;       // 视差(0..2047)→mm
-  std::vector<uint16_t> depth_mm_buf_; // 视差→mm 转换暂存(回调线程单线程)
   std::atomic<int64_t> cb_frames_{0};
 };
 

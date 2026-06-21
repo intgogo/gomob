@@ -22,6 +22,7 @@ package device
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -30,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"io.gomob/server/pkg/audit"
@@ -683,34 +685,134 @@ func (h *Handler) CalibrationByVersion(w http.ResponseWriter, r *http.Request) {
 // admin
 // ============================================================================
 
+// adminDeviceCols 与 pkg/repo/device.go 的 deviceCols 列序一致（该常量在 repo 包未导出，
+// 此处显式镜像；列序变更需两处同步）。
+const adminDeviceCols = `id, user_id, serial_number, manufacturer, model,
+	firmware_version, sdk_version, nickname, status, last_seen_at,
+	calibration_seq, note, created_at, updated_at, retired_at`
+
+const adminListPageSize = 100
+
 func (h *Handler) AdminList(w http.ResponseWriter, r *http.Request) {
 	if !isAdmin(r) {
 		httpx.WriteError(w, httpx.ErrPermDenied)
 		return
 	}
-	rows, err := h.pool.Query(r.Context(), `
-		SELECT id FROM devices ORDER BY created_at DESC LIMIT 200
-	`)
+
+	limit := adminListPageSize
+	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= adminListPageSize {
+			limit = n
+		}
+	}
+
+	// 游标分页：keyset on (created_at, id) 与 ORDER BY created_at DESC, id DESC 对齐，
+	// 比 OFFSET 稳定（插入/删除不漏不重）。cursor = base64("<rfc3339nano>|<id>")。
+	cursorTS, cursorID, hasCursor, err := decodeAdminCursor(r.URL.Query().Get("cursor"))
 	if err != nil {
-		h.log.Error("admin list", "err", err)
+		httpx.WriteError(w, httpx.ErrBadParam)
+		return
+	}
+
+	// 单次查询取全部列，消除 N+1（原来每行再 FindByID 一次）。多取 1 行用于判断是否有下一页。
+	var (
+		rows pgx.Rows
+		qErr error
+	)
+	if hasCursor {
+		rows, qErr = h.pool.Query(r.Context(), `
+			SELECT `+adminDeviceCols+` FROM devices
+			WHERE (created_at, id) < ($1, $2)
+			ORDER BY created_at DESC, id DESC
+			LIMIT $3
+		`, cursorTS, cursorID, limit+1)
+	} else {
+		rows, qErr = h.pool.Query(r.Context(), `
+			SELECT `+adminDeviceCols+` FROM devices
+			ORDER BY created_at DESC, id DESC
+			LIMIT $1
+		`, limit+1)
+	}
+	if qErr != nil {
+		h.log.Error("admin list query", "err", qErr)
 		httpx.WriteError(w, httpx.ErrInternal)
 		return
 	}
 	defer rows.Close()
-	out := make([]deviceDTO, 0, 200)
+
+	out := make([]deviceDTO, 0, limit)
+	var lastTS time.Time
+	var lastID int64
 	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var d repo.Device
+		// 扫描顺序严格对应 adminDeviceCols。
+		if err := rows.Scan(
+			&d.ID, &d.UserID, &d.SerialNumber, &d.Manufacturer, &d.Model,
+			&d.FirmwareVersion, &d.SDKVersion, &d.Nickname, &d.Status, &d.LastSeenAt,
+			&d.CalibrationSeq, &d.Note, &d.CreatedAt, &d.UpdatedAt, &d.RetiredAt,
+		); err != nil {
+			// 不静默丢行：扫描失败说明数据/列序异常，直接报错而非跳过。
+			h.log.Error("admin list scan", "err", err)
 			httpx.WriteError(w, httpx.ErrInternal)
 			return
 		}
-		d, err := h.devRepo.FindByID(r.Context(), id)
-		if err != nil {
-			continue
-		}
-		out = append(out, toDeviceDTO(d))
+		out = append(out, toDeviceDTO(&d))
+		lastTS, lastID = d.CreatedAt, d.ID
 	}
-	httpx.OK(w, map[string]any{"items": out, "total": len(out)})
+	if err := rows.Err(); err != nil {
+		h.log.Error("admin list rows", "err", err)
+		httpx.WriteError(w, httpx.ErrInternal)
+		return
+	}
+
+	var nextCursor string
+	if len(out) > limit {
+		// 多取的那 1 行只用来判定有无下一页；下一页游标取本页最后一行。
+		out = out[:limit]
+		last := out[limit-1]
+		lastID, _ = strconv.ParseInt(last.ID, 10, 64)
+		if t, perr := time.Parse(time.RFC3339Nano, last.CreatedAt); perr == nil {
+			lastTS = t
+		}
+		nextCursor = encodeAdminCursor(lastTS, lastID)
+	}
+
+	resp := map[string]any{"items": out, "total": len(out)}
+	if nextCursor != "" {
+		resp["next_cursor"] = nextCursor
+	}
+	httpx.OK(w, resp)
+}
+
+// encodeAdminCursor 把 (created_at, id) 编为 URL-safe base64 游标。
+func encodeAdminCursor(ts time.Time, id int64) string {
+	raw := ts.UTC().Format(time.RFC3339Nano) + "|" + strconv.FormatInt(id, 10)
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+// decodeAdminCursor 解析游标；空串 → hasCursor=false；格式错 → error。
+func decodeAdminCursor(s string) (ts time.Time, id int64, hasCursor bool, err error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, 0, false, nil
+	}
+	raw, derr := base64.RawURLEncoding.DecodeString(s)
+	if derr != nil {
+		return time.Time{}, 0, false, derr
+	}
+	parts := strings.SplitN(string(raw), "|", 2)
+	if len(parts) != 2 {
+		return time.Time{}, 0, false, errors.New("游标格式错误")
+	}
+	ts, err = time.Parse(time.RFC3339Nano, parts[0])
+	if err != nil {
+		return time.Time{}, 0, false, err
+	}
+	id, err = strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return time.Time{}, 0, false, err
+	}
+	return ts, id, true, nil
 }
 
 func (h *Handler) AdminGet(w http.ResponseWriter, r *http.Request) {

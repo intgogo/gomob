@@ -80,6 +80,8 @@ class Eys3dCameraService @Inject constructor(
     private var watchdogJob: Job? = null
     private var depthFrameIdx = 0
     private var colorFrameIdx = 0
+    // 看门狗判死后的有限次自动重连计数（对齐 BerxelService：出帧恢复清零，超上限放弃报错）。
+    @Volatile private var restartCount = 0
 
     // ─── native 直驱厂商 C++ 引擎路径（dlopen libUVCCamera.so，零 Java 编排） ───
     private val cameraStack = CameraStack()
@@ -174,24 +176,38 @@ class Eys3dCameraService @Inject constructor(
         return true
     }
 
-    // poll 循环（IO 线程）：每帧新建 direct buffer 喂 onDepthFrame（避免复用 buffer 与下一次 poll 竞争）。
+    // poll 循环（IO 线程）：用循环外复用的 scratch buffer 做 native poll（绝大多数迭代 n<=0 无帧，
+    // 旧实现每迭代白分配 160KB DirectByteBuffer）。只有真出帧（n>0）才把数据拷进新 buffer 再 emit，
+    // 保证下发给 consumer 的 buffer 不会被下一次 poll 覆盖（零拷贝竞争）。
     private fun startPollLoop() {
         pollJob?.cancel()
         pollJob = scope.launch {
             val outInfo = LongArray(4)
             var polls = 0
             var got = 0
+            val pollScratch = ByteBuffer.allocateDirect(DEPTH_W * DEPTH_H * 2).order(ByteOrder.LITTLE_ENDIAN)
             while (isActive && running) {
-                val buf = ByteBuffer.allocateDirect(DEPTH_W * DEPTH_H * 2).order(ByteOrder.LITTLE_ENDIAN)
-                val n = cameraStack.pollDepthMm(buf, outInfo)
+                pollScratch.clear()
+                val n = cameraStack.pollDepthMm(pollScratch, outInfo)
                 polls++
                 if (n > 0) {
                     got++
                     val w = outInfo[0].toInt().let { if (it > 0) it else DEPTH_W }
                     val h = outInfo[1].toInt().let { if (it > 0) it else DEPTH_H }
-                    buf.position(0).limit(w * h * 2)
-                    onDepthFrame(w, h, buf)
-                    if (got == 1) Log.i(TAG, "eYs3D 首帧深度到达 ${w}x$h")
+                    val len = w * h * 2
+                    // 出帧才分配 + 拷贝；emit 后此 buffer 归 consumer，scratch 继续被下次 poll 复用。
+                    val frameBuf = ByteBuffer.allocateDirect(len).order(ByteOrder.LITTLE_ENDIAN)
+                    pollScratch.position(0).limit(len)
+                    frameBuf.put(pollScratch)
+                    frameBuf.position(0).limit(len)
+                    onDepthFrame(w, h, frameBuf)
+                    if (got == 1) {
+                        Log.i(TAG, "eYs3D 首帧深度到达 ${w}x$h")
+                        if (restartCount > 0) {
+                            Log.i(TAG, "eYs3D 首帧恢复，清零自动重连计数 old=$restartCount")
+                            restartCount = 0
+                        }
+                    }
                 }
                 if (polls % 300 == 0) Log.d(TAG, "pollDepthMm polls=$polls got=$got")
                 // 彩色：eYs3D 自身 L' 流（vendor uvc_any2rgb 出 RGB24 1280×256），poll 出来喂 onColorFrame。
@@ -255,11 +271,31 @@ class Eys3dCameraService @Inject constructor(
         }
     }
 
+    // LOW(error): 旧实现判死后只置 Error 不重连。对齐 BerxelService 的有限次自动重连：
+    // 释放 native 会话 → 若仍有消费者(acquireCount>0) 且未超上限 → 延时后重进 startInternal；
+    // 出帧恢复会在 poll 循环清零 restartCount，连续失败超 EYS3D_MAX_RESTARTS 才落终态 Error。
     private fun markSessionDead() {
-        Log.e(TAG, "eYs3D ${FRAME_TIMEOUT_MS}ms 无帧，判定 session 死")
+        restartCount++
+        val attempt = restartCount
+        Log.e(TAG, "eYs3D ${FRAME_TIMEOUT_MS}ms 无帧，判定 session 死；第 $attempt 次自动重连")
         running = false
         tearDownNative()
-        _sourceState.value = CameraSourceState.Error("eYs3D 流掉线（USB IO）— 重新插拔相机或重进本页")
+        if (acquireCount.get() <= 0) {
+            Log.i(TAG, "eYs3D session 死，但无活动消费者，不自动重连")
+            _sourceState.value = CameraSourceState.Idle
+            return
+        }
+        if (attempt >= EYS3D_MAX_RESTARTS) {
+            Log.e(TAG, "eYs3D 已连续自动重连 $attempt 次，放弃")
+            _sourceState.value =
+                CameraSourceState.Error("eYs3D 流反复掉线（USB IO）— 重新插拔相机或检查 OTG 供电")
+            return
+        }
+        _sourceState.value = CameraSourceState.Opening
+        scope.launch {
+            delay(EYS3D_RESTART_DELAY_MS)
+            if (acquireCount.get() > 0 && !running) startInternal()
+        }
     }
 
     // 自研 native 路径释放：停 poll → cameraStack.stop（释放 native 会话）→ 关 usbfs 连接（fd 唯一释放点）。
@@ -278,6 +314,7 @@ class Eys3dCameraService @Inject constructor(
         }
         Log.i(TAG, "eYs3D stop")
         running = false
+        restartCount = 0
         watchdogJob?.cancel(); watchdogJob = null
         tearDownNative()
         _sourceState.value = CameraSourceState.Idle
@@ -349,6 +386,8 @@ class Eys3dCameraService @Inject constructor(
         const val USB_PERMISSION_ACTION = "io.gomob.nativebridge.camera.EYS3D_USB_PERMISSION"
         const val CAMERA_RELEASE_GRACE_MS = 600L
         const val FRAME_TIMEOUT_MS = 30_000L  // 任一路无帧判死阈;mode25 排障期放宽,稳定后回 8s
+        const val EYS3D_MAX_RESTARTS = 3  // 看门狗判死后最多连续自动重连次数（对齐 BerxelService）
+        const val EYS3D_RESTART_DELAY_MS = 1_200L  // 每次自动重连前延时，给 USB/native 释放留窗口
         const val POLL_INTERVAL_MS = 33L  // ~30Hz poll（mode25 出 ~5fps，poll 快于产帧即可不漏）
         // mode25 深度分辨率（videoMode=36，CameraModeKt.DEFAULT_ROSIE4_U2_MODE）。
         const val DEPTH_W = 640

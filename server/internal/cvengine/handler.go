@@ -23,8 +23,10 @@
 package cvengine
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"io"
@@ -61,17 +63,79 @@ type Handler struct {
 	// VIN 还原用 yolo-obb 模型：懒加载一次复用（onnxruntime session 建一次即可）。
 	obbOnce sync.Once
 	obbErr  error
+
+	// 推理并发闸：限制同时在跑的 RunMask / RunCom 推理数，防过载 OOM。
+	// 容量取自 GOMOB_CVENGINE_INFER_CONCURRENCY（默认 4）；获取不到额度时等待 inferTimeout。
+	inferSem     chan struct{}
+	inferTimeout time.Duration
 }
 
 func NewHandler() *Handler {
-	return &Handler{
-		startedAt:   time.Now(),
-		log:         logger.New("cvengine.handler"),
-		requireAuth: os.Getenv("GOMOB_CVENGINE_REQUIRE_AUTH") == "true",
-		vinRef:      vinrefclient.NewClient(os.Getenv("GOMOB_VINREF_TARGET")),
-		shapeRef:    shaperefclient.NewClient(os.Getenv("GOMOB_SHAPEREF_TARGET")),
-		models:      core.New(),
+	conc := parseIntOr(os.Getenv("GOMOB_CVENGINE_INFER_CONCURRENCY"), 4)
+	if conc < 1 {
+		conc = 1
 	}
+	timeoutSec := parseIntOr(os.Getenv("GOMOB_CVENGINE_INFER_TIMEOUT_SEC"), 30)
+	if timeoutSec < 1 {
+		timeoutSec = 1
+	}
+	return &Handler{
+		startedAt:    time.Now(),
+		log:          logger.New("cvengine.handler"),
+		requireAuth:  os.Getenv("GOMOB_CVENGINE_REQUIRE_AUTH") == "true",
+		vinRef:       vinrefclient.NewClient(os.Getenv("GOMOB_VINREF_TARGET")),
+		shapeRef:     shaperefclient.NewClient(os.Getenv("GOMOB_SHAPEREF_TARGET")),
+		models:       core.New(),
+		inferSem:     make(chan struct{}, conc),
+		inferTimeout: time.Duration(timeoutSec) * time.Second,
+	}
+}
+
+// parseIntOr 解析 int 环境变量；空 / 非法用默认值。
+func parseIntOr(s string, def int) int {
+	if s == "" {
+		return def
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return def
+	}
+	return v
+}
+
+// runMaskGuarded 给 RunMask 套上并发闸 + 准入超时 + panic→error 防护。
+//
+//  1. 信号量限并发：满额时阻塞到拿到额度，或 ctx（含 GOMOB_CVENGINE_INFER_TIMEOUT_SEC 准入截止）取消 →
+//     返 ctx.Err()，调用方转 503，避免请求堆积撑爆内存。
+//  2. recover：onnxruntime / cgo 推理 panic 兜成 error，避免单请求打挂整个进程。
+//
+// 为何不做"推理跑到一半超时就抢占返回"：底层 gocv RunMask 是经 net.inChan 串行化的同步 cgo 调用，
+// 且直接读传入的 img(gocv.Mat) —— 若把它丢进后台 goroutine 然后超时提前返回，调用方会随即 Release img，
+// 而后台 cgo 仍在用该 Mat → Mat UAF。真正的"mid-flight 抢占"需 gocv 层加 done channel 支持中断 cgo
+// 并接管 Mat 生命周期，属结构性改动（见 core.ReleaseAll 的 G14-thread TODO）。当前在准入处限并发 + 超时，
+// 推理本身同步执行，既挡住过载又不引入 Mat UAF。
+func (h *Handler) runMaskGuarded(ctx context.Context, tag string, img gocv.Mat,
+	conf, maskTh, nmsTh, rudeScale float32) (
+	contours [][]image.Point, rrects []gocv.RotatedRect, classes []string, scores []float32, err error) {
+
+	// 1. 准入信号量（带准入超时：拿不到额度等到 inferTimeout 就放弃 → 503）
+	admitCtx, cancel := context.WithTimeout(ctx, h.inferTimeout)
+	defer cancel()
+	select {
+	case h.inferSem <- struct{}{}:
+		defer func() { <-h.inferSem }()
+	case <-admitCtx.Done():
+		return nil, nil, nil, nil, admitCtx.Err()
+	}
+
+	// 2. recover 兜 cgo panic（命名返回值在 defer 里改写 err）
+	defer func() {
+		if rec := recover(); rec != nil {
+			contours, rrects, classes, scores = nil, nil, nil, nil
+			err = fmt.Errorf("RunMask panic: %v", rec)
+		}
+	}()
+	return h.models.RunMask(tag, img, conf, maskTh, nmsTh, rudeScale)
 }
 
 // Models 暴露 registry 给 main.go 做启动期 LoadFromEnv 调用。
@@ -260,25 +324,25 @@ var _ = os.Getenv
 // ============================================================================
 
 type vinCharRefMatch struct {
-	SampleID         string  `json:"sample_id"`
-	BatchID          string  `json:"batch_id"`
-	AlphaObjectKey   string  `json:"alpha_object_key"`
-	FontID           string  `json:"font_id"`
-	PositionHint     *int16  `json:"position_hint,omitempty"`
-	Value            float64 `json:"value"`      // 算法原始值（IOU 0..1 / Chamfer 0+）
-	Similarity       float64 `json:"similarity"` // 归一化 0..1，越大越相似
+	SampleID       string  `json:"sample_id"`
+	BatchID        string  `json:"batch_id"`
+	AlphaObjectKey string  `json:"alpha_object_key"`
+	FontID         string  `json:"font_id"`
+	PositionHint   *int16  `json:"position_hint,omitempty"`
+	Value          float64 `json:"value"`      // 算法原始值（IOU 0..1 / Chamfer 0+）
+	Similarity     float64 `json:"similarity"` // 归一化 0..1，越大越相似
 }
 
 type vinCharRefResp struct {
-	VehicleModelID  string            `json:"vehicle_model_id"`
-	BatchID         string            `json:"batch_id"`
-	Character       string            `json:"character"`
-	Method          int               `json:"method"`
-	Best            *vinCharRefMatch  `json:"best,omitempty"`
-	Matches         []vinCharRefMatch `json:"matches"`
-	SampleCount     int               `json:"sample_count"`
-	LogID           string            `json:"log_id"`
-	BelowThreshold  bool              `json:"below_threshold,omitempty"`
+	VehicleModelID string            `json:"vehicle_model_id"`
+	BatchID        string            `json:"batch_id"`
+	Character      string            `json:"character"`
+	Method         int               `json:"method"`
+	Best           *vinCharRefMatch  `json:"best,omitempty"`
+	Matches        []vinCharRefMatch `json:"matches"`
+	SampleCount    int               `json:"sample_count"`
+	LogID          string            `json:"log_id"`
+	BelowThreshold bool              `json:"below_threshold,omitempty"`
 }
 
 // VinCharacterCompareWithRef —— 把扫描端拍到的字符 mask 与该车型 active 批次的所有
@@ -295,9 +359,9 @@ type vinCharRefResp struct {
 //
 // 内部流程：
 //
-//	1. 调 vin-ref ListActiveSamples → 拿 N 条候选 sample（含签名 alpha_url）
-//	2. 对每条 sample：FetchAlpha 拉字节 → ProcVinCharacterCompare 比对
-//	3. 排序选最佳；按 method 决定"越大越好"还是"越小越好"
+//  1. 调 vin-ref ListActiveSamples → 拿 N 条候选 sample（含签名 alpha_url）
+//  2. 对每条 sample：FetchAlpha 拉字节 → ProcVinCharacterCompare 比对
+//  3. 排序选最佳；按 method 决定"越大越好"还是"越小越好"
 func (h *Handler) VinCharacterCompareWithRef(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(32 << 20); err != nil && err != http.ErrNotMultipart {
 		httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest, "multipart 解析失败: "+err.Error()))
@@ -479,14 +543,14 @@ type yoloRRect struct {
 }
 
 type yoloDetection struct {
-	Class    string      `json:"class"`
-	Score    float32     `json:"score"`
-	RRect    yoloRRect   `json:"rrect"`
-	Contour  [][2]int    `json:"contour,omitempty"` // 多边形轮廓（来自 mask）
+	Class   string    `json:"class"`
+	Score   float32   `json:"score"`
+	RRect   yoloRRect `json:"rrect"`
+	Contour [][2]int  `json:"contour,omitempty"` // 多边形轮廓（来自 mask）
 }
 
 type yoloDetectResp struct {
-	Tag           string          `json:"tag"`           // 用的模型 tag（默认 VMASK）
+	Tag           string          `json:"tag"` // 用的模型 tag（默认 VMASK）
 	ImageRows     int             `json:"image_rows"`
 	ImageCols     int             `json:"image_cols"`
 	ConfThreshold float32         `json:"conf_threshold"`
@@ -546,25 +610,30 @@ func (h *Handler) VinDetectYolo(w http.ResponseWriter, r *http.Request) {
 		logID = "yolo_" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	}
 
-	// 解码图（IMReadColor）
+	// 解码图（IMReadColor）。Mat 持 C 堆内存、无 finalizer，必须显式 Release（否则长跑 OOM）。
 	mat, err := gocv.IMDecode(buf, gocv.IMReadColor)
+	defer func() { _ = mat.Release() }()
 	if err != nil || mat.Empty() {
 		httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest, "OpenCV 解码失败"))
 		return
 	}
-	// gocv 的 ORTSession_RunMask 期望 RGB 输入；BGR→RGB 标准转换。
+	// gocv 的 ORTSession_RunMask 期望 RGB 输入；BGR→RGB 标准转换。同样需显式 Release。
 	rgb := gocv.NewMat()
+	defer func() { _ = rgb.Release() }()
 	gocv.CvtColor(mat, &rgb, gocv.ColorBGRToRGB)
 
-	contours, rrects, classes, scores, err := h.models.RunMask(tag, rgb, float32(conf), float32(maskTh), float32(nmsTh), float32(rudeScale))
+	contours, rrects, classes, scores, err := h.runMaskGuarded(r.Context(), tag, rgb, float32(conf), float32(maskTh), float32(nmsTh), float32(rudeScale))
 	if err != nil {
-		switch err {
-		case core.ErrNotFound:
+		switch {
+		case err == core.ErrNotFound:
 			httpx.WriteError(w, httpx.NewError(40701, http.StatusNotFound,
 				"模型 tag="+tag+" 未注册（启动期未配 GOMOB_CVENGINE_MODELS 含 "+tag+":mask=...）"))
-		case core.ErrWrongKind:
+		case err == core.ErrWrongKind:
 			httpx.WriteError(w, httpx.NewError(40701, http.StatusNotFound,
 				"模型 tag="+tag+" 未按 mask kind 注册"))
+		case err == context.DeadlineExceeded || err == context.Canceled:
+			h.log.Warn("RunMask 超时/取消（过载或客户端断开）", "err", err, "tag", tag)
+			httpx.WriteError(w, httpx.NewError(50301, http.StatusServiceUnavailable, "推理超时或服务过载: "+err.Error()))
 		default:
 			h.log.Error("RunMask 失败", "err", err, "tag", tag)
 			httpx.WriteError(w, httpx.NewError(50001, http.StatusInternalServerError, "RunMask: "+err.Error()))
@@ -732,27 +801,32 @@ func (h *Handler) VinPipeline(w http.ResponseWriter, r *http.Request) {
 		logID = "vin_pipe_" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	}
 
-	// 1. 解码原图
+	// 1. 解码原图。Mat 持 C 堆内存、无 finalizer，必须显式 Release（否则 VIN 主链长跑 OOM）。
 	mat, err := gocv.IMDecode(buf, gocv.IMReadColor)
+	defer func() { _ = mat.Release() }()
 	if err != nil || mat.Empty() {
 		httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest, "OpenCV 解码失败"))
 		return
 	}
 	rows, cols := mat.Rows(), mat.Cols()
 
-	// 2. BGR → RGB → RunMask
+	// 2. BGR → RGB → RunMask。rgb 同样需显式 Release。
 	rgb := gocv.NewMat()
+	defer func() { _ = rgb.Release() }()
 	gocv.CvtColor(mat, &rgb, gocv.ColorBGRToRGB)
-	contours, rrects, classes, scores, runErr := h.models.RunMask(
-		tag, rgb, float32(conf), float32(maskTh), float32(nmsTh), float32(rudeScale))
+	contours, rrects, classes, scores, runErr := h.runMaskGuarded(
+		r.Context(), tag, rgb, float32(conf), float32(maskTh), float32(nmsTh), float32(rudeScale))
 	if runErr != nil {
-		switch runErr {
-		case core.ErrNotFound:
+		switch {
+		case runErr == core.ErrNotFound:
 			httpx.WriteError(w, httpx.NewError(40701, http.StatusNotFound,
 				"模型 tag="+tag+" 未注册"))
-		case core.ErrWrongKind:
+		case runErr == core.ErrWrongKind:
 			httpx.WriteError(w, httpx.NewError(40701, http.StatusNotFound,
 				"模型 tag="+tag+" 不是 mask kind"))
+		case runErr == context.DeadlineExceeded || runErr == context.Canceled:
+			h.log.Warn("RunMask 超时/取消（过载或客户端断开）", "err", runErr, "tag", tag, "log_id", logID)
+			httpx.WriteError(w, httpx.NewError(50301, http.StatusServiceUnavailable, "推理超时或服务过载: "+runErr.Error()))
 		default:
 			h.log.Error("RunMask 失败", "err", runErr, "tag", tag, "log_id", logID)
 			httpx.WriteError(w, httpx.NewError(50001, http.StatusInternalServerError, "RunMask: "+runErr.Error()))
@@ -981,20 +1055,20 @@ func (h *Handler) ensureVinObbModel() error {
 }
 
 type vinRestoreResp struct {
-	OK            bool    `json:"ok"`
-	ResultPNGB64  string  `json:"result_png_base64,omitempty"`
-	Width         int     `json:"width"`
-	Height        int     `json:"height"`
-	TiltDeg       float64 `json:"tilt_deg"`
-	WidthMM       float64 `json:"width_mm"`
-	HeightMM      float64 `json:"height_mm"`
-	ThetaDeg      float64 `json:"theta_deg"`
-	InlierRate    float64 `json:"inlier_rate"`
-	RMS           float64 `json:"rms"`
-	MedZ          float64 `json:"med_z"`
-	NumDet        int     `json:"num_det"`
-	DeviceID      string  `json:"device_id,omitempty"`
-	LogID         string  `json:"log_id"`
+	OK           bool    `json:"ok"`
+	ResultPNGB64 string  `json:"result_png_base64,omitempty"`
+	Width        int     `json:"width"`
+	Height       int     `json:"height"`
+	TiltDeg      float64 `json:"tilt_deg"`
+	WidthMM      float64 `json:"width_mm"`
+	HeightMM     float64 `json:"height_mm"`
+	ThetaDeg     float64 `json:"theta_deg"`
+	InlierRate   float64 `json:"inlier_rate"`
+	RMS          float64 `json:"rms"`
+	MedZ         float64 `json:"med_z"`
+	NumDet       int     `json:"num_det"`
+	DeviceID     string  `json:"device_id,omitempty"`
+	LogID        string  `json:"log_id"`
 }
 
 // VinRestore —— 收彩色 rgb1300 + depth.yuv + 深度内参，出 OCR 级二值签名 PNG。
@@ -1169,8 +1243,8 @@ var errBadBBox = newPipelineErr("contour bbox 非法")
 
 type pipelineErr struct{ msg string }
 
-func (e *pipelineErr) Error() string         { return e.msg }
-func newPipelineErr(s string) *pipelineErr   { return &pipelineErr{msg: s} }
+func (e *pipelineErr) Error() string       { return e.msg }
+func newPipelineErr(s string) *pipelineErr { return &pipelineErr{msg: s} }
 
 func contains(ss []string, x string) bool {
 	for _, s := range ss {
@@ -1228,14 +1302,14 @@ type shapeMetricsResp struct {
 }
 
 type shapeRefSummary struct {
-	ID            string  `json:"id"`
-	VersionLabel  string  `json:"version_label"`
-	Format        string  `json:"format"`
-	TriangleCount *int64  `json:"triangle_count,omitempty"`
-	PointCount    *int64  `json:"point_count,omitempty"`
+	ID            string       `json:"id"`
+	VersionLabel  string       `json:"version_label"`
+	Format        string       `json:"format"`
+	TriangleCount *int64       `json:"triangle_count,omitempty"`
+	PointCount    *int64       `json:"point_count,omitempty"`
 	BBox          *shapeBBoxIn `json:"bbox,omitempty"`
-	Coverage      *float32 `json:"coverage,omitempty"`
-	QCScore       *float32 `json:"qc_score,omitempty"`
+	Coverage      *float32     `json:"coverage,omitempty"`
+	QCScore       *float32     `json:"qc_score,omitempty"`
 }
 
 type shapeCompareResp struct {
@@ -1263,9 +1337,9 @@ type shapeCompareResp struct {
 //
 // 处理：
 //
-//	1. 拉 shape-ref active 记录（按 vehicle_model_id）
-//	2. shapecmp.Compute(scan, ref) 算 ratios + bbox IoU
-//	3. shapecmp.Score / Verdict 出综合分 + verdict + reasons
+//  1. 拉 shape-ref active 记录（按 vehicle_model_id）
+//  2. shapecmp.Compute(scan, ref) 算 ratios + bbox IoU
+//  3. shapecmp.Score / Verdict 出综合分 + verdict + reasons
 //
 // 错误：
 //
@@ -1423,9 +1497,9 @@ func parseFloatOr(s string, def float64) float64 {
 // Healthz 不调 cgo，纯 Go 探活。
 func (h *Handler) Healthz(w http.ResponseWriter, _ *http.Request) {
 	httpx.OK(w, map[string]any{
-		"ok":          true,
-		"uptime_sec":  int(time.Since(h.startedAt).Seconds()),
-		"go_version":  runtime.Version(),
+		"ok":         true,
+		"uptime_sec": int(time.Since(h.startedAt).Seconds()),
+		"go_version": runtime.Version(),
 	})
 }
 
@@ -1479,7 +1553,9 @@ func (h *Handler) EchoDim(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest, "OpenCV 解码失败: "+err.Error()))
 		return
 	}
-	// gocv.Mat 由 Go GC + finalizer 回收（gocv/mat_noprofile.go SetFinalizer），不需要显式 Close。
+	// 订正旧错误注释：本仓 gocv shim（mat_noprofile.go / mat_profile.go）未注册 runtime.SetFinalizer，
+	// Mat 持有的是 C 堆内存，GC 不会回收 —— 必须显式 Release，否则 VIN 主链长跑泄漏 → OOM。
+	defer func() { _ = mat.Release() }()
 	if mat.Empty() {
 		httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest, "OpenCV 解码后 Mat 为空"))
 		return

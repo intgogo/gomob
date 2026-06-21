@@ -12,6 +12,7 @@ import (
 	"errors"
 	"log/slog"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -20,6 +21,13 @@ import (
 	"io.gomob/server/pkg/logger"
 	"io.gomob/server/pkg/repo"
 )
+
+// callPeers 一次通话的两端用户。answer/ice/bye 中继前据此校验会话归属。
+type callPeers struct {
+	caller   int64
+	callee   int64
+	expireAt time.Time
+}
 
 // Router 持有所有依赖；Handler 用它来 Dispatch。
 type Router struct {
@@ -33,6 +41,13 @@ type Router struct {
 	log      *slog.Logger
 	// 配置
 	pendingCallTTL time.Duration
+
+	// 进程内通话归属表：invite 时登记 {call_id → caller/callee}，
+	// answer/ice/bye 中继前据此校验中继方与目标都属于该 call，防 from_user 伪造越权注入。
+	// 在线通话(常态)不落 pending_calls，DB 无记录，故必须用进程内表;
+	// 进程重启后丢失的离线 invite 回退查 pending_calls 兜底。
+	callsMu sync.Mutex
+	calls   map[string]callPeers
 }
 
 func NewRouter(pool *pgxpool.Pool, hub *Hub, auditRec audit.Recorder, pendingCallTTL time.Duration) *Router {
@@ -49,6 +64,7 @@ func NewRouter(pool *pgxpool.Pool, hub *Hub, auditRec audit.Recorder, pendingCal
 		audit:          auditRec,
 		log:            logger.New("signaling.router"),
 		pendingCallTTL: pendingCallTTL,
+		calls:          map[string]callPeers{},
 	}
 }
 
@@ -429,6 +445,8 @@ func (r *Router) handleCallInvite(ctx context.Context, c *Conn, env Envelope) {
 		return
 	}
 	callID := newCallID()
+	// 登记通话归属，供后续 answer/ice/bye 校验中继方是否属于该 call。
+	r.registerCall(callID, c.UserID, req.ToUserID)
 
 	// 在线优先：直接推 callee 的所有连接
 	delivered := r.hub.Push(req.ToUserID, Envelope{
@@ -488,7 +506,46 @@ func (r *Router) handleCallInvite(ctx context.Context, c *Conn, env Envelope) {
 	}
 }
 
-func (r *Router) handleCallAnswer(_ context.Context, c *Conn, env Envelope) {
+// registerCall 在 invite 时登记通话两端；过期项顺手清理。
+func (r *Router) registerCall(callID string, caller, callee int64) {
+	r.callsMu.Lock()
+	defer r.callsMu.Unlock()
+	now := time.Now()
+	// 机会式清理过期项，避免 map 长期膨胀（无独立 ticker）。
+	for id, p := range r.calls {
+		if now.After(p.expireAt) {
+			delete(r.calls, id)
+		}
+	}
+	r.calls[callID] = callPeers{caller: caller, callee: callee, expireAt: now.Add(r.pendingCallTTL + time.Hour)}
+}
+
+// dropCall 通话结束时移除登记。
+func (r *Router) dropCall(callID string) {
+	r.callsMu.Lock()
+	defer r.callsMu.Unlock()
+	delete(r.calls, callID)
+}
+
+// authorizeRelay 校验 from(中继发起方)与 to(中继目标)同属 callID 这次通话，
+// 且互为对端。命中进程内登记表则直接判定;未命中(进程重启丢登记)回退查 pending_calls。
+// 返回 false 表示无权中继(伪造 from_user / 张冠李戴 call_id)。
+func (r *Router) authorizeRelay(ctx context.Context, callID string, from, to int64) bool {
+	r.callsMu.Lock()
+	p, ok := r.calls[callID]
+	r.callsMu.Unlock()
+	if ok {
+		return (from == p.caller && to == p.callee) || (from == p.callee && to == p.caller)
+	}
+	// 进程内无登记：可能是重启后仍存活的离线 invite，查 DB 兜底。
+	pc, err := r.callRepo.FindByCallID(ctx, callID)
+	if err != nil || pc == nil {
+		return false
+	}
+	return (from == pc.CallerID && to == pc.CalleeID) || (from == pc.CalleeID && to == pc.CallerID)
+}
+
+func (r *Router) handleCallAnswer(ctx context.Context, c *Conn, env Envelope) {
 	var req callAnswerReq
 	if err := json.Unmarshal(env.Payload, &req); err != nil {
 		r.sendError(c, 10001, "call.answer payload 解析失败", env)
@@ -496,6 +553,10 @@ func (r *Router) handleCallAnswer(_ context.Context, c *Conn, env Envelope) {
 	}
 	if req.ToUserID <= 0 || req.CallID == "" || len(req.SDP) == 0 {
 		r.sendError(c, 10001, "call.answer 参数缺失", env)
+		return
+	}
+	if !r.authorizeRelay(ctx, req.CallID, c.UserID, req.ToUserID) {
+		r.sendError(c, 40103, "无权操作该通话", env)
 		return
 	}
 	// 把 answer 透传给主叫（callee → caller）
@@ -509,7 +570,7 @@ func (r *Router) handleCallAnswer(_ context.Context, c *Conn, env Envelope) {
 	})
 }
 
-func (r *Router) handleCallIce(_ context.Context, c *Conn, env Envelope) {
+func (r *Router) handleCallIce(ctx context.Context, c *Conn, env Envelope) {
 	var req callIceReq
 	if err := json.Unmarshal(env.Payload, &req); err != nil {
 		r.sendError(c, 10001, "call.ice payload 解析失败", env)
@@ -517,6 +578,10 @@ func (r *Router) handleCallIce(_ context.Context, c *Conn, env Envelope) {
 	}
 	if req.ToUserID <= 0 || req.CallID == "" || len(req.Candidate) == 0 {
 		r.sendError(c, 10001, "call.ice 参数缺失", env)
+		return
+	}
+	if !r.authorizeRelay(ctx, req.CallID, c.UserID, req.ToUserID) {
+		r.sendError(c, 40103, "无权操作该通话", env)
 		return
 	}
 	r.hub.Push(req.ToUserID, Envelope{
@@ -547,6 +612,11 @@ func (r *Router) handleCallBye(ctx context.Context, c *Conn, env Envelope) {
 		}
 	}
 	if req.ToUserID > 0 {
+		// 中继挂断前同样校验归属，防伪造 from_user 给任意人塞 bye。
+		if !r.authorizeRelay(ctx, req.CallID, c.UserID, req.ToUserID) {
+			r.sendError(c, 40103, "无权操作该通话", env)
+			return
+		}
 		r.hub.Push(req.ToUserID, Envelope{
 			Type: "call.bye",
 			Payload: mustJSON(map[string]any{
@@ -556,6 +626,8 @@ func (r *Router) handleCallBye(ctx context.Context, c *Conn, env Envelope) {
 			}),
 		})
 	}
+	// 通话结束，移除进程内归属登记。
+	r.dropCall(req.CallID)
 }
 
 // ============================================================================

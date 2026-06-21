@@ -93,6 +93,9 @@ void ThrowNativeException(JNIEnv* env, jint code, const char* message) {
     if (ctor == nullptr) return;
     jstring jmsg = env->NewStringUTF(message);
     auto exc = (jthrowable) env->NewObject(cls, ctor, code, jmsg);
+    // NewObject 在 OOM / 构造抛异常时返回 nullptr，且已留下 pending exception；
+    // 再 env->Throw(nullptr) 是 UB。判 null 直接 return，让既有 pending exception 上抛。
+    if (exc == nullptr) return;
     env->Throw(exc);
 }
 
@@ -124,6 +127,7 @@ Java_io_gomob_nativebridge_NativeBridge_depthToPointCloud(
     env->ReleaseShortArrayElements(depth, depthData, JNI_ABORT);
 
     jfloatArray result = env->NewFloatArray(static_cast<jsize>(cloud.size()));
+    if (!result) return nullptr;  // OOM：NewFloatArray 返 null（已留 pending OOM），不能再 Set*Region
     env->SetFloatArrayRegion(result, 0, static_cast<jsize>(cloud.size()), cloud.data());
     return result;
 }
@@ -155,6 +159,7 @@ Java_io_gomob_nativebridge_NativeBridge_colorizePointCloud(
     env->ReleaseDoubleArrayElements(translation, tData, JNI_ABORT);
 
     jbyteArray result = env->NewByteArray(static_cast<jsize>(colored.size()));
+    if (!result) return nullptr;  // OOM 保护
     env->SetByteArrayRegion(result, 0, static_cast<jsize>(colored.size()),
                             reinterpret_cast<const jbyte*>(colored.data()));
     return result;
@@ -195,6 +200,7 @@ Java_io_gomob_nativebridge_NativeBridge_icpRegister(
         return nullptr;
     }
     jfloatArray result = env->NewFloatArray(7);
+    if (!result) return nullptr;  // OOM 保护
     env->SetFloatArrayRegion(result, 0, 7, ir.pose7.data());
     return result;
 }
@@ -264,6 +270,7 @@ Java_io_gomob_nativebridge_NativeBridge_scanSessionFinalize(
         return nullptr;
     }
     jintArray result = env->NewIntArray(3);
+    if (!result) return nullptr;  // OOM 保护
     env->SetIntArrayRegion(result, 0, 3, stats);
     return result;
 }
@@ -285,7 +292,7 @@ Java_io_gomob_nativebridge_NativeBridge_scanSessionPeekVertices(
     }
     auto vs = gomob::reconstruction::SessionPeekVertices(s, maxVertices);
     jfloatArray result = env->NewFloatArray(static_cast<jsize>(vs.size()));
-    if (!vs.empty()) {
+    if (result && !vs.empty()) {  // OOM 下 result 为 null，跳过 Set*Region（返回 null 由 Kotlin 处理）
         env->SetFloatArrayRegion(result, 0, static_cast<jsize>(vs.size()), vs.data());
     }
     return result;
@@ -301,7 +308,7 @@ Java_io_gomob_nativebridge_NativeBridge_scanSessionMeshVertices(
     if (!s) return env->NewFloatArray(0);
     const auto& vs = gomob::reconstruction::SessionMeshVertices(s);
     jfloatArray result = env->NewFloatArray(static_cast<jsize>(vs.size()));
-    if (!vs.empty()) {
+    if (result && !vs.empty()) {  // OOM 保护
         env->SetFloatArrayRegion(result, 0, static_cast<jsize>(vs.size()), vs.data());
     }
     return result;
@@ -314,7 +321,7 @@ Java_io_gomob_nativebridge_NativeBridge_scanSessionMeshNormals(
     if (!s) return env->NewFloatArray(0);
     const auto& ns = gomob::reconstruction::SessionMeshNormals(s);
     jfloatArray result = env->NewFloatArray(static_cast<jsize>(ns.size()));
-    if (!ns.empty()) {
+    if (result && !ns.empty()) {  // OOM 保护
         env->SetFloatArrayRegion(result, 0, static_cast<jsize>(ns.size()), ns.data());
     }
     return result;
@@ -327,7 +334,7 @@ Java_io_gomob_nativebridge_NativeBridge_scanSessionMeshIndices(
     if (!s) return env->NewIntArray(0);
     const auto& idx = gomob::reconstruction::SessionMeshIndices(s);
     jintArray result = env->NewIntArray(static_cast<jsize>(idx.size()));
-    if (!idx.empty()) {
+    if (result && !idx.empty()) {  // OOM 保护
         // uint32_t → jint 重解释 OK：mesh 顶点数 ≤ 2^31，indices 不会超 INT_MAX
         env->SetIntArrayRegion(result, 0, static_cast<jsize>(idx.size()),
                                reinterpret_cast<const jint*>(idx.data()));
@@ -413,16 +420,21 @@ Java_io_gomob_nativebridge_NativeBridge_vinOrthoRectify(
     // 回 Kotlin VinOrthoNative(rgb, mask, width, height, planeNormalAndD[4], planeStats[2], covered)。
     // 裸 RGB888 + mask，不在 native 编码 PNG（显示用 Kotlin 直接组 Bitmap，上传时再压）。
     jbyteArray jrgb = env->NewByteArray(static_cast<jsize>(res.rgb.size()));
+    jbyteArray jmask = env->NewByteArray(static_cast<jsize>(res.mask.size()));
+    jfloatArray jplane = env->NewFloatArray(4);
+    jfloatArray jstats = env->NewFloatArray(2);
+    // 任一 New*Array OOM 返 null 即不能 Set*Region；统一判空后再填，避免 UB。
+    if (!jrgb || !jmask || !jplane || !jstats) {
+        ThrowNativeException(env, 3, "vinOrthoRectify: 分配返回数组失败(OOM)");
+        return nullptr;
+    }
     env->SetByteArrayRegion(jrgb, 0, static_cast<jsize>(res.rgb.size()),
                             reinterpret_cast<const jbyte*>(res.rgb.data()));
-    jbyteArray jmask = env->NewByteArray(static_cast<jsize>(res.mask.size()));
     env->SetByteArrayRegion(jmask, 0, static_cast<jsize>(res.mask.size()),
                             reinterpret_cast<const jbyte*>(res.mask.data()));
     const float planeND[4] = {res.plane.n[0], res.plane.n[1], res.plane.n[2], res.plane.d};
-    jfloatArray jplane = env->NewFloatArray(4);
     env->SetFloatArrayRegion(jplane, 0, 4, planeND);
     const float stats[2] = {res.plane.rms_mm, res.plane.inlier_ratio};
-    jfloatArray jstats = env->NewFloatArray(2);
     env->SetFloatArrayRegion(jstats, 0, 2, stats);
 
     jclass cls = env->FindClass("io/gomob/nativebridge/VinOrthoNative");
@@ -1019,6 +1031,7 @@ Java_io_gomob_nativebridge_NativeBridge_berxelSessionXuGetCur(
         return nullptr;
     }
     jbyteArray out = env->NewByteArray(static_cast<jsize>(buf.size()));
+    if (!out) return nullptr;  // OOM 保护
     env->SetByteArrayRegion(out, 0, static_cast<jsize>(buf.size()),
                             reinterpret_cast<const jbyte*>(buf.data()));
     return out;
@@ -1118,6 +1131,36 @@ Java_io_gomob_nativebridge_NativeBridge_berxelOpenStream(
     st->transfer_size = transferSize;
     st->xfers.reserve(transferCount);
 
+    // 构造期失败（alloc/submit 中途挂）安全收尾：此刻 event_thread 还没起，已 submit 的 URB 还在途。
+    // 直接 return 会析构 st → 释放 slot->buffer + 泄漏未 free 的 libusb_transfer，且在途 URB 回调
+    // 落到已释放内存 = UAF。对齐 dual-session：先 stop_flag + cancel 已 submit 的，自己 pump 事件把
+    // 取消回调排干（无 event_thread，必须本线程 handle_events），确认无在途后再 free，最后才析构 st。
+    const auto abort_partial_stream = [&]() {
+        st->stop_flag.store(true);
+        for (auto& slot : st->xfers) {
+            if (slot && slot->xfer && slot->submitted) {
+                libusb_cancel_transfer(slot->xfer);
+            }
+        }
+        // pump 事件让 CANCELLED 回调跑完（回调里 submitted=false）；最多 ~500ms 兜底防卡死。
+        timeval tv{0, 50 * 1000};
+        for (int spin = 0; spin < 10; ++spin) {
+            bool any_inflight = false;
+            for (auto& slot : st->xfers) {
+                if (slot && slot->xfer && slot->submitted) { any_inflight = true; break; }
+            }
+            if (!any_inflight) break;
+            libusb_handle_events_timeout_completed(s->ctx, &tv, nullptr);
+        }
+        for (auto& slot : st->xfers) {
+            if (slot && slot->xfer) {
+                libusb_free_transfer(slot->xfer);
+                slot->xfer = nullptr;
+            }
+        }
+        st->xfers.clear();
+    };
+
     for (int i = 0; i < transferCount; ++i) {
         auto slot = std::make_unique<gomob::berxel::BulkXfer>();
         slot->owner = st.get();
@@ -1125,6 +1168,7 @@ Java_io_gomob_nativebridge_NativeBridge_berxelOpenStream(
         slot->xfer = libusb_alloc_transfer(0);
         if (!slot->xfer) {
             LOGE("alloc_transfer #%d failed", i);
+            abort_partial_stream();  // 收回已在途 URB，避免 UAF + transfer 泄漏
             return -3004;
         }
         libusb_fill_bulk_transfer(slot->xfer, s->handle, st->bulk_in_ep,
@@ -1197,6 +1241,7 @@ Java_io_gomob_nativebridge_NativeBridge_berxelReadFrame(
     }
 
     jbyteArray out = env->NewByteArray(static_cast<jsize>(frame.size()));
+    if (!out) return nullptr;  // OOM 保护
     env->SetByteArrayRegion(out, 0, static_cast<jsize>(frame.size()),
                             reinterpret_cast<const jbyte*>(frame.data()));
     return out;
@@ -1227,6 +1272,7 @@ Java_io_gomob_nativebridge_NativeBridge_berxelControlTransfer(
              bmRequestType, bRequest, wValue, wIndex, wLengthIn, rc);
         if (rc < 0) return nullptr;
         jbyteArray out = env->NewByteArray(rc);
+        if (!out) return nullptr;  // OOM 保护
         env->SetByteArrayRegion(out, 0, rc, reinterpret_cast<const jbyte*>(buf.data()));
         return out;
     }
@@ -1268,6 +1314,7 @@ Java_io_gomob_nativebridge_NativeBridge_berxelBulkSyncReadBytes(
                                   static_cast<unsigned int>(timeoutMs));
     if (rc != 0 || actual <= 0) return nullptr;
     jbyteArray out = env->NewByteArray(actual);
+    if (!out) return nullptr;  // OOM 保护
     env->SetByteArrayRegion(out, 0, actual, reinterpret_cast<const jbyte*>(buf.data()));
     return out;
 }
@@ -1298,6 +1345,7 @@ Java_io_gomob_nativebridge_NativeBridge_berxelStreamStats(
     if (!s || !s->stream) {
         jlong zeros[4] = {0, 0, 0, 0};
         jlongArray out = env->NewLongArray(4);
+        if (!out) return nullptr;  // OOM 保护
         env->SetLongArrayRegion(out, 0, 4, zeros);
         return out;
     }
@@ -1311,6 +1359,7 @@ Java_io_gomob_nativebridge_NativeBridge_berxelStreamStats(
         v[3] = static_cast<jlong>(st->ready_frames.size());
     }
     jlongArray out = env->NewLongArray(4);
+    if (!out) return nullptr;  // OOM 保护
     env->SetLongArrayRegion(out, 0, 4, v);
     return out;
 }
@@ -1333,6 +1382,7 @@ Java_io_gomob_nativebridge_NativeBridge_calibDetectCharuco(
     env->ReleaseIntArrayElements(boardSpec, specData, JNI_ABORT);
 
     jfloatArray result = env->NewFloatArray(static_cast<jsize>(corners.size()));
+    if (!result) return nullptr;  // OOM 保护
     env->SetFloatArrayRegion(result, 0, static_cast<jsize>(corners.size()), corners.data());
     return result;
 }
@@ -1355,6 +1405,7 @@ Java_io_gomob_nativebridge_NativeBridge_calibCalibrateCamera(
     env->ReleaseIntArrayElements(boardSpec, specData, JNI_ABORT);
 
     jdoubleArray jResult = env->NewDoubleArray(static_cast<jsize>(result.size()));
+    if (!jResult) return nullptr;  // OOM 保护
     env->SetDoubleArrayRegion(jResult, 0, static_cast<jsize>(result.size()), result.data());
     return jResult;
 }
@@ -1381,6 +1432,7 @@ Java_io_gomob_nativebridge_NativeBridge_calibStereoCalibrate(
     env->ReleaseDoubleArrayElements(depthIntr, diData, JNI_ABORT);
 
     jdoubleArray jResult = env->NewDoubleArray(static_cast<jsize>(result.size()));
+    if (!jResult) return nullptr;  // OOM 保护
     env->SetDoubleArrayRegion(jResult, 0, static_cast<jsize>(result.size()), result.data());
     return jResult;
 }

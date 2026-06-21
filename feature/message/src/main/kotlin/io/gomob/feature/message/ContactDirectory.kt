@@ -39,6 +39,7 @@ internal fun StationContact.toContactProfileUi(): ContactProfileUi = ContactProf
     employeeId = employeeId,
     availabilityText = "可发消息",
     organization = stationName.ifBlank { "本站" },
+    // TODO(demo-data R1): online 写死 true 是占位假数据，未接真实 presence；终态应订阅在线状态服务后回填。
     online = true,
     peerUserId = userId,
 )

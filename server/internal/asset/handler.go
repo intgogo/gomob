@@ -539,22 +539,44 @@ func (h *Handler) PresignDownload(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, httpx.ErrInternal)
 		return
 	}
-	// 权限：只允许本查验所属 inspector 或 supervisor/reviewer/admin
+	// 权限：默认拒绝，必须显式命中一条放行规则才放行（防 IDOR / 资产枚举）。
 	uid := callerUserID(r)
 	role := r.Header.Get("X-Gomob-Roles")
-	if a.InspectionID > 0 && role == "" {
+	if uid == 0 {
 		// 不带 token 直接拒
 		httpx.WriteError(w, httpx.ErrTokenInvalid)
 		return
 	}
-	if a.InspectionID > 0 {
-		ins, err := h.insps.FindByID(r.Context(), a.InspectionID)
-		if err == nil {
-			if ins.InspectorID != uid && role != "supervisor" && role != "reviewer" && role != "admin" {
-				httpx.WriteError(w, httpx.ErrPermDenied)
+	allowed := false
+	switch {
+	case role == "admin" || role == "supervisor" || role == "reviewer":
+		// 管理 / 主管 / 审核角色可跨查验下载（排障 / 复核）
+		allowed = true
+	case a.InspectionID > 0:
+		// 归属某查验：仅该查验的 inspector 放行。
+		// 注意：DB 出错必须返回错误而非短路放行，否则可被用来绕过校验。
+		ins, ferr := h.insps.FindByID(r.Context(), a.InspectionID)
+		if ferr != nil {
+			if errors.Is(ferr, repo.ErrNotFound) {
+				httpx.WriteError(w, httpx.ErrNotFound)
 				return
 			}
+			httpx.WriteError(w, httpx.ErrInternal)
+			return
 		}
+		allowed = ins.InspectorID == uid
+	default:
+		// 孤儿资产（无 inspection_id，如直传未关联查验）：仅上传者本人放行。
+		owned, oerr := h.assets.IsAssetOwnedByUser(r.Context(), a.ID, uid)
+		if oerr != nil {
+			httpx.WriteError(w, httpx.ErrInternal)
+			return
+		}
+		allowed = owned
+	}
+	if !allowed {
+		httpx.WriteError(w, httpx.ErrPermDenied)
+		return
 	}
 
 	url, err := h.mc.PresignedGetObject(r.Context(), h.cfg.Bucket, a.ObjectKey, h.cfg.PresignDuration, nil)
