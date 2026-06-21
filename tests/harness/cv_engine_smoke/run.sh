@@ -47,7 +47,7 @@ step() {
     shift 3
     local t0 t1 lat http body code ok
     t0=$(date +%s%N)
-    out=$(curl -s -o /tmp/curl-body.$$ -w '%{http_code}' "$@")
+    out=$(curl -s --max-time 15 -o /tmp/curl-body.$$ -w '%{http_code}' "$@")
     t1=$(date +%s%N)
     lat=$(( (t1 - t0) / 1000000 ))
     http=$out
@@ -106,7 +106,7 @@ PID=$!
 trap "kill $PID 2>/dev/null; wait 2>/dev/null" EXIT
 sleep 1
 
-hc=$(curl -s -o /dev/null -w '%{http_code}' "$CV/healthz")
+hc=$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "$CV/healthz")
 if [[ "$hc" != "200" ]]; then
     log "✗ /healthz=$hc，进程可能挂了"
     cat "$OUTPUT_DIR/cvengine.log" | tail -20

@@ -47,8 +47,8 @@ struct TsdfConfig {
 };
 
 struct TsdfStats {
-    int allocated_voxels;        // grid_dim^3
-    int integrated_voxels;       // weight > 0 的体素数
+    int64_t allocated_voxels;    // grid_dim^3 — int64 防 grid_dim>1290 立方溢出(真机≤512 安全,但终态不留窄化)
+    int64_t integrated_voxels;   // weight > 0 的体素数
     int integrated_frames;
 };
 

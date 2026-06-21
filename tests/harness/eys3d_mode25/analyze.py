@@ -74,24 +74,30 @@ def main():
     vr = statistics.median(vrs); med = statistics.median(meds); const = statistics.median(consts)
     print(f"\n汇总: 有效率={vr:.1%} mm中位={med} 列恒定度={const:.2f}")
 
-    # 判定
+    # 判定。三态:
+    #   FAIL(return 1): 列恒定(ASIC 没真算视差) / 有效率过低 / mm 中位不在物理合理区(坏 scale 深度)。
+    #     —— 物理合理性是硬判据:值落不到 [150,6000] 说明 scale/ZD 标定根本不对,不能当"质量待查"软放过。
+    #   WARN(return 0): 三态保留位,当前所有可量化异常都属硬判据,无纯软警告档。
+    #   正常(return 0): 全部判据通过。
     reasons = []
+    phys_bad = not (150 <= med <= 6000)
     if vr < 0.30:
         reasons.append(f"有效率过低({vr:.1%}<30%)")
     if const < 0.15:
         reasons.append(f"列恒定(度{const:.2f}<0.15)= ASIC 没真算视差(错模式特征)")
-    if not (150 <= med <= 6000):
-        reasons.append(f"mm 中位 {med} 不在物理合理区[150,6000]")
+    if phys_bad:
+        reasons.append(f"mm 中位 {med} 不在物理合理区[150,6000]= 坏 scale 深度")
 
     if not reasons:
         print(f"\n✅ 正常: mode25(videoMode=36)硬件深度有效,深度有空间变化、值物理合理。")
         return 0
+    # 任一硬判据触发即 FAIL。坏 scale 深度不再被软警告吞成 exit 0。
+    print(f"\n❌ 异常: {'; '.join(reasons)}")
     if const < 0.15 or vr < 0.30:
-        print(f"\n❌ 异常: {'; '.join(reasons)}")
         print("   → 若列恒定仍在:确认 videoMode=36 已写入、帧索引对、再查 AE arming(ASIC 进 live-depth 最后一环)。")
-        return 1
-    print(f"\n⚠ 警告: {'; '.join(reasons)} — 深度出了但质量/标定待查(几何兜底?ZD 表未注入?)。")
-    return 0
+    if phys_bad:
+        print("   → mm 中位越界:查 scale/ZD 表是否注入、视差→深度的 fx·B 几何参数是否对。")
+    return 1
 
 
 if __name__ == "__main__":

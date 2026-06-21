@@ -40,7 +40,7 @@ def ecc_residual(ref, mov):
 
 
 def main():
-    d = sys.argv[1] if len(sys.argv) > 1 else ".dev/vin_restore"
+    d = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("OUTPUT_DIR", ".dev/vin_restore")
     pat = sys.argv[2] if len(sys.argv) > 2 else "cap_*_canon.png"
     files = sorted(glob.glob(os.path.join(d, pat)))
     if len(files) < 2:
@@ -64,7 +64,7 @@ def main():
                 g.append(j); seen.add(j)
         groups.append(g)
 
-    print("分组（ECC 对齐后 NCC>0.6 同 VIN）：")
+    print("分组（ECC 对齐后 NCC>0.55 同 VIN）：")
     SHIFT_PCT = 100.0 / W           # 残余位移 → 占宽百分比
     worst_align = 1.0; worst_shift = 0.0
     for gi, g in enumerate(groups):
@@ -87,10 +87,12 @@ def main():
     if worst_shift <= W * 0.008 and worst_align >= 0.55:   # 中位残余≤0.8%宽 + 内容匹配
         print(f"正常 — 同 VIN 各张几何重合（最差组中位残余={worst_shift:.0f}px/{worst_shift*SHIFT_PCT:.2f}%，对齐后NCC={worst_align:.2f}）")
         return 0
-    if worst_shift <= W * 0.015:
-        print(f"警告 — 大致重合，残余偏大（最差组中位残余={worst_shift:.0f}px/{worst_shift*SHIFT_PCT:.2f}%，对齐后NCC={worst_align:.2f}）")
+    # 警告档：残余偏大但仍在 1.5% 内，且内容仍能匹配（NCC≥0.55）→ WARN（退码 0，但醒目打印）。
+    # 若内容都对不上（NCC<0.55），即便位移小也是配准假重合 → 落 FAIL 而非被警告档吞掉。
+    if worst_shift <= W * 0.015 and worst_align >= 0.55:
+        print(f"⚠ 警告 — 大致重合，残余偏大（最差组中位残余={worst_shift:.0f}px/{worst_shift*SHIFT_PCT:.2f}%，对齐后NCC={worst_align:.2f}）")
         return 0
-    print(f"异常 — 未重合（最差组中位残余={worst_shift:.0f}px/{worst_shift*SHIFT_PCT:.2f}%，对齐后NCC={worst_align:.2f}）；查平面/OBB/配准")
+    print(f"❌ 异常 — 未重合（最差组中位残余={worst_shift:.0f}px/{worst_shift*SHIFT_PCT:.2f}%，对齐后NCC={worst_align:.2f}）；查平面/OBB/配准")
     return 1
 
 

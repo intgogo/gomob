@@ -29,9 +29,9 @@ def main(out_dir: str) -> int:
         "S1b.vmask_loaded_kind_mask",
         "S2.classes_vin",
         "S3.detect_synthetic",
-        "S3b.detect_response_well_formed",
+        "S3b.blank_image_zero_detections",
         "S4.detect_low_conf",
-        "S4b.lower_conf_at_least_eq_count",
+        "S4b.blank_low_conf_still_zero",
         "S5.tag_not_registered_40701",
         "S6.missing_image_10001",
         "S7.dev_no_auth_required",
@@ -71,5 +71,8 @@ def main(out_dir: str) -> int:
 
 
 if __name__ == "__main__":
-    out = sys.argv[1] if len(sys.argv) > 1 else "/root/lilw/gomob/.dev/cv_yolo_detect"
+    # M12.4 路径参数化：优先 argv，其次 OUTPUT_DIR 环境变量，最后退仓库相对默认。
+    _repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    _default = os.environ.get("OUTPUT_DIR") or os.path.join(_repo, ".dev", "cv_yolo_detect")
+    out = sys.argv[1] if len(sys.argv) > 1 else _default
     sys.exit(main(out))

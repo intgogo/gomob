@@ -111,13 +111,11 @@ void TsdfVolume::Get(int i, int j, int k, float& out_sdf, float& out_weight) con
 
 TsdfStats TsdfVolume::Stats() const {
     TsdfStats s{};
-    // grid_dim^3 大网格（如 200^3=8M、512^3=134M）整型乘法会 int 溢出（UB），先用 size_t 算。
-    // TODO(tsdf-stats): TsdfStats::allocated_voxels 字段本身仍是 int（在 tsdf.h，本轮不改 header
-    //   避免跨文件结构改动），grid_dim>1290 时回写 int 仍会截断；终态应把该字段及 integrated_voxels
-    //   widen 到 int64_t/size_t。当前真机 grid_dim≤512（134M）已超 int 上限(2.1G)前的安全区但临界，先消除乘法 UB。
+    // grid_dim^3 大网格（如 200^3=8M、512^3=134M）整型乘法会溢出（UB），用 size_t 算；
+    // TsdfStats::allocated_voxels/integrated_voxels 已 widen 到 int64_t（tsdf.h），回写不截断。
     const std::size_t total_voxels =
         static_cast<std::size_t>(grid_dim_) * grid_dim_ * grid_dim_;
-    s.allocated_voxels = static_cast<int>(total_voxels);
+    s.allocated_voxels = static_cast<int64_t>(total_voxels);
     s.integrated_voxels = 0;
     for (float w : weight_) if (w > 0.0f) ++s.integrated_voxels;
     s.integrated_frames = frame_count_;

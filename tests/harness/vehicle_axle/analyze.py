@@ -6,7 +6,26 @@
 import os, sys, numpy as np
 from scipy.signal import find_peaks
 
-SESS = os.environ.get("JCHY_DATA", "/root/WindowsR/JCHY_OFFLINE/Data/100742")
+# 真值会话目录：优先 JCHY_DATA 环境变量；否则在若干默认根下探测 Data/100742。
+# M12.4：禁止硬编码个人机器绝对路径作为唯一真理源 → 环境变量 + 默认探测，缺则 loud-fail。
+def _resolve_sess():
+    env = os.environ.get("JCHY_DATA")
+    if env:
+        return env
+    # 默认探测根（按优先级），命中含 1.pcd/2.pcd 的目录即用
+    candidates = [
+        os.path.expanduser("~/WindowsR/JCHY_OFFLINE/Data/100742"),
+        "/root/WindowsR/JCHY_OFFLINE/Data/100742",
+        os.path.join(os.path.dirname(__file__), "..", "..", "..", ".dev", "vehicle_axle", "truth", "100742"),
+    ]
+    for c in candidates:
+        if os.path.exists(os.path.join(c, "1.pcd")):
+            return c
+    # 未命中：返回首选默认，由 main() 统一 loud-fail（exit 1）
+    return candidates[0]
+
+
+SESS = _resolve_sess()
 # 真值
 TG = [710, 399, 261]   # 相邻轴距
 FO, RO = 261, 163      # 前悬 / 后悬
@@ -62,8 +81,11 @@ def detect_axles(P, contactH=60.0, binw=10.0, smooth=5):
 def main():
     p1 = os.path.join(SESS, "1.pcd"); p2 = os.path.join(SESS, "2.pcd")
     if not (os.path.exists(p1) and os.path.exists(p2)):
-        print(f"[SKIP] 无真值会话 {SESS}（设备/逆向数据不在本环境）")
-        return 0
+        # M12.1：缺真值不可静默放过（假过）。无 1.pcd/2.pcd → 无法判定 → exit 1。
+        print(f"❌ 无法判定：真值会话缺失 {SESS}（需 1.pcd + 2.pcd）", file=sys.stderr)
+        print("   提供真值后重跑：JCHY_DATA=/path/to/Data/100742 跑本 harness；", file=sys.stderr)
+        print("   或把会话放到 .dev/vehicle_axle/truth/100742/。", file=sys.stderr)
+        return 1
     P = np.vstack([load_pcd(p1), load_pcd(p2)])
     P = P[((P >= [270, 0, 10]) & (P <= [1000, 2200, 800])).all(1)]
     ylo, yhi, cen = detect_axles(P)
@@ -92,7 +114,11 @@ def main():
     if err:
         print("结论: ❌ 异常 —", "; ".join(err)); return 1
     if warn:
-        print("结论: ⚠ 警告 —", "; ".join(warn)); return 0
+        # M12.1 三态：WARN 不吞退码但必须醒目，便于 CI/人眼立刻看到偏差。
+        print("=" * 60)
+        print("结论: ⚠ 警告（未达异常阈但已偏离真值，需关注）—", "; ".join(warn))
+        print("=" * 60)
+        return 0
     print("结论: ✅ 正常 — 轴距/前后悬全部达标"); return 0
 
 

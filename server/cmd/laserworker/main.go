@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"io.gomob/server/internal/laser"
+	"io.gomob/server/pkg/audit"
 	"io.gomob/server/pkg/logger"
 	"io.gomob/server/pkg/pubsub"
 	"io.gomob/server/pkg/repo"
@@ -102,6 +103,8 @@ func main() {
 		ScanBStop:     parseFloat("GOMOB_LASER_B_STOP_ANGLE", -10),
 	}
 	h := laser.NewHandler(cfg, jobs, runner, publisher, log)
+	// 标定级操作（车位框 put/preview 等）审计落 PG（M11.4）：与 devserver/asset 同一 PG recorder 范式。
+	h.SetAuditRecorder(audit.NewPG(pool))
 	h.SetCloudReader(clouds) // 同一 MinIO 实例兼作 PCD 下载读取器
 	h.SetCropBoxStore(cropBoxes)
 

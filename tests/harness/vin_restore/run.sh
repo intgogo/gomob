@@ -7,8 +7,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/../../.."        # → 仓根
 CAPS="${1:-.dev/vin_captures}"
-OUT=".dev/vin_restore"
+OUT="${OUTPUT_DIR:-.dev/vin_restore}"   # 产物落点可被环境变量 OUTPUT_DIR 覆盖（默认 .dev/vin_restore）
 MODEL=".dev/vin_models/yolo-obb.onnx"
+export OUTPUT_DIR="$OUT"                 # 透传给 restore_obb.py，保证还原与分析落同一目录
 
 [ -d "$CAPS" ] || { echo "无采集数据 $CAPS（先真机拍 + adb pull）"; exit 1; }
 [ -f "$MODEL" ] || { echo "缺 YOLO 模型 $MODEL（从 VINCreator APK assets/model/yolo-obb.onnx 拷入）"; exit 1; }

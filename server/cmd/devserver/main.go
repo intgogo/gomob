@@ -69,6 +69,10 @@ func main() {
 		}
 	}
 
+	// devserver 的 auth 直接对外（不经 gateway 注入 X-Gomob-User-Id），
+	// 须显式打开 Bearer 直连鉴权路径；生产入口绝不调用，保持单一信任源（M11.3）。
+	auth.EnableBearerDirect(true)
+
 	devAutoActivate := os.Getenv("GOMOB_DEV_AUTO_ACTIVATE") != "false"
 	authH := auth.NewHandler(pool, devAutoActivate)
 	signalingHub := signaling.NewHub()

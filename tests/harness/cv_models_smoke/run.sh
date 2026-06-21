@@ -23,7 +23,8 @@ RESULTS="$OUTPUT_DIR/results.jsonl"
 CV=http://127.0.0.1:18810
 # 使用 gosmart data/ 下真实 ONNX 模型做加载测试。
 # 这些不入 gomob 仓（GB 级、训练侧产物）；仅在本机 dev 环境用。
-GOSMART_MODEL="/root/lilw/gosmart/data/vmet1.onnx"
+# M12.4 机器特定绝对路径参数化：可被 GOMOB_VMET_ONNX 覆盖，默认保持本机现行为。
+GOSMART_MODEL="${GOMOB_VMET_ONNX:-/root/lilw/gosmart/data/vmet1.onnx}"
 
 log() { printf "[%s] %s\n" "$(date +%H:%M:%S)" "$*"; }
 

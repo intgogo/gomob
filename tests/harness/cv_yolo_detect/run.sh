@@ -22,7 +22,8 @@ RESULTS="$OUTPUT_DIR/results.jsonl"
 : > "$RESULTS"
 
 CV=http://127.0.0.1:18810
-VMASK="/root/lilw/gosmart/data/vins0.onnx"
+# M12.4 机器特定绝对路径参数化：可被 GOMOB_VMASK_ONNX 覆盖，默认保持本机现行为。
+VMASK="${GOMOB_VMASK_ONNX:-/root/lilw/gosmart/data/vins0.onnx}"
 
 log() { printf "[%s] %s\n" "$(date +%H:%M:%S)" "$*"; }
 
@@ -120,14 +121,16 @@ for it in d["data"]["items"]:
 print("false")')
 record "S2.classes_vin" "$HAS_CLASSES" 0 0 "" "" 0 "classes 含 vin"
 
-# S3 在合成 A.png 上跑 yolo —— 不报错且 detections 为列表（合成图大概率 0 检测，是真实 yolo 输出）
-# 用之前 cv_vin_compare 留下的 A.png；如果不存在就生成一张
-A_PNG="$PROJ_DIR/.dev/cv_vin_compare/A.png"
-if [[ ! -f "$A_PNG" ]]; then
-    A_PNG="$OUTPUT_DIR/A.png"
-    python3 - <<'PY' > "$A_PNG"
-import struct, zlib, sys
-W=H=64
+# S3 在受控合成图上跑 yolo。
+# M12.3：判据不再用 count>=0（永真）。在一张已知 64×64 全黑空白图上，
+# 真 onnxruntime + 真 yolo 后处理必然出 0 检测框（无任何 VIN 字符）；
+# 任何 stub / 伪造 box 都会让 count>0 → 被识破。故空白图的真实判据 = count==0。
+# 为保证判据确定性，固定自生成受控空白图（不复用 cv_vin_compare 留下的、内容不可控的 A.png）。
+SYN_W=64; SYN_H=64
+A_PNG="$OUTPUT_DIR/A.png"
+SYN_W=$SYN_W SYN_H=$SYN_H python3 - <<'PY' > "$A_PNG"
+import struct, zlib, sys, os
+W=int(os.environ["SYN_W"]); H=int(os.environ["SYN_H"])
 raw = b''
 for y in range(H):
     raw += b'\x00' + bytes(0 for _ in range(W))
@@ -138,7 +141,6 @@ ihdr = struct.pack('>IIBBBBB', W, H, 8, 0, 0, 0, 0)
 idat = zlib.compress(raw)
 sys.stdout.buffer.write(sig + chunk(b'IHDR', ihdr) + chunk(b'IDAT', idat) + chunk(b'IEND', b''))
 PY
-fi
 
 b=$(step "S3.detect_synthetic" 200 0 -X POST "$CV/cv/ocr/v1/vin_detect_yolo" \
     -F "image_binary=@$A_PNG" \
@@ -148,18 +150,23 @@ ROWS=$(echo "$b" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"
 COLS=$(echo "$b" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"].get("image_cols",0))')
 DCOUNT=$(echo "$b" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"].get("count",-1))')
 TAG=$(echo "$b" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"].get("tag",""))')
-# 期望：image_rows / cols 真实，count 是非负整数（≥0），tag=VMASK
-[[ "$ROWS" -gt 0 && "$COLS" -gt 0 && "$DCOUNT" -ge 0 && "$TAG" == "VMASK" ]] && S3OK=true || S3OK=false
-record "S3b.detect_response_well_formed" "$S3OK" 0 0 "" "" 0 "rows=$ROWS cols=$COLS count=$DCOUNT tag=$TAG"
+# M12.3 真实判据（替换 count>=0 永真断言）：
+#   - image_rows/cols 必须精确回显受控图尺寸（不是 >0，而是 == SYN_H/SYN_W）→ 证真解码了这张图
+#   - 空白图上真 yolo 必出 0 框（count==0）→ 证非 stub（stub 会伪造框使 count>0）
+#   - tag 回显 == VMASK
+[[ "$ROWS" -eq "$SYN_H" && "$COLS" -eq "$SYN_W" && "$DCOUNT" -eq 0 && "$TAG" == "VMASK" ]] && S3OK=true || S3OK=false
+record "S3b.blank_image_zero_detections" "$S3OK" 0 0 "" "" 0 "rows=$ROWS(期望$SYN_H) cols=$COLS(期望$SYN_W) count=$DCOUNT(期望0) tag=$TAG"
 
-# S4 用更小的 conf 阈值（0.0）→ 至少结构合法；count 可能更高（仍是真 yolo 输出，不是 stub）
+# S4 把 conf 压到 0.01：空白图无任何候选框，真 yolo 仍出 0；
+# 若是 stub 或后处理把背景误当框，降阈值会冒出框 → count>0 被识破。
 b=$(step "S4.detect_low_conf" 200 0 -X POST "$CV/cv/ocr/v1/vin_detect_yolo" \
     -F "image_binary=@$A_PNG" \
     -F "tag=VMASK" \
     -F "conf=0.01")
 DCOUNT2=$(echo "$b" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"].get("count",-1))')
-[[ "$DCOUNT2" -ge "$DCOUNT" ]] && S4OK=true || S4OK=false
-record "S4b.lower_conf_at_least_eq_count" "$S4OK" 0 0 "" "" 0 "high_conf_count=$DCOUNT low_conf_count=$DCOUNT2"
+# M12.3 真实判据：空白图低阈值仍须 0 框（不再是 count2>=count1 这种几乎永真的比较）
+[[ "$DCOUNT2" -eq 0 ]] && S4OK=true || S4OK=false
+record "S4b.blank_low_conf_still_zero" "$S4OK" 0 0 "" "" 0 "high_conf_count=$DCOUNT low_conf_count=$DCOUNT2(期望0)"
 
 # S5 错误：tag 未注册
 step "S5.tag_not_registered_40701" 404 40701 -X POST "$CV/cv/ocr/v1/vin_detect_yolo" \

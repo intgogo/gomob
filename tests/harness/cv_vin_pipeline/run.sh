@@ -22,7 +22,8 @@ RESULTS="$OUTPUT_DIR/results.jsonl"
 : > "$RESULTS"
 
 CV=http://127.0.0.1:18810
-VMASK="/root/lilw/gosmart/data/vins0.onnx"
+# M12.4 机器特定绝对路径参数化：可被 GOMOB_VMASK_ONNX 覆盖，默认保持本机现行为。
+VMASK="${GOMOB_VMASK_ONNX:-/root/lilw/gosmart/data/vins0.onnx}"
 
 log() { printf "[%s] %s\n" "$(date +%H:%M:%S)" "$*"; }
 

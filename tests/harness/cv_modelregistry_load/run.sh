@@ -24,7 +24,8 @@ ASSET=http://127.0.0.1:18083
 MODELREG=http://127.0.0.1:18057
 CV=http://127.0.0.1:18810
 AUTH=http://127.0.0.1:18082
-VMET="/root/lilw/gosmart/data/vmet1.onnx"
+# M12.4 机器特定绝对路径参数化：可被 GOMOB_VMET_ONNX 覆盖，默认保持本机现行为。
+VMET="${GOMOB_VMET_ONNX:-/root/lilw/gosmart/data/vmet1.onnx}"
 
 log() { printf "[%s] %s\n" "$(date +%H:%M:%S)" "$*"; }
 

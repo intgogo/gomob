@@ -147,7 +147,8 @@ def render(frame, out_w=OUT_W, out_h=OUT_H, mx=0.08, my=0.22):
 
 def main():
     root = sys.argv[1] if len(sys.argv) > 1 else ".dev/vin_captures"
-    outdir = ".dev/vin_restore"
+    # 产物落点：优先 argv[2]，否则环境变量 OUTPUT_DIR，最后默认 .dev/vin_restore（与 run.sh 一致）
+    outdir = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("OUTPUT_DIR", ".dev/vin_restore")
     os.makedirs(outdir, exist_ok=True)
     det = ObbDetector(MODEL)
     frames = []

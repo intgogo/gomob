@@ -83,7 +83,11 @@ int main() {
 
   // 测试 5: 真实设备 ZD 表(若存在)
   {
-    const char* path = "/root/lilw/gomob/.dev/eys3d-sdk/tables/zd_dt4_b4096.bin";
+    // M12.4 机器特定绝对路径参数化：可被 GOMOB_EYS3D_ZD_TABLE 覆盖，默认保持本机现行为。
+    const char* env_path = std::getenv("GOMOB_EYS3D_ZD_TABLE");
+    const char* path = (env_path && env_path[0])
+                           ? env_path
+                           : "/root/lilw/gomob/.dev/eys3d-sdk/tables/zd_dt4_b4096.bin";
     FILE* fp = std::fopen(path, "rb");
     if (fp) {
       std::fseek(fp, 0, SEEK_END);

@@ -72,5 +72,8 @@ def main(out_dir: str) -> int:
 
 
 if __name__ == "__main__":
-    out = sys.argv[1] if len(sys.argv) > 1 else "/root/lilw/gomob/.dev/cv_modelregistry_load"
+    # M12.4 路径参数化：优先 argv，其次 OUTPUT_DIR 环境变量，最后退仓库相对默认。
+    _repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    _default = os.environ.get("OUTPUT_DIR") or os.path.join(_repo, ".dev", "cv_modelregistry_load")
+    out = sys.argv[1] if len(sys.argv) > 1 else _default
     sys.exit(main(out))

@@ -305,3 +305,9 @@ else
 fi
 
 log "采样完成 → $RESULTS"
+
+# 13. 分析判定 — 三态退码:FAIL→1 / 用法或缺数据→2 / 全通过→0。
+#     不再无条件 exit 0:任一场景 ok=false(verdict 不对/状态不对/audit 缺 mode 等)都让 run.sh 落非零退码。
+log "13. 分析判定（三态退码）"
+python3 "$(dirname "$0")/analyze.py" "$OUTPUT_DIR"
+exit $?
