@@ -103,21 +103,35 @@ def restore_obb(capdir, det, px=None):
     depth, color, meta = load_capture(capdir)
     Kd = (meta["depth"]["fx"], meta["depth"]["fy"], meta["depth"]["cx"], meta["depth"]["cy"])
     s = color.shape[1] / depth.shape[1]
-    Kc = (Kd[0] * s, Kd[1] * s, Kd[2] * s, Kd[3] * s)
-    pts = backproject_roi(depth, Kd, (0.5, 0.5, 0.9, 0.9))
+    # 彩色(HLSD8)内参：水平与深度 2× registered → fxc=2·fxd、cx/cy=2×；但 **fyc≠2·fyd**！
+    # 深度被重度竖直 binning(640×128, fy≈164 anamorphic)，彩色不是——实测彩色近方形像素 fyc≈fxc，
+    # 用 2·fyd 会留残余竖直透视→字符随拍摄倾角左右渐斜。真机 21 组实证 fyc=fxc 时倾角全≤2°。详见 finding 2026-06-22。
+    Kc = (Kd[0] * s, Kd[0] * s, Kd[2] * s, Kd[3] * s)  # fyc = fxc（方形彩色像素）
+    ch, cw = color.shape[:2]
+
+    # ① 先检 OBB（定位钢牌上的 VIN 文字区）—— 用它把平面拟合限到承印面，排除 strip 上下背景。
+    dets = det.detect(color)
+    if not dets:
+        return None, dict(err="no obb")
+    d = max(dets, key=lambda x: x["score"])
+    corners_px = _poly(d["corners"])  # TL,TR,BR,BL（color px）
+
+    # ② 只在 OBB 区(=钢牌承印面)拟合平面。旧版取中心 90% 把 strip 上下背景纳入 → 法向被污染 → 去透视不彻底→字斜。
+    #    用 OBB 轴对齐 bbox 换算成 depth 分数 ROI（÷ 颜色分辨率，分数与分辨率无关）；高度补一点(×1.25)多覆盖些钢牌面、夹钳定法向。
+    xs = [p[0] for p in corners_px]
+    ys = [p[1] for p in corners_px]
+    rcx = (min(xs) + max(xs)) * 0.5 / cw
+    rcy = (min(ys) + max(ys)) * 0.5 / ch
+    rw = max(0.12, (max(xs) - min(xs)) / cw * 0.95)
+    rh = max(0.12, (max(ys) - min(ys)) / ch * 1.25)
+    pts = backproject_roi(depth, Kd, (rcx, rcy, rw, rh))
     plane = ransac_plane(pts)
     tilt = math.degrees(math.acos(min(1.0, abs(plane["n"][2]))))  # 原厂 tilt=acos(|nz|)
     if tilt > MAX_TILT_DEG:
         return None, dict(err="tilt>%g (=%.1f)" % (MAX_TILT_DEG, tilt))
     right, up = plane_basis(plane)
 
-    dets = det.detect(color)
-    if not dets:
-        return None, dict(err="no obb")
-    d = max(dets, key=lambda x: x["score"])
-    c = d["corners"]  # TL,TR,BR,BL（color px）
-    corners_px = _poly(c)
-    # 4 角点 → 平面内 2D（相对 centroid）
+    # ③ OBB 4 角 → 平面内 2D（相对 centroid）
     ab = np.array([ray_plane_inplane(u, v, Kc, plane, right, up)[0] for (u, v) in corners_px], np.float32)
     tl, tr, br, bl = ab
     width_mm = (np.linalg.norm(tr - tl) + np.linalg.norm(br - bl)) * 0.5
@@ -137,7 +151,20 @@ def render(frame, out_w=OUT_W, out_h=OUT_H, mx=0.08, my=0.22):
     px0, py0 = mx * out_w, my * out_h
     px1, py1 = (1 - mx) * out_w, (1 - my) * out_h
     out_corners = np.array([[px0, py0], [px1, py0], [px1, py1], [px0, py1]], np.float32)  # TL,TR,BR,BL
-    H = cv2.getPerspectiveTransform(out_corners, ab)  # 输出像素 → 平面内 (a,b)
+    # 把 OBB 在平面内的 4 角(透视梯形/平行四边形)重建成**真矩形**(垂直边)：用平均长轴定向 + 垂直轴，
+    # 这样输出↔平面是保角相似(旋转+各向异性缩放)而非含 shear 的一般单应 → 字符正(不再斜体状)。
+    tl, tr, br, bl = ab
+    c = (tl + tr + br + bl) * 0.25
+    xdir = (tr - tl) + (br - bl)
+    xdir = xdir / (np.linalg.norm(xdir) + 1e-9)        # 平面内文字水平方向(长轴)
+    ydir = np.array([-xdir[1], xdir[0]], np.float64)   # 平面内垂直 x 轴
+    if np.dot(bl - tl, ydir) < 0:
+        ydir = -ydir                                    # 指向"下"(与 tl→bl 一致)
+    hw = (np.linalg.norm(tr - tl) + np.linalg.norm(br - bl)) * 0.25
+    hh = (np.linalg.norm(bl - tl) + np.linalg.norm(br - tr)) * 0.25
+    rect = np.array([c - hw * xdir - hh * ydir, c + hw * xdir - hh * ydir,
+                     c + hw * xdir + hh * ydir, c - hw * xdir + hh * ydir], np.float32)  # TL,TR,BR,BL 真矩形
+    H = cv2.getPerspectiveTransform(out_corners, rect)  # 输出像素 → 平面内 (a,b)，保角无 shear
     xs, ys = np.meshgrid(np.arange(out_w), np.arange(out_h))  # 列=x，行=y
     g = np.stack([xs.ravel(), ys.ravel(), np.ones(xs.size)], 0)
     m = H @ g

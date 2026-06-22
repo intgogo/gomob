@@ -80,6 +80,7 @@ func Restore(
 	}
 	defer func() { _ = rect.Release() }()
 
+	// 二值签名仅用于质量闸(墨水占比)+ 未来 OCR；**最终返回的是彩色正交还原图 rect**（用户要彩色，非二值）。
 	sig, ink := signatureBinarize(rect)
 	defer func() { _ = sig.Release() }()
 
@@ -103,7 +104,7 @@ func Restore(
 		return nil, meta, ErrLowQuality
 	}
 
-	png, err := gocv.IMEncode(gocv.PNGFileExt, sig)
+	png, err := gocv.IMEncode(gocv.PNGFileExt, rect) // 彩色正交还原图（BGR）
 	if err != nil {
 		return nil, Meta{}, err
 	}

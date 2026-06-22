@@ -52,7 +52,32 @@ func buildFrame(
 	kd [4]float64, colorBGR gocv.Mat,
 	dets []Detection,
 ) (*frame, float64, error) {
-	pts := backprojectROI(depth, dw, dh, kd[0], kd[1], kd[2], kd[3], defaultROI)
+	if len(dets) == 0 {
+		return nil, 0, errors.New("未检测到 VIN OBB")
+	}
+	// 取 score 最大的 OBB（VIN 文字区）—— 先拿它，把平面拟合限到承印面。
+	best := dets[0]
+	for _, d := range dets[1:] {
+		if d.Score > best.Score {
+			best = d
+		}
+	}
+
+	// 只在 OBB 区(=钢牌承印面)拟合平面。中心 ROI 会把 strip 上下背景纳入→法向被污染→去透视不彻底→字斜。
+	// OBB 轴对齐 bbox 换算成 depth 分数 ROI（÷彩色分辨率，分数与分辨率无关）；高度补一点(×1.25)夹钳定法向。
+	cw := float64(colorBGR.Cols())
+	chh := float64(colorBGR.Rows())
+	minx, maxx := best.Corners[0][0], best.Corners[0][0]
+	miny, maxy := best.Corners[0][1], best.Corners[0][1]
+	for _, c := range best.Corners[1:] {
+		minx, maxx = math.Min(minx, c[0]), math.Max(maxx, c[0])
+		miny, maxy = math.Min(miny, c[1]), math.Max(maxy, c[1])
+	}
+	roi := [4]float64{
+		(minx + maxx) * 0.5 / cw, (miny + maxy) * 0.5 / chh,
+		math.Max(0.12, (maxx-minx)/cw*0.95), math.Max(0.12, (maxy-miny)/chh*1.25),
+	}
+	pts := backprojectROI(depth, dw, dh, kd[0], kd[1], kd[2], kd[3], roi)
 	if len(pts) < 100 {
 		return nil, 0, errors.New("深度有效点过少")
 	}
@@ -66,20 +91,11 @@ func buildFrame(
 	}
 	right, up := planeBasis(plane)
 
-	if len(dets) == 0 {
-		return nil, tilt, errors.New("未检测到 VIN OBB")
-	}
-	// 取 score 最大
-	best := dets[0]
-	for _, d := range dets[1:] {
-		if d.Score > best.Score {
-			best = d
-		}
-	}
-
-	// 彩色内参 = depth × (彩色宽/深度宽)，外参单位阵（restore_obb.py 同光路假设）。
-	s := float64(colorBGR.Cols()) / float64(dw)
-	kc := [4]float64{kd[0] * s, kd[1] * s, kd[2] * s, kd[3] * s}
+	// 彩色(HLSD8)内参：水平与深度 2× registered → fxc=2·fxd、cx/cy=2×；但 **fyc≠2·fyd**！
+	// 深度被重度竖直 binning(640×128, fy anamorphic)，彩色不是——实测彩色近方形像素 fyc≈fxc。
+	// 用 2·fyd 会留残余竖直透视→字符随拍摄倾角左右渐斜。真机 21 组实证 fyc=fxc 时倾角全≤2°。详见 finding 2026-06-22。
+	s := cw / float64(dw)
+	kc := [4]float64{kd[0] * s, kd[0] * s, kd[2] * s, kd[3] * s}
 
 	var ab [4][2]float64
 	for i, c := range best.Corners {
@@ -107,8 +123,30 @@ func render(f *frame) (gocv.Mat, error) {
 	px1, py1 := (1-marX)*OutW, (1-marY)*OutH
 	outCorners := [4][2]float64{{px0, py0}, {px1, py0}, {px1, py1}, {px0, py1}} // TL,TR,BR,BL
 
-	// H：输出像素 → 平面内 (a,b)（getPerspectiveTransform(out_corners, ab)）。
-	H, ok := perspectiveTransform(outCorners, f.ab)
+	// 把 OBB 平面内 4 角(透视梯形/平行四边形)重建成**真矩形**(垂直边)：平均长轴定向 + 垂直轴，
+	// 输出↔平面为保角相似(旋转+各向异性缩放)而非含 shear 的一般单应 → 字符正。
+	tl, tr, br, bl := f.ab[0], f.ab[1], f.ab[2], f.ab[3]
+	cx2 := (tl[0] + tr[0] + br[0] + bl[0]) * 0.25
+	cy2 := (tl[1] + tr[1] + br[1] + bl[1]) * 0.25
+	xdx := (tr[0] - tl[0]) + (br[0] - bl[0])
+	xdy := (tr[1] - tl[1]) + (br[1] - bl[1])
+	xn := math.Hypot(xdx, xdy) + 1e-9
+	xdx, xdy = xdx/xn, xdy/xn
+	ydx, ydy := -xdy, xdx // 平面内垂直 x 轴
+	if (bl[0]-tl[0])*ydx+(bl[1]-tl[1])*ydy < 0 {
+		ydx, ydy = -ydx, -ydy // 指向"下"
+	}
+	hw := (dist2(tr, tl) + dist2(br, bl)) * 0.25
+	hh := (dist2(bl, tl) + dist2(br, tr)) * 0.25
+	rect := [4][2]float64{
+		{cx2 - hw*xdx - hh*ydx, cy2 - hw*xdy - hh*ydy},
+		{cx2 + hw*xdx - hh*ydx, cy2 + hw*xdy - hh*ydy},
+		{cx2 + hw*xdx + hh*ydx, cy2 + hw*xdy + hh*ydy},
+		{cx2 - hw*xdx + hh*ydx, cy2 - hw*xdy + hh*ydy},
+	}
+
+	// H：输出像素 → 平面内 (a,b) 真矩形（保角无 shear）。
+	H, ok := perspectiveTransform(outCorners, rect)
 	if !ok {
 		return gocv.Mat{}, errors.New("单应求解失败（四角退化）")
 	}

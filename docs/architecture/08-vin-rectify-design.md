@@ -376,4 +376,8 @@ JNI/契约/采集/UI 已接通，第一光用 eYs3D 自带 L' 彩色 + `R|t=单�
    - `handler.go ensureVinObbModel` 优先复用启动期 loader 注册的 `VINOBB`（`h.models.Get`），仅纯本地无 registry 时才从 `VIN_OBB_MODEL`/默认 `.dev` 兜底。
    - `go build ./...` 绿、loader/restore `go vet` 净、HTTP 契约 httptest 仍 11/11（兜底未坏）。
    - **ops 播种**（infra-gated，需 MinIO+registry 在跑）：`scripts/seed-vinobb-model.sh`（mc 上传 onnx → `POST /admin/v1/models` kind=com → activate），再把 `VINOBB` 加进生产 `GOMOB_CVENGINE_MODEL_NAMES` 重启。
-   **待**：⑧ 真机 live 回线（拍 → 上传还原 → 确认 OCR → 回显；**VMASK 对二值还原签名的识别质量需真机验**，服务端 vin_restore 契约已真机数据验，device/infra-gated）。
+8. ✅ **真机 live 回线 + 正交还原订正（2026-06-22，真机 21 组）**：真机 2510DRK44C 拍→上传→还原→回显跑通（devserver 多次 200）。用户两条纠正已修（详 finding_vin_ortho_color_upright_2026-06-22）：
+   - **输出彩色正射图**（非二值签名）：`Restore` 返回 `render` 的彩色 BGR PNG；二值仅算墨水占比给质量闸。
+   - **字符端正**：原图 VIN 字本正、还原后左右渐斜=残余透视。根因① 彩色内参 `fyc` 错——深度竖直 binning anamorphic(`fy164/fx614`)，彩色近方形 `fyc=fxc`≠`2·fyd`；根因② 平面拟合取中心 ROI 纳入背景。改 **`fyc=fxc` + 只在 OBB 区拟合平面**（inlier 0.44-0.82→0.99-1.0、rms 8.4→4.4）→ 21 组竖笔倾角全≤2°。
+   - 验收：cap_021 live 实测 ok/ink8.4%/tilt16.6°/彩色 260×1200×3 端正；harness 重合 0.51-1.01%；真机重拍截图确认彩色端正可读。
+   **待**：⑥ OCR 段 VMASK 真机验（dev 栈 0 模型/0 字形库，缺 VMASK 阻断）。
