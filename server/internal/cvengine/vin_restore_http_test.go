@@ -81,6 +81,8 @@ func TestVinRestoreHTTPContract(t *testing.T) {
 				Height int     `json:"height"`
 				Tilt   float64 `json:"tilt_deg"`
 				NumDet int     `json:"num_det"`
+				Ink    float64 `json:"ink_ratio"`
+				Reason string  `json:"reject_reason"`
 			} `json:"data"`
 		}
 		if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
@@ -90,7 +92,8 @@ func TestVinRestoreHTTPContract(t *testing.T) {
 			t.Fatalf("%s envelope code=%d（期望 0）", name, env.Code)
 		}
 		if !env.Data.OK {
-			t.Logf("%s ok=false tilt=%.1f ndet=%d（>70° 判废，契约仍 200）", name, env.Data.Tilt, env.Data.NumDet)
+			t.Logf("%s ok=false 判废=%s tilt=%.1f 墨水=%.0f%% ndet=%d（契约仍 200）",
+				name, env.Data.Reason, env.Data.Tilt, env.Data.Ink*100, env.Data.NumDet)
 			continue
 		}
 		okCount++
@@ -105,7 +108,7 @@ func TestVinRestoreHTTPContract(t *testing.T) {
 			t.Fatalf("%s 还原图尺寸非法 %dx%d", name, env.Data.Width, env.Data.Height)
 		}
 		pngOK = true
-		t.Logf("%s ✓ ok PNG %dB %dx%d tilt=%.1f ndet=%d", name, len(png), env.Data.Width, env.Data.Height, env.Data.Tilt, env.Data.NumDet)
+		t.Logf("%s ✓ ok PNG %dB %dx%d tilt=%.1f 墨水=%.0f%% ndet=%d", name, len(png), env.Data.Width, env.Data.Height, env.Data.Tilt, env.Data.Ink*100, env.Data.NumDet)
 	}
 
 	if !pngOK {

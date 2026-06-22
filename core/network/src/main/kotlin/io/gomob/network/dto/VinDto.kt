@@ -45,6 +45,8 @@ data class VinRestoreResponse(
     val rms: Double = 0.0,
     @SerialName("med_z") val medZ: Double = 0.0,
     @SerialName("num_det") val numDet: Int = 0,
+    @SerialName("ink_ratio") val inkRatio: Double = 0.0,
+    @SerialName("reject_reason") val rejectReason: String = "",  // ok=false 判废原因：tilt_too_large / low_quality
     @SerialName("device_id") val deviceId: String = "",
     @SerialName("log_id") val logId: String = "",
 )

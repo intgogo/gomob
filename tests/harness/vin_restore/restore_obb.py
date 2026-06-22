@@ -15,25 +15,33 @@ MODEL = ".dev/vin_models/yolo-obb.onnx"
 MAX_TILT_DEG = 70.0  # 原厂硬门：承印面相对相机倾角 >70° 判废（restoreImageFlow 码 34）
 
 
+# 去阴影质量闸：归一后墨水占比 > 此值 = 噪声/坏采集（真实 VIN 字带稀疏 ~8-12%）。
+SIG_INK_MAX = 0.25
+
+
 def signature_binarize(bgr):
-    """原厂 GetSignature3G 真去阴影/二值化（逆向逐指令对齐）：cvtColor→adaptiveThreshold(GAUSSIAN,BINARY,
-       blockSize=131,C=15)→反相→erode(CROSS3)+dilate(RECT5)→连通域去小斑(minAreaRect 宽高都≤39 填黑)→
-       反相回正→morphologyEx CLOSE+OPEN(RECT3)。超大窗自适应阈值=去金属反光梯度，OCR 级前景。返回二值图(前景=黑0)。"""
+    """去阴影 + OCR 级二值化（鲁棒版，2026-06-21 真机 21 组实证重写）。
+
+    原厂 GetSignature3G 的 adaptiveThreshold(131,15) 在真机实测两处失效：① **极性假设固定**——刻字在不同
+    补光角度下可比底暗也可比底亮(镜面高光灌进刻槽)，固定 BINARY+反相会整片翻转(白字黑底)；② **固定边距怕低对比**
+    ——字-底差 < C 时整串丢字成碎片。改：双边降噪保边除微纹理 → **背景除法平照**(g÷大blur×180 拉平光照不均) →
+    全局 Otsu → **极性归一**(真实墨水稀疏,前景过半即反相) → 去小斑 → 形态学。返回二值图(前景=黑0)。
+    """
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    b = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 131, 15)
-    b = cv2.bitwise_not(b)                                            # 笔画→白，便于连通域
-    b = cv2.erode(b, cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3)))
-    b = cv2.dilate(b, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)))
-    cnts, _ = cv2.findContours(b, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    for c in cnts:                                                    # 去小斑：宽高都≤39 填黑
+    d = cv2.bilateralFilter(gray, 9, 60, 60)                          # 保边降噪，除钢板微纹理
+    bg = cv2.GaussianBlur(d, (0, 0), 21)                              # 估局部光照
+    norm = np.clip(d.astype(np.float32) / (bg.astype(np.float32) + 1) * 180, 0, 255).astype(np.uint8)
+    _, fg = cv2.threshold(norm, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)  # fg=白=暗于底(假定刻字)
+    if (fg > 0).mean() > 0.5:                                         # 极性归一：墨水稀疏，前景过半=刻字偏亮→反相
+        fg = cv2.bitwise_not(fg)
+    cnts, _ = cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    for c in cnts:                                                    # 去小斑：宽高都≤39
         (_, _), (w, h), _ = cv2.minAreaRect(c)
         if int(w) <= 39 and int(h) <= 39:
-            cv2.drawContours(b, [c], -1, 0, -1)
-    b = cv2.bitwise_not(b)                                            # 回正：前景=黑
-    k3 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    b = cv2.morphologyEx(b, cv2.MORPH_CLOSE, k3)
-    b = cv2.morphologyEx(b, cv2.MORPH_OPEN, k3)
-    return b
+            cv2.drawContours(fg, [c], -1, 0, -1)
+    fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2)))
+    fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
+    return cv2.bitwise_not(fg)                                        # 回正：前景=黑
 
 
 def picshadow_crop(binimg, pad=5):
@@ -170,6 +178,13 @@ def main():
         r = render(f)
         sig = signature_binarize(r)
         cv2.imwrite(os.path.join(outdir, name + "_obb.png"), r)
+        # 质量闸：归一后墨水占比过高 = 噪声/坏采集（框偏/糊/低对比无法提字），判废不进重合分析。
+        # _obb 仍写盘便于排查；_sig 只对通过质量闸的写（analyze 只看 _sig）。
+        ink = float((sig == 0).mean())
+        if ink > SIG_INK_MAX:
+            print("  ↳ %s 判废：墨水占比 %.0f%% > %.0f%%（噪声/坏采集，对准钢牌重拍）"
+                  % (name, ink * 100, SIG_INK_MAX * 100))
+            continue
         cv2.imwrite(os.path.join(outdir, name + "_sig.png"), sig)
         rows.append((name, cv2.cvtColor(sig, cv2.COLOR_GRAY2BGR)))
     if rows:

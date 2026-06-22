@@ -346,8 +346,14 @@ JNI/契约/采集/UI 已接通，第一光用 eYs3D 自带 L' 彩色 + `R|t=单�
    → **原厂 GetSignature3G 去阴影二值化(`adaptiveThreshold` GAUSSIAN/BINARY/blockSize=131/C=15 + erode(CROSS3)/dilate(RECT5)/去小斑/CLOSE+OPEN)**。
    `analyze.py` 用 EUCLIDEAN ECC 测同 VIN 几何残余(主指标)。**实测结论=正常：同 VIN 各张几何重合，中位残余 0.44~0.48%(4~5px/1000)、旋转<0.6°，
    六张叠加成锐利可读 `☆LA99FRP32G0LTH013☆`**；板2 强反光被超大窗自适应阈值根除→清晰可读。
-2. ✅ **原厂真去阴影已落定**：`GetSignature3G` 的 `adaptiveThreshold(blockSize=131,C=15)` 是唯一去阴影/二值化算子(非 CLAHE/gamma)，
-   blockSize 远大于笔画→去金属反光梯度。`picshadow`=黑像素投影内容裁剪(留作 Go 端口 `picshadow_crop` 参照；harness 主锚定用 OBB 单应框已排星，故未叠用)。
+2. ⚠️→✅ **去阴影二值化真机订正 + 鲁棒重写（2026-06-21，真机 21 组实测）**：原 `GetSignature3G` 的 `adaptiveThreshold(131,15)`
+   在另一次真机采集（同钢板不同补光/距离）**两处失效**：① **极性反转**——刻字在该光照下镜面高光灌进刻槽→比底**亮**，固定
+   BINARY+反相整片翻成**白字黑底**（墨水占比 91%，端上显示"还原图有问题"）；② **固定边距怕低对比**——字-底差 < C 时整串丢字成碎片。
+   **新法**（`signature_binarize`/`signatureBinarize` 两端同步）：bilateral(9,60,60) 保边降噪除钢板微纹理 → **背景除法平照**
+   `norm=clip(d÷(GaussianBlur σ21 +1)×180)` 拉平光照不均 → 全局 **Otsu** → **极性归一**（真实墨水稀疏 ~8-12%，前景过半即反相）
+   → 去小斑 → OPEN/CLOSE。**质量闸**：归一后墨水占比 > `SigInkMax=0.25` 判废（`ErrLowQuality`→`ok:false`+`reject_reason=low_quality`），
+   端侧提示重拍而非显垃圾。实测 21 组：14 组好采集出干净可读签名（墨水 8-12%，含原 91% 垃圾的 6 组 live 转 8-9%），7 组坏采集（框偏/糊/低对比/板2 反光）正确判废。
+   `picshadow`=黑像素投影内容裁剪(留作 Go 端口 `picshadow_crop` 参照；harness 主锚定用 OBB 单应框已排星，故未叠用)。
 3. ✅ **Go cvengine 端口已落地**（`server/internal/cvengine/restore/` + `POST /cv/ocr/v1/vin_restore`）：纯 Go 无新 cgo——
    OBB 走 `gocv.CreateORTCom` 取原始 [1,6,8400] 张量 Go 侧解码（新增 `gocv.RunCom` 桥 + core `KindCom`）；平面 `z=ax+by+d` 用 `gocv.Solve`
    (SVD-free)；四角单应 8×8 `Solve`（`GetPerspectiveTransform` 仅整型）；去阴影 `adaptiveThreshold(131,15)`。`go build` 绿；

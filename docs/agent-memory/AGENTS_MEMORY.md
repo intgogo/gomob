@@ -41,6 +41,7 @@
 
 - [**重建主线 2026-05-07 重大方向变更**](finding_multiview_rgbd_pivot_2026-05-07.md) — 实时 SLAM → 多视角 RGBD 配准 + 端云融合；权威设计在 04b；既有 native 沉淀阶段 3 复用。**新工作不要扩 04 路线**。
 - [**VIN 还原全量上服务端 2026-06-18**](finding_vin_rectify_serverside_calib_2026-06-18.md) — 订正:真还原管线在libcreator_jni.so(restoreImageFlow:YOLO OBB+RANSAC平面+单应+去阴影+后处理);决策全量上Go cvengine原厂全保真,端侧只拍存传;首批11张数据在.dev/vin_captures。
+- [**VIN 去阴影真机订正:极性反转+低对比 2026-06-21**](finding_vin_signature_binarize_realdevice_2026-06-21.md) — 原厂 adaptiveThreshold(131,15) 真机失效(刻字偏亮→整片反相白字黑底/低对比丢字);改 双边+背景除法平照+Otsu+极性归一(墨水稀疏前景过半即反相)+墨水占比>0.25质量闸判废;两端同步。
 - [**车辆外廓+VIN 端到端拉通 2026-06-02**](finding_scan_vin_wiring_2026-06-02.md) — 两 mock 屏重写接真底座；bundle 契约=rgbd_bundle.py；新增 /v1/scans GLB 流端点;cvengine 经 devserver 反代+服务端 HMAC(密钥不下发);雷点:Kotlin 注释嵌套/拦截器缓冲二进制 OOM。
 - [**激光扫描设备集成 2026-06-03**](finding_laser_scanner_integration_2026-06-03.md) — 车辆外廓页加激光设备(切 berxel/激光);两网络单元 .101/.102 迁 /root/lilw/lidar 几何;Kotlin 网络+native 几何+端侧融合,不引 PCL(复用 IcpRegister);M8.1 已提交 worktree feat/laser-scan-integration。
 - [**JCHY 测量/建模层逆向 2026-06-04**](finding_jchy_measurement_layer_re_2026-06-04.md) — 漏掉的「应用软件」逆向(JCHY_simple_3.0.0,带完整 PDB):采集层之上的测量/建模。26 车型+carType 表已解密+8 阶段管线(PCL 聚类+OBB+局部 PointSIFT)+测量字典(LWH/轴距/罐体三段/栏板/护栏/容积)。gomob 全缺此层。完整架构 docs/architecture/16。

@@ -240,8 +240,15 @@ class VinCaptureViewModel @Inject constructor(
                         _captureMsg.value = "服务端还原 ✓ 第 $seq 张｜倾角 %.0f° 内点 %.0f%% 检出 %d（点确认识别）".format(
                             r.tiltDeg, r.inlierRate * 100, r.numDet)
                     } else {
-                        _captureMsg.value =
-                            "服务端判废：倾角 %.0f°>70°（请正对钢牌再拍）｜检出 %d，已存第 $seq 张".format(r.tiltDeg, r.numDet)
+                        // 判废分原因：过斜 vs 噪声/坏采集（对准/距离/反光），给针对性重拍提示。
+                        _captureMsg.value = when (r.rejectReason) {
+                            "tilt_too_large" ->
+                                "判废：承印面过斜 %.0f°（>70°），请正对钢牌再拍｜已存第 $seq 张".format(r.tiltDeg)
+                            "low_quality" ->
+                                "判废：还原噪声大 %.0f%%（对准钢牌、调距离/避反光重拍）｜已存第 $seq 张".format(r.inkRatio * 100)
+                            else ->
+                                "判废：还原不可用（检出 %d），请重拍｜已存第 $seq 张".format(r.numDet)
+                        }
                     }
                 } catch (e: Throwable) {
                     _captureMsg.value = "上传还原失败（已存第 $seq 张可离线重试）：${e.message}"

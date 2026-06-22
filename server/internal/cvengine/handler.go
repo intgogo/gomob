@@ -1067,6 +1067,8 @@ type vinRestoreResp struct {
 	RMS          float64 `json:"rms"`
 	MedZ         float64 `json:"med_z"`
 	NumDet       int     `json:"num_det"`
+	InkRatio     float64 `json:"ink_ratio"`
+	RejectReason string  `json:"reject_reason,omitempty"` // ok=false 时判废原因：tilt_too_large / low_quality
 	DeviceID     string  `json:"device_id,omitempty"`
 	LogID        string  `json:"log_id"`
 }
@@ -1136,13 +1138,21 @@ func (h *Handler) VinRestore(w http.ResponseWriter, r *http.Request) {
 
 	png, meta, rerr := restore.Restore(h.models, vinObbTag, rgb, depth, dw, dh, fx, fy, cx, cy)
 	if rerr != nil {
-		if rerr == restore.ErrTiltTooLarge {
+		// tilt 过斜 / 噪声坏采集 → 判废（HTTP 200 + ok=false + 原因），端侧提示重拍，不算系统错。
+		if rerr == restore.ErrTiltTooLarge || rerr == restore.ErrLowQuality {
+			reason := "tilt_too_large"
+			if rerr == restore.ErrLowQuality {
+				reason = "low_quality"
+			}
 			httpx.OK(w, vinRestoreResp{
-				OK:       false,
-				TiltDeg:  meta.TiltDeg,
-				NumDet:   meta.NumDet,
-				DeviceID: deviceID,
-				LogID:    logID,
+				OK:           false,
+				TiltDeg:      meta.TiltDeg,
+				NumDet:       meta.NumDet,
+				InlierRate:   meta.InlierRate,
+				InkRatio:     meta.InkRatio,
+				RejectReason: reason,
+				DeviceID:     deviceID,
+				LogID:        logID,
 			})
 			return
 		}
@@ -1164,6 +1174,7 @@ func (h *Handler) VinRestore(w http.ResponseWriter, r *http.Request) {
 		RMS:          meta.RMS,
 		MedZ:         meta.MedZ,
 		NumDet:       meta.NumDet,
+		InkRatio:     meta.InkRatio,
 		DeviceID:     deviceID,
 		LogID:        logID,
 	})

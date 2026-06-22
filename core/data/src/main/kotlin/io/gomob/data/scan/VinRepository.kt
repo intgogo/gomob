@@ -45,6 +45,9 @@ data class VinRestoreOutcome(
     val rms: Double,
     val medZ: Double,
     val numDet: Int,
+    val inkRatio: Double,
+    /** ok=false 判废原因：tilt_too_large（承印面过斜）/ low_quality（噪声坏采集）/ 空（成功）。 */
+    val rejectReason: String,
     val logId: String,
 )
 
@@ -138,6 +141,8 @@ class VinRepository @Inject constructor(
             rms = resp.rms,
             medZ = resp.medZ,
             numDet = resp.numDet,
+            inkRatio = resp.inkRatio,
+            rejectReason = resp.rejectReason,
             logId = resp.logId,
         )
     }

@@ -19,10 +19,14 @@ type Meta struct {
 	OutW       int     `json:"out_w"`
 	OutH       int     `json:"out_h"`
 	NumDet     int     `json:"num_det"`
+	InkRatio   float64 `json:"ink_ratio"`
 }
 
 // ErrTiltTooLarge 承印面倾角超过 MaxTiltDeg（原厂硬门，码 34）。
 var ErrTiltTooLarge = errors.New("tilt 超过门限（承印面过斜）")
+
+// ErrLowQuality 去阴影后墨水占比超 SigInkMax —— 噪声/坏采集（框偏/糊/低对比无法提字），判废让端侧重拍。
+var ErrLowQuality = errors.New("还原签名噪声过大（坏采集，对准钢牌重拍）")
 
 // Restore —— VIN 数码拓印还原主入口（端口自 restore_obb.py 主链）。
 //
@@ -76,16 +80,10 @@ func Restore(
 	}
 	defer func() { _ = rect.Release() }()
 
-	sig := signatureBinarize(rect)
+	sig, ink := signatureBinarize(rect)
 	defer func() { _ = sig.Release() }()
 
-	png, err := gocv.IMEncode(gocv.PNGFileExt, sig)
-	if err != nil {
-		return nil, Meta{}, err
-	}
-
 	meta := Meta{
-		OK:         true,
 		TiltDeg:    f.tilt,
 		WidthMM:    f.width,
 		HeightMM:   f.height,
@@ -96,6 +94,19 @@ func Restore(
 		OutW:       OutW,
 		OutH:       OutH,
 		NumDet:     len(dets),
+		InkRatio:   ink,
 	}
+
+	// 质量闸：墨水占比过高 = 噪声/坏采集（框偏/糊/低对比），判废让端侧重拍，不返垃圾图。
+	if ink > SigInkMax {
+		meta.OK = false
+		return nil, meta, ErrLowQuality
+	}
+
+	png, err := gocv.IMEncode(gocv.PNGFileExt, sig)
+	if err != nil {
+		return nil, Meta{}, err
+	}
+	meta.OK = true
 	return png, meta, nil
 }
