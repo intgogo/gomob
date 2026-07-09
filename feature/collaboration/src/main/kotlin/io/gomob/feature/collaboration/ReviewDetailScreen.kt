@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -27,6 +28,8 @@ import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.HairlineCard
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
+import io.gomob.designsystem.glass.GlassHeaderScaffold
+import io.gomob.designsystem.glass.glassChrome
 import io.gomob.designsystem.theme.Gomob
 
 // TODO(demo-data R1): 整个复核详情为静态占位假数据，未按 reviewId 拉取真实工单，也未接裁决 API。
@@ -50,20 +53,70 @@ private val ANOMALIES = listOf(
 
 @Composable
 fun ReviewDetailRoute(reviewId: String, onBack: () -> Unit) {
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        BackHeader(
-            title = "抽查复核",
-            onBack = onBack,
-            eyebrow = "工单 · $reviewId",
-            trailing = { StatusTag(text = "待复核", tone = StatusTone.Warn, showDot = true) },
-        )
-
+    val scrollState = rememberScrollState()
+    GlassHeaderScaffold(
+        scrollState = scrollState,
+        header = {
+            BackHeader(
+                title = "抽查复核",
+                onBack = onBack,
+                eyebrow = "工单 · $reviewId",
+                trailing = { StatusTag(text = "待复核", tone = StatusTone.Warn, showDot = true) },
+            )
+        },
+        overlay = { _ ->
+            // 三按钮吸底玻璃动作栏 — 结果正确 / 结果错误 / 跳过
+            Row(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .glassChrome(topEdge = true)
+                    .navigationBarsPadding()
+                    .padding(Gomob.spacing.s16),
+                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+            ) {
+                // TODO(demo-data R1): 三个裁决按钮尚未接复核裁决提交接口；当前点击仅提示“未实现”，
+                // 不做静默无效操作。终态应提交 (reviewId, 裁决结果) 到后端并返回上一页。
+                val context = LocalContext.current
+                val notImplemented = {
+                    Toast.makeText(context, "复核裁决暂未实现", Toast.LENGTH_SHORT).show()
+                }
+                DecisionButton(
+                    modifier = Modifier.weight(1f),
+                    text = "结果正确",
+                    fill = Gomob.colors.okSoft,
+                    fg = Gomob.colors.ok,
+                    onClick = notImplemented,
+                )
+                DecisionButton(
+                    modifier = Modifier.weight(1f),
+                    text = "结果错误",
+                    fill = Gomob.colors.dangerSoft,
+                    fg = Gomob.colors.danger,
+                    onClick = notImplemented,
+                )
+                DecisionButton(
+                    modifier = Modifier.weight(1f),
+                    text = "跳过",
+                    fill = Gomob.colors.bg2,
+                    fg = Gomob.colors.fg2,
+                    onClick = notImplemented,
+                )
+            }
+        },
+    ) { padding ->
         Column(
             Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s12),
+                .fillMaxSize()
+                .verticalScroll(scrollState)
+                // scaffold padding 并进内容 padding；底部再避让吸底动作栏(touchMin + 上下 s16)
+                .padding(
+                    start = Gomob.spacing.s16,
+                    end = Gomob.spacing.s16,
+                    top = padding.calculateTopPadding() + Gomob.spacing.s12,
+                    bottom = padding.calculateBottomPadding() + Gomob.spacing.s12 +
+                        Gomob.spacing.touchMin + Gomob.spacing.s16 * 2,
+                ),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
             // 周日历
@@ -144,43 +197,6 @@ fun ReviewDetailRoute(reviewId: String, onBack: () -> Unit) {
             ) {
                 Text("车架号图 · 多张辅助图", style = Gomob.type.bodySm, color = Gomob.colors.fg3)
             }
-        }
-
-        // 三按钮 — 结果正确 / 结果错误 / 跳过
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .background(Gomob.colors.bg0)
-                .padding(Gomob.spacing.s16),
-            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-        ) {
-            // TODO(demo-data R1): 三个裁决按钮尚未接复核裁决提交接口；当前点击仅提示“未实现”，
-            // 不做静默无效操作。终态应提交 (reviewId, 裁决结果) 到后端并返回上一页。
-            val context = LocalContext.current
-            val notImplemented = {
-                Toast.makeText(context, "复核裁决暂未实现", Toast.LENGTH_SHORT).show()
-            }
-            DecisionButton(
-                modifier = Modifier.weight(1f),
-                text = "结果正确",
-                fill = Gomob.colors.okSoft,
-                fg = Gomob.colors.ok,
-                onClick = notImplemented,
-            )
-            DecisionButton(
-                modifier = Modifier.weight(1f),
-                text = "结果错误",
-                fill = Gomob.colors.dangerSoft,
-                fg = Gomob.colors.danger,
-                onClick = notImplemented,
-            )
-            DecisionButton(
-                modifier = Modifier.weight(1f),
-                text = "跳过",
-                fill = Gomob.colors.bg2,
-                fg = Gomob.colors.fg2,
-                onClick = notImplemented,
-            )
         }
     }
 }

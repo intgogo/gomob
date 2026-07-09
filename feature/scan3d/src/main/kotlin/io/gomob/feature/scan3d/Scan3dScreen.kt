@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -41,6 +42,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.designsystem.component.ScreenHeader
+import io.gomob.designsystem.glass.GlassHeaderScaffold
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.nativebridge.berxel.BerxelDeviceState
@@ -58,15 +60,24 @@ fun Scan3dRoute(
 ) {
     val ui by vm.uiState.collectAsStateWithLifecycle()
 
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        Scan3dHeader(
-            state = ui,
-            onOpenDepthCamera = onOpenDepthCamera,
-            onOpenSonixDebug = onOpenSonixDebug,
-        )
+    val listState = rememberLazyListState()
+    GlassHeaderScaffold(
+        listState = listState,
+        header = {
+            Scan3dHeader(
+                state = ui,
+                onOpenDepthCamera = onOpenDepthCamera,
+                onOpenSonixDebug = onOpenSonixDebug,
+            )
+        },
+    ) { padding ->
         LazyColumn(
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            contentPadding = PaddingValues(bottom = Gomob.spacing.s28),
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                top = padding.calculateTopPadding(),
+                bottom = padding.calculateBottomPadding() + Gomob.spacing.s28,
+            ),
         ) {
             item {
                 ActionTilePair(

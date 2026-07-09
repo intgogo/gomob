@@ -13,6 +13,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import io.gomob.designsystem.glass.LocalGlassHeader
 import io.gomob.designsystem.motion.fixedDuringPageDrag
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
@@ -32,7 +33,15 @@ fun BackHeader(
     modifier: Modifier = Modifier,
     trailing: @Composable (() -> Unit)? = null,
 ) {
-    Column(modifier.fixedDuringPageDrag().fillMaxWidth().background(Gomob.colors.bg0)) {
+    val feedbackTrigger = LocalFeedbackTitleLongPress.current
+    // 在 GlassHeaderScaffold 内由玻璃层画底；独立使用时保持 bg0 实底
+    val inGlass = LocalGlassHeader.current
+    Column(
+        modifier
+            .fixedDuringPageDrag()
+            .fillMaxWidth()
+            .then(if (inGlass) Modifier else Modifier.background(Gomob.colors.bg0)),
+    ) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -57,6 +66,13 @@ fun BackHeader(
                 eyebrow = eyebrow,
                 modifier = Modifier
                     .weight(1f)
+                    .then(
+                        if (feedbackTrigger != null) {
+                            Modifier.feedbackTitleLongPress(title, feedbackTrigger)
+                        } else {
+                            Modifier
+                        },
+                    )
                     .padding(start = Gomob.spacing.s4, end = Gomob.spacing.s12),
             )
             if (trailing != null) trailing()

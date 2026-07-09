@@ -15,10 +15,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.systemBars
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -89,13 +86,10 @@ class MainActivity : ComponentActivity() {
                 )
             }
             GomobTheme(darkTheme = darkTheme, colorScheme = colorScheme) {
-                val appFrameModifier = if (systemBarsPaddingRequired) {
-                    Modifier
-                        .fillMaxSize()
-                        .windowInsetsPadding(WindowInsets.systemBars)
-                } else {
-                    Modifier.fillMaxSize()
-                }
+                // 真 edge-to-edge：不再全局吃 systemBars —— 玻璃 TabBar / Header 延伸到
+                // 系统栏底下，各屏经 GlassHeaderScaffold / TabBar 自己处理 inset。
+                // systemBarsPaddingRequired 仅保留"视频沉浸页"语义，驱动状态栏图标配色。
+                val appFrameModifier = Modifier.fillMaxSize()
                 LaunchedEffect(
                     launchBackdropVisible,
                     launchBackdropMayHide,

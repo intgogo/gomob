@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.designsystem.component.BackHeader
+import io.gomob.designsystem.glass.GlassHeaderScaffold
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.nativebridge.camera.CameraSourceState
@@ -65,7 +66,7 @@ const val SCAN_VEHICLE_ROUTE = "scan3d/vehicle"
 fun VehicleContourScanRoute(
     onBack: () -> Unit,
 ) {
-    // 设备模式（M8'）：顶栏右上角段控切换。激光 = 服务端瘦客户端三云页；相机 = 现有 Berxel 界面。
+    // 设备模式：顶栏右上角下拉选切换。3D 工位（激光）= 服务端瘦客户端点云页；3D 相机 = 现有 Berxel 界面。
     // 各自子屏独立持有自己的 ViewModel（berxel 相机仅在相机模式才初始化，避免无谓连相机）。
     var mode by rememberSaveable { mutableStateOf(ScanDeviceMode.Berxel) }
     val switcher = @Composable { DeviceSwitcher(mode = mode, onSelect = { mode = it }) }
@@ -90,15 +91,19 @@ private fun BerxelScanScreen(
     val capturing by vm.capturing.collectAsStateWithLifecycle()
     val deviceState by vm.deviceState.collectAsStateWithLifecycle()
 
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        BackHeader(
-            title = "车辆外廓扫描",
-            eyebrow = "三维扫描",
-            onBack = onBack,
-            // 右上角固定为设备切换段控（激光/相机一致）；相机模式不再叠加 0/8 拍照计数。
-            trailing = { switcher() },
-        )
-        Box(Modifier.weight(1f).fillMaxWidth()) {
+    // 玻璃 header 骨架；内容是高度自适应布局 + 吸底拍摄栏，整体避让不穿越（规则 3）。
+    GlassHeaderScaffold(
+        header = {
+            BackHeader(
+                title = "车辆外廓扫描",
+                eyebrow = "三维扫描",
+                onBack = onBack,
+                // 右上角固定为设备下拉选（3D 工位/3D 相机一致）；相机模式不再叠加 0/8 拍照计数。
+                trailing = { switcher() },
+            )
+        },
+    ) { padding ->
+        Box(Modifier.fillMaxSize().padding(padding)) {
             when (val s = state) {
                 is VehicleScanState.Completed -> CompletedPanel(state = s, onRestart = vm::restart)
                 VehicleScanState.Uploading, VehicleScanState.Fusing ->

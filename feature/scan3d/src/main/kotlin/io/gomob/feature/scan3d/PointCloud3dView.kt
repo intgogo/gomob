@@ -848,7 +848,9 @@ internal class PointCloudSurfaceView(
         )
     }
 
-    // ───── 漫游对外接口（RoamAnnotationScreen 调用） ─────
+    // ───── 第一视角漫游对外接口 ─────
+    // 注：原调用方（漫游标注屏）已随「工位界面重做」移除，当前无端侧调用者；作为点云视图的通用漫游能力
+    // 暂保留（roamMode 默认 false，运行期完全惰性、不影响主渲染）。后续若确认不再用可整段清理。
 
     /**
      * 进入第一视角漫游：落在给定起点(centerU,centerV)，眼高 eyeHeight 为离地高度。

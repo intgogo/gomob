@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Text
@@ -50,6 +51,7 @@ import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.HairlineCard
 import io.gomob.designsystem.component.SettingRow
 import io.gomob.designsystem.component.SettingRowDivider
+import io.gomob.designsystem.glass.GlassHeaderScaffold
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.nativebridge.NativeBridge
 import io.gomob.nativebridge.berxel.BerxelDeviceState
@@ -215,12 +217,18 @@ fun SonixDebugRoute(onBack: () -> Unit) {
         }
     }
 
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        BackHeader(title = "Sonix ASIC 调试", eyebrow = "M1.6.5/6 · 验证 XU vendor 协议", onBack = onBack)
-
+    val listState = rememberLazyListState()
+    GlassHeaderScaffold(
+        listState = listState,
+        header = { BackHeader(title = "Sonix ASIC 调试", eyebrow = "M1.6.5/6 · 验证 XU vendor 协议", onBack = onBack) },
+    ) { padding ->
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(top = Gomob.spacing.s12, bottom = Gomob.spacing.s28),
+            contentPadding = PaddingValues(
+                top = padding.calculateTopPadding() + Gomob.spacing.s12,
+                bottom = padding.calculateBottomPadding() + Gomob.spacing.s28,
+            ),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
             item {

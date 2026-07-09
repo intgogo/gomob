@@ -17,9 +17,11 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -29,7 +31,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -44,6 +45,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.data.scan.VinResult
 import io.gomob.designsystem.component.BackHeader
+import io.gomob.designsystem.glass.GlassHeaderScaffold
+import io.gomob.designsystem.glass.glassChrome
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 
@@ -51,7 +54,7 @@ import io.gomob.designsystem.theme.Gomob
  * VIN 数码拓印（按原设计还原多面板版式）。
  *
  * 顶部两个横条 = 真实相机帧：彩色图（[VinCaptureViewModel.colorPreview]）+ 深度图（[VinCaptureViewModel.depthPreview]）。
- * 拓印纸面 = 服务端原厂全保真还原签名（拍照→上传→还原回显）；单字符比对 / 汇总结论 = 真实 vin_pipeline OCR（点「确认」识别）。
+ * 拓印纸面 = 服务端原厂式彩色正射还原图（拍照→上传→还原回显）；单字符比对 / 汇总结论 = 真实 vin_pipeline OCR（点「确认」识别）。
  */
 @Composable
 fun ScanCaptureRoute(
@@ -65,18 +68,12 @@ fun ScanCaptureRoute(
     val captureMsg by vm.captureMsg.collectAsStateWithLifecycle()
     val vinState by vm.state.collectAsStateWithLifecycle()
 
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        BackHeader(title = "VIN 数码拓印", eyebrow = "三维扫描", onBack = onBack)
-        Column(Modifier.weight(1f).fillMaxWidth()) {
-            LazyColumn(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                contentPadding = PaddingValues(bottom = 8.dp),
-            ) {
-                item { VinDepthPane(depthBmp = depthBmp) }
-                item { VinColorPane(colorBmp = colorBmp) }
-                item { VinRubbing(rubbing = rubbing, captureMsg = captureMsg, processing = capturing, vinState = vinState) }
-                item { Spacer(Modifier.height(8.dp)) }
-            }
+    val listState = rememberLazyListState()
+    GlassHeaderScaffold(
+        listState = listState,
+        header = { BackHeader(title = "VIN 数码拓印", eyebrow = "三维扫描", onBack = onBack) },
+        overlay = { _ ->
+            // 吸底拍摄栏 → 玻璃吸底条（规则 4）：内容从底下滚过透出模糊背景，导航栏 inset 吃在玻璃内侧。
             VinCaptureBar(
                 capturing = capturing,
                 recognizing = vinState is VinCaptureState.Recognizing,
@@ -84,13 +81,35 @@ fun ScanCaptureRoute(
                 onShutter = vm::capture,
                 onRetake = vm::retake,
                 onConfirm = vm::recognize,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .glassChrome(topEdge = true)
+                    .navigationBarsPadding(),
             )
+        },
+    ) { padding ->
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                top = padding.calculateTopPadding(),
+                // 底部预留吸底拍摄栏高度，末尾内容不被压住
+                bottom = padding.calculateBottomPadding() + 98.dp,
+            ),
+        ) {
+            item { VinDepthPane(depthBmp = depthBmp) }
+            item { VinColorPane(colorBmp = colorBmp) }
+            item { VinRubbing(rubbing = rubbing, captureMsg = captureMsg, processing = capturing, vinState = vinState) }
+            item { Spacer(Modifier.height(8.dp)) }
         }
     }
 }
 
 // 面板固定 3.5:1：原帧约 5:1，Crop 按高填满、左右多余视野裁掉（只取中间需要的部分，不留黑边）。
 private const val PANE_ASPECT = 3.5f
+// 服务端还原宽度固定、高度按原厂 metric 比例动态算；占位用接近真实 VIN 横条的瘦长比例。
+private const val RESTORED_RUBBING_ASPECT = 8.0f
 
 // ─── 横条：深度图（真实深度帧 turbo 伪彩）───
 @Composable
@@ -247,10 +266,14 @@ private fun VinRubbing(rubbing: Bitmap?, captureMsg: String?, processing: Boolea
 
 @Composable
 private fun RubbingPaper(rubbing: Bitmap?) {
+    val aspect = rubbing
+        ?.takeIf { it.width > 0 && it.height > 0 }
+        ?.let { (it.width.toFloat() / it.height.toFloat()).coerceAtLeast(PANE_ASPECT) }
+        ?: RESTORED_RUBBING_ASPECT
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .aspectRatio(2f)  // 正射输出 1024×512 = 2:1
+            .aspectRatio(aspect)
             .background(Color(0xFFE8DFC0)),
         contentAlignment = Alignment.Center,
     ) {
@@ -314,7 +337,7 @@ private fun VinCharCompare(result: VinResult?, recognizing: Boolean) {
             }
         } else {
             Text(
-                if (recognizing) "正在识别还原签名…" else "拍照生成还原图后，点下方「确认」识别",
+                if (recognizing) "正在识别还原图…" else "拍照生成还原图后，点下方「确认」识别",
                 modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
                 textAlign = TextAlign.Center,
                 style = Gomob.type.numInline.copy(fontSize = 10.sp, letterSpacing = 0.04.em),
@@ -499,11 +522,11 @@ private fun VinCaptureBar(
     onConfirm: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // 底色由调用处 glassChrome 玻璃负责，这里只留内边距（导航栏 inset 也在调用处吃掉）。
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .background(Brush.verticalGradient(listOf(Color.Transparent, Gomob.colors.bg0), startY = 0f, endY = 90f))
-            .padding(start = 24.dp, top = 10.dp, end = 24.dp, bottom = 22.dp),
+            .padding(start = 24.dp, top = 10.dp, end = 24.dp, bottom = 12.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),

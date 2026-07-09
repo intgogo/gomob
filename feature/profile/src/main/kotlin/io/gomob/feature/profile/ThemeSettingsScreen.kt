@@ -38,6 +38,7 @@ import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.HairlineCard
 import io.gomob.designsystem.component.SegmentedTabItem
 import io.gomob.designsystem.component.SegmentedTabs
+import io.gomob.designsystem.glass.GlassHeaderScaffold
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.AllColorSchemes
 import io.gomob.designsystem.theme.ColorScheme
@@ -72,17 +73,20 @@ fun ThemeSettingsRoute(
         ThemeMode.System -> systemDark
     }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(Gomob.colors.bg0),
-    ) {
-        BackHeader(title = "主题设置", onBack = onBack)
+    val scrollState = rememberScrollState()
+    GlassHeaderScaffold(
+        scrollState = scrollState,
+        header = { BackHeader(title = "主题设置", onBack = onBack) },
+    ) { padding ->
         Column(
             Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(bottom = Gomob.spacing.s24),
+                .verticalScroll(scrollState)
+                // padding 挂在 verticalScroll 之后 → 属于内容, 随内容滚动
+                .padding(
+                    top = padding.calculateTopPadding(),
+                    bottom = padding.calculateBottomPadding() + Gomob.spacing.s24,
+                ),
         ) {
             SectionTitle("外观模式")
             Box(Modifier.padding(horizontal = Gomob.spacing.s20)) {

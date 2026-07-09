@@ -17,7 +17,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Text
@@ -52,6 +54,7 @@ import io.gomob.designsystem.component.SettingRow
 import io.gomob.designsystem.component.SettingRowDivider
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
+import io.gomob.designsystem.glass.GlassHeaderScaffold
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.model.user.UserProfile
@@ -68,23 +71,36 @@ fun ProfilePersonalRoute(
     val state by vm.state.collectAsStateWithLifecycle()
     val p = state.profile
     var tab by rememberSaveable(initialTab) { mutableStateOf(initialTab.coerceIn(0, 1)) }
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        BackHeader(title = "我的资料", onBack = onBack, eyebrow = "PROFILE · EDIT")
-        SegmentedTabs(
-            items = listOf(SegmentedTabItem("基本资料"), SegmentedTabItem("我的案例")),
-            selectedIndex = tab,
-            onSelect = { tab = it },
-            modifier = Modifier.padding(horizontal = Gomob.spacing.s20, vertical = Gomob.spacing.s6),
-        )
+    val basicListState = rememberLazyListState()
+    val caseListState = rememberLazyListState()
+    GlassHeaderScaffold(
+        listState = if (tab == 0) basicListState else caseListState,
+        header = {
+            // SegmentedTabs 与 BackHeader 同入 header 槽, 共享玻璃底
+            Column {
+                BackHeader(title = "我的资料", onBack = onBack, eyebrow = "PROFILE · EDIT")
+                SegmentedTabs(
+                    items = listOf(SegmentedTabItem("基本资料"), SegmentedTabItem("我的案例")),
+                    selectedIndex = tab,
+                    onSelect = { tab = it },
+                    modifier = Modifier.padding(horizontal = Gomob.spacing.s20, vertical = Gomob.spacing.s6),
+                )
+            }
+        },
+    ) { padding ->
         when (tab) {
-            0 -> ProfileBasicPane(profile = p)
-            else -> ProfileCasePane()
+            0 -> ProfileBasicPane(profile = p, listState = basicListState, padding = padding)
+            else -> ProfileCasePane(listState = caseListState, padding = padding)
         }
     }
 }
 
 @Composable
-private fun ProfileBasicPane(profile: UserProfile?) {
+private fun ProfileBasicPane(
+    profile: UserProfile?,
+    listState: LazyListState,
+    padding: PaddingValues,
+) {
     var name by rememberSaveable(profile?.realName) { mutableStateOf(profile?.realName ?: "沈海明") }
     var role by rememberSaveable(profile?.roleLabel) { mutableStateOf(profile?.roleLabel ?: "查验员") }
     var contact by rememberSaveable(profile?.id) { mutableStateOf("13586**4421") }
@@ -95,10 +111,14 @@ private fun ProfileBasicPane(profile: UserProfile?) {
     val station = profile?.stationName ?: "杭州市西湖区 · 车管所检测站"
 
     LazyColumn(
-        Modifier
-            .fillMaxSize()
-            .padding(horizontal = Gomob.spacing.s20),
-        contentPadding = PaddingValues(top = Gomob.spacing.s8, bottom = Gomob.spacing.s24),
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(
+            start = Gomob.spacing.s20,
+            end = Gomob.spacing.s20,
+            top = padding.calculateTopPadding() + Gomob.spacing.s8,
+            bottom = padding.calculateBottomPadding() + Gomob.spacing.s24,
+        ),
         verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
     ) {
         item { ProfileAvatarCard(name = name, onChange = {}) }
@@ -336,12 +356,19 @@ private val PROFILE_CASES = listOf(
 )
 
 @Composable
-private fun ProfileCasePane() {
+private fun ProfileCasePane(
+    listState: LazyListState,
+    padding: PaddingValues,
+) {
     LazyColumn(
-        Modifier
-            .fillMaxSize()
-            .padding(horizontal = Gomob.spacing.s20),
-        contentPadding = PaddingValues(top = Gomob.spacing.s8, bottom = Gomob.spacing.s24),
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(
+            start = Gomob.spacing.s20,
+            end = Gomob.spacing.s20,
+            top = padding.calculateTopPadding() + Gomob.spacing.s8,
+            bottom = padding.calculateBottomPadding() + Gomob.spacing.s24,
+        ),
         verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
     ) {
         item { ProfileCaseStats() }
@@ -531,10 +558,14 @@ fun ProfileAccountRoute(onBack: () -> Unit) {
     var oldPwd by remember { mutableStateOf("") }
     var newPwd by remember { mutableStateOf("") }
     var confirmPwd by remember { mutableStateOf("") }
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        BackHeader(title = "账号与安全", onBack = onBack, eyebrow = "修改密码 / 设备管理")
+    GlassHeaderScaffold(
+        header = { BackHeader(title = "账号与安全", onBack = onBack, eyebrow = "修改密码 / 设备管理") },
+    ) { padding ->
         Column(
-            Modifier.padding(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s12),
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s12),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
             PasswordInput("当前密码", oldPwd, "请输入当前密码") { oldPwd = it }
@@ -614,10 +645,14 @@ fun ProfileNotificationRoute(onBack: () -> Unit) {
     var globalOn by remember { mutableStateOf(true) }
     var inAppOn by remember { mutableStateOf(true) }
     var sysBarOn by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        BackHeader(title = "通知", onBack = onBack, eyebrow = "推送 + 系统通知栏")
+    GlassHeaderScaffold(
+        header = { BackHeader(title = "通知", onBack = onBack, eyebrow = "推送 + 系统通知栏") },
+    ) { padding ->
         Column(
-            Modifier.padding(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s12),
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s12),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
             HairlineCard(padding = 0.dp) {
@@ -679,10 +714,14 @@ private fun ToggleRow(
 // ============================================================================
 @Composable
 fun ProfileAboutRoute(onBack: () -> Unit) {
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        BackHeader(title = "关于 gomob", onBack = onBack, eyebrow = "版本 + 法务")
+    GlassHeaderScaffold(
+        header = { BackHeader(title = "关于 gomob", onBack = onBack, eyebrow = "版本 + 法务") },
+    ) { padding ->
         Column(
-            Modifier.padding(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s12),
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s12),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
             HairlineCard {

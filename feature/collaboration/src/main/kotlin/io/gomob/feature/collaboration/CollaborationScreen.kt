@@ -1,10 +1,12 @@
 package io.gomob.feature.collaboration
 
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -48,6 +50,7 @@ import io.gomob.designsystem.component.SegmentedTabItem
 import io.gomob.designsystem.component.SegmentedTabs
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
+import io.gomob.designsystem.glass.GlassHeaderScaffold
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.model.message.LiveSessionSummary
@@ -131,31 +134,50 @@ fun CollaborationRoute(
         viewModel.refreshLiveSessions()
     }
 
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        // TODO(demo-data R1): 复核“127 待办”、案例“780 案例”徽标为占位假数据，未接真实统计 API。
-        val (eyebrow, badge, badgeTone) = when (sub) {
-            0 -> Triple("团队 · 实时第一视角直播", "${liveSessions.size} 在线", StatusTone.Accent)
-            1 -> Triple("团队 · 抽查复核 / 工单分发", "127 待办", StatusTone.Warn)
-            else -> Triple("团队 · 公开案例库", "780 案例", StatusTone.Neutral)
-        }
-        ScreenHeader(
-            title = "多方协作",
-            eyebrow = eyebrow,
-            trailing = { StatusTag(text = badge, tone = badgeTone, showDot = true) },
-        )
+    // 3 个子板各持独立滚动状态；scaffold 只接当前选中板的，分隔线随该板滚动渐显
+    val boardScrollStates = listOf(rememberScrollState(), rememberScrollState(), rememberScrollState())
 
-        SegmentedTabs(
-            items = SUB_TABS,
-            selectedIndex = sub,
-            onSelect = { sub = it },
-            modifier = Modifier.padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20, bottom = 14.dp),
-        )
-
+    // TODO(demo-data R1): 复核“127 待办”、案例“780 案例”徽标为占位假数据，未接真实统计 API。
+    val (eyebrow, badge, badgeTone) = when (sub) {
+        0 -> Triple("团队 · 实时第一视角直播", "${liveSessions.size} 在线", StatusTone.Accent)
+        1 -> Triple("团队 · 抽查复核 / 工单分发", "127 待办", StatusTone.Warn)
+        else -> Triple("团队 · 公开案例库", "780 案例", StatusTone.Neutral)
+    }
+    GlassHeaderScaffold(
+        scrollState = boardScrollStates[sub],
+        header = {
+            Column {
+                ScreenHeader(
+                    title = "多方协作",
+                    eyebrow = eyebrow,
+                    trailing = { StatusTag(text = badge, tone = badgeTone, showDot = true) },
+                )
+                SegmentedTabs(
+                    items = SUB_TABS,
+                    selectedIndex = sub,
+                    onSelect = { sub = it },
+                    modifier = Modifier.padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20, bottom = 14.dp),
+                )
+            }
+        },
+    ) { padding ->
         Box(Modifier.fillMaxSize()) {
             when (sub) {
-                0 -> FirstPersonBoard(liveSessions = liveSessions, onOpenLiveStream = onOpenLiveStream)
-                1 -> ReviewBoard(onOpenReview = onOpenReview)
-                else -> CaseLibBoard()
+                0 -> FirstPersonBoard(
+                    liveSessions = liveSessions,
+                    onOpenLiveStream = onOpenLiveStream,
+                    scrollState = boardScrollStates[0],
+                    padding = padding,
+                )
+                1 -> ReviewBoard(
+                    onOpenReview = onOpenReview,
+                    scrollState = boardScrollStates[1],
+                    padding = padding,
+                )
+                else -> CaseLibBoard(
+                    scrollState = boardScrollStates[2],
+                    padding = padding,
+                )
             }
         }
     }
@@ -187,12 +209,20 @@ class CollaborationViewModel @Inject constructor(
 private fun FirstPersonBoard(
     liveSessions: List<LiveSessionSummary>,
     onOpenLiveStream: (String) -> Unit,
+    scrollState: ScrollState,
+    padding: PaddingValues,
 ) {
     Column(
         Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = Gomob.spacing.s16),
+            .verticalScroll(scrollState)
+            // scaffold padding 并进内容 padding：内容从玻璃 header 下穿过再避让
+            .padding(
+                start = Gomob.spacing.s16,
+                end = Gomob.spacing.s16,
+                top = padding.calculateTopPadding(),
+                bottom = padding.calculateBottomPadding(),
+            ),
         verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12)) {
@@ -372,12 +402,21 @@ private val REVIEW_TREND = listOf(18, 22, 15, 17, 24, 31, 21)
 private val REVIEW_DAYS = listOf("一", "二", "三", "四", "五", "六", "七")
 
 @Composable
-private fun ReviewBoard(onOpenReview: (String) -> Unit) {
+private fun ReviewBoard(
+    onOpenReview: (String) -> Unit,
+    scrollState: ScrollState,
+    padding: PaddingValues,
+) {
     Column(
         Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = Gomob.spacing.s20),
+            .verticalScroll(scrollState)
+            .padding(
+                start = Gomob.spacing.s20,
+                end = Gomob.spacing.s20,
+                top = padding.calculateTopPadding(),
+                bottom = padding.calculateBottomPadding(),
+            ),
         verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
     ) {
         // 4 KPI tile 2×2 网格
@@ -635,12 +674,20 @@ private fun LegendStat(label: String, value: String) {
 // 案例公开 — 公开案例库(培训/参考)
 // ============================================================================
 @Composable
-private fun CaseLibBoard() {
+private fun CaseLibBoard(
+    scrollState: ScrollState,
+    padding: PaddingValues,
+) {
     Column(
         Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = Gomob.spacing.s16),
+            .verticalScroll(scrollState)
+            .padding(
+                start = Gomob.spacing.s16,
+                end = Gomob.spacing.s16,
+                top = padding.calculateTopPadding(),
+                bottom = padding.calculateBottomPadding(),
+            ),
         verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
     ) {
         HairlineCard {

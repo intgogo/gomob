@@ -41,8 +41,9 @@
 
 - [**重建主线 2026-05-07 重大方向变更**](finding_multiview_rgbd_pivot_2026-05-07.md) — 实时 SLAM → 多视角 RGBD 配准 + 端云融合；权威设计在 04b；既有 native 沉淀阶段 3 复用。**新工作不要扩 04 路线**。
 - [**VIN 还原全量上服务端 2026-06-18**](finding_vin_rectify_serverside_calib_2026-06-18.md) — 订正:真还原管线在libcreator_jni.so(restoreImageFlow:YOLO OBB+RANSAC平面+单应+去阴影+后处理);决策全量上Go cvengine原厂全保真,端侧只拍存传;首批11张数据在.dev/vin_captures。
-- [**VIN 去阴影真机订正:极性反转+低对比 2026-06-21**](finding_vin_signature_binarize_realdevice_2026-06-21.md) — 原厂 adaptiveThreshold(131,15) 真机失效(刻字偏亮→整片反相白字黑底/低对比丢字);改 双边+背景除法平照+Otsu+极性归一(墨水稀疏前景过半即反相)+墨水占比>0.25质量闸判废;两端同步。
-- [**VIN 正交还原:输出彩色+字符端正 2026-06-22**](finding_vin_ortho_color_upright_2026-06-22.md) — 输出改彩色正射(非二值,二值仅给质量闸);字斜根因=彩色内参 fyc 错(深度竖直 binning anamorphic,彩色近方形 fyc=fxc≠2·fyd)+平面拟合纳入背景;改 fyc=fxc + 只在 OBB 区拟合平面 → 21 组倾角全≤2°。
+- [**VIN 墨水占比质量闸删除:无信号调参兜底 2026-06-24**](finding_vin_signature_binarize_realdevice_2026-06-21.md) — 墨水占比>0.25闸真机误判废43%好采集(被废组锐度/饱和/对比都正常);用后处理统计量反推采集质量=因果倒置必假阳性;已删,坏采集靠OBB/tilt门,噪声治采集端不靠滤镜。
+- [**VIN 正交还原:彩色正射+内部签名校正 2026-06-22**](finding_vin_ortho_color_upright_2026-06-22.md) — 彩色返回;黑白仅内部;fyc/ROI/内容锚定。
+- [**VIN 度量网格+深度尺度订正 2026-06-23**](finding_vin_metric_grid_depth_scale_2026-06-23.md) — render 固定 mm/px 度量网格(视角无关+刻度尺)替 OBB 单应;深度尺度 0.1116 定标 120mm;atan 去畸变试错已删(把钢牌弯成弧),无去畸变端直最优。
 - [**车辆外廓+VIN 端到端拉通 2026-06-02**](finding_scan_vin_wiring_2026-06-02.md) — 两 mock 屏重写接真底座；bundle 契约=rgbd_bundle.py；新增 /v1/scans GLB 流端点;cvengine 经 devserver 反代+服务端 HMAC(密钥不下发);雷点:Kotlin 注释嵌套/拦截器缓冲二进制 OOM。
 - [**激光扫描设备集成 2026-06-03**](finding_laser_scanner_integration_2026-06-03.md) — 车辆外廓页加激光设备(切 berxel/激光);两网络单元 .101/.102 迁 /root/lilw/lidar 几何;Kotlin 网络+native 几何+端侧融合,不引 PCL(复用 IcpRegister);M8.1 已提交 worktree feat/laser-scan-integration。
 - [**JCHY 测量/建模层逆向 2026-06-04**](finding_jchy_measurement_layer_re_2026-06-04.md) — 漏掉的「应用软件」逆向(JCHY_simple_3.0.0,带完整 PDB):采集层之上的测量/建模。26 车型+carType 表已解密+8 阶段管线(PCL 聚类+OBB+局部 PointSIFT)+测量字典(LWH/轴距/罐体三段/栏板/护栏/容积)。gomob 全缺此层。完整架构 docs/architecture/16。
@@ -73,4 +74,5 @@
 - [**P100R3 并发 color+depth = MIX 模式 2026-06-02**](finding_p100r3_mix_color_depth_2026-06-02.md) — **推翻"color/depth 设备特定互斥"**:真因是没进 MIX 模式(原回放 SINGULAR init)。从原厂还原 MIX 配方落资产,enableColor 自动选;host+Android 真机双端 PASS,"开 color 死"根除。
 - [**官方 SDK 可逆向 + 设备协商深度帧 1026584≠我方 513280 2026-06-03**](finding_berxel_sdk_acquisition_re_2026-06-03.md) — 官方 so 未混淆可逆向；协商帧含 12B header 被我方丢弃，盲切疑似劈开 depth|IR 拼帧=bad_marker/帧率抖真因(待 DUMP)；marker 分流是官方正解、硬件温补已开勿加软温补，终态按真实帧长拆面弃盲切。
 - [**深度飞点剔除：三证合一 2026-05-29**](finding_depth_flying_pixel_removal_2026-05-29.md) — 纯单帧检测过杀 24%；正解=时域不稳∧双侧角度超界夹心∧无共面支撑(放 fuse 后判),命中保 raw+conf 置 0。订正:降级须用 stable_run+frames_seen,旧 reset_age 让慢性飞点删不掉。conf 在 JNI 算了从不 poll 出去=断链待补。
+- [**Haze 采样源嵌套=玻璃全透明 2026-07-09**](finding_haze_nested_sources_transparent_2026-07-09.md) — 毛玻璃 hazeChild 静默不画的真因是源嵌套;全 App 单 HazeState、源只挂各屏内容层一处;Haze 钉 1.2.2。
 - [**周期纹理致配准位姿翻转 2026-05-31**](finding_periodic_texture_registration_aliasing_2026-05-31.md) — 合成物体用周期正弦纹理→FPFH/Color-ICP 特征混叠→~20% 视角翻转(同输入 1.7↔6mm);换非周期渐变色 10/10 稳。配准 harness 配色须非周期梯度;flaky 融合先疑配准翻转(看顶点/completeness 跳变)。真实重复纹理物体生产同风险。

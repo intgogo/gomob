@@ -9,12 +9,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
@@ -52,7 +55,7 @@ const val LOGIN_ROUTE = "auth/login"
  * 01 登录屏 — 严格对齐 jsx login.jsx 排版。
  *
  * 视觉骨架（自上而下）：
- *   1. 顶部 Brand 行（padding 14/20/0）：左 Logo 28dp + "方寸观车 / v0.1.0" 横排 / 右 DEV tag
+ *   1. 顶部 Brand 行（padding 14/20/0）：左 Logo 28dp + "锐眼观车 / v0.1.0" 横排 / 右 DEV tag
  *   2. 欢迎区（padding 60/24/0）："你好" / "登录工作台" 28sp / 副标题
  *   3. 输入区（padding 36/24/0 gap 14）：Field × 2 + 记住账号 / 去注册同行
  *   4. 主按钮（padding 24/24/0）：48dp 高 + accentSoft + "登 录" 字距 0.3em + ArrowRight
@@ -118,6 +121,8 @@ private fun LoginContent(
         Modifier
             .fillMaxSize()
             .background(Gomob.colors.bg0)
+            // App 已 edge-to-edge：登录页无玻璃 header，背景铺满后内容自行避让系统栏
+            .windowInsetsPadding(WindowInsets.systemBars)
             .verticalScroll(rememberScrollState()),
     ) {
         BrandRow(onDevBypass = onDevBypass)
@@ -188,7 +193,7 @@ private fun BrandRow(onDevBypass: () -> Unit) {
             }
             Column {
                 Text(
-                    "方寸观车",
+                    "锐眼观车",
                     fontSize = 14.sp,
                     fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
                     letterSpacing = 0.04.em,
@@ -582,7 +587,8 @@ private fun EndpointEditorSheet(
     androidx.compose.material3.ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = Gomob.colors.bg1,
+        // 拟玻璃面板：Dialog 独立 window 做不了真模糊，用高不透明 bg1 拟合
+        containerColor = Gomob.colors.bg1.copy(alpha = 0.97f),
         contentColor = Gomob.colors.fg0,
     ) {
         Column(

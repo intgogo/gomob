@@ -70,6 +70,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.gomob.data.message.MediaSessionRepository
+import io.gomob.designsystem.component.LocalFeedbackTitleLongPress
+import io.gomob.designsystem.component.feedbackTitleLongPress
+import io.gomob.designsystem.theme.Gomob
 import io.livekit.android.ConnectOptions
 import io.livekit.android.LiveKit
 import io.livekit.android.LiveKitOverrides
@@ -229,7 +232,8 @@ fun FirstPersonViewerRoute(
         ModalBottomSheet(
             onDismissRequest = { watchersOpen = false },
             sheetState = sheetState,
-            containerColor = Color(0xFF111521),
+            // 拟玻璃面板：Dialog 独立 window 做不了真模糊，用高不透明 bg1 拟合
+            containerColor = Gomob.colors.bg1.copy(alpha = 0.97f),
             contentColor = Color.White,
         ) {
             WatchersSheetContent(total = s.watchers)
@@ -248,6 +252,7 @@ private fun TopBar(
     onBack: () -> Unit,
     onShowWatchers: () -> Unit,
 ) {
+    val feedbackTrigger = LocalFeedbackTitleLongPress.current
     Row(
         Modifier
             .fillMaxWidth()
@@ -271,7 +276,18 @@ private fun TopBar(
             )
         }
         Spacer(Modifier.width(10.dp))
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(
+            Modifier
+                .weight(1f)
+                .then(
+                    if (feedbackTrigger != null) {
+                        Modifier.feedbackTitleLongPress(inspector, feedbackTrigger)
+                    } else {
+                        Modifier
+                    },
+                ),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
             Text(
                 inspector,
                 color = Color.White,

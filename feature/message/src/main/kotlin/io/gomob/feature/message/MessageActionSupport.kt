@@ -81,10 +81,10 @@ internal fun MessageMultiSelectBar(
     onForward: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // 多选操作栏在 GlassHeaderScaffold overlay 槽内 → 不画实底，由 glassChrome 玻璃负责
     Row(
         modifier
             .fillMaxWidth()
-            .background(Gomob.colors.bg1)
             .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),

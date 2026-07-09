@@ -95,7 +95,8 @@ internal fun MessageComposerBar(
         else mentionCandidates.filter { it.name.contains(activeMentionQuery, ignoreCase = true) }
     }
 
-    Column(modifier.fixedDuringPageDrag().fillMaxWidth().background(Gomob.colors.bg1)) {
+    // 吸底输入栏在 GlassHeaderScaffold overlay 槽内 → 不画实底，由 glassChrome 玻璃负责
+    Column(modifier.fixedDuringPageDrag().fillMaxWidth()) {
         if (filteredMentionCandidates.isNotEmpty()) {
             MentionPickerPanel(
                 candidates = filteredMentionCandidates,

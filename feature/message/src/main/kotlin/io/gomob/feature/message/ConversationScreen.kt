@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -35,6 +36,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -48,6 +50,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -61,8 +64,12 @@ import androidx.compose.ui.window.PopupProperties
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.gomob.designsystem.component.LocalFeedbackTitleLongPress
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
+import io.gomob.designsystem.component.feedbackTitleLongPress
+import io.gomob.designsystem.glass.GlassHeaderScaffold
+import io.gomob.designsystem.glass.glassChrome
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.motion.fixedDuringPageDrag
 import io.gomob.designsystem.theme.Gomob
@@ -326,6 +333,8 @@ fun ConversationRoute(
     if (clearConfirmOpen) {
         AlertDialog(
             onDismissRequest = { clearConfirmOpen = false },
+            containerColor = Gomob.colors.bg2.copy(alpha = 0.97f),
+            shape = Gomob.shapes.r3,
             title = { Text("清空聊天记录", style = Gomob.type.title, color = Gomob.colors.fg0) },
             text = { Text("清空后，本机不会再显示当前已同步的历史消息。", style = Gomob.type.bodySm, color = Gomob.colors.fg2) },
             confirmButton = {
@@ -364,8 +373,12 @@ fun ConversationRoute(
             viewModel.refreshAssetUrl(localKey, assetId)
         },
     ) {
-    Box(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        Column(Modifier.fillMaxSize().imePadding()) {
+    val density = LocalDensity.current
+    // 吸底栏实测总高（含导航栏 / 输入法 inset），供消息列表 bottom 预留，最后一条不被压住
+    var bottomBarHeightPx by remember { mutableIntStateOf(0) }
+    GlassHeaderScaffold(
+        // 会话列表 reverseLayout 常驻停靠最新消息，星空壁纸始终从玻璃下穿过 → 不接滚动源，分隔线常显
+        header = {
             ConversationTopBar(
                 title = state.title,
                 onBack = onBack,
@@ -377,108 +390,130 @@ fun ConversationRoute(
                 onClearMessages = { clearConfirmOpen = true },
                 onTogglePinned = viewModel::togglePinned,
             )
-
-            ConversationBody(
-                state = state,
-                searchQuery = "",
-                targetLocalKey = targetLocalKey,
-                onRefresh = viewModel::refresh,
-                onRetry = viewModel::retry,
-                onRetryTranscript = viewModel::retryVoiceTranscript,
-                onOpenInspection = onOpenInspection,
-                onOpenUserDetail = onOpenUserDetail,
-                onAcceptCall = viewModel::acceptVideoCall,
-                onStartVideoCall = startVideoCall,
-                onOpenImage = { bubble ->
-                    imagePreview = bubble.toImageMessagePreview()
-                },
-                inputFocused = inputFocused,
-                favoriteMessageKeys = favoriteMessageKeys,
-                selectedMessageKeys = selectedMessageKeys,
-                multiSelectMode = multiSelectMode,
-                onToggleSelected = ::toggleMessageSelection,
-                onQuickAction = ::handleMessageAction,
-                modifier = Modifier.weight(1f),
-            )
-
-            if (multiSelectMode) {
-                MessageMultiSelectBar(
-                    selectedCount = selectedMessageKeys.size,
-                    onCancel = ::exitMultiSelect,
-                    onCopy = {
-                        copyMessages(selectedMessages())
-                        exitMultiSelect()
-                    },
-                    onForward = {
-                        forwardingMessages = selectedMessages()
-                    },
-                )
-            } else {
-                MessageComposerBar(
-                    draft = draft,
-                    enabled = true,
-                    onDraftChange = { draft = it },
-                    onShareInspection = {
-                        focusManager.clearFocus()
-                        inspectionPickerOpen = true
-                    },
-                    onPickImage = openImagePicker,
-                    onTakePhoto = startPhotoCapture,
-                    onStartVideoCall = { startVideoCall(null) },
-                    onStartVoice = startVoiceRecording,
-                    onSendVoice = sendVoiceRecording,
-                    onCancelVoice = cancelVoiceRecording,
-                    onTranscribeVoice = transcribeVoiceRecording,
-                    onSendVideoClip = openVideoPicker,
-                    voiceRecording = voiceRecording,
-                    quoteDraft = quoteDraft,
-                    onClearQuote = { quoteDraft = null },
-                    onInputFocusChanged = { inputFocused = it },
-                    onSendText = sendDraft,
-                    mentionCandidates = mentionCandidates,
-                    onPickMention = { candidate ->
-                        draft = applyMentionPick(draft, candidate)
-                        if (pendingMentions.none { it.userId == candidate.userId }) {
-                            pendingMentions = pendingMentions + MentionRef(candidate.userId, candidate.name)
-                        }
-                    },
-                )
-            }
-        }
-        InspectionSharePicker(
-            visible = inspectionPickerOpen,
-            onDismiss = { inspectionPickerOpen = false },
-            onSelect = { card ->
-                inspectionPickerOpen = false
-                viewModel.sendInspectionCard(card)
-            },
-        )
-        FloatingMessageError(
-            text = state.errorMessage.takeUnless { inspectionPickerOpen },
-            onClick = viewModel::refresh,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 96.dp),
-        )
-        VoiceTranscriptionOverlay(
-            draft = voiceTranscriptionDraft,
-            onCancel = { voiceTranscriptionDraft = null },
-            onSendVoice = { draft ->
-                voiceTranscriptionDraft = null
-                viewModel.sendVoice(draft.uri, draft.durationSec)
-            },
-            onSendText = { draft ->
-                val text = draft.text.trim()
-                if (text.isNotEmpty()) {
-                    voiceTranscriptionDraft = null
-                    viewModel.send(text, quoteDraft?.quote)
-                    quoteDraft = null
+        },
+        overlay = { _ ->
+            // 吸底输入栏 / 多选操作栏：玻璃底；导航栏与输入法 inset 由自身处理
+            //（原 imePadding 在外层 Column，迁移后收进吸底栏，键盘弹出时随之上移）
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .onSizeChanged { bottomBarHeightPx = it.height }
+                    .glassChrome(topEdge = true)
+                    .navigationBarsPadding()
+                    .imePadding(),
+            ) {
+                if (multiSelectMode) {
+                    MessageMultiSelectBar(
+                        selectedCount = selectedMessageKeys.size,
+                        onCancel = ::exitMultiSelect,
+                        onCopy = {
+                            copyMessages(selectedMessages())
+                            exitMultiSelect()
+                        },
+                        onForward = {
+                            forwardingMessages = selectedMessages()
+                        },
+                    )
+                } else {
+                    MessageComposerBar(
+                        draft = draft,
+                        enabled = true,
+                        onDraftChange = { draft = it },
+                        onShareInspection = {
+                            focusManager.clearFocus()
+                            inspectionPickerOpen = true
+                        },
+                        onPickImage = openImagePicker,
+                        onTakePhoto = startPhotoCapture,
+                        onStartVideoCall = { startVideoCall(null) },
+                        onStartVoice = startVoiceRecording,
+                        onSendVoice = sendVoiceRecording,
+                        onCancelVoice = cancelVoiceRecording,
+                        onTranscribeVoice = transcribeVoiceRecording,
+                        onSendVideoClip = openVideoPicker,
+                        voiceRecording = voiceRecording,
+                        quoteDraft = quoteDraft,
+                        onClearQuote = { quoteDraft = null },
+                        onInputFocusChanged = { inputFocused = it },
+                        onSendText = sendDraft,
+                        mentionCandidates = mentionCandidates,
+                        onPickMention = { candidate ->
+                            draft = applyMentionPick(draft, candidate)
+                            if (pendingMentions.none { it.userId == candidate.userId }) {
+                                pendingMentions = pendingMentions + MentionRef(candidate.userId, candidate.name)
+                            }
+                        },
+                    )
                 }
+            }
+            InspectionSharePicker(
+                visible = inspectionPickerOpen,
+                onDismiss = { inspectionPickerOpen = false },
+                onSelect = { card ->
+                    inspectionPickerOpen = false
+                    viewModel.sendInspectionCard(card)
+                },
+            )
+            FloatingMessageError(
+                text = state.errorMessage.takeUnless { inspectionPickerOpen },
+                onClick = viewModel::refresh,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 96.dp),
+            )
+            VoiceTranscriptionOverlay(
+                draft = voiceTranscriptionDraft,
+                onCancel = { voiceTranscriptionDraft = null },
+                onSendVoice = { draft ->
+                    voiceTranscriptionDraft = null
+                    viewModel.sendVoice(draft.uri, draft.durationSec)
+                },
+                onSendText = { draft ->
+                    val text = draft.text.trim()
+                    if (text.isNotEmpty()) {
+                        voiceTranscriptionDraft = null
+                        viewModel.send(text, quoteDraft?.quote)
+                        quoteDraft = null
+                    }
+                },
+            )
+            ImageMessageViewer(
+                preview = imagePreview,
+                onDismiss = { imagePreview = null },
+            )
+        },
+    ) { padding ->
+        ConversationBody(
+            state = state,
+            searchQuery = "",
+            targetLocalKey = targetLocalKey,
+            onRefresh = viewModel::refresh,
+            onRetry = viewModel::retry,
+            onRetryTranscript = viewModel::retryVoiceTranscript,
+            onOpenInspection = onOpenInspection,
+            onOpenUserDetail = onOpenUserDetail,
+            onAcceptCall = viewModel::acceptVideoCall,
+            onStartVideoCall = startVideoCall,
+            onOpenImage = { bubble ->
+                imagePreview = bubble.toImageMessagePreview()
             },
-        )
-        ImageMessageViewer(
-            preview = imagePreview,
-            onDismiss = { imagePreview = null },
+            inputFocused = inputFocused,
+            favoriteMessageKeys = favoriteMessageKeys,
+            selectedMessageKeys = selectedMessageKeys,
+            multiSelectMode = multiSelectMode,
+            onToggleSelected = ::toggleMessageSelection,
+            onQuickAction = ::handleMessageAction,
+            contentPadding = PaddingValues(
+                start = Gomob.spacing.s16,
+                end = Gomob.spacing.s16,
+                top = padding.calculateTopPadding() + Gomob.spacing.s12,
+                // 吸底栏未量到前先按导航栏 inset 兜底；量到后随栏高（含键盘弹起）实时避让
+                bottom = with(density) { bottomBarHeightPx.toDp() }
+                    .coerceAtLeast(padding.calculateBottomPadding()) + Gomob.spacing.s12,
+            ),
+            modifier = Modifier.fillMaxSize(),
         )
     }
     } // CompositionLocalProvider close
@@ -497,8 +532,10 @@ private fun ConversationTopBar(
     modifier: Modifier = Modifier,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
+    val feedbackTrigger = LocalFeedbackTitleLongPress.current
 
-    Column(modifier.fixedDuringPageDrag().fillMaxWidth().background(Gomob.colors.bg0)) {
+    // 顶栏在 GlassHeaderScaffold header 槽内 → 不画实底，由玻璃层负责
+    Column(modifier.fixedDuringPageDrag().fillMaxWidth()) {
         Box(
             Modifier
                 .fillMaxWidth()
@@ -527,6 +564,13 @@ private fun ConversationTopBar(
                 modifier = Modifier
                     .align(Alignment.Center)
                     .fillMaxWidth()
+                    .then(
+                        if (feedbackTrigger != null) {
+                            Modifier.feedbackTitleLongPress(title, feedbackTrigger)
+                        } else {
+                            Modifier
+                        },
+                    )
                     .padding(horizontal = 72.dp),
             )
             Box(
@@ -683,6 +727,7 @@ private fun ConversationBody(
     multiSelectMode: Boolean,
     onToggleSelected: (String) -> Unit,
     onQuickAction: (MessageQuickAction, MessageBubbleUi) -> Unit,
+    contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
 ) {
     val focusManager = LocalFocusManager.current
@@ -762,10 +807,8 @@ private fun ConversationBody(
         LazyColumn(
             Modifier.fillMaxSize(),
             state = listState,
-            contentPadding = PaddingValues(
-                horizontal = Gomob.spacing.s16,
-                vertical = Gomob.spacing.s12,
-            ),
+            // 顶/底避让并进 contentPadding（外部算好传入），消息从玻璃顶栏与吸底栏下穿过
+            contentPadding = contentPadding,
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
             reverseLayout = reverseMessages,
         ) {

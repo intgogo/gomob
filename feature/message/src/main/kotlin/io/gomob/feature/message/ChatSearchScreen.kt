@@ -16,7 +16,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Icon
@@ -49,6 +51,7 @@ import io.gomob.data.message.MessageRepository
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
+import io.gomob.designsystem.glass.GlassHeaderScaffold
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.model.message.ConversationSummary
@@ -128,31 +131,41 @@ fun ChatSearchRoute(
         }
     }
 
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        BackHeader(
-            title = "查找聊天记录",
-            eyebrow = state.title,
-            onBack = onBack,
-        )
-        ChatSearchInput(
-            query = query,
-            onQueryChange = { query = it },
-        )
-        ChatSearchFilterRow(
-            selected = filter,
-            onSelect = {
-                filterValue = it.name
-                if (it == ChatSearchFilter.Date) {
-                    selectedDateKey = null
+    val dateListState = rememberLazyListState()
+    val resultListState = rememberLazyListState()
+    val showDateList = filter == ChatSearchFilter.Date && selectedDateKey == null
+    GlassHeaderScaffold(
+        listState = if (showDateList) dateListState else resultListState,
+        // 搜索框 + 筛选条一并入玻璃 header, 结果列表从其下穿过
+        header = {
+            Column {
+                BackHeader(
+                    title = "查找聊天记录",
+                    eyebrow = state.title,
+                    onBack = onBack,
+                )
+                ChatSearchInput(
+                    query = query,
+                    onQueryChange = { query = it },
+                )
+                ChatSearchFilterRow(
+                    selected = filter,
+                    onSelect = {
+                        filterValue = it.name
+                        if (it == ChatSearchFilter.Date) {
+                            selectedDateKey = null
+                        }
+                    },
+                )
+                if (filter == ChatSearchFilter.Date && selectedDateKey != null) {
+                    ChatSearchDateScopeBar(
+                        label = dateGroups.firstOrNull { it.dateKey == selectedDateKey }?.label.orEmpty(),
+                        onClear = { selectedDateKey = null },
+                    )
                 }
-            },
-        )
-        if (filter == ChatSearchFilter.Date && selectedDateKey != null) {
-            ChatSearchDateScopeBar(
-                label = dateGroups.firstOrNull { it.dateKey == selectedDateKey }?.label.orEmpty(),
-                onClear = { selectedDateKey = null },
-            )
-        }
+            }
+        },
+    ) { padding ->
         ChatSearchContent(
             state = state,
             filter = filter,
@@ -161,7 +174,10 @@ fun ChatSearchRoute(
             selectedDateKey = selectedDateKey,
             onSelectDate = { selectedDateKey = it.dateKey },
             onOpenMessage = onOpenMessage,
-            modifier = Modifier.weight(1f),
+            dateListState = dateListState,
+            resultListState = resultListState,
+            contentPadding = padding,
+            modifier = Modifier.fillMaxSize(),
         )
     }
 }
@@ -390,16 +406,19 @@ private fun ChatSearchContent(
     selectedDateKey: String?,
     onSelectDate: (ChatSearchDateGroupUi) -> Unit,
     onOpenMessage: (String) -> Unit,
+    dateListState: LazyListState,
+    resultListState: LazyListState,
+    contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
 ) {
     when {
         state.loading && state.items.isEmpty() -> {
-            Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Box(modifier.fillMaxSize().padding(contentPadding), contentAlignment = Alignment.Center) {
                 Text("正在同步聊天记录", style = Gomob.type.bodySm, color = Gomob.colors.fg3)
             }
         }
         state.errorMessage != null && state.items.isEmpty() -> {
-            Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Box(modifier.fillMaxSize().padding(contentPadding), contentAlignment = Alignment.Center) {
                 Text(state.errorMessage, style = Gomob.type.bodySm, color = Gomob.colors.danger)
             }
         }
@@ -407,6 +426,8 @@ private fun ChatSearchContent(
             ChatSearchDateList(
                 groups = dateGroups,
                 onSelectDate = onSelectDate,
+                listState = dateListState,
+                contentPadding = contentPadding,
                 modifier = modifier,
             )
         }
@@ -414,6 +435,8 @@ private fun ChatSearchContent(
             ChatSearchResultList(
                 items = resultItems,
                 onOpenMessage = onOpenMessage,
+                listState = resultListState,
+                contentPadding = contentPadding,
                 modifier = modifier,
             )
         }
@@ -424,15 +447,23 @@ private fun ChatSearchContent(
 private fun ChatSearchDateList(
     groups: List<ChatSearchDateGroupUi>,
     onSelectDate: (ChatSearchDateGroupUi) -> Unit,
+    listState: LazyListState,
+    contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
 ) {
     if (groups.isEmpty()) {
-        ChatSearchEmpty(modifier, "没有可筛选的日期")
+        ChatSearchEmpty(modifier.padding(contentPadding), "没有可筛选的日期")
         return
     }
     LazyColumn(
-        modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s8),
+        state = listState,
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(
+            start = Gomob.spacing.s16,
+            end = Gomob.spacing.s16,
+            top = contentPadding.calculateTopPadding() + Gomob.spacing.s8,
+            bottom = contentPadding.calculateBottomPadding() + Gomob.spacing.s8,
+        ),
         verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
     ) {
         items(groups, key = { it.dateKey }) { group ->
@@ -445,15 +476,23 @@ private fun ChatSearchDateList(
 private fun ChatSearchResultList(
     items: List<ChatSearchItemUi>,
     onOpenMessage: (String) -> Unit,
+    listState: LazyListState,
+    contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
 ) {
     if (items.isEmpty()) {
-        ChatSearchEmpty(modifier, "没有找到相关聊天记录")
+        ChatSearchEmpty(modifier.padding(contentPadding), "没有找到相关聊天记录")
         return
     }
     LazyColumn(
-        modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s8),
+        state = listState,
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(
+            start = Gomob.spacing.s16,
+            end = Gomob.spacing.s16,
+            top = contentPadding.calculateTopPadding() + Gomob.spacing.s8,
+            bottom = contentPadding.calculateBottomPadding() + Gomob.spacing.s8,
+        ),
         verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
     ) {
         items(items, key = { it.localKey }) { item ->

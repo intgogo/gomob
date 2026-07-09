@@ -50,6 +50,7 @@ import io.gomob.data.message.MediaSessionRepository
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
+import io.gomob.designsystem.glass.GlassHeaderScaffold
 import io.gomob.designsystem.theme.Gomob
 import io.livekit.android.ConnectOptions
 import io.livekit.android.LiveKit
@@ -110,122 +111,127 @@ fun LocalVideoPreviewRoute(
         onBack()
     }
 
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        BackHeader(
-            title = "第一视角",
-            onBack = {
-                viewModel.stop()
-                onBack()
-            },
-            eyebrow = listOf(
-                title.takeIf { it.isNotBlank() },
-                "正在向团队直播",
-                when (state) {
-                    is LocalLiveState.Ready -> "LiveKit 已接通"
-                    LocalLiveState.Starting -> "连接中"
-                    is LocalLiveState.Unavailable -> "媒体不可用"
-                    is LocalLiveState.Error -> "连接失败"
-                    LocalLiveState.Idle -> "准备中"
+    GlassHeaderScaffold(
+        header = {
+            BackHeader(
+                title = "第一视角",
+                onBack = {
+                    viewModel.stop()
+                    onBack()
                 },
-            ).filterNotNull().joinToString(" · "),
-            trailing = {
-                val (text, tone) = when (val s = state) {
-                    LocalLiveState.Idle -> "准备中" to StatusTone.Neutral
-                    LocalLiveState.Starting -> "连接中" to StatusTone.Neutral
-                    is LocalLiveState.Ready -> "直播中" to StatusTone.Ok
-                    is LocalLiveState.Unavailable -> "媒体不可用" to StatusTone.Warn
-                    is LocalLiveState.Error -> "连接失败" to StatusTone.Danger
-                }
-                StatusTag(text = text, tone = tone, showDot = true)
-            },
-        )
-
-        Box(
-            Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .background(Color.Black),
-            contentAlignment = Alignment.Center,
-        ) {
-            val track = localTrack
-            when {
-                !hasMediaPermission -> PermissionBlock(
-                    text = "需要相机 + 录音权限才能开播",
-                    onClick = { permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)) },
-                )
-                !controls.cameraEnabled -> PausedBlock()
-                track != null -> AndroidView(
-                    modifier = Modifier.fillMaxSize(),
-                    factory = { ctx ->
-                        TextureViewRenderer(ctx).apply {
-                            layoutParams = ViewGroup.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                            )
-                            // LiveKit 2.x: 必须显式初始化 renderer 才能收到帧
-                            room?.initVideoRenderer(this)
-                            track.addRenderer(this)
-                        }
+                eyebrow = listOf(
+                    title.takeIf { it.isNotBlank() },
+                    "正在向团队直播",
+                    when (state) {
+                        is LocalLiveState.Ready -> "LiveKit 已接通"
+                        LocalLiveState.Starting -> "连接中"
+                        is LocalLiveState.Unavailable -> "媒体不可用"
+                        is LocalLiveState.Error -> "连接失败"
+                        LocalLiveState.Idle -> "准备中"
                     },
-                    onRelease = { view -> track.removeRenderer(view) },
-                )
-                else -> StatusTag(
-                    text = "等待采集本地视频轨道",
-                    tone = StatusTone.Neutral,
-                    showDot = true,
-                )
-            }
-            val msg = when (val s = state) {
-                is LocalLiveState.Unavailable -> s.message
-                is LocalLiveState.Error -> s.message
-                is LocalLiveState.Ready -> "房间 ${s.providerRoom}"
-                else -> null
-            }
-            if (msg != null) {
-                Box(
-                    Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(Gomob.spacing.s12),
-                ) {
-                    StatusTag(
-                        text = msg,
-                        tone = when (state) {
-                            is LocalLiveState.Ready -> StatusTone.Ok
-                            is LocalLiveState.Error -> StatusTone.Danger
-                            else -> StatusTone.Warn
+                ).filterNotNull().joinToString(" · "),
+                trailing = {
+                    val (text, tone) = when (val s = state) {
+                        LocalLiveState.Idle -> "准备中" to StatusTone.Neutral
+                        LocalLiveState.Starting -> "连接中" to StatusTone.Neutral
+                        is LocalLiveState.Ready -> "直播中" to StatusTone.Ok
+                        is LocalLiveState.Unavailable -> "媒体不可用" to StatusTone.Warn
+                        is LocalLiveState.Error -> "连接失败" to StatusTone.Danger
+                    }
+                    StatusTag(text = text, tone = tone, showDot = true)
+                },
+            )
+        },
+    ) { padding ->
+        // 非滚动整页: 预览区 + 控制条整体避让玻璃 header 与导航栏
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .background(Color.Black),
+                contentAlignment = Alignment.Center,
+            ) {
+                val track = localTrack
+                when {
+                    !hasMediaPermission -> PermissionBlock(
+                        text = "需要相机 + 录音权限才能开播",
+                        onClick = { permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)) },
+                    )
+                    !controls.cameraEnabled -> PausedBlock()
+                    track != null -> AndroidView(
+                        modifier = Modifier.fillMaxSize(),
+                        factory = { ctx ->
+                            TextureViewRenderer(ctx).apply {
+                                layoutParams = ViewGroup.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                )
+                                // LiveKit 2.x: 必须显式初始化 renderer 才能收到帧
+                                room?.initVideoRenderer(this)
+                                track.addRenderer(this)
+                            }
                         },
+                        onRelease = { view -> track.removeRenderer(view) },
+                    )
+                    else -> StatusTag(
+                        text = "等待采集本地视频轨道",
+                        tone = StatusTone.Neutral,
                         showDot = true,
                     )
                 }
+                val msg = when (val s = state) {
+                    is LocalLiveState.Unavailable -> s.message
+                    is LocalLiveState.Error -> s.message
+                    is LocalLiveState.Ready -> "房间 ${s.providerRoom}"
+                    else -> null
+                }
+                if (msg != null) {
+                    Box(
+                        Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(Gomob.spacing.s12),
+                    ) {
+                        StatusTag(
+                            text = msg,
+                            tone = when (state) {
+                                is LocalLiveState.Ready -> StatusTone.Ok
+                                is LocalLiveState.Error -> StatusTone.Danger
+                                else -> StatusTone.Warn
+                            },
+                            showDot = true,
+                        )
+                    }
+                }
             }
-        }
 
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .background(Gomob.colors.bg1)
-                .padding(horizontal = Gomob.spacing.s20, vertical = Gomob.spacing.s12),
-            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12, Alignment.CenterHorizontally),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            ControlButton(
-                active = controls.micEnabled,
-                icon = if (controls.micEnabled) Icons.Filled.Mic else Icons.Filled.MicOff,
-                label = if (controls.micEnabled) "静音" else "解除静音",
-                onClick = { viewModel.toggleMic() },
-            )
-            ControlButton(
-                active = controls.cameraEnabled,
-                icon = if (controls.cameraEnabled) Icons.Filled.Videocam else Icons.Filled.VideocamOff,
-                label = if (controls.cameraEnabled) "关闭摄像头" else "打开摄像头",
-                onClick = { viewModel.toggleCamera() },
-            )
-            ControlButton(
-                active = true,
-                icon = Icons.Filled.Cameraswitch,
-                label = "切换摄像头",
-                onClick = { viewModel.flipCamera() },
-            )
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .background(Gomob.colors.bg1)
+                    .padding(horizontal = Gomob.spacing.s20, vertical = Gomob.spacing.s12),
+                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ControlButton(
+                    active = controls.micEnabled,
+                    icon = if (controls.micEnabled) Icons.Filled.Mic else Icons.Filled.MicOff,
+                    label = if (controls.micEnabled) "静音" else "解除静音",
+                    onClick = { viewModel.toggleMic() },
+                )
+                ControlButton(
+                    active = controls.cameraEnabled,
+                    icon = if (controls.cameraEnabled) Icons.Filled.Videocam else Icons.Filled.VideocamOff,
+                    label = if (controls.cameraEnabled) "关闭摄像头" else "打开摄像头",
+                    onClick = { viewModel.toggleCamera() },
+                )
+                ControlButton(
+                    active = true,
+                    icon = Icons.Filled.Cameraswitch,
+                    label = "切换摄像头",
+                    onClick = { viewModel.flipCamera() },
+                )
+            }
         }
     }
 }

@@ -17,9 +17,10 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ChatBubble
@@ -27,8 +28,10 @@ import androidx.compose.material.icons.filled.GroupWork
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,8 +46,11 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import dev.chrisbanes.haze.HazeState
 import io.gomob.designsystem.component.TabBarVector
 import io.gomob.designsystem.component.TabItemVector
+import io.gomob.designsystem.glass.LocalContentBottomInset
+import io.gomob.designsystem.glass.LocalHazeState
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.feature.collaboration.CollaborationRoute
 import io.gomob.feature.collaboration.FirstPersonViewerRoute
@@ -95,7 +101,7 @@ private const val IOS_UNDERLAY_PARALLAX_DIVISOR = 3
 private val IosEasing = CubicBezierEasing(0.32f, 0.72f, 0f, 1f)
 
 private val TABS = listOf(
-    TabItemVector(ROUTE_HOME, "首页", Icons.Filled.AutoAwesome),
+    TabItemVector(ROUTE_HOME, "助手", Icons.Filled.AutoAwesome),
     TabItemVector(ROUTE_MESSAGE, "消息", Icons.Filled.ChatBubble),
     TabItemVector(ROUTE_SCAN3D, "3D", Icons.Filled.ViewInAr),
     TabItemVector(ROUTE_COLLAB, "协作", Icons.Filled.GroupWork),
@@ -123,12 +129,18 @@ fun GomobNavHost(
     val onTabRoot = currentRoute in TAB_ROUTES
     val density = LocalDensity.current
     val imeVisible = WindowInsets.ime.getBottom(density) > 0
-    val stableRootBottomPadding = Gomob.spacing.tabBarHeight
+    // TabBar 总高 = 56dp + 导航栏 inset（玻璃条延伸到导航栏底下）
+    val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val tabChromeHeight = Gomob.spacing.tabBarHeight + navBarBottom
+    val stableRootBottomPadding = tabChromeHeight
     val rootBottomPadding by animateDpAsState(
-        targetValue = if (imeVisible) 0.dp else Gomob.spacing.tabBarHeight,
+        targetValue = if (imeVisible) 0.dp else tabChromeHeight,
         animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
         label = "root-bottom-padding",
     )
+    // 全 App 共享 HazeState：采样源是各屏 GlassHeaderScaffold 的内容层(经 LocalHazeState 下发),
+    // TabBar / Header / 来电浮窗都消费同一个 state。不在 NavHost 上再挂源 —— 源嵌套会互相录空。
+    val shellHaze = remember { HazeState() }
     LaunchedEffect(debugRouteRequest) {
         val route = debugRouteRequest?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
         nav.navigate(route) {
@@ -140,6 +152,7 @@ fun GomobNavHost(
         currentOnSystemBarsPaddingRequiredChanged(systemBarsPaddingRequired)
     }
 
+    CompositionLocalProvider(LocalHazeState provides shellHaze) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -504,15 +517,22 @@ fun GomobNavHost(
             )
         }
     }
+    }
 }
 
+/**
+ * root tab 屏容器：不再用 padding 挡住 TabBar —— 内容占满全屏从玻璃 TabBar
+ * 底下穿过，避让高度经 [LocalContentBottomInset] 下发给各屏的滚动 contentPadding。
+ */
 @Composable
 private fun RootTabPage(
     bottomPadding: Dp,
     content: @Composable () -> Unit,
 ) {
-    Box(Modifier.fillMaxSize().padding(bottom = bottomPadding)) {
-        content()
+    CompositionLocalProvider(LocalContentBottomInset provides bottomPadding) {
+        Box(Modifier.fillMaxSize()) {
+            content()
+        }
     }
 }
 

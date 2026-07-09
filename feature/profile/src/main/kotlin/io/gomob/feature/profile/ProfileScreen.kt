@@ -15,14 +15,18 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -54,6 +58,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.data.prefs.ThemeMode
 import io.gomob.designsystem.component.ScreenHeader
 import io.gomob.designsystem.decoration.ticks
+import io.gomob.designsystem.glass.GlassHeaderScaffold
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 import kotlinx.coroutines.Dispatchers
@@ -109,12 +114,10 @@ fun ProfileRoute(
         settingsOpen = false
     }
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(Gomob.colors.bg0),
-    ) {
-        Column(Modifier.fillMaxSize()) {
+    val listState = rememberLazyListState()
+    GlassHeaderScaffold(
+        listState = listState,
+        header = {
             ScreenHeader(
                 title = "我的",
                 eyebrow = "工号 ${state.profile?.employeeId ?: "ZAA0120230001"}",
@@ -122,55 +125,61 @@ fun ProfileRoute(
                     SettingsIconButton(onClick = { settingsOpen = !settingsOpen })
                 },
             )
-            LazyColumn(
-                Modifier.weight(1f).fillMaxWidth(),
-                contentPadding = PaddingValues(bottom = 28.dp),
-            ) {
-                item {
-                    IdentityCard(
-                        state = state,
-                        onOpenEdit = onOpenPersonal,
-                        onOpenCases = onOpenCases,
-                    )
-                }
-                item { Spacer(Modifier.height(Gomob.spacing.s12)) }
-                item { FlowSectionHeader(onOpenHistory = onOpenHistory) }
-                item { FilterChipRow() }
-                item { Spacer(Modifier.height(10.dp)) }
-                items(FLOW_ROWS.size) { i ->
-                    Box(
-                        Modifier
-                            .padding(horizontal = Gomob.spacing.s20)
-                            .padding(bottom = Gomob.spacing.s8),
-                    ) { FlowRow(FLOW_ROWS[i]) }
-                }
+        },
+        overlay = {
+            // 设置抽屉 — 全屏浮层放 overlay 槽, 面板内容自吃 systemBars inset
+            SettingsDrawer(
+                visible = settingsOpen,
+                onClose = { settingsOpen = false },
+                onLogout = {
+                    vm.logout()
+                    settingsOpen = false
+                },
+                onOpenAccount = onOpenAccount,
+                onOpenNotification = onOpenNotification,
+                onOpenAbout = onOpenAbout,
+                themeLabel = themeLabel(themeMode) + " · " + colorScheme.displayName,
+                onOpenTheme = {
+                    settingsOpen = false
+                    onOpenTheme()
+                },
+                cacheText = formatCacheSize(cacheSize),
+                onClearCache = {
+                    scope.launch {
+                        withContext(Dispatchers.IO) { clearDir(cacheRoot) }
+                        cacheSize = withContext(Dispatchers.IO) { dirSize(cacheRoot) }
+                    }
+                },
+            )
+        },
+    ) { padding ->
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                top = padding.calculateTopPadding(),
+                bottom = padding.calculateBottomPadding() + 28.dp,
+            ),
+        ) {
+            item {
+                IdentityCard(
+                    state = state,
+                    onOpenEdit = onOpenPersonal,
+                    onOpenCases = onOpenCases,
+                )
+            }
+            item { Spacer(Modifier.height(Gomob.spacing.s12)) }
+            item { FlowSectionHeader(onOpenHistory = onOpenHistory) }
+            item { FilterChipRow() }
+            item { Spacer(Modifier.height(10.dp)) }
+            items(FLOW_ROWS.size) { i ->
+                Box(
+                    Modifier
+                        .padding(horizontal = Gomob.spacing.s20)
+                        .padding(bottom = Gomob.spacing.s8),
+                ) { FlowRow(FLOW_ROWS[i]) }
             }
         }
-
-        // 设置抽屉 — Box.matchParentSize + AnimatedVisibility
-        SettingsDrawer(
-            visible = settingsOpen,
-            onClose = { settingsOpen = false },
-            onLogout = {
-                vm.logout()
-                settingsOpen = false
-            },
-            onOpenAccount = onOpenAccount,
-            onOpenNotification = onOpenNotification,
-            onOpenAbout = onOpenAbout,
-            themeLabel = themeLabel(themeMode) + " · " + colorScheme.displayName,
-            onOpenTheme = {
-                settingsOpen = false
-                onOpenTheme()
-            },
-            cacheText = formatCacheSize(cacheSize),
-            onClearCache = {
-                scope.launch {
-                    withContext(Dispatchers.IO) { clearDir(cacheRoot) }
-                    cacheSize = withContext(Dispatchers.IO) { dirSize(cacheRoot) }
-                }
-            },
-        )
     }
 }
 
@@ -620,7 +629,7 @@ private fun DrawerContent(
         SettingItem(GomobIcons.Moon, "切换主题", value = themeLabel, onClick = onOpenTheme),
         SettingItem(GomobIcons.Cache, "清理缓存", value = cacheText, onClick = onClearCache),
         SettingItem(GomobIcons.Bell, "通知设置", onClick = onOpenNotification),
-        SettingItem(GomobIcons.Info, "关于方寸观车", value = "v0.1.0", onClick = onOpenAbout),
+        SettingItem(GomobIcons.Info, "关于锐眼观车", value = "v0.1.0", onClick = onOpenAbout),
     )
     Column(
         Modifier
@@ -631,7 +640,9 @@ private fun DrawerContent(
                 interactionSource = drawerClickSource,
                 indication = null,
                 onClick = { dismissInput() },
-            ),
+            )
+            // 面板背景铺满全高, 内容避让状态栏/导航栏
+            .windowInsetsPadding(WindowInsets.systemBars),
     ) {
         // 抽屉顶
         Row(

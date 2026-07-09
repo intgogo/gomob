@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -101,7 +102,9 @@ private fun InspectionSharePickerContent(
                 interactionSource = consumeClicks,
                 indication = null,
                 onClick = {},
-            ),
+            )
+            // edge-to-edge 后面板贴屏幕物理底边，内容自己避让导航栏
+            .navigationBarsPadding(),
     ) {
         Row(
             Modifier

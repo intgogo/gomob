@@ -105,9 +105,9 @@ class VinCaptureViewModel @Inject constructor(
     @Volatile private var latestDepth: DepthFrame? = null
     private var captureJob: Job? = null
 
-    // 服务端还原签名 PNG：拍照成功后存，「确认」时喂 vin_pipeline OCR（原厂全保真还原图，比原始 color 更利识别）。
+    // 服务端彩色正射还原 PNG：拍照成功后存，「确认」时喂 vin_pipeline OCR。
     // 每次新拍照 / 重拍清空，避免对陈旧图识别。
-    @Volatile private var restoredSignaturePng: ByteArray? = null
+    @Volatile private var restoredRubbingPng: ByteArray? = null
     private var recognizeJob: Job? = null
 
     init {
@@ -166,9 +166,9 @@ class VinCaptureViewModel @Inject constructor(
         }
         _capturing.value = true
         _captureMsg.value = null
-        // 新拍照作废上一张的还原签名与 OCR 结果（回取景态，等本次还原成功再供「确认」识别）。
+        // 新拍照作废上一张的还原图与 OCR 结果（回取景态，等本次还原成功再供「确认」识别）。
         recognizeJob?.cancel()
-        restoredSignaturePng = null
+        restoredRubbingPng = null
         _state.value = VinCaptureState.Preview
         captureJob = viewModelScope.launch {
             try {
@@ -219,7 +219,7 @@ class VinCaptureViewModel @Inject constructor(
                     Log.i(TAG, "端侧预览正射跳过（不影响落盘/上传）: ${e.message}")
                 }
 
-                // ③ 上传服务端原厂全保真还原 → 权威拓印签名图，覆盖即时预览。深度内参随传，彩色内参服务端按 2× registration 自推。
+                // ③ 上传服务端原厂式还原 → 权威彩色正射图，覆盖即时预览。深度内参随传，彩色内参服务端按 2× registration 自推。
                 if (jpeg == null) {
                     _captureMsg.value = "已存第 $seq 张（彩色编码失败，未上传）"
                     return@launch
@@ -236,7 +236,7 @@ class VinCaptureViewModel @Inject constructor(
                     if (r.ok && png != null) {
                         withContext(Dispatchers.Default) { BitmapFactory.decodeByteArray(png, 0, png.size) }
                             ?.let { _rubbing.value = it; _previewEstimated.value = false }  // 服务端权威覆盖，清估算角标
-                        restoredSignaturePng = png  // 供「确认」喂 vin_pipeline OCR
+                        restoredRubbingPng = png  // 供「确认」喂 vin_pipeline OCR
                         _captureMsg.value = "服务端还原 ✓ 第 $seq 张｜倾角 %.0f° 内点 %.0f%% 检出 %d（点确认识别）".format(
                             r.tiltDeg, r.inlierRate * 100, r.numDet)
                     } else {
@@ -266,12 +266,12 @@ class VinCaptureViewModel @Inject constructor(
     /**
      * VIN 字符识别（OCR + 厂家字形库比对，服务端 vin_pipeline）。
      *
-     * 输入 = **服务端原厂全保真还原签名 PNG**（[restoredSignaturePng]，去阴影 OCR 级二值图，比原始 color 更利识别），
+     * 输入 = **服务端原厂式彩色正射 PNG**（[restoredRubbingPng]），
      * 由「确认」按钮触发。还原未成功（未拍照 / tilt 判废 / 上传失败）时无图可识，提示先拍照，不退化喂原始 color。
      */
     fun recognize() {
         if (_state.value == VinCaptureState.Recognizing) return
-        val png = restoredSignaturePng
+        val png = restoredRubbingPng
         if (png == null) {
             _captureMsg.value = "请先拍照生成还原图，再点确认识别"
             return
@@ -279,9 +279,9 @@ class VinCaptureViewModel @Inject constructor(
         _state.value = VinCaptureState.Recognizing
         recognizeJob = viewModelScope.launch {
             try {
-                // vin_pipeline 服务端按 magic 字节 IMDecode，PNG/JPEG 通吃；这里直传还原签名 PNG。
+                // vin_pipeline 服务端按 magic 字节 IMDecode，PNG/JPEG 通吃；这里直传彩色正射还原 PNG。
                 val bmp = withContext(Dispatchers.Default) { BitmapFactory.decodeByteArray(png, 0, png.size) }
-                    ?: throw IllegalStateException("还原签名解码失败")
+                    ?: throw IllegalStateException("还原图解码失败")
                 val result = vinRepo.recognize(_vehicleModelId.value, png)
                 _state.value = VinCaptureState.Result(capture = bmp, result = result)
                 Log.i(TAG, "VIN 识别完成 verdict=${result.verdict} vin=${result.recognizedVin} scored=${result.scored}")
@@ -349,13 +349,13 @@ class VinCaptureViewModel @Inject constructor(
         return dir
     }
 
-    /** 重拍：清掉拓印图、还原签名、OCR 结果与提示，回到取景。 */
+    /** 重拍：清掉拓印图、OCR 结果与提示，回到取景。 */
     fun retake() {
         captureJob?.cancel()
         captureJob = null
         recognizeJob?.cancel()
         recognizeJob = null
-        restoredSignaturePng = null
+        restoredRubbingPng = null
         _rubbing.value = null
         _captureMsg.value = null
         _state.value = VinCaptureState.Preview
@@ -382,9 +382,9 @@ class VinCaptureViewModel @Inject constructor(
         // 实测 ~6.5（fx≈8320@1280宽, HFOV≈8.8°）；离线复现真机 dump 验证整串 VIN 正确充满还原图。待 ArUco 标定替换。
         private const val HLSD8_FOCAL_FACTOR = 6.5
         // 正射配置 [pixel_size_mm, out_w, out_h, plane_dist_thresh_mm, ransac_iter, min_inlier_ratio,
-        //          roi_cx, roi_cy, roi_w, roi_h]。0.2mm/px × 1024×512 ≈ 205×102mm 视场，覆盖 VIN 字带。
+        //          roi_cx, roi_cy, roi_w, roi_h]。仅作端侧即时预览；权威拓印由服务端动态比例输出覆盖。
         // ROI=中心 50%×50%：只用图像中间部位深度拟合平面 + 定输出中心，避背景污染、对准中央目标。
         private val ORTHO_CONFIG =
-            floatArrayOf(0.2f, 1024f, 512f, 3f, 200f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f)
+            floatArrayOf(0.2f, 1200f, 260f, 3f, 200f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f)
     }
 }

@@ -42,10 +42,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -72,9 +75,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -97,9 +98,11 @@ import androidx.compose.ui.zIndex
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.ScreenHeader
 import io.gomob.designsystem.decoration.ticks
+import io.gomob.designsystem.glass.GlassHeaderScaffold
+import io.gomob.designsystem.glass.LocalContentBottomInset
+import io.gomob.designsystem.glass.glassChrome
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
-import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 
 const val HOME_ROUTE = "home"
@@ -144,12 +147,6 @@ fun HomeRoute(
         }
     }
     val context = LocalContext.current
-    val view = LocalView.current
-    val density = LocalDensity.current
-    var bottomAnchorInsetPx by remember { mutableStateOf<Int?>(null) }
-    val bottomAnchorInset = bottomAnchorInsetPx
-        ?.let { with(density) { it.toDp() } }
-        ?: Gomob.spacing.tabBarHeight
     LaunchedEffect(requestCapture) {
         if (requestCapture) {
             val granted = ContextCompat.checkSelfPermission(
@@ -172,16 +169,13 @@ fun HomeRoute(
     }
     BackHandler(enabled = composerActive, onBack = exitInput)
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .trackWindowBottomInset(view) { bottomAnchorInsetPx = it }
-            .consumeWindowInsets(WindowInsets.ime)
-            .background(Gomob.colors.bg0),
-    ) {
-        Column(Modifier.fillMaxSize()) {
+    val rootListState = rememberLazyListState()
+    GlassHeaderScaffold(
+        modifier = Modifier.consumeWindowInsets(WindowInsets.ime),
+        listState = rootListState,
+        header = {
             ScreenHeader(
-                title = "AI 助手",
+                title = "智能助手",
                 eyebrow = "车辆检验智能体 · 检测站合规识别",
                 trailing = {
                     HistoryIconButton(
@@ -190,52 +184,56 @@ fun HomeRoute(
                     )
                 },
             )
-            BoxWithConstraints(
+        },
+        overlay = { padding ->
+            InputScrim(
+                visible = composerActive,
+                onDismiss = exitInput,
+            )
+            ChatComposer(
+                onSubmit = { text ->
+                    val token = attachedBitmap?.let(HomeImageHolder::put)
+                    attachedBitmap = null
+                    onOpenNewChat(text, token)
+                },
+                attachedBitmap = attachedBitmap,
+                onClearAttachment = { attachedBitmap = null },
+                onCameraClick = { requestCapture = true },
+                active = composerActive,
+                onActiveChange = { composerActive = it },
+                bottomAnchorInset = padding.calculateBottomPadding(),
                 modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(bottom = LocalContentBottomInset.current),
+            )
+            HistoryPanel(
+                visible = historyOpen,
+                onDismiss = { historyOpen = false },
+            )
+        },
+    ) { padding ->
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val compact = maxWidth < 360.dp
+            LazyColumn(
+                state = rootListState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    top = padding.calculateTopPadding(),
+                    bottom = padding.calculateBottomPadding() + (if (compact) 104.dp else 112.dp),
+                ),
             ) {
-                val compact = maxWidth < 360.dp
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = if (compact) 104.dp else 112.dp),
-                ) {
-                    item { AgentIntroCard(compact = compact) }
-                    item { Spacer(Modifier.height(if (compact) Gomob.spacing.s12 else Gomob.spacing.s16)) }
-                    item {
-                        AgentCapabilityList(
-                            onSelect = { onOpenAgent(it.key) },
-                            compact = compact,
-                        )
-                    }
-                    item { Spacer(Modifier.height(if (compact) Gomob.spacing.s16 else Gomob.spacing.s24)) }
+                item { AgentIntroCard(compact = compact) }
+                item { Spacer(Modifier.height(if (compact) Gomob.spacing.s12 else Gomob.spacing.s16)) }
+                item {
+                    AgentCapabilityList(
+                        onSelect = { onOpenAgent(it.key) },
+                        compact = compact,
+                    )
                 }
+                item { Spacer(Modifier.height(if (compact) Gomob.spacing.s16 else Gomob.spacing.s24)) }
             }
         }
-        InputScrim(
-            visible = composerActive,
-            onDismiss = exitInput,
-        )
-        ChatComposer(
-            onSubmit = { text ->
-                val token = attachedBitmap?.let(HomeImageHolder::put)
-                attachedBitmap = null
-                onOpenNewChat(text, token)
-            },
-            attachedBitmap = attachedBitmap,
-            onClearAttachment = { attachedBitmap = null },
-            onCameraClick = { requestCapture = true },
-            active = composerActive,
-            onActiveChange = { composerActive = it },
-            bottomAnchorInset = bottomAnchorInset,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth(),
-        )
-        HistoryPanel(
-            visible = historyOpen,
-            onDismiss = { historyOpen = false },
-        )
     }
 }
 
@@ -255,12 +253,6 @@ fun HomeAiChatRoute(
     var prompts by rememberSaveable(initialPrompt, agentKey) { mutableStateOf(seedPrompts) }
     var composerActive by rememberSaveable { mutableStateOf(false) }
     val listState = rememberLazyListState()
-    val view = LocalView.current
-    val density = LocalDensity.current
-    var bottomAnchorInsetPx by remember { mutableStateOf<Int?>(null) }
-    val bottomAnchorInset = bottomAnchorInsetPx
-        ?.let { with(density) { it.toDp() } }
-        ?: 0.dp
     // 仅在首次 enter 时把 token 兑换成 Bitmap；之后 token 在 holder 里被移除，避免泄漏。
     val attached = remember(imageToken) { imageToken?.let(HomeImageHolder::take) }
     val exitKeyboard = rememberExitInput()
@@ -285,24 +277,39 @@ fun HomeAiChatRoute(
         else -> "新会话"
     }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .trackWindowBottomInset(view) { bottomAnchorInsetPx = it }
-            .background(Gomob.colors.bg0)
-    ) {
-        BackHeader(
-            title = headerTitle,
-            eyebrow = "AI 助手",
-            onBack = onBack,
-        )
+    GlassHeaderScaffold(
+        listState = listState,
+        header = {
+            BackHeader(
+                title = headerTitle,
+                eyebrow = "助手",
+                onBack = onBack,
+            )
+        },
+        overlay = { padding ->
+            ChatComposer(
+                onSubmit = { prompt -> prompts = prompts + prompt },
+                active = composerActive,
+                onActiveChange = { composerActive = it },
+                bottomAnchorInset = padding.calculateBottomPadding(),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth(),
+            )
+        },
+    ) { padding ->
         LazyColumn(
             state = listState,
             modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
+                .fillMaxSize()
                 .dismissInputOnTap(exitInput),
-            contentPadding = PaddingValues(horizontal = Gomob.spacing.s20, vertical = Gomob.spacing.s12),
+            contentPadding = PaddingValues(
+                start = Gomob.spacing.s20,
+                end = Gomob.spacing.s20,
+                top = padding.calculateTopPadding() + Gomob.spacing.s12,
+                // 底部预留吸底输入条高度，最后一条气泡不被压住
+                bottom = padding.calculateBottomPadding() + 104.dp,
+            ),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
             if (agent != null) {
@@ -318,13 +325,6 @@ fun HomeAiChatRoute(
                 )
             }
         }
-        ChatComposer(
-            onSubmit = { prompt -> prompts = prompts + prompt },
-            active = composerActive,
-            onActiveChange = { composerActive = it },
-            bottomAnchorInset = bottomAnchorInset,
-            modifier = Modifier.fillMaxWidth(),
-        )
     }
 }
 
@@ -452,6 +452,8 @@ private fun HistoryPanelContent() {
             .fillMaxWidth(0.82f)
             .fillMaxHeight()
             .background(Gomob.colors.bg1)
+            // edge-to-edge 后侧滑面板自己避让系统栏
+            .windowInsetsPadding(WindowInsets.systemBars)
             .clickable(
                 interactionSource = drawerClickSource,
                 indication = null,
@@ -1225,7 +1227,9 @@ private fun ChatComposer(
         modifier
             .zIndex(10f)
             .offset { IntOffset(x = 0, y = -keyboardTravel) }
-            .background(Gomob.colors.bg0)
+            // 玻璃吸底条：内容从底下滚过时透出模糊背景；导航栏 inset 吃在玻璃内侧
+            .glassChrome(topEdge = true)
+            .navigationBarsPadding()
             .clickable(
                 interactionSource = inputClickSource,
                 indication = null,
@@ -1443,19 +1447,6 @@ private fun rememberExitInput(): () -> Unit {
             focusManager.clearFocus(force = true)
             keyboardController?.hide()
         }
-    }
-}
-
-private fun Modifier.trackWindowBottomInset(
-    view: android.view.View,
-    onInsetChanged: (Int) -> Unit,
-): Modifier = onGloballyPositioned { coordinates ->
-    val windowHeight = view.rootView.height.takeIf { it > 0 } ?: view.height
-    if (windowHeight > 0) {
-        val bottomInset = (windowHeight - coordinates.boundsInWindow().bottom)
-            .roundToInt()
-            .coerceAtLeast(0)
-        onInsetChanged(bottomInset)
     }
 }
 

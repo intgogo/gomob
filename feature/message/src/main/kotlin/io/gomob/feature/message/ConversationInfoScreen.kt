@@ -63,6 +63,9 @@ import io.gomob.data.message.ConversationInfoRepository
 import io.gomob.data.message.ConversationInfoSettings
 import io.gomob.data.message.ConversationInfoStoredMember
 import io.gomob.data.message.MessageRepository
+import io.gomob.designsystem.component.LocalFeedbackTitleLongPress
+import io.gomob.designsystem.component.feedbackTitleLongPress
+import io.gomob.designsystem.glass.GlassHeaderScaffold
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.motion.fixedDuringPageDrag
 import io.gomob.designsystem.theme.Gomob
@@ -110,6 +113,8 @@ fun ConversationInfoRoute(
     if (clearConfirmOpen) {
         AlertDialog(
             onDismissRequest = { clearConfirmOpen = false },
+            containerColor = Gomob.colors.bg2.copy(alpha = 0.97f),
+            shape = Gomob.shapes.r3,
             title = { Text("清空聊天记录", style = Gomob.type.title, color = Gomob.colors.fg0) },
             text = { Text("清空后，本机不会再显示当前已同步的历史消息。", style = Gomob.type.bodySm, color = Gomob.colors.fg2) },
             confirmButton = {
@@ -133,6 +138,8 @@ fun ConversationInfoRoute(
     if (leaveConfirmOpen) {
         AlertDialog(
             onDismissRequest = { leaveConfirmOpen = false },
+            containerColor = Gomob.colors.bg2.copy(alpha = 0.97f),
+            shape = Gomob.shapes.r3,
             title = { Text("退出群聊", style = Gomob.type.title, color = Gomob.colors.fg0) },
             text = { Text("退出后将不再接收该群聊消息。", style = Gomob.type.bodySm, color = Gomob.colors.fg2) },
             confirmButton = {
@@ -200,17 +207,25 @@ fun ConversationInfoRoute(
         )
     }
 
-    Column(Modifier.fillMaxSize().background(ConversationInfoPageBg)) {
-        ConversationInfoTopBar(
-            title = state.headerTitle,
-            onBack = onBack,
-        )
+    val scrollState = rememberScrollState()
+    GlassHeaderScaffold(
+        scrollState = scrollState,
+        header = {
+            ConversationInfoTopBar(
+                title = state.headerTitle,
+                onBack = onBack,
+            )
+        },
+    ) { padding ->
         Column(
             Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .verticalScroll(rememberScrollState()),
+                .fillMaxSize()
+                // 页面底色铺满视口（含玻璃顶栏下方），滚动内容从其上穿过
+                .background(ConversationInfoPageBg)
+                .verticalScroll(scrollState),
         ) {
+            // verticalScroll 无 contentPadding → 首尾 Spacer 承接 scaffold 避让区
+            Spacer(Modifier.height(padding.calculateTopPadding()))
             ConversationMemberGrid(
                 members = state.members,
                 onOpenUserDetail = onOpenUserDetail,
@@ -296,7 +311,7 @@ fun ConversationInfoRoute(
                     modifier = Modifier.padding(Gomob.spacing.s20),
                 )
             }
-            Spacer(Modifier.height(Gomob.spacing.s28))
+            Spacer(Modifier.height(padding.calculateBottomPadding() + Gomob.spacing.s28))
         }
     }
 }
@@ -339,6 +354,8 @@ private fun ConversationInfoEditDialog(
     val maxLines = if (target == ConversationInfoEditTarget.Announcement) 5 else 2
     AlertDialog(
         onDismissRequest = onDismiss,
+        containerColor = Gomob.colors.bg2.copy(alpha = 0.97f),
+        shape = Gomob.shapes.r3,
         title = { Text(title, style = Gomob.type.title, color = Gomob.colors.fg0) },
         text = {
             ConversationInfoTextInput(
@@ -399,6 +416,8 @@ private fun ConversationQrDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
+        containerColor = Gomob.colors.bg2.copy(alpha = 0.97f),
+        shape = Gomob.shapes.r3,
         title = { Text("群二维码", style = Gomob.type.title, color = Gomob.colors.fg0) },
         text = {
             Column(
@@ -489,6 +508,8 @@ private fun ConversationMemberDialog(
     }
     AlertDialog(
         onDismissRequest = onDismiss,
+        containerColor = Gomob.colors.bg2.copy(alpha = 0.97f),
+        shape = Gomob.shapes.r3,
         title = { Text(title, style = Gomob.type.title, color = Gomob.colors.fg0) },
         text = {
             if (items.isEmpty()) {
@@ -584,12 +605,13 @@ private fun ConversationInfoTopBar(
     title: String,
     onBack: () -> Unit,
 ) {
+    val feedbackTrigger = LocalFeedbackTitleLongPress.current
+    // 顶栏在 GlassHeaderScaffold header 槽内 → 不画实底，由玻璃层负责
     Box(
         Modifier
             .fixedDuringPageDrag()
             .fillMaxWidth()
-            .height(Gomob.spacing.headerHeight)
-            .background(Gomob.colors.bg0),
+            .height(Gomob.spacing.headerHeight),
     ) {
         Box(
             Modifier
@@ -615,6 +637,13 @@ private fun ConversationInfoTopBar(
             modifier = Modifier
                 .align(Alignment.Center)
                 .fillMaxWidth()
+                .then(
+                    if (feedbackTrigger != null) {
+                        Modifier.feedbackTitleLongPress(title, feedbackTrigger)
+                    } else {
+                        Modifier
+                    },
+                )
                 .padding(horizontal = 84.dp),
         )
     }

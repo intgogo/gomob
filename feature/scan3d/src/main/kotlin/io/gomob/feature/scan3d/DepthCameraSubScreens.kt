@@ -1,26 +1,47 @@
 package io.gomob.feature.scan3d
 
+import android.graphics.Bitmap
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.HairlineCard
 import io.gomob.designsystem.component.SettingRow
 import io.gomob.designsystem.component.SettingRowDivider
+import io.gomob.designsystem.glass.GlassHeaderScaffold
+import io.gomob.designsystem.glass.glassChrome
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.nativebridge.berxel.BerxelDeviceControls
 import io.gomob.nativebridge.berxel.BerxelDeviceState
@@ -43,11 +64,18 @@ fun DepthCameraInfoRoute(
 ) {
     val ui by vm.uiState.collectAsStateWithLifecycle()
 
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        BackHeader(title = "设备详情", eyebrow = "iHawk · 信息 / 内参 / 帧统计", onBack = onBack)
+    val listState = rememberLazyListState()
+    GlassHeaderScaffold(
+        listState = listState,
+        header = { BackHeader(title = "设备详情", eyebrow = "iHawk · 信息 / 内参 / 帧统计", onBack = onBack) },
+    ) { padding ->
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(top = Gomob.spacing.s12, bottom = Gomob.spacing.s28),
+            contentPadding = PaddingValues(
+                top = padding.calculateTopPadding() + Gomob.spacing.s12,
+                bottom = padding.calculateBottomPadding() + Gomob.spacing.s28,
+            ),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s16),
         ) {
             item { DeviceInfoSection(state = ui.device) }
@@ -138,11 +166,18 @@ fun DepthCameraControlsRoute(
     val ui by vm.uiState.collectAsStateWithLifecycle()
     val controls = ui.controls
 
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        BackHeader(title = "成像控制", eyebrow = "Color / Depth · 实时调参", onBack = onBack)
+    val listState = rememberLazyListState()
+    GlassHeaderScaffold(
+        listState = listState,
+        header = { BackHeader(title = "成像控制", eyebrow = "Color / Depth · 实时调参", onBack = onBack) },
+    ) { padding ->
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(top = Gomob.spacing.s12, bottom = Gomob.spacing.s28),
+            contentPadding = PaddingValues(
+                top = padding.calculateTopPadding() + Gomob.spacing.s12,
+                bottom = padding.calculateBottomPadding() + Gomob.spacing.s28,
+            ),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s16),
         ) {
             item { ColorControlsSection(controls, vm) }
@@ -219,54 +254,110 @@ private fun GeneralControlsSection(c: BerxelDeviceControls, vm: DepthCameraViewM
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
-fun DepthCameraCalibrationRoute(onBack: () -> Unit) {
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        BackHeader(title = "Color ↔ Depth 标定", eyebrow = "iHawk 自身两路传感器", onBack = onBack)
+fun DepthCameraCalibrationRoute(
+    onBack: () -> Unit,
+    vm: StereoCalibViewModel = hiltViewModel(),
+) {
+    val hlsd8 by vm.hlsd8Preview.collectAsStateWithLifecycle()
+    val lprime by vm.lprimePreview.collectAsStateWithLifecycle()
+    val count by vm.calibCount.collectAsStateWithLifecycle()
+    val msg by vm.msg.collectAsStateWithLifecycle()
+    val capturing by vm.capturing.collectAsStateWithLifecycle()
+
+    val listState = rememberLazyListState()
+    GlassHeaderScaffold(
+        listState = listState,
+        header = { BackHeader(title = "HLSD8 ↔ Depth 标定", eyebrow = "ChArUco 双相机标定采集", onBack = onBack) },
+        overlay = { _ ->
+            // 吸底采集按钮 → 玻璃吸底条（规则 4）：列表从底下滚过透出模糊背景。
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .glassChrome(topEdge = true)
+                    .navigationBarsPadding()
+                    .padding(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 12.dp),
+            ) {
+                CalibCaptureButton(count = count, enabled = vm.hasRgb && !capturing, onClick = vm::captureCalib)
+            }
+        },
+    ) { padding ->
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(top = Gomob.spacing.s12, bottom = Gomob.spacing.s28),
-            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s16),
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                end = 16.dp,
+                top = padding.calculateTopPadding() + 12.dp,
+                // 底部预留吸底采集按钮高度
+                bottom = padding.calculateBottomPadding() + 88.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
-                SectionTitle("当前外参")
-                SectionList {
-                    InfoRow("外参来源", "SDK 出厂 + setRegistrationEnable")
-                    SettingRowDivider()
-                    InfoRow("自标定", "未启用（M2 标定向导待实施）")
-                    SettingRowDivider()
-                    InfoRow("外参 R / t", "—")
+                HairlineCard {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("对准 ChArUco 标定板采集", color = Gomob.colors.fg1, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        Text(
+                            "采集时已自动关 IR 投射器 → L' 出无散斑灰度（标定才能检角点）。" +
+                                "多姿态/倾角各采一张：俯仰/左右偏摆/平面内旋 ±25–30°、远近 20–35cm、板挪到画面上/中/下，建议 ≥20 张。",
+                            color = Gomob.colors.fg3, fontSize = 12.sp,
+                        )
+                    }
                 }
             }
-            item {
-                SectionTitle("RGB 内参标定")
-                SectionList {
-                    InfoRow("方法", "OpenCV cv::calibrateCamera（M2.x）")
-                    SettingRowDivider()
-                    InfoRow("标定板", "Charuco（运动鲁棒）")
-                    SettingRowDivider()
-                    InfoRow("采集张数", "建议 12 角度（前/左/右/上/下/倾斜各 2 张）")
-                    SettingRowDivider()
-                    InfoRow("验收阈值", "Color reprojection ≤ 1.0 px / Depth ≤ 0.5 mm")
+            if (!vm.hasRgb) {
+                item {
+                    HairlineCard {
+                        Text(
+                            "未检测到 HLSD8 彩色相机——双相机标定需要它。插好 HLSD8 再进本页。",
+                            color = Gomob.colors.danger, fontSize = 13.sp, modifier = Modifier.padding(14.dp),
+                        )
+                    }
                 }
             }
+            item { CalibPreviewPane("HLSD8 彩色（13MP，检角点）", hlsd8) }
+            item { CalibPreviewPane("eYs3D L'（无散斑，检角点）", lprime) }
             item {
-                SectionTitle("Color ↔ Depth 外参标定")
-                SectionList {
-                    InfoRow("方法", "OpenCV cv::stereoCalibrate（M2.x）")
-                    SettingRowDivider()
-                    InfoRow("输入", "RGB 内参 + Depth 内参 + N 帧 Charuco 双流配对")
-                    SettingRowDivider()
-                    InfoRow("输出", "Depth → Color 旋转 R + 平移 t（mm）")
-                }
-            }
-            item {
-                SectionTitle("决策门")
-                SectionHint(
-                    "实测 SDK 出厂参数 + setRegistrationEnable 在 30/50/100cm 距离的精度，达标 → 跳过自标定；" +
-                        "不达标才启动向导。详见 docs/architecture/05-calibration-pipeline.md。",
+                Text(
+                    msg ?: "对准标定板，点下方按钮采集",
+                    color = if (msg != null) Gomob.colors.accent else Gomob.colors.fg3,
+                    fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp),
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun CalibPreviewPane(label: String, bmp: Bitmap?) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(label, color = Gomob.colors.fg2, fontSize = 12.sp)
+        Box(
+            Modifier.fillMaxWidth().aspectRatio(4f).clip(RoundedCornerShape(10.dp)).background(Gomob.colors.bg1),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (bmp != null) {
+                Image(bmp.asImageBitmap(), contentDescription = label,
+                    modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            } else {
+                Text("等待画面…", color = Gomob.colors.fg3, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CalibCaptureButton(count: Int, enabled: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier.fillMaxWidth().height(52.dp).clip(CircleShape)
+            .background(if (enabled) Gomob.colors.accentSoft else Gomob.colors.bg1)
+            .border(BorderStroke(1.dp, if (enabled) Gomob.colors.accent else Gomob.colors.line2), CircleShape)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text("标定采集    已采 $count 张", color = if (enabled) Gomob.colors.accent else Gomob.colors.fg3,
+            fontSize = 15.sp, fontWeight = FontWeight.Medium)
     }
 }
 

@@ -15,16 +15,22 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -62,6 +68,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.designsystem.component.ScreenHeader
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
+import io.gomob.designsystem.glass.GlassHeaderScaffold
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 
@@ -157,95 +164,105 @@ fun MessageRoute(
         }
     }
 
-    Box(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        Column(Modifier.fillMaxSize()) {
-            ScreenHeader(
-                title = "消息中心",
-                eyebrow = "实时协同 · 监管督查 · 多人会审",
-                modifier = Modifier.clearInputFocusOnPointerDown(focusManager),
-                trailing = {
-                    ContactsIconButton(
-                        onClick = {
-                            focusManager.clearFocus()
-                            viewModel.clearContactActionError()
-                            contactsOpen = true
-                        },
-                    )
-                },
-            )
-            SegmentedTabs(
-                tab = tab,
-                hasMessageUnread = hasMessageUnread,
-                hasHelpUnread = hasHelpUnread,
-                onChange = {
-                    focusManager.clearFocus()
-                    tab = it
-                },
-            )
-            when (tab) {
-                MsgTab.List -> ListPane(
-                    state = state,
-                    searchState = searchState,
-                    helpState = helpState,
-                    onOpenConversation = { viewModel.openConversation(it.id) },
-                    onOpenMessage = viewModel::openSearchMessage,
-                    onOpenContactDetail = { onOpenContactDetail(it.detailId) },
-                    modifier = Modifier.weight(1f),
+    val listTabState = rememberLazyListState()
+    val helpTabState = rememberLazyListState()
+    GlassHeaderScaffold(
+        listState = if (tab == MsgTab.List) listTabState else helpTabState,
+        header = {
+            Column {
+                ScreenHeader(
+                    title = "消息中心",
+                    eyebrow = "实时协同 · 监管督查 · 多人会审",
+                    modifier = Modifier.clearInputFocusOnPointerDown(focusManager),
+                    trailing = {
+                        ContactsIconButton(
+                            onClick = {
+                                focusManager.clearFocus()
+                                viewModel.clearContactActionError()
+                                contactsOpen = true
+                            },
+                        )
+                    },
                 )
-                MsgTab.Help -> MultiLinePane(
-                    roomsState = multiLineRoomsState,
-                    onRefresh = {
-                        viewModel.refreshHelpExperts()
-                        viewModel.refreshHelpRoom()
+                SegmentedTabs(
+                    tab = tab,
+                    hasMessageUnread = hasMessageUnread,
+                    hasHelpUnread = hasHelpUnread,
+                    onChange = {
+                        focusManager.clearFocus()
+                        tab = it
                     },
-                    onOpenRoom = { room -> viewModel.openConversation(room.id) },
-                    onStartAdHoc = {
-                        viewModel.clearContactActionError()
-                        adHocPickerOpen = true
-                    },
-                    modifier = Modifier.weight(1f),
                 )
             }
-        }
-        ContactsDrawer(
-            visible = contactsOpen,
-            state = helpState,
-            errorText = contactActionError,
-            onClose = {
-                contactsOpen = false
-                viewModel.clearContactActionError()
-            },
-            onOpenContactDetail = { contact ->
-                contactsOpen = false
-                onOpenContactDetail(contact.detailId)
-            },
-        )
-        AdHocCallPicker(
-            visible = adHocPickerOpen,
-            state = helpState,
-            errorText = contactActionError,
-            onClose = {
-                adHocPickerOpen = false
-                viewModel.clearContactActionError()
-            },
-            onConfirm = { ids -> viewModel.startAdHocCall(ids) },
-        )
-        FloatingMessageError(
-            text = pageNotice?.text,
-            tone = pageNotice?.tone ?: FloatingMessageTone.Danger,
-            onClick = {
-                when (tab) {
-                    MsgTab.List -> viewModel.refresh()
-                    MsgTab.Help -> {
-                        viewModel.refreshHelpExperts()
-                        viewModel.refreshHelpRoom()
+        },
+        overlay = { padding ->
+            ContactsDrawer(
+                visible = contactsOpen,
+                state = helpState,
+                errorText = contactActionError,
+                onClose = {
+                    contactsOpen = false
+                    viewModel.clearContactActionError()
+                },
+                onOpenContactDetail = { contact ->
+                    contactsOpen = false
+                    onOpenContactDetail(contact.detailId)
+                },
+            )
+            AdHocCallPicker(
+                visible = adHocPickerOpen,
+                state = helpState,
+                errorText = contactActionError,
+                onClose = {
+                    adHocPickerOpen = false
+                    viewModel.clearContactActionError()
+                },
+                onConfirm = { ids -> viewModel.startAdHocCall(ids) },
+            )
+            FloatingMessageError(
+                text = pageNotice?.text,
+                tone = pageNotice?.tone ?: FloatingMessageTone.Danger,
+                onClick = {
+                    when (tab) {
+                        MsgTab.List -> viewModel.refresh()
+                        MsgTab.Help -> {
+                            viewModel.refreshHelpExperts()
+                            viewModel.refreshHelpRoom()
+                        }
                     }
-                }
-            },
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 22.dp),
-        )
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = padding.calculateBottomPadding() + 22.dp),
+            )
+        },
+    ) { padding ->
+        when (tab) {
+            MsgTab.List -> ListPane(
+                state = state,
+                searchState = searchState,
+                helpState = helpState,
+                onOpenConversation = { viewModel.openConversation(it.id) },
+                onOpenMessage = viewModel::openSearchMessage,
+                onOpenContactDetail = { onOpenContactDetail(it.detailId) },
+                listState = listTabState,
+                contentPadding = padding,
+            )
+            MsgTab.Help -> MultiLineRoomList(
+                state = multiLineRoomsState,
+                onRefresh = {
+                    viewModel.refreshHelpExperts()
+                    viewModel.refreshHelpRoom()
+                },
+                onOpenRoom = { room -> viewModel.openConversation(room.id) },
+                onStartAdHoc = {
+                    viewModel.clearContactActionError()
+                    adHocPickerOpen = true
+                },
+                listState = helpTabState,
+                contentPadding = padding,
+            )
+        }
     }
 }
 
@@ -383,6 +400,8 @@ private fun ContactsDrawerContent(
                 .fillMaxWidth()
                 .fillMaxHeight()
                 .background(Gomob.colors.bg1)
+                // edge-to-edge 后全屏侧滑面板自己避让系统栏
+                .windowInsetsPadding(WindowInsets.systemBars)
                 .clickable(
                     interactionSource = drawerClickSource,
                     indication = null,
@@ -448,6 +467,7 @@ private fun ContactsDrawerContent(
             text = errorText,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
                 .padding(bottom = 22.dp),
         )
     }
@@ -812,6 +832,8 @@ private fun ListPane(
     onOpenConversation: (ConversationRowUi) -> Unit,
     onOpenMessage: (MessageListSearchMessageUi) -> Unit,
     onOpenContactDetail: (ContactRowUi) -> Unit,
+    listState: LazyListState,
+    contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
 ) {
     var searchActive by remember { mutableStateOf(false) }
@@ -839,59 +861,63 @@ private fun ListPane(
     val normalizedQuery = query.trim()
     val searching = normalizedQuery.isNotBlank()
 
-    Column(modifier.fillMaxSize()) {
-        SearchContainer(
-            query = query,
-            onQueryChange = { query = it },
-            onActiveChange = { searchActive = it },
-        )
-        LazyColumn(
-            Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .clearInputFocusOnPointerDown(focusManager) {
-                    keyboardController?.hide()
-                },
-            contentPadding = PaddingValues(bottom = Gomob.spacing.s24),
-        ) {
-            if (searching) {
-                item {
-                    MessageListSearchPanel(
-                        query = normalizedQuery,
-                        messageState = state,
-                        searchState = searchState,
-                        helpState = helpState,
-                        onOpenConversation = {
-                            dismissSearchFocus()
-                            onOpenConversation(it)
-                        },
-                        onOpenMessage = {
-                            dismissSearchFocus()
-                            onOpenMessage(it)
-                        },
-                        onOpenContactDetail = {
-                            dismissSearchFocus()
-                            onOpenContactDetail(it)
-                        },
-                    )
+    // 搜索框并入列表首项, 整体从玻璃 header 下穿过再避让
+    LazyColumn(
+        state = listState,
+        modifier = modifier
+            .fillMaxSize()
+            .clearInputFocusOnPointerDown(focusManager) {
+                keyboardController?.hide()
+            },
+        contentPadding = PaddingValues(
+            top = contentPadding.calculateTopPadding(),
+            bottom = contentPadding.calculateBottomPadding() + Gomob.spacing.s24,
+        ),
+    ) {
+        item(key = "conversation-search") {
+            SearchContainer(
+                query = query,
+                onQueryChange = { query = it },
+                onActiveChange = { searchActive = it },
+            )
+        }
+        if (searching) {
+            item {
+                MessageListSearchPanel(
+                    query = normalizedQuery,
+                    messageState = state,
+                    searchState = searchState,
+                    helpState = helpState,
+                    onOpenConversation = {
+                        dismissSearchFocus()
+                        onOpenConversation(it)
+                    },
+                    onOpenMessage = {
+                        dismissSearchFocus()
+                        onOpenMessage(it)
+                    },
+                    onOpenContactDetail = {
+                        dismissSearchFocus()
+                        onOpenContactDetail(it)
+                    },
+                )
+            }
+        } else {
+            when (state) {
+                MessageListUiState.Loading -> item {
+                    StateBlock(text = "正在加载会话", tone = StatusTone.Neutral)
                 }
-            } else {
-                when (state) {
-                    MessageListUiState.Loading -> item {
-                        StateBlock(text = "正在加载会话", tone = StatusTone.Neutral)
-                    }
-                    MessageListUiState.Empty -> Unit
-                    is MessageListUiState.Error -> Unit
-                    is MessageListUiState.Content -> {
-                        items(state.conversations, key = { item -> item.id }) { item ->
-                            MsgRow(
-                                item,
-                                onClick = {
-                                    dismissSearchFocus()
-                                    onOpenConversation(item)
-                                },
-                            )
-                        }
+                MessageListUiState.Empty -> Unit
+                is MessageListUiState.Error -> Unit
+                is MessageListUiState.Content -> {
+                    items(state.conversations, key = { item -> item.id }) { item ->
+                        MsgRow(
+                            item,
+                            onClick = {
+                                dismissSearchFocus()
+                                onOpenConversation(item)
+                            },
+                        )
                     }
                 }
             }
@@ -1242,10 +1268,10 @@ private fun String.searchResultIcon(): ImageVector = when (this) {
 
 @Composable
 private fun MsgRow(item: ConversationRowUi, onClick: () -> Unit) {
+    // 行不再铺 bg0 实底: 玻璃骨架下露出氛围光晕
     Column(
         Modifier
             .fillMaxWidth()
-            .background(Gomob.colors.bg0)
             .clickable(onClick = onClick),
     ) {
         Row(
@@ -1310,25 +1336,6 @@ private fun MsgAvatar(seed: String, kind: AvatarKind) {
 }
 
 @Composable
-private fun MultiLinePane(
-    roomsState: MultiLineRoomsUiState,
-    onRefresh: () -> Unit,
-    onOpenRoom: (MultiLineRoomRowUi) -> Unit,
-    onStartAdHoc: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Column(modifier.fillMaxSize()) {
-        StartAdHocCallEntry(onClick = onStartAdHoc)
-        MultiLineRoomList(
-            state = roomsState,
-            onRefresh = onRefresh,
-            onOpenRoom = onOpenRoom,
-            modifier = Modifier.weight(1f),
-        )
-    }
-}
-
-@Composable
 private fun StartAdHocCallEntry(onClick: () -> Unit) {
     Row(
         Modifier
@@ -1372,6 +1379,9 @@ private fun MultiLineRoomList(
     state: MultiLineRoomsUiState,
     onRefresh: () -> Unit,
     onOpenRoom: (MultiLineRoomRowUi) -> Unit,
+    onStartAdHoc: () -> Unit,
+    listState: LazyListState,
+    contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
@@ -1391,43 +1401,50 @@ private fun MultiLineRoomList(
             rooms.filter { it.matchesMultiLineRoomKeyword(keyword, normalizedKeyword) }
         }
     }
-    Column(modifier.fillMaxSize()) {
-        MultiLineRoomSearchBar(
-            query = query,
-            onQueryChange = { query = it },
-        )
-        LazyColumn(
-            Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .clearInputFocusOnPointerDown(focusManager) {
-                    keyboardController?.hide()
-                },
-            contentPadding = PaddingValues(bottom = Gomob.spacing.s24),
-        ) {
-            when (state) {
-                MultiLineRoomsUiState.Loading -> item {
-                    StateBlock(text = "正在加载多人连线", tone = StatusTone.Neutral)
-                }
-                is MultiLineRoomsUiState.Error -> item {
-                    StateBlock(text = state.message, tone = StatusTone.Danger, onClick = onRefresh)
-                }
-                MultiLineRoomsUiState.Empty -> item {
-                    StateBlock(text = "暂无多人群聊", tone = StatusTone.Neutral, onClick = onRefresh)
-                }
-                is MultiLineRoomsUiState.Content -> {
-                    if (visibleRooms.isEmpty()) {
-                        item { StateBlock(text = "未找到相关群聊", tone = StatusTone.Neutral) }
-                    } else {
-                        items(visibleRooms, key = { it.id }) { room ->
-                            MultiLineRoomRow(
-                                room = room,
-                                onClick = {
-                                    dismissSearchInput()
-                                    onOpenRoom(room)
-                                },
-                            )
-                        }
+    // 发起入口 + 搜索框并入列表首项, 整体从玻璃 header 下穿过再避让
+    LazyColumn(
+        state = listState,
+        modifier = modifier
+            .fillMaxSize()
+            .clearInputFocusOnPointerDown(focusManager) {
+                keyboardController?.hide()
+            },
+        contentPadding = PaddingValues(
+            top = contentPadding.calculateTopPadding(),
+            bottom = contentPadding.calculateBottomPadding() + Gomob.spacing.s24,
+        ),
+    ) {
+        item(key = "adhoc-entry") {
+            StartAdHocCallEntry(onClick = onStartAdHoc)
+        }
+        item(key = "room-search") {
+            MultiLineRoomSearchBar(
+                query = query,
+                onQueryChange = { query = it },
+            )
+        }
+        when (state) {
+            MultiLineRoomsUiState.Loading -> item {
+                StateBlock(text = "正在加载多人连线", tone = StatusTone.Neutral)
+            }
+            is MultiLineRoomsUiState.Error -> item {
+                StateBlock(text = state.message, tone = StatusTone.Danger, onClick = onRefresh)
+            }
+            MultiLineRoomsUiState.Empty -> item {
+                StateBlock(text = "暂无多人群聊", tone = StatusTone.Neutral, onClick = onRefresh)
+            }
+            is MultiLineRoomsUiState.Content -> {
+                if (visibleRooms.isEmpty()) {
+                    item { StateBlock(text = "未找到相关群聊", tone = StatusTone.Neutral) }
+                } else {
+                    items(visibleRooms, key = { it.id }) { room ->
+                        MultiLineRoomRow(
+                            room = room,
+                            onClick = {
+                                dismissSearchInput()
+                                onOpenRoom(room)
+                            },
+                        )
                     }
                 }
             }
@@ -1459,10 +1476,10 @@ private fun MultiLineRoomRow(
     room: MultiLineRoomRowUi,
     onClick: () -> Unit,
 ) {
+    // 行不再铺 bg0 实底: 玻璃骨架下露出氛围光晕
     Column(
         Modifier
             .fillMaxWidth()
-            .background(Gomob.colors.bg0)
             .clickable(onClick = onClick),
     ) {
         Row(
@@ -1649,7 +1666,9 @@ private fun AdHocCallPickerContent(
         Modifier
             .fillMaxWidth(0.82f)
             .fillMaxHeight()
-            .background(Gomob.colors.bg1),
+            .background(Gomob.colors.bg1)
+            // edge-to-edge 后全屏侧滑面板自己避让系统栏
+            .windowInsetsPadding(WindowInsets.systemBars),
     ) {
         Row(
             Modifier

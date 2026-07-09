@@ -11,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
+import io.gomob.designsystem.glass.LocalGlassHeader
 import io.gomob.designsystem.motion.fixedDuringPageDrag
 import io.gomob.designsystem.theme.Gomob
 
@@ -29,11 +30,14 @@ fun ScreenHeader(
     modifier: Modifier = Modifier,
     trailing: @Composable (() -> Unit)? = null,
 ) {
+    val feedbackTrigger = LocalFeedbackTitleLongPress.current
+    // 在 GlassHeaderScaffold 内由玻璃层画底；独立使用时保持 bg0 实底
+    val inGlass = LocalGlassHeader.current
     Row(
         modifier
             .fixedDuringPageDrag()
             .fillMaxWidth()
-            .background(Gomob.colors.bg0)
+            .then(if (inGlass) Modifier else Modifier.background(Gomob.colors.bg0))
             .padding(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s12),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -42,6 +46,13 @@ fun ScreenHeader(
             eyebrow = eyebrow,
             modifier = Modifier
                 .weight(1f)
+                .then(
+                    if (feedbackTrigger != null) {
+                        Modifier.feedbackTitleLongPress(title, feedbackTrigger)
+                    } else {
+                        Modifier
+                    },
+                )
                 .padding(end = Gomob.spacing.s12),
         )
         if (trailing != null) trailing()

@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -34,9 +35,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
-import io.gomob.designsystem.motion.fixedDuringPageDrag
+import io.gomob.designsystem.component.LocalFeedbackTitleLongPress
+import io.gomob.designsystem.component.feedbackTitleLongPress
 import io.gomob.designsystem.decoration.ticks
+import io.gomob.designsystem.glass.GlassHeaderScaffold
 import io.gomob.designsystem.icons.GomobIcons
+import io.gomob.designsystem.motion.fixedDuringPageDrag
 import io.gomob.designsystem.theme.Gomob
 
 const val HISTORY_ROUTE = "profile/history"
@@ -85,15 +89,18 @@ fun HistoryRoute(onBack: () -> Unit) {
     var selected by remember { mutableStateOf(5) }
     val sel = DAY_DATA[selected]
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(Gomob.colors.bg0),
-    ) {
-        TopHistoryHeader(onBack = onBack)
+    val listState = rememberLazyListState()
+    GlassHeaderScaffold(
+        listState = listState,
+        header = { TopHistoryHeader(onBack = onBack) },
+    ) { padding ->
         LazyColumn(
-            Modifier.weight(1f),
-            contentPadding = PaddingValues(bottom = 28.dp),
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                top = padding.calculateTopPadding(),
+                bottom = padding.calculateBottomPadding() + 28.dp,
+            ),
         ) {
             item { MonthSwitcher() }
             item {
@@ -116,6 +123,7 @@ fun HistoryRoute(onBack: () -> Unit) {
 
 @Composable
 private fun TopHistoryHeader(onBack: () -> Unit) {
+    val feedbackTrigger = LocalFeedbackTitleLongPress.current
     Row(
         Modifier
             .fixedDuringPageDrag()
@@ -139,7 +147,17 @@ private fun TopHistoryHeader(onBack: () -> Unit) {
                 modifier = Modifier.size(22.dp),
             )
         }
-        Column(Modifier.weight(1f)) {
+        Column(
+            Modifier
+                .weight(1f)
+                .then(
+                    if (feedbackTrigger != null) {
+                        Modifier.feedbackTitleLongPress("历史数据", feedbackTrigger)
+                    } else {
+                        Modifier
+                    },
+                ),
+        ) {
             Text(
                 "HISTORY",
                 fontSize = 10.sp,

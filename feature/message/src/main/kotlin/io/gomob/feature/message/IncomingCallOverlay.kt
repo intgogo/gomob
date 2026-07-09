@@ -36,6 +36,8 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import io.gomob.data.auth.TokenStore
 import io.gomob.data.message.IncomingCallInvite
 import io.gomob.data.message.MessageRepository
+import io.gomob.designsystem.glass.glassChrome
+import io.gomob.designsystem.theme.Gomob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -126,11 +128,12 @@ fun IncomingCallOverlay(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         contentAlignment = Alignment.TopCenter,
     ) {
+        // Shell 层已下发 LocalHazeState → 卡片走真模糊玻璃; 文案换语义色适配双主题
         Row(
             Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(14.dp))
-                .background(Color(0xF21B2230))
+                .glassChrome()
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -139,27 +142,27 @@ fun IncomingCallOverlay(
                 Modifier
                     .size(40.dp)
                     .clip(CircleShape)
-                    .background(Color(0xFF2DD4BF)),
+                    .background(Gomob.colors.accent),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(Icons.Filled.Phone, contentDescription = null, tint = Color.Black, modifier = Modifier.size(20.dp))
             }
             Column(Modifier.weight(1f)) {
                 val tag = if (invite.conversationKind == "group") "群通话来电" else "视频来电"
-                Text(tag, color = Color(0xFFE0F2FE), fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                Text(tag, color = Gomob.colors.fg1, fontSize = 13.sp, fontWeight = FontWeight.Medium)
                 val mainLabel = if (invite.conversationKind == "group") {
                     invite.conversationTitle?.takeIf { it.isNotBlank() } ?: invite.title
                 } else {
                     invite.title
                 }
-                Text(mainLabel, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                Text(mainLabel, color = Gomob.colors.fg0, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
             }
             // 拒绝
             Box(
                 Modifier
                     .size(38.dp)
                     .clip(CircleShape)
-                    .background(Color(0xFFEF4444))
+                    .background(Gomob.colors.danger)
                     .clickable { viewModel.decline() },
                 contentAlignment = Alignment.Center,
             ) {
@@ -170,7 +173,7 @@ fun IncomingCallOverlay(
                 Modifier
                     .size(38.dp)
                     .clip(CircleShape)
-                    .background(Color(0xFF22C55E))
+                    .background(Gomob.colors.ok)
                     .clickable {
                         onAccept(invite)
                         viewModel.accept()

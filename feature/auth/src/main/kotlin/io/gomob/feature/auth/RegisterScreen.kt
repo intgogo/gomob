@@ -32,6 +32,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.HairlineCard
+import io.gomob.designsystem.glass.GlassHeaderScaffold
 import io.gomob.designsystem.theme.Gomob
 
 const val REGISTER_ROUTE = "auth/register"
@@ -43,13 +44,22 @@ fun RegisterRoute(
     vm: RegisterViewModel = hiltViewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        BackHeader(title = "注册账号", onBack = onBack, eyebrow = "查验员入驻")
+    val scrollState = rememberScrollState()
+    GlassHeaderScaffold(
+        scrollState = scrollState,
+        header = { BackHeader(title = "注册账号", onBack = onBack, eyebrow = "查验员入驻") },
+    ) { padding ->
         Column(
             Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = Gomob.spacing.s24, vertical = Gomob.spacing.s16),
+                .verticalScroll(scrollState)
+                // scaffold padding 并进内容 padding：内容从玻璃 header 下穿过再避让
+                .padding(
+                    start = Gomob.spacing.s24,
+                    end = Gomob.spacing.s24,
+                    top = padding.calculateTopPadding() + Gomob.spacing.s16,
+                    bottom = padding.calculateBottomPadding() + Gomob.spacing.s16,
+                ),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s16),
         ) {
             HairlineInput(

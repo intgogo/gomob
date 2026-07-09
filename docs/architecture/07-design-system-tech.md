@@ -167,3 +167,49 @@ GomobTheme(useDynamicColor = false) {
 - `component/TopAppBar.kt`（沉浸式 / 透明 / 高斯模糊背景）
 
 实现详见后续 commit。
+
+## 8. 毛玻璃体系（2026-07 落地, 代码真理源）
+
+> 本节对应 `core/designsystem/glass/` 实际实现; 上文 1-7 节为早期设计稿,
+> 色板/组件命名以 `theme/Color.kt`(5 套 GomobColors × 明暗)与 `component/` 现码为准。
+
+### 8.1 分层原则 — 按"玻璃下有没有高频内容穿过"选实现
+
+| 档位 | 实现 | 适用 | 成本 |
+|------|------|------|------|
+| 真模糊 chrome | `Modifier.glassChrome()` (Haze backdrop blur) | TabBar / Header / 吸底输入条 / 来电浮窗 | API 31+ GPU 模糊; API 26-30 自动降级 0.94 遮罩 |
+| 拟玻璃面板 | `GlassPanel` / `Modifier.glassPanelBg()` | 卡片(HairlineCard) / Dialog / BottomSheet | 零模糊: 半透明 bg1 + 顶缘高光 + line1 细边 |
+
+依据: Dialog/Sheet 是独立 window 采样不到 Activity 内容; 卡片下面只有低频
+AmbientGlow 光晕(模糊结果 ≈ 原样), 真模糊纯浪费。滚动内容会穿过的悬浮条才配真模糊。
+
+### 8.2 关键件
+
+- `GlassHeaderScaffold(header, overlay, content)` — 屏骨架: bg0 + AmbientGlow 氛围光晕
+  + 内容层(haze 采样源, 全屏) + 玻璃 header(自动吃状态栏, 滚动后渐显分隔线) + overlay 槽
+  (吸底输入条/侧滑面板, 可取 LocalHazeState 做真模糊)。content 经 PaddingValues 拿避让区。
+- `LocalContentBottomInset` — Shell 在 root tab 屏下发 TabBar 总高(56dp+导航栏, ime 时动画归 0)。
+- 真 edge-to-edge: MainActivity 不再全局吃 systemBars, 每屏经 scaffold/TabBar 自理 inset;
+  `systemBarsPaddingRequired` 仅余"视频沉浸页"语义(驱动状态栏图标配色)。
+- 玻璃样式全部从语义 token 派生(`glassChromeStyle(colors)`), 不引入新原色;
+  浅色 tint 0.72 / 深色 0.64, 保证 fg0 在花内容上可读。
+
+### 8.2b ★ HazeState 拓扑铁律 — 全 App 单 state, 采样源绝不嵌套
+
+**真机踩坑(2026-07-09, 2510DRK44C)**: 最初 NavHost 挂一层 `haze()` 源、每屏 scaffold
+内容层再挂一层 → 层中录层把采样层录空, **所有 hazeChild 全透明**(不模糊不 tint,
+内容原样从 chrome 底下透出), 1.3.1/1.2.2 两版本一致 → 拓扑错误而非版本 bug。正确拓扑:
+
+- Shell 建唯一 `HazeState`, 经 `LocalHazeState` 下发整棵树;
+- **采样源只有一处**: 当前屏 GlassHeaderScaffold 的内容层(`Modifier.haze(state)`);
+  NavHost/其它容器一律不挂源。转场瞬间两屏源共存属多 area, 正常;
+- 消费者(TabBar / Header / 吸底栏 / 来电浮窗)全部 `hazeChild` 同一个 state,
+  且必须不是源节点的后代(scaffold 里 header/overlay 与内容层是兄弟, 满足);
+- Haze 版本钉 **1.2.2**(Compose 1.7 世代), API 名为 `haze`/`hazeChild`。
+- 详见 docs/agent-memory/finding_haze_nested_sources_transparent_2026-07-09.md。
+
+### 8.3 动效补充(2026-07)
+
+- TabBar: 选中图标弹性放大 1.08 + 按压回缩 0.88(spring), 颜色 200ms tween, 无方块 ripple。
+- SegmentedTabs: accentSoft 滑动指示块 220ms 滑移。
+- 可点卡片: `Modifier.pressScale()` 按压 0.985 弹性回缩。

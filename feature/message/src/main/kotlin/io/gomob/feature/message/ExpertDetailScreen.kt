@@ -15,7 +15,9 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
@@ -35,6 +37,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
+import io.gomob.designsystem.glass.GlassHeaderScaffold
+import io.gomob.designsystem.glass.glassChrome
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 
@@ -54,45 +58,69 @@ fun ExpertDetailRoute(
         }
     }
 
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        BackHeader(
-            title = content?.expert?.name ?: "专家详情",
-            onBack = onBack,
-            eyebrow = "多人连线 · 协作成员",
-        )
-
-        Box(Modifier.weight(1f)) {
-            when (state) {
-                ExpertDetailUiState.Loading -> ExpertDetailStateBlock("正在加载专家", StatusTone.Neutral, null)
-                is ExpertDetailUiState.Error -> ExpertDetailStateBlock(
+    val listState = rememberLazyListState()
+    GlassHeaderScaffold(
+        listState = listState,
+        header = {
+            BackHeader(
+                title = content?.expert?.name ?: "专家详情",
+                onBack = onBack,
+                eyebrow = "多人连线 · 协作成员",
+            )
+        },
+        overlay = {
+            // 底部动作栏玻璃吸底: 内容从其下滚过透出模糊背景
+            ExpertBottomActions(
+                enabled = content != null && !content.openingMessage,
+                onMessage = viewModel::openDirectConversation,
+                onAudioVideo = {
+                    content?.expert?.name
+                        ?.let { onOpenAudioVideo("$it · 音视频通话") }
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .glassChrome(topEdge = true)
+                    .navigationBarsPadding(),
+            )
+        },
+    ) { padding ->
+        when (state) {
+            ExpertDetailUiState.Loading -> Box(Modifier.fillMaxSize().padding(padding)) {
+                ExpertDetailStateBlock("正在加载专家", StatusTone.Neutral, null)
+            }
+            is ExpertDetailUiState.Error -> Box(Modifier.fillMaxSize().padding(padding)) {
+                ExpertDetailStateBlock(
                     text = (state as ExpertDetailUiState.Error).message,
                     tone = StatusTone.Danger,
                     onClick = viewModel::refresh,
                 )
-                is ExpertDetailUiState.Content -> ExpertDetailContent(state as ExpertDetailUiState.Content)
             }
+            is ExpertDetailUiState.Content -> ExpertDetailContent(
+                state = state as ExpertDetailUiState.Content,
+                listState = listState,
+                contentPadding = padding,
+            )
         }
-        ExpertBottomActions(
-            enabled = content != null && !content.openingMessage,
-            onMessage = viewModel::openDirectConversation,
-            onAudioVideo = {
-                content?.expert?.name
-                    ?.let { onOpenAudioVideo("$it · 音视频通话") }
-            },
-        )
     }
 }
 
 @Composable
 private fun ExpertDetailContent(
     state: ExpertDetailUiState.Content,
+    listState: LazyListState,
+    contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
-        modifier.fillMaxWidth(),
+        state = listState,
+        modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(
-            horizontal = Gomob.spacing.s20,
-            vertical = Gomob.spacing.s12,
+            start = Gomob.spacing.s20,
+            end = Gomob.spacing.s20,
+            top = contentPadding.calculateTopPadding() + Gomob.spacing.s12,
+            // 底部预留吸底动作栏高度(两个 touchMin 按钮 + 间距), 最后一张卡不被压住
+            bottom = contentPadding.calculateBottomPadding() + 120.dp,
         ),
         verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
     ) {
@@ -199,8 +227,9 @@ private fun ExpertBottomActions(
     enabled: Boolean,
     onMessage: () -> Unit,
     onAudioVideo: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    Column(Modifier.fillMaxWidth().background(Gomob.colors.bg1).navigationBarsPadding()) {
+    Column(modifier) {
         Column(
             Modifier
                 .fillMaxWidth()

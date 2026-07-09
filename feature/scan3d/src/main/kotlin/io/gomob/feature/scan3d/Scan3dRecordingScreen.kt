@@ -39,6 +39,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.HairlineCard
+import io.gomob.designsystem.glass.GlassHeaderScaffold
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.nativebridge.camera.CameraSourceState
 
@@ -67,16 +68,22 @@ fun Scan3dRecordingRoute(
     val colorBmp by vm.colorPreview.collectAsStateWithLifecycle()
     val depthBmp by vm.depthPreview.collectAsStateWithLifecycle()
 
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        BackHeader(
-            title = "三维外廓扫描",
-            eyebrow = "TSDF 体素积分 · ICP 增量配准",
-            onBack = onBack,
-        )
+    // 玻璃 header 骨架（规则 3 非穿越）：本页含 Filament SurfaceView（PointCloud3dView），
+    // 玻璃 header 无法对 SurfaceView 内容取样模糊；整页不滚动、内容不从 header 下穿过即无碍。
+    GlassHeaderScaffold(
+        header = {
+            BackHeader(
+                title = "三维外廓扫描",
+                eyebrow = "TSDF 体素积分 · ICP 增量配准",
+                onBack = onBack,
+            )
+        },
+    ) { padding ->
         // 整页布局，不滚动：RGB|Depth 横排（固定 4:3）+ 点云 weight=1 占剩余 + 状态卡（包内容自适应）
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .padding(padding)
                 .padding(
                     top = Gomob.spacing.s8,
                     bottom = Gomob.spacing.s8,

@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Check
@@ -56,6 +57,7 @@ import io.gomob.designsystem.component.SegmentedTabItem
 import io.gomob.designsystem.component.SegmentedTabs
 import io.gomob.designsystem.component.SettingRow
 import io.gomob.designsystem.component.SettingRowDivider
+import io.gomob.designsystem.glass.GlassHeaderScaffold
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.nativebridge.berxel.BerxelFrameStat
 import io.gomob.nativebridge.berxel.BerxelStackBackend
@@ -110,17 +112,23 @@ fun DepthCameraRoute(
         }
     }
 
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        BackHeader(
-            title = "深度相机",
-            eyebrow = ui.label.ifBlank { "深度相机" } + " · 详情与控制",
-            onBack = onBack,
-        )
+    val listState = rememberLazyListState()
+    GlassHeaderScaffold(
+        listState = listState,
+        header = {
+            BackHeader(
+                title = "深度相机",
+                eyebrow = ui.label.ifBlank { "深度相机" } + " · 详情与控制",
+                onBack = onBack,
+            )
+        },
+    ) { padding ->
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
-                top = Gomob.spacing.s12,
-                bottom = Gomob.spacing.s28,
+                top = padding.calculateTopPadding() + Gomob.spacing.s12,
+                bottom = padding.calculateBottomPadding() + Gomob.spacing.s28,
             ),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
@@ -197,6 +205,17 @@ fun DepthCameraRoute(
                             title = "Sonix ASIC 调试",
                             subtitle = "M1.6.5/6 · 直发 XU vendor cmd 读寄存器",
                             onClick = onOpenSonixDebug,
+                        )
+                    }
+                }
+            } else {
+                // eYs3D：Berxel 专属项不适用，但 HLSD8↔depth 双相机标定是 eYs3D 机型的事，单独给入口。
+                item {
+                    SectionList {
+                        NavRow(
+                            title = "HLSD8 ↔ Depth 标定",
+                            subtitle = "ChArUco 双相机标定采集（关散斑出干净 L'）",
+                            onClick = onOpenCalibration,
                         )
                     }
                 }

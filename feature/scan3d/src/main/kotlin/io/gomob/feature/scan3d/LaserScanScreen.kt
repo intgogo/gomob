@@ -12,13 +12,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -30,7 +27,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PointMode
@@ -44,6 +40,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.data.scan.LaserCloudRenderData
 import io.gomob.data.scan.VehicleMeasurement
 import io.gomob.designsystem.component.BackHeader
+import io.gomob.designsystem.glass.GlassHeaderScaffold
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 import kotlin.math.roundToInt
@@ -54,9 +51,10 @@ const val SCAN_LASER_ROUTE = "scan3d/laser"
 enum class LaserCloudKind { FUSED, A, B }
 
 /**
- * 激光双单元车辆外廓扫描屏（M8' 瘦客户端，模型查看器范式）：
- * 单主点云窗口（复用一个）+ 缩略图切换行（融合/A/B，采集时实时 2D 预览）+ 状态结果区 + 操作键。
- * [switcher] 为顶栏右上角设备切换段控（由外层 [VehicleContourScanRoute] 注入，激光/相机共用）。
+ * 3D 工位（激光双单元）车辆外廓扫描屏 —— 操作员范式（配置全在网页端管理端）：
+ * 单主点云窗口（复用一个）+ 缩略图切换行（融合/A/B，采集时实时 2D 预览）+ 完成态外廓尺寸结果卡 + 主控键。
+ * 端侧只做：选设备 → 开始/停止 → 看长宽高结果；不再有车型下拉、设备控制/设置、测量范围(车位框)标定入口。
+ * [switcher] 为顶栏右上角设备下拉选（由外层 [VehicleContourScanRoute] 注入，工位/相机共用）。
  */
 @Composable
 fun LaserScanScreen(
@@ -68,34 +66,20 @@ fun LaserScanScreen(
     val fused by vm.fusedCloud.collectAsStateWithLifecycle()
     val unitA by vm.unitACloud.collectAsStateWithLifecycle()
     val unitB by vm.unitBCloud.collectAsStateWithLifecycle()
-    val vehicleType by vm.vehicleType.collectAsStateWithLifecycle()
-    var showDevice by remember { mutableStateOf(false) }
-    // 车位框编辑器：入口已收进设备控制 sheet（一次性标定）。进场预载已存框；完成态有融合云时方可圈选。
-    var showCropEditor by remember { mutableStateOf(false) }
-    var loadedBox by remember { mutableStateOf<io.gomob.data.scan.ScanCropBox?>(null) }
-    var savedHint by remember { mutableStateOf(false) }
-    // 按单元已存框缓存（驱动「已标/重标」提示）。
-    val boxA by vm.boxA.collectAsStateWithLifecycle()
-    val boxB by vm.boxB.collectAsStateWithLifecycle()
-    // 漫游标注请求（按当前镜头进第一视角圈框；非空即全屏叠漫游屏）。
-    var roamReq by remember { mutableStateOf<RoamReq?>(null) }
-    val completed = state as? LaserScanState.Completed
-    val canEditCropBox = completed != null && fused.xyz.isNotEmpty()
-    val hasSavedBox = loadedBox != null || savedHint
-    // 持久化车位框（unit_a 世界系，跨会话）进场预载一次，用于设置内显示「已圈选」并作编辑器初值。
-    // 融合云顶视编辑器对应 a 单元（融合==世界==unit_a 系）；同时预载 A/B 两单元缓存。
-    LaunchedEffect(Unit) { loadedBox = vm.loadCropBox("a"); vm.refreshCropBoxes() }
 
-    Box(Modifier.fillMaxSize()) {
-    Column(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-        BackHeader(
-            title = "车辆外廓扫描",
-            eyebrow = "激光扫描",
-            onBack = onBack,
-            // 右上角：激光/相机段控（设备控制已下移到控制栏「设置」键）。
-            trailing = { switcher() },
-        )
-        Box(Modifier.weight(1f).fillMaxWidth()) {
+    // 玻璃 header 骨架；整页非滚动布局（点云主窗 weight 占满），内容整体避让不穿越（规则 3）。
+    GlassHeaderScaffold(
+        header = {
+            BackHeader(
+                title = "车辆外廓扫描",
+                eyebrow = "3D 工位",
+                onBack = onBack,
+                // 右上角：设备下拉选（3D 工位 / 3D 相机）。
+                trailing = { switcher() },
+            )
+        },
+    ) { padding ->
+        Box(Modifier.fillMaxSize().padding(padding)) {
             when (val s = state) {
                 is LaserScanState.Error -> LaserErrorPanel(msg = s.msg, onRestart = vm::restart)
                 else -> LaserCaptureBody(
@@ -106,69 +90,11 @@ fun LaserScanScreen(
                     onStart = vm::start,
                     onStop = vm::stop,
                     onRestart = vm::restart,
-                    vehicleType = vehicleType,
-                    onSelectVehicleType = vm::selectVehicleType,
-                    onOpenSettings = { showDevice = true },
-                    boxASaved = boxA != null,
-                    boxBSaved = boxB != null,
-                    onRoam = { cloud, unit, up -> roamReq = RoamReq(cloud, unit, up) },
                 )
             }
         }
     }
-    if (showDevice) {
-        LaserDeviceControlSheet(
-            onDismiss = { showDevice = false },
-            canEditCropBox = canEditCropBox,
-            cropBoxSaved = hasSavedBox,
-            // 一次性标定：关设置 → 开顶视编辑器（编辑器仍以当前融合云为底图）。
-            onEditCropBox = {
-                showDevice = false
-                showCropEditor = true
-            },
-        )
-    }
-    // 全屏车位框编辑器（叠在最上层）。
-    if (showCropEditor && fused.xyz.isNotEmpty()) {
-        val ground = completed?.ground
-        Box(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-            LaserCropBoxEditor(
-                cloud = fused.xyz,
-                groundNormal = if (ground != null && ground.valid) floatArrayOf(ground.nx, ground.ny, ground.nz) else null,
-                initialBox = loadedBox,
-                // 顶视编辑器显示的是融合云 → 预览也裁融合云（与显示 + crop_box 测量一致）；存为 a 框。
-                onPreview = { box -> vm.cropPreview("fused", box) },
-                onSave = { box ->
-                    vm.saveCropBox("a", box) { ok -> savedHint = ok; if (ok) loadedBox = box }
-                    showCropEditor = false
-                },
-                onDismiss = { showCropEditor = false },
-            )
-        }
-    }
-    // 全屏漫游标注（叠在最上层，按镜头进第一视角走动圈框 → 顶视编辑器微调保存）。
-    roamReq?.let { req ->
-        Box(Modifier.fillMaxSize().background(Gomob.colors.bg0)) {
-            RoamAnnotationScreen(
-                cloud = req.cloud.xyz,
-                colors = req.cloud.rgb,
-                groundNormal = req.up,
-                onPreview = { box -> vm.cropPreview(req.unit, box) },
-                onSave = { box ->
-                    vm.saveCropBox(req.unit, box) { ok ->
-                        if (ok && req.unit == "a") { savedHint = true; loadedBox = box }
-                    }
-                    roamReq = null
-                },
-                onDismiss = { roamReq = null },
-            )
-        }
-    }
-    }
 }
-
-/** 漫游标注请求：按某镜头进第一视角圈框所需的点云(含可选颜色) + 单元(a|b) + 上方向(null→+Z)。 */
-private class RoamReq(val cloud: LaserCloudRenderData, val unit: String, val up: FloatArray?)
 
 @Composable
 private fun LaserCaptureBody(
@@ -179,12 +105,6 @@ private fun LaserCaptureBody(
     onStart: () -> Unit,
     onStop: () -> Unit,
     onRestart: () -> Unit,
-    vehicleType: io.gomob.data.scan.VehicleType,
-    onSelectVehicleType: (io.gomob.data.scan.VehicleType) -> Unit,
-    onOpenSettings: () -> Unit,
-    boxASaved: Boolean,
-    boxBSaved: Boolean,
-    onRoam: (cloud: LaserCloudRenderData, unit: String, up: FloatArray?) -> Unit,
 ) {
     // 视角预设（顶/侧/斜/自由，相对各云的"上"方向）。A/B/融合三窗同款；新扫描重置为自由家位。
     var viewPreset by remember { mutableStateOf(LaserViewPreset.FREE) }
@@ -250,33 +170,17 @@ private fun LaserCaptureBody(
                     modifier = Modifier.align(Alignment.TopEnd).padding(10.dp),
                 )
             }
-            // 漫游标注入口：完成态且当前云非空时叠左下——按当前镜头进第一视角走一圈圈车位框。
-            // 融合/镜头A → 世界系 a 框（A==世界，up=地面法向）；镜头B → unitB 设备系 b 框（up=+Z）。
-            if (completed != null && selectedCloud.xyz.isNotEmpty()) {
-                val roamUnit = if (selected == LaserCloudKind.B) "b" else "a"
-                val roamUp = if (selected == LaserCloudKind.B) null
-                else if (ground != null && ground.valid) floatArrayOf(ground.nx, ground.ny, ground.nz) else null
-                val saved = if (roamUnit == "b") boxBSaved else boxASaved
-                Box(Modifier.align(Alignment.BottomStart).padding(10.dp)) {
-                    OverlayPill(if (saved) "重标车位框 ◈" else "漫游标注 ◈", accent = true) {
-                        onRoam(selectedCloud, roamUnit, roamUp)
-                    }
-                }
-            }
         }
         // 缩略图切换行（融合/A/B，2D 散点轻量预览；采集时实时长，点击切主窗口）。
         CloudSwitcherRow(
             selected = selected, fused = fused, unitA = unitA, unitB = unitB,
             onSelect = { selected = it }, modifier = Modifier.padding(horizontal = 16.dp),
         )
-        // 状态 & 结果区（状态行 + 完成后计数 + 测量卡/不可用）。车位框入口已移入设备控制 sheet。
-        LaserStatusPanel(
+        // 完成态外廓尺寸结果卡（放大展示车长/车宽/车高）。非完成态不渲染，竖向空间全让给点云主窗。
+        LaserResultPanel(
             state = state, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 10.dp),
         )
-        LaserControlBar(
-            state = state, onStart = onStart, onStop = onStop, onRestart = onRestart,
-            vehicleType = vehicleType, onSelectVehicleType = onSelectVehicleType, onOpenSettings = onOpenSettings,
-        )
+        LaserControlBar(state = state, onStart = onStart, onStop = onStop, onRestart = onRestart)
     }
 }
 
@@ -350,12 +254,13 @@ private fun CloudThumbnail(
 }
 
 /**
- * 结果区（缩略图下方）：仅在完成态渲染描边卡（计数摘要 + 测量卡/不可用）。
- * 非完成态不渲染——状态已上移到点云窗口角标（[CloudStatusBadge]），竖向空间全让给点云主窗。
- * 车位框圈选入口已移入设备控制 sheet（[LaserDeviceControlSheet] 的「测量范围」节），一次性标定不占主流程。
+ * 完成态外廓尺寸结果卡（缩略图下方）：放大展示车长/车宽/车高（米 + mm），是全屏最醒目内容。
+ * 数据来自服务端 measure.go（融合后对 fused 云算 OBB + Z 跨度），经 scan.fusion_done 事件推来（mm）。
+ * 只算长宽高（纯几何，与车型无关）；不再显示按车型合规结论（车型/合规已移到网页端）。
+ * 非完成态不渲染——状态在点云窗口左上角标（[CloudStatusBadge]），竖向空间全让给点云主窗。
  */
 @Composable
-private fun LaserStatusPanel(
+private fun LaserResultPanel(
     state: LaserScanState,
     modifier: Modifier = Modifier,
 ) {
@@ -366,10 +271,23 @@ private fun LaserStatusPanel(
             .clip(Gomob.shapes.r3)
             .background(Gomob.colors.bg1)
             .border(BorderStroke(1.dp, Gomob.colors.line2), Gomob.shapes.r3)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // 计数摘要：小字次要信息（测量数字才是主角）。
+        Text(
+            "外廓尺寸",
+            style = Gomob.type.numInline.copy(fontSize = 10.sp, letterSpacing = 0.14.em),
+            color = Gomob.colors.accent,
+        )
+        if (s.measurement.valid) {
+            MeasurementResult(s.measurement)
+        } else {
+            Text(
+                "测量不可用（点云不足 / 超出量程）",
+                style = Gomob.type.numInline.copy(fontSize = 12.sp), color = Gomob.colors.fg3,
+            )
+        }
+        // 次要信息：点数摘要（小字，尺寸数字才是主角）。
         Text(
             "融合 ${s.points} 点 · A ${s.ptsA} / B ${s.ptsB} · ${s.alignMethod}",
             style = Gomob.type.numInline.copy(fontSize = 9.sp), color = Gomob.colors.fg2,
@@ -380,15 +298,51 @@ private fun LaserStatusPanel(
                 style = Gomob.type.numInline.copy(fontSize = 10.sp), color = Gomob.colors.danger,
             )
         }
-        if (s.measurement.valid) {
-            MeasurementCard(s.measurement)
-        } else {
-            Text(
-                "测量不可用（点云不足 / 超出量程）",
-                style = Gomob.type.numInline.copy(fontSize = 11.sp), color = Gomob.colors.fg3,
-            )
-        }
     }
+}
+
+/** 外廓三尺寸并排放大展示（车长/车宽/车高），中间用细分隔线区隔。 */
+@Composable
+private fun MeasurementResult(m: VehicleMeasurement, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceEvenly,
+    ) {
+        BigDim("车长", m.lengthMm, Modifier.weight(1f))
+        DimDivider()
+        BigDim("车宽", m.widthMm, Modifier.weight(1f))
+        DimDivider()
+        BigDim("车高", m.heightMm, Modifier.weight(1f))
+    }
+}
+
+/** 单个尺寸：标题 + 大号米值（全屏最大数字）+ 小号 mm。 */
+@Composable
+private fun BigDim(label: String, mm: Float, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Text(label, fontSize = 11.sp, color = Gomob.colors.fg3)
+        Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(
+                "%.2f".format(mm / 1000f),
+                style = Gomob.type.numInline.copy(fontSize = 26.sp),
+                color = Gomob.colors.fg0,
+                maxLines = 1,
+            )
+            Text("m", fontSize = 12.sp, color = Gomob.colors.fg3, modifier = Modifier.padding(bottom = 3.dp))
+        }
+        Text("${mm.roundToInt()} mm", fontSize = 10.sp, color = Gomob.colors.fg2)
+    }
+}
+
+/** 尺寸之间的细竖分隔线。 */
+@Composable
+private fun DimDivider() {
+    Box(Modifier.size(1.dp, 40.dp).background(Gomob.colors.line2))
 }
 
 /**
@@ -523,66 +477,7 @@ private fun CloudStatusBadge(state: LaserScanState) {
     }
 }
 
-/**
- * 测量卡片（M9.6）：完成后在状态结果区显示车长/车宽/车高（米）+ GB7258-2017 外廓合规结论。
- * 数据来自服务端 measure.go（融合后对 fused 云算 OBB + Z 跨度），经 scan.fusion_done 事件推来（mm）。
- * 容器装饰交由外层 [LaserStatusPanel]，本卡只排版内容。
- */
-@Composable
-private fun MeasurementCard(m: VehicleMeasurement, modifier: Modifier = Modifier) {
-    Column(
-        modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            DimChip("车长", m.lengthMm)
-            DimChip("车宽", m.widthMm)
-            DimChip("车高", m.heightMm)
-        }
-        ComplianceBadge(m.compliant, m.violations)
-    }
-}
-
-/** 单个尺寸：标题 + 大号米值 + 小号 mm（车辆尺度 mm 量级，米更直观；米值仍是全屏最大数字）。 */
-@Composable
-private fun DimChip(label: String, mm: Float) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(0.dp)) {
-        Text(label, fontSize = 9.sp, color = Gomob.colors.fg3)
-        Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(
-                "%.2f".format(mm / 1000f),
-                style = Gomob.type.numInline.copy(fontSize = 17.sp),
-                color = Gomob.colors.fg1,
-            )
-            Text("m", fontSize = 10.sp, color = Gomob.colors.fg3, modifier = Modifier.padding(bottom = 2.dp))
-        }
-        Text("${mm.roundToInt()} mm", fontSize = 9.sp, color = Gomob.colors.fg2)
-    }
-}
-
-/** 合规徽章：绿=符合 / 红=超限并列出违规项（GB7258-2017 §4.15 外廓限值）。 */
-@Composable
-private fun ComplianceBadge(compliant: Boolean, violations: List<String>) {
-    val color = if (compliant) Gomob.colors.ok else Gomob.colors.danger
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(Gomob.shapes.r2)
-            .background(color.copy(alpha = 0.12f))
-            .padding(horizontal = 8.dp, vertical = 5.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Box(Modifier.size(7.dp).clip(CircleShape).background(color))
-        Text(
-            if (compliant) "符合 GB7258-2017 外廓限值" else "超限：" + violations.joinToString("、"),
-            fontSize = 11.sp,
-            color = color,
-        )
-    }
-}
-
-/** 视角预设段控（顶/侧/斜/自由）+ 重置：完成后叠在融合模型右上角，一键切机位 / 复位取景。 */
+/** 视角预设段控（顶/侧/斜/自由）+ 重置：叠在点云窗口右上角，一键切机位 / 复位取景。 */
 @Composable
 private fun ViewPresetBar(
     current: LaserViewPreset,
@@ -637,141 +532,31 @@ private fun ViewPresetChip(
     }
 }
 
+/**
+ * 主控栏（单键居中）：开始/停止/融合中/重新扫描。退出走标题栏返回箭头；结果在 [LaserResultPanel]。
+ * 车型下拉与设备控制/设置已移除——工位配置全在网页端管理端，App 只负责操作。
+ */
 @Composable
 private fun LaserControlBar(
     state: LaserScanState,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onRestart: () -> Unit,
-    vehicleType: io.gomob.data.scan.VehicleType,
-    onSelectVehicleType: (io.gomob.data.scan.VehicleType) -> Unit,
-    onOpenSettings: () -> Unit,
-) {
-    // 三键：左=车型下拉（逆向 JCHY 26 型，随扫描下发）｜中=主控（开始/停止/融合中/重新扫描）｜右=设置（设备控制）。
-    // 退出走标题栏返回箭头；计数/结果在 LaserStatusPanel。
-    Column(
-        modifier = Modifier.fillMaxWidth().padding(start = 20.dp, top = 8.dp, end = 20.dp, bottom = 14.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            VehicleTypeDropdown(current = vehicleType, onSelect = onSelectVehicleType)
-            Box(contentAlignment = Alignment.Center) {
-                when (state) {
-                    LaserScanState.Idle -> PillButton("开始扫描", primary = true, onClick = onStart)
-                    LaserScanState.Connecting -> PillStatus("连接设备中…", spinner = true)
-                    // 与「开始扫描」同款单 pill（仅 danger 色），不加图标/前置红点——避免按键风格突变 +
-                    // 居中位置偏移；采集中指示已在点云窗口左上「采集中」徽标。
-                    LaserScanState.Scanning -> PillButton("停止扫描", primary = false, danger = true, onClick = onStop)
-                    LaserScanState.Processing -> PillStatus("云端融合中…", spinner = true)
-                    is LaserScanState.Completed -> PillButton("重新扫描", GomobIcons.Refresh, primary = true, onClick = onRestart)
-                    is LaserScanState.Error -> PillButton("重新扫描", GomobIcons.Refresh, primary = true, onClick = onRestart)
-                }
-            }
-            RoundIconButton(GomobIcons.Settings, "设备控制", onClick = onOpenSettings)
-        }
-    }
-}
-
-/**
- * 车型下拉选（控制栏左槽）：46dp 全圆角 pill 芯片显示当前车型名 + 下拉箭头，点开按货车/挂车分组列出
- * 逆向 JCHY 26 型。选中随扫描下发服务端（carType 偏移 + 按型合规 + 记录）。与中间动作 pill、右侧设置
- * 圆钮同高同圆角，左右中性、中间 accent —— 统一视觉层级。
- */
-@Composable
-private fun VehicleTypeDropdown(
-    current: io.gomob.data.scan.VehicleType,
-    onSelect: (io.gomob.data.scan.VehicleType) -> Unit,
-) {
-    var expanded by remember { mutableStateOf(false) }
-    Box {
-        Row(
-            modifier = Modifier
-                .height(46.dp)
-                .widthIn(min = 88.dp, max = 132.dp)
-                .clip(CircleShape)
-                .background(Gomob.colors.bg1)
-                .border(BorderStroke(1.dp, Gomob.colors.line2), CircleShape)
-                .clickable { expanded = true }
-                .padding(start = 16.dp, end = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Text(
-                current.name, fontSize = 14.sp, color = Gomob.colors.fg1, maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
-            )
-            Icon(GomobIcons.ChevronRight, "选择车型", tint = Gomob.colors.fg3,
-                modifier = Modifier.size(15.dp).rotate(90f))
-        }
-        DropdownMenu(
-            expanded = expanded, onDismissRequest = { expanded = false },
-            modifier = Modifier.background(Gomob.colors.bg1).heightIn(max = 360.dp),
-        ) {
-            VehicleGroupLabel("货车")
-            io.gomob.data.scan.VehicleTypeCatalog.all
-                .filter { it.group == io.gomob.data.scan.VehicleGroup.TRUCK }
-                .forEach { VehicleTypeMenuItem(it, current) { onSelect(it); expanded = false } }
-            VehicleGroupLabel("挂车")
-            io.gomob.data.scan.VehicleTypeCatalog.all
-                .filter { it.group == io.gomob.data.scan.VehicleGroup.TRAILER }
-                .forEach { VehicleTypeMenuItem(it, current) { onSelect(it); expanded = false } }
-        }
-    }
-}
-
-/** 控制栏右槽设置圆钮：46dp 圆形图标键（无文字标签），与车型 pill / 动作 pill 同高，中性描边。 */
-@Composable
-private fun RoundIconButton(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    contentDescription: String,
-    onClick: () -> Unit,
 ) {
     Box(
-        Modifier
-            .size(46.dp)
-            .clip(CircleShape)
-            .background(Gomob.colors.bg1)
-            .border(BorderStroke(1.dp, Gomob.colors.line2), CircleShape)
-            .clickable(onClick = onClick),
+        modifier = Modifier.fillMaxWidth().padding(start = 20.dp, top = 8.dp, end = 20.dp, bottom = 14.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, contentDescription, tint = Gomob.colors.fg1, modifier = Modifier.size(19.dp))
+        when (state) {
+            LaserScanState.Idle -> PillButton("开始扫描", primary = true, onClick = onStart)
+            LaserScanState.Connecting -> PillStatus("连接设备中…", spinner = true)
+            // 与「开始扫描」同款单 pill（仅 danger 色）；采集中指示已在点云窗口左上「采集中」徽标。
+            LaserScanState.Scanning -> PillButton("停止扫描", primary = false, danger = true, onClick = onStop)
+            LaserScanState.Processing -> PillStatus("云端融合中…", spinner = true)
+            is LaserScanState.Completed -> PillButton("重新扫描", GomobIcons.Refresh, primary = true, onClick = onRestart)
+            is LaserScanState.Error -> PillButton("重新扫描", GomobIcons.Refresh, primary = true, onClick = onRestart)
+        }
     }
-}
-
-@Composable
-private fun VehicleGroupLabel(text: String) {
-    Text(
-        text, fontSize = 10.sp, color = Gomob.colors.fg3,
-        modifier = Modifier.padding(start = 12.dp, top = 6.dp, bottom = 2.dp),
-    )
-}
-
-@Composable
-private fun VehicleTypeMenuItem(
-    t: io.gomob.data.scan.VehicleType,
-    current: io.gomob.data.scan.VehicleType,
-    onClick: () -> Unit,
-) {
-    val sel = t.id == current.id
-    androidx.compose.material3.DropdownMenuItem(
-        text = {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(t.name, fontSize = 13.sp, color = if (sel) Gomob.colors.accent else Gomob.colors.fg1)
-                if (t.tank) Text("罐", fontSize = 9.sp, color = Gomob.colors.fg3)
-                if (t.crane) Text("吊", fontSize = 9.sp, color = Gomob.colors.fg3)
-            }
-        },
-        onClick = onClick,
-        trailingIcon = if (sel) {
-            { Icon(GomobIcons.Check, "已选", tint = Gomob.colors.accent, modifier = Modifier.size(14.dp)) }
-        } else null,
-    )
 }
 
 @Composable
