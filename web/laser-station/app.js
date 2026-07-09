@@ -3008,8 +3008,67 @@ function renderVehicleOverlay(rect) {
     if (Array.isArray(ov.axle_lines)) {
       for (const ln of ov.axle_lines) if (Array.isArray(ln) && ln.length === 2) line(ln[0], ln[1], "ov-axle");
     }
+    renderOverlayDimensions(ov, svg, pane, line);
     layer.append(svg);
     els.markerLayer.append(layer);
+  }
+}
+
+// renderOverlayDimensions 把测量数值直接标注到叠加几何上（用户拍板"按草图标注"）：
+// ① 车长/车宽/车高标在对应框棱中点；② 前悬|轴距₁..ₙ|后悬 尺寸链沿 wMin 侧底棱向外挪画，
+// 节点=框两端+各轴线端点(与轴线同源)，数值取 app.measure(与测量面板同一 stats，不另算)。
+function renderOverlayDimensions(ov, svg, pane, line) {
+  const m = app.measure;
+  const vb = ov && ov.vehicle_box;
+  if (!m || !Array.isArray(vb) || vb.length !== 8) return;
+  const SVGNS = "http://www.w3.org/2000/svg";
+  const fmt = (v) => `${Math.round(Number(v) || 0).toLocaleString()}`;
+  const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
+  const text = (worldP, str, dy = 0) => {
+    const sp = projectPointInPane(worldP, pane);
+    if (!sp) return;
+    const el = document.createElementNS(SVGNS, "text");
+    el.setAttribute("x", (sp[0] - pane.x).toFixed(1));
+    el.setAttribute("y", (sp[1] - pane.y + dy).toFixed(1));
+    el.setAttribute("class", "ov-dim-label");
+    el.textContent = str;
+    svg.append(el);
+  };
+  // 长/宽/高：框棱中点（车长放顶棱上方避开底部尺寸链；车宽/车高放 lMax 端）。
+  if (Number(m.length_mm) > 0) text(mid(vb[4], vb[5]), `车长 ${fmt(m.length_mm)}`, -8);
+  if (Number(m.width_mm) > 0) text(mid(vb[1], vb[2]), `车宽 ${fmt(m.width_mm)}`, 16);
+  if (Number(m.height_mm) > 0) text(mid(vb[2], vb[6]), `车高 ${fmt(m.height_mm)}`, 0);
+
+  // 尺寸链：前悬 | 轴距… | 后悬。
+  const axles = Array.isArray(ov.axle_lines) ? ov.axle_lines : [];
+  if (!m.axle_valid || axles.length < 2) return;
+  // 外挪方向 = wMin 底棱(c0→c1)背离框体一侧（c3→c0 方向），偏移量取车宽的 18%。
+  const out = [(vb[0][0] - vb[3][0]) * 0.18, (vb[0][1] - vb[3][1]) * 0.18, (vb[0][2] - vb[3][2]) * 0.18];
+  const off = (p) => [p[0] + out[0], p[1] + out[1], p[2] + out[2]];
+  const tickHalf = (p) => [[p[0] - out[0] * 0.2, p[1] - out[1] * 0.2, p[2] - out[2] * 0.2],
+                           [p[0] + out[0] * 0.2, p[1] + out[1] * 0.2, p[2] + out[2] * 0.2]];
+  // 链节点：框 lMin 端角 + 各轴线 wMin 侧端点 + 框 lMax 端角（轴线端点本就画在 wMin/wMax 车底，见 overlay.go）。
+  const nodes = [vb[0], ...axles.map((ln) => ln[0]), vb[1]].map(off);
+  // 数据链（从车头端起）：前悬, 轴距1..n, 后悬；几何节点沿 l 升序——比较 lMin 端首段长度更接近前悬还是后悬，判车头端。
+  let chain = [
+    { name: "前悬", v: m.front_overhang_mm },
+    ...(Array.isArray(m.wheelbases_mm) ? m.wheelbases_mm : []).map((v, i) => ({ name: `轴距${i + 1}`, v })),
+    { name: "后悬", v: m.rear_overhang_mm },
+  ];
+  if (chain.length !== nodes.length - 1) return; // 轴线数与轴距数不匹配（异常数据），不标
+  const d3 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  const firstSeg = d3(nodes[0], nodes[1]);
+  if (Math.abs(firstSeg - Number(m.front_overhang_mm)) > Math.abs(firstSeg - Number(m.rear_overhang_mm))) {
+    chain = chain.slice().reverse();
+  }
+  for (const n of nodes) {
+    const [a, b] = tickHalf(n);
+    line(a, b, "ov-dim");
+  }
+  for (let i = 0; i + 1 < nodes.length; i++) {
+    line(nodes[i], nodes[i + 1], "ov-dim");
+    // 相邻段标签上下交错，避免短轴距段文字互叠。
+    text(mid(nodes[i], nodes[i + 1]), `${chain[i].name} ${fmt(chain[i].v)}`, i % 2 ? 14 : -6);
   }
 }
 

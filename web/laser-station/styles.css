@@ -1284,6 +1284,8 @@ label {
 .overlay-svg .ov-vehicle { stroke: #4fd1ff; stroke-width: 1.6; fill: none; opacity: 0.9; }
 .overlay-svg .ov-cargo { stroke: #ffd54a; stroke-width: 1.6; fill: none; opacity: 0.95; }
 .overlay-svg .ov-axle { stroke: #ff7a6b; stroke-width: 2.2; fill: none; opacity: 0.95; }
+.overlay-svg .ov-dim { stroke: #9be07a; stroke-width: 1.1; fill: none; opacity: 0.85; }
+.overlay-svg .ov-dim-label { fill: #eaffdf; font-size: 11px; font-family: ui-monospace, SFMono-Regular, monospace; text-anchor: middle; paint-order: stroke; stroke: rgba(10, 14, 18, 0.85); stroke-width: 3px; }
 .measure-badge.warn { background: rgba(240, 190, 90, 0.18); color: #f0be5a; border: 1px solid rgba(240, 190, 90, 0.5); }
 .ov-legend { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 500; }
 .ov-dot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-left: 4px; }
