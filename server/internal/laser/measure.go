@@ -128,9 +128,21 @@ func MeasureFull(xyzMM []float32, p MeasureParams, ap AxleParams) (Dimensions, A
 		return d, AxleResult{}, CargoBox{}
 	}
 	det := clipToBodyFootprint(roiPts, body, d, footprintMarginMM)
-	axle := DetectAxles(det, d.OBBAngleDeg, ap)
+	axle := DetectAxles(det, d.OBBAngleDeg, anchorAxleParams(ap, body, d))
 	axle = gateAxlePlausibility(axle, d)
 	return d, axle, DetectCargoBox(det, d.OBBAngleDeg, DefaultCargoBoxParams())
+}
+
+// anchorAxleParams 主簇可信时把接触带锚到车体底（轮是车体自身最低部件，抗低垂残留/支撑面起伏，
+// M13.9）；主簇不可信(稀疏合成壳/碎裂)时保持旧全局低分位锚。
+func anchorAxleParams(ap AxleParams, body []pt, d Dimensions) AxleParams {
+	if !d.Valid || d.BodyRatio < footprintMinBodyRatio || len(body) == 0 {
+		return ap
+	}
+	bottom, _ := robustZExtents(body)
+	ap.UseAnchor = true
+	ap.AnchorZ = bottom
+	return ap
 }
 
 // footprintMarginMM 车体足迹裁剪外扩量：容纳轮胎微凸出车体投影、OBB 角度量化误差与

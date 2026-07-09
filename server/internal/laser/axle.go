@@ -27,6 +27,14 @@ type AxleParams struct {
 	SmoothBins  int     // 密度平滑窗口（bin 数）
 	MinAxleGap  float32 // 最小轴距 mm（峰间最小间距，防把单轴拆成两峰）
 	EndTrimFrac float32 // 端噪剔除：丢点数 < 峰值×此比例的车长两端 bin
+
+	// 接触带锚定（M13.9，真机 job190 反馈闭环）：默认接触带从"输入点全局最低分位 z0"起——
+	// 背景漂移残留/台面杂物可能比车轮更低，把带锚拉到杂物上（轮完全不在带内，检出全是伪轴）。
+	// UseAnchor 时改从"车体主簇底部"起：轮是车体自身的最低部件，与支撑面在哪/平不平无关。
+	// AnchorZ = 车体底(主簇 z 的 P0.5)，带 = [AnchorZ−AnchorSlack, AnchorZ−AnchorSlack+contactH]。
+	UseAnchor   bool
+	AnchorZ     float32
+	AnchorSlack float32 // 底部余量 mm：容纳被主簇丢掉的悬挂轮略低于主簇底（默认 20）
 }
 
 // DefaultAxleParams 与 harness analyze.py 一致（Data/100742 达标）。
@@ -68,8 +76,18 @@ func DetectAxles(body []pt, obbAngleDeg float32, p AxleParams) AxleResult {
 	if hi-lo < p.MinAxleGap {
 		return r
 	}
-	// 3) 地面 z0（鲁棒低分位）+ 贴地接触带高度。
+	// 3) 接触带下锚 z0 + 带高。默认=输入点鲁棒低分位（平整地面、无残留时 ≈ 轮底）；
+	//    UseAnchor 时=车体主簇底（抗支撑面起伏与低垂残留，见 AxleParams 注释）。
 	z0 := percentile(zs, 0.3)
+	if p.UseAnchor {
+		slack := p.AnchorSlack
+		if slack <= 0 {
+			// 40mm: 主簇底(P0.5, 经 ROR)比真实轮底略高 —— JCHY 真值数据实测 20mm 余量使带上移
+			// 吃进侧裙(轴距 +6%)，40mm 与旧全局低分位锚重合、真值回归不动。
+			slack = 40
+		}
+		z0 = p.AnchorZ - slack
+	}
 	height := percentile(zs, 99.7) - z0
 	contactH := p.ContactFrac * height
 	if contactH < p.ContactMin {
@@ -82,7 +100,7 @@ func DetectAxles(body []pt, obbAngleDeg float32, p AxleParams) AxleResult {
 	}
 	dens := make([]float64, nb)
 	for i := range ls {
-		if zs[i] >= z0+contactH || ls[i] < lo || ls[i] > hi {
+		if zs[i] < z0 || zs[i] >= z0+contactH || ls[i] < lo || ls[i] > hi {
 			continue
 		}
 		b := int((ls[i] - lo) / p.BinMM)

@@ -76,8 +76,10 @@ func main() {
 	mp.WidthSupportFrac = 0.15
 	mp.WidthBinMM = 1
 	mp.SpanTrimPct = 0.5
-	dims := laser.Measure(fg, mp)
+	dims, axle, cargo := laser.MeasureFull(fg, mp, laser.DefaultAxleParams())
 	out["measure"] = dims
+	out["axle"] = axle
+	out["cargo_box"] = cargo
 
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", " ")
