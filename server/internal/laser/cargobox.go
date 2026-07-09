@@ -63,6 +63,8 @@ func DetectCargoBox(body []pt, obbAngleDeg float32, p CargoBoxParams) CargoBox {
 	if hi-lo < 3*p.BinMM {
 		return r
 	}
+	vehLen := hi - lo
+	vehW := spanPct(ws, 2, 98)
 	ground := percentile(zs, 0.3)
 	top := percentile(zs, 99.5)
 	vehH := top - ground
@@ -149,27 +151,34 @@ func DetectCargoBox(body []pt, obbAngleDeg float32, p CargoBoxParams) CargoBox {
 			}
 		}
 	}
+	// bed = 从箱顶向下延伸的恒宽壁段的下端。参考宽用 outerW(rim 宽)而非任意段自身宽：
+	// 箱壁宽=箱宽是物理约束。旧"全局最长恒宽段"会被底盘/轮带宽度偶合的段抢走——真机相邻两扫
+	// (job192/193，数据互差 1mm) bed 在 561/281 间翻转、箱深撞合理性上限致 has_box 闪烁；
+	// 顶锚定后 bed 语义=箱壁下端，确定性。点不足的未知 bin 容忍 ≤2 个连续跳过(壁面稀疏)，
+	// 更长的未知带视为壁段结束(防经未知带桥接到下方偶合的底盘段)。
 	bed := ground
-	bestLen := 0
-	for b := 0; b < znb; {
+	topBin := int((top - ground) / p.BinMM)
+	if topBin >= znb {
+		topBin = znb - 1
+	}
+	lowestWall, gap := -1, 0
+	for b := topBin; b >= 0; b-- {
 		if widthZ[b] <= 0 {
-			b++
+			gap++
+			if gap > 2 {
+				break
+			}
 			continue
 		}
-		ref := widthZ[b]
-		j := b
-		for j < znb && widthZ[j] > 0 && absf32(widthZ[j]-ref) < p.WidthTolFrac*ref {
-			j++
+		if absf32(widthZ[b]-outerW) < p.WidthTolFrac*outerW {
+			lowestWall = b
+			gap = 0
+			continue
 		}
-		if j-b > bestLen {
-			bestLen = j - b
-			bed = ground + float32(b)*p.BinMM
-		}
-		if j > b {
-			b = j
-		} else {
-			b++
-		}
+		break
+	}
+	if lowestWall >= 0 {
+		bed = ground + float32(lowestWall)*p.BinMM
 	}
 	r.TopZMM = top
 	r.BedZMM = bed
@@ -183,9 +192,29 @@ func DetectCargoBox(body []pt, obbAngleDeg float32, p CargoBoxParams) CargoBox {
 	r.BoxLMinMM, r.BoxLMaxMM = bl0, bl1
 	r.BoxWCenterMM = pctVal(bw, 2)/2 + pctVal(bw, 98)/2
 	r.BoxWHalfMM = outerW / 2
+	if !cargoBoxPhysicallyCredible(r, vehLen, vehW, vehH, p.BinMM) {
+		return CargoBox{}
+	}
 	r.HasBox = true
 	r.Valid = true
 	return r
+}
+
+func cargoBoxPhysicallyCredible(c CargoBox, vehicleLengthMM, vehicleWidthMM, vehicleHeightMM, binMM float32) bool {
+	if vehicleLengthMM <= 0 || vehicleWidthMM <= 0 || vehicleHeightMM <= 0 {
+		return false
+	}
+	if c.OuterLengthMM <= 0 || c.OuterWidthMM <= 0 || c.DepthMM <= 0 {
+		return false
+	}
+	minLen := maxf(4*binMM, 0.18*vehicleLengthMM)
+	minWidth := maxf(3*binMM, 0.35*vehicleWidthMM)
+	minDepth := maxf(2*binMM, 0.08*vehicleHeightMM)
+	maxDepth := minf(0.92*vehicleHeightMM, minf(1.35*c.OuterWidthMM, 1.60*c.OuterLengthMM))
+	return c.OuterLengthMM >= minLen &&
+		c.OuterWidthMM >= minWidth &&
+		c.DepthMM >= minDepth &&
+		c.DepthMM <= maxDepth
 }
 
 // pctVal 返回升序分位值。

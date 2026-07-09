@@ -46,6 +46,15 @@ func synthVehicleWithWheelsAndJunk() (all []float32, bodyLen float32) {
 			}
 		}
 	}
+	// 前端"保险杠角"：贴车头端(l∈[0,40])两侧、接触带高度的稠密结构——距端 ~1% 车长，
+	// 端部排除应剔除(真机 job195 前脸下沿伪轴场景)；不剔则会多出一根 3% 前悬的假轴。
+	for x := float32(0); x <= 40; x += 5 {
+		for y := float32(20); y <= 90; y += 5 {
+			for z := float32(0); z <= clearance; z += 5 {
+				pts = append(pts, x, y, z, x, W-y, z)
+			}
+		}
+	}
 	return pts, L
 }
 

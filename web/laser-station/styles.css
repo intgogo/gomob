@@ -1290,6 +1290,9 @@ label {
 .overlay-svg .ov-lwh-ext { stroke: #4fd1ff; stroke-width: 1; fill: none; opacity: 0.45; stroke-dasharray: 3 3; }
 .overlay-svg .ov-arrow-dim { fill: #9be07a; }
 .overlay-svg .ov-arrow-lwh { fill: #4fd1ff; }
+.overlay-svg .ov-cargo-dim { stroke: #ffd54a; stroke-width: 1.3; fill: none; opacity: 0.95; }
+.overlay-svg .ov-cargo-dim-ext { stroke: #ffd54a; stroke-width: 1; fill: none; opacity: 0.45; stroke-dasharray: 3 3; }
+.overlay-svg .ov-arrow-cargo { fill: #ffd54a; }
 /* 测量标注立体徽章：渐变底 + 亮上边 + 外投影，噪点点云上保持可读（M13.10） */
 .overlay-pane .ov-dim-chip {
   position: absolute;

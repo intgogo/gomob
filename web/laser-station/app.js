@@ -3031,7 +3031,7 @@ function renderOverlayDimensions(ov, svg, pane, line, layer) {
 
   // 双端箭头 marker（auto-start-reverse 同一 marker 兼作两端）。
   const defs = document.createElementNS(SVGNS, "defs");
-  for (const [id, cls] of [["ovArrowDim", "ov-arrow-dim"], ["ovArrowLwh", "ov-arrow-lwh"]]) {
+  for (const [id, cls] of [["ovArrowDim", "ov-arrow-dim"], ["ovArrowLwh", "ov-arrow-lwh"], ["ovArrowCargo", "ov-arrow-cargo"]]) {
     const mk = document.createElementNS(SVGNS, "marker");
     mk.setAttribute("id", id);
     mk.setAttribute("viewBox", "0 0 10 10");
@@ -3098,6 +3098,17 @@ function renderOverlayDimensions(ov, svg, pane, line, layer) {
   if (Number(m.length_mm) > 0) dimension(vb[4], vb[5], hUp, "车长", fmt(m.length_mm), "ov-lwh", "ovArrowLwh", "lwh");
   if (Number(m.width_mm) > 0) dimension(vb[1], vb[2], lOut, "车宽", fmt(m.width_mm), "ov-lwh", "ovArrowLwh", "lwh");
   if (Number(m.height_mm) > 0) dimension(vb[2], vb[6], wOut, "车高", fmt(m.height_mm), "ov-lwh", "ovArrowLwh", "lwh");
+
+  // 货箱：箱长(wMax 侧顶棱)/箱宽(lMin 端顶棱)/箱深(lMin·wMax 竖棱)，黄色与货箱框同色；
+  // 落位避开车体尺寸线(车长在 wMin 侧顶棱上方、车宽车高在 lMax 端)。角点序与 box8 一致。
+  const cgb = ov.has_cargo_box && Array.isArray(ov.cargo_box) && ov.cargo_box.length === 8 ? ov.cargo_box : null;
+  if (cgb && m.has_cargo_box) {
+    const cWOut = vscale(vsub(cgb[3], cgb[0]), 0.25); // 车宽方向外挪(wMax 侧)
+    const cLOut = vscale(vsub(cgb[0], cgb[1]), 0.12); // 车长方向外挪(箱前端)
+    if (Number(m.box_outer_length_mm) > 0) dimension(cgb[7], cgb[6], cWOut, "箱长", fmt(m.box_outer_length_mm), "ov-cargo-dim", "ovArrowCargo", "cargo");
+    if (Number(m.box_outer_width_mm) > 0) dimension(cgb[4], cgb[7], cLOut, "箱宽", fmt(m.box_outer_width_mm), "ov-cargo-dim", "ovArrowCargo", "cargo");
+    if (Number(m.box_depth_mm) > 0) dimension(cgb[3], cgb[7], cWOut, "箱深", fmt(m.box_depth_mm), "ov-cargo-dim", "ovArrowCargo", "cargo");
+  }
 
   // 尺寸链：前悬 | 轴距(只标数字) | 后悬，沿 wMin 侧底棱外挪。
   const axles = Array.isArray(ov.axle_lines) ? ov.axle_lines : [];

@@ -35,11 +35,17 @@ type AxleParams struct {
 	UseAnchor   bool
 	AnchorZ     float32
 	AnchorSlack float32 // 底部余量 mm：容纳被主簇丢掉的悬挂轮略低于主簇底（默认 20）
+
+	// EndExclusionFrac 端部排除带占车长比例（默认 0.04）：轴心不可能贴着车体端部——轮是圆的，
+	// 轴心到车头/车尾至少隔一个轮半径；贴端的接触带峰是保险杠下沿/裙边（真机 job195 前脸下沿
+	// 距车头端 3% 处成伪轴、且密度压 0.25 阈线在相邻扫描间闪烁）。0=不排除。
+	EndExclusionFrac float32
 }
 
 // DefaultAxleParams 与 harness analyze.py 一致（Data/100742 达标）。
 func DefaultAxleParams() AxleParams {
-	return AxleParams{ContactFrac: 0.08, ContactMin: 40, BinMM: 10, SmoothBins: 5, MinAxleGap: 150, EndTrimFrac: 0.05}
+	return AxleParams{ContactFrac: 0.08, ContactMin: 40, BinMM: 10, SmoothBins: 5, MinAxleGap: 150, EndTrimFrac: 0.05,
+		EndExclusionFrac: 0.04}
 }
 
 // AxleResult 轴距/前后悬测量结果（沿车长轴，mm）。
@@ -65,8 +71,8 @@ func DetectAxles(body []pt, obbAngleDeg float32, p AxleParams) AxleResult {
 	if len(body) < 50 {
 		return r
 	}
-	// 1) 投到 OBB 对齐的车长轴坐标 l（取转后跨度更大的轴为车长）。
-	ls, zs := projectLengthAxis(body, obbAngleDeg)
+	// 1) 投到 OBB 对齐的车长/车宽轴坐标（取转后跨度更大的轴为车长；宽轴供轮对形态检验）。
+	ls, ws, zs := projectLWZ(body, obbAngleDeg)
 	lMin, lMax := minMax(ls)
 	if lMax-lMin < p.MinAxleGap {
 		return r
@@ -124,7 +130,11 @@ func DetectAxles(body []pt, obbAngleDeg float32, p AxleParams) AxleResult {
 	if len(peaks) < 2 {
 		return r
 	}
-	// 6) 每峰用密度加权细化轴心（l 坐标）。
+	// 6) 每峰用密度加权细化轴心（l 坐标），并做轮对形态检验：真轴=左右轮对，接触带内该 l 切片
+	//    的宽度分布两侧有支撑、车宽中段空；保险杠/箱面残留等横贯全宽的墙状结构中段占比高 → 剔除
+	//    （真机 job195 前保险杠下沿进接触带成伪轴、前悬塌到 59mm）。
+	wLo := percentile(ws, 2)
+	wHi := percentile(ws, 98)
 	centers := make([]float32, 0, len(peaks))
 	for _, pk := range peaks {
 		a, b := pk-8, pk+8
@@ -140,8 +150,19 @@ func DetectAxles(body []pt, obbAngleDeg float32, p AxleParams) AxleResult {
 			sw += sig[i]
 			swc += sig[i] * float64(c)
 		}
-		if sw > 0 {
-			centers = append(centers, float32(swc/sw))
+		if sw <= 0 {
+			continue
+		}
+		center := float32(swc / sw)
+		// 端部排除：轴心距车体任一端 < EndExclusionFrac×车长 → 保险杠/裙边端部结构，非轮。
+		if p.EndExclusionFrac > 0 {
+			endBand := p.EndExclusionFrac * (hi - lo)
+			if center-lo < endBand || hi-center < endBand {
+				continue
+			}
+		}
+		if wheelPairLike(ls, ws, zs, center, 3*p.BinMM, z0, contactH, wLo, wHi) {
+			centers = append(centers, center)
 		}
 	}
 	sort.Slice(centers, func(i, j int) bool { return centers[i] < centers[j] })
@@ -166,6 +187,35 @@ func DetectAxles(body []pt, obbAngleDeg float32, p AxleParams) AxleResult {
 	r.RearOverhangMM = hi - centers[len(centers)-1]
 	r.Valid = true
 	return r
+}
+
+// wheelPairLike 轮对形态检验：接触带内、|l−center|≤halfWin 的点，其车宽坐标按整车宽
+// [wLo,wHi] 分三段——真轴(左右轮对/单侧可见轮)中段占比低；横贯全宽的墙(保险杠/箱面残留)
+// 中段占比 ~1/3。中段占比 > 0.25 判非轮。点数不足(<20)不否决(稀疏别误杀)。
+func wheelPairLike(ls, ws, zs []float32, centerL, halfWin, z0, contactH, wLo, wHi float32) bool {
+	third := (wHi - wLo) / 3
+	if third <= 0 {
+		return true
+	}
+	m0, m1 := wLo+third, wHi-third
+	total, mid := 0, 0
+	for i := range ls {
+		if zs[i] < z0 || zs[i] >= z0+contactH {
+			continue
+		}
+		d := ls[i] - centerL
+		if d < -halfWin || d > halfWin {
+			continue
+		}
+		total++
+		if ws[i] >= m0 && ws[i] <= m1 {
+			mid++
+		}
+	}
+	if total < 20 {
+		return true
+	}
+	return float32(mid)/float32(total) <= 0.25
 }
 
 // adjDiff 升序序列的相邻差。
