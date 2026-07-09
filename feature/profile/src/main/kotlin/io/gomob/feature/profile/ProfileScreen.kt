@@ -56,8 +56,6 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.data.prefs.ThemeMode
-import io.gomob.designsystem.component.ScreenHeader
-import io.gomob.designsystem.decoration.ticks
 import io.gomob.designsystem.glass.GlassHeaderScaffold
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
@@ -72,7 +70,7 @@ const val PROFILE_ROUTE = "profile"
  * 06 我的 — jsx profile.jsx 主屏。
  *
  * 视觉骨架:
- *   1. ScreenHeader "我的 / 工号 ZAA0120230001" + 右上 Settings 按钮 → 抽屉
+ *   1. 玻璃条右上 Settings 按钮 → 抽屉; 身份 hero(头像/姓名/工号)沉在内容区
  *   2. 身份卡: 点击进入个人信息；56dp acc 头像方框 "沈" + 沈海明 17sp medium +
  *      查验员 acc tag + 工号 mono + 检测站
  *   3. 预审流水: 标题 "预审流水" + "历史数据 ›" 链接 → 跳到 07 历史日历
@@ -118,13 +116,15 @@ fun ProfileRoute(
     GlassHeaderScaffold(
         listState = listState,
         header = {
-            ScreenHeader(
-                title = "我的",
-                eyebrow = "工号 ${state.profile?.employeeId ?: "ZAA0120230001"}",
-                trailing = {
-                    SettingsIconButton(onClick = { settingsOpen = !settingsOpen })
-                },
-            )
+            // 身份 hero 化后 header 只留设置入口 —— 姓名/工号沉到内容区 hero, 不再叠床架屋
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Gomob.spacing.s8, vertical = Gomob.spacing.s2),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                SettingsIconButton(onClick = { settingsOpen = !settingsOpen })
+            }
         },
         overlay = {
             // 设置抽屉 — 全屏浮层放 overlay 槽, 面板内容自吃 systemBars inset
@@ -162,13 +162,13 @@ fun ProfileRoute(
             ),
         ) {
             item {
-                IdentityCard(
+                ProfileHero(
                     state = state,
                     onOpenEdit = onOpenPersonal,
                     onOpenCases = onOpenCases,
                 )
             }
-            item { Spacer(Modifier.height(Gomob.spacing.s12)) }
+            item { Spacer(Modifier.height(Gomob.spacing.s16)) }
             item { FlowSectionHeader(onOpenHistory = onOpenHistory) }
             item { FilterChipRow() }
             item { Spacer(Modifier.height(10.dp)) }
@@ -221,9 +221,10 @@ private fun SettingsIconButton(onClick: () -> Unit) {
     }
 }
 
-// ─── 身份卡 ─────────────────────────────────────────────────────────────────
+// ─── 身份 hero ───────────────────────────────────────────────────────────────
+// 无卡壳直接铺在氛围光晕上(iOS 设置页风); 点主体进编辑资料, 案例数是独立小入口。
 @Composable
-private fun IdentityCard(
+private fun ProfileHero(
     state: ProfileUiState,
     onOpenEdit: () -> Unit,
     onOpenCases: () -> Unit,
@@ -232,91 +233,90 @@ private fun IdentityCard(
     val role = state.profile?.roleLabel ?: "查验员"
     val empId = state.profile?.employeeId ?: "ZAA0120230001"
     val station = state.profile?.stationName ?: "杭州市西湖区 · 车管所检测站"
-    Box(Modifier.padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20, bottom = Gomob.spacing.s12)) {
-        Box(
+    Column(Modifier.padding(horizontal = Gomob.spacing.s20)) {
+        Row(
             Modifier
                 .fillMaxWidth()
                 .clip(Gomob.shapes.r3)
-                .background(Gomob.colors.bg1)
                 .clickable(onClick = onOpenEdit)
-                .ticks()
-                .padding(16.dp),
+                .padding(vertical = Gomob.spacing.s8),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            Box(
+                Modifier
+                    .size(56.dp)
+                    .clip(Gomob.shapes.r2)
+                    .background(Gomob.colors.accentSoft),
+                contentAlignment = Alignment.Center,
             ) {
-                Box(
-                    Modifier
-                        .size(56.dp)
-                        .clip(Gomob.shapes.r2)
-                        .background(Gomob.colors.accentSoft),
-                    contentAlignment = Alignment.Center,
+                Text(
+                    state.profile?.avatarInitial ?: name.take(1),
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Medium,
+                    letterSpacing = 0.04.em,
+                    color = Gomob.colors.accentStrong,
+                )
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
                 ) {
-                    Text(
-                        state.profile?.avatarInitial ?: name.take(1),
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.Medium,
-                        letterSpacing = 0.04.em,
-                        color = Gomob.colors.accentStrong,
-                    )
+                    Text(name, fontSize = 21.sp, fontWeight = FontWeight.SemiBold, color = Gomob.colors.fg0)
+                    AccTag(role)
                 }
-                Column(Modifier.weight(1f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-                    ) {
-                        Text(name, fontSize = 17.sp, fontWeight = FontWeight.Medium, color = Gomob.colors.fg0)
-                        AccTag(role)
-                    }
-                    Spacer(Modifier.height(Gomob.spacing.s6))
-                    Row {
-                        Text("工号 ", fontSize = 11.sp, color = Gomob.colors.fg2)
-                        Text(
-                            empId,
-                            style = Gomob.type.numInline.copy(fontSize = 11.sp),
-                            color = Gomob.colors.fg2,
-                        )
-                    }
-                    Spacer(Modifier.height(Gomob.spacing.s4))
+                Row {
+                    Text("工号 ", fontSize = 11.sp, color = Gomob.colors.fg2)
                     Text(
-                        station,
-                        fontSize = 11.sp,
+                        empId,
+                        style = Gomob.type.numInline.copy(fontSize = 11.sp),
                         color = Gomob.colors.fg2,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
                 }
-                Column(
-                    horizontalAlignment = Alignment.End,
-                    verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-                ) {
-                    Row(
-                        Modifier.clickable(onClick = onOpenEdit),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
-                    ) {
-                        Text("编辑资料", fontSize = 11.sp, color = Gomob.colors.accent)
-                        Icon(
-                            imageVector = GomobIcons.ChevronRight,
-                            contentDescription = null,
-                            tint = Gomob.colors.accent,
-                            modifier = Modifier.size(12.dp),
-                        )
-                    }
-                    Row(
-                        Modifier.clickable(onClick = onOpenCases),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
-                    ) {
-                        Text("我的案例", fontSize = 10.sp, color = Gomob.colors.fg3)
-                        Text(
-                            "06",
-                            style = Gomob.type.numInline.copy(fontSize = 11.sp),
-                            color = Gomob.colors.fg1,
-                        )
-                    }
-                }
+            }
+            Icon(
+                imageVector = GomobIcons.ChevronRight,
+                contentDescription = "编辑资料",
+                tint = Gomob.colors.fg3,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        // 次要信息行: 站点 + 我的案例入口
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = Gomob.spacing.s4),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                station,
+                fontSize = 11.sp,
+                color = Gomob.colors.fg2,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Row(
+                Modifier
+                    .clip(Gomob.shapes.r1)
+                    .clickable(onClick = onOpenCases)
+                    .padding(horizontal = Gomob.spacing.s8, vertical = Gomob.spacing.s4),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+            ) {
+                Text("我的案例", fontSize = 11.sp, color = Gomob.colors.fg3)
+                Text(
+                    "06",
+                    style = Gomob.type.numInline.copy(fontSize = 12.sp),
+                    color = Gomob.colors.fg1,
+                )
+                Icon(
+                    imageVector = GomobIcons.ChevronRight,
+                    contentDescription = null,
+                    tint = Gomob.colors.fg3,
+                    modifier = Modifier.size(12.dp),
+                )
             }
         }
     }

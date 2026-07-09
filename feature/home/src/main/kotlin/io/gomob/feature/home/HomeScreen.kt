@@ -19,8 +19,6 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -46,9 +44,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -96,6 +92,7 @@ import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import io.gomob.designsystem.component.BackHeader
+import io.gomob.designsystem.component.HairlineCard
 import io.gomob.designsystem.component.ScreenHeader
 import io.gomob.designsystem.decoration.ticks
 import io.gomob.designsystem.glass.GlassHeaderScaffold
@@ -121,10 +118,10 @@ fun HomeRoute(
     onOpenInspection: (String) -> Unit = {},
     onOpenNewChat: (String, String?) -> Unit = { _, _ -> },
     onOpenAgent: (String) -> Unit = {},
+    onOpenHistory: () -> Unit = {},
 ) {
     KeepAiInputStableEffect()
 
-    var historyOpen by rememberSaveable { mutableStateOf(false) }
     var composerActive by rememberSaveable { mutableStateOf(false) }
     var attachedBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var requestCapture by remember { mutableStateOf(false) }
@@ -178,10 +175,7 @@ fun HomeRoute(
                 title = "智能助手",
                 eyebrow = "车辆检验智能体 · 检测站合规识别",
                 trailing = {
-                    HistoryIconButton(
-                        active = historyOpen,
-                        onClick = { historyOpen = true },
-                    )
+                    HistoryIconButton(onClick = onOpenHistory)
                 },
             )
         },
@@ -206,10 +200,6 @@ fun HomeRoute(
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .padding(bottom = LocalContentBottomInset.current),
-            )
-            HistoryPanel(
-                visible = historyOpen,
-                onDismiss = { historyOpen = false },
             )
         },
     ) { padding ->
@@ -389,128 +379,73 @@ private fun AgentIntroBubble(agent: AgentCapability, modifier: Modifier = Modifi
 }
 
 @Composable
-private fun HistoryIconButton(active: Boolean, onClick: () -> Unit) {
+private fun HistoryIconButton(onClick: () -> Unit) {
     Box(
         Modifier
             .size(Gomob.spacing.touchMin)
             .clip(Gomob.shapes.r1)
-            .background(if (active) Gomob.colors.accentSoft else Color.Transparent)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
             GomobIcons.History,
             contentDescription = "历史会话",
-            tint = if (active) Gomob.colors.accent else Gomob.colors.fg2,
+            tint = Gomob.colors.fg2,
             modifier = Modifier.size(Gomob.spacing.icon20),
         )
     }
 }
 
+/**
+ * 历史会话 — 全屏玻璃二级页（替代旧右侧抽屉, 与其它二级页同款风格）。
+ */
 @Composable
-private fun HistoryPanel(visible: Boolean, onDismiss: () -> Unit) {
-    BackHandler(enabled = visible, onBack = onDismiss)
-    AnimatedVisibility(
-        visible = visible,
-        enter = fadeIn(),
-        exit = fadeOut(),
-    ) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.5f))
-                .clickable(onClick = onDismiss),
-        )
-    }
-    AnimatedVisibility(
-        visible = visible,
-        enter = slideInHorizontally(initialOffsetX = { it }),
-        exit = slideOutHorizontally(targetOffsetX = { it }),
-        modifier = Modifier.fillMaxSize(),
-    ) {
-        Box(
-            Modifier.fillMaxSize(),
-            contentAlignment = Alignment.CenterEnd,
-        ) {
-            HistoryPanelContent()
-        }
-    }
-}
-
-@Composable
-private fun HistoryPanelContent() {
-    val focusManager = LocalFocusManager.current
-    val keyboardController = LocalSoftwareKeyboardController.current
-    val drawerClickSource = remember { MutableInteractionSource() }
-    fun dismissInput() {
-        focusManager.clearFocus()
-        keyboardController?.hide()
-    }
-
-    Column(
-        Modifier
-            .fillMaxWidth(0.82f)
-            .fillMaxHeight()
-            .background(Gomob.colors.bg1)
-            // edge-to-edge 后侧滑面板自己避让系统栏
-            .windowInsetsPadding(WindowInsets.systemBars)
-            .clickable(
-                interactionSource = drawerClickSource,
-                indication = null,
-                onClick = { dismissInput() },
+fun ChatHistoryRoute(onBack: () -> Unit) {
+    val listState = rememberLazyListState()
+    GlassHeaderScaffold(
+        listState = listState,
+        header = {
+            BackHeader(
+                title = "历史会话",
+                eyebrow = "智能助手",
+                onBack = onBack,
+            )
+        },
+    ) { padding ->
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = Gomob.spacing.s20,
+                end = Gomob.spacing.s20,
+                top = padding.calculateTopPadding() + Gomob.spacing.s8,
+                bottom = padding.calculateBottomPadding() + Gomob.spacing.s24,
             ),
-    ) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column {
-                Text(
-                    "HISTORY",
-                    fontSize = 10.sp,
-                    fontFamily = FontFamily.Monospace,
-                    letterSpacing = 0.14.em,
-                    color = Gomob.colors.fg3,
-                )
-                Spacer(Modifier.height(Gomob.spacing.s2))
-                Text(
-                    "历史会话",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Gomob.colors.fg0,
-                )
+            item {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = Gomob.spacing.s12),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    Text("近 7 天", fontSize = 12.sp, color = Gomob.colors.fg2)
+                    Text(
+                        "${HISTORY_ITEMS.size}",
+                        style = Gomob.type.numInline.copy(fontSize = 18.sp),
+                        color = Gomob.colors.accent,
+                    )
+                }
             }
-        }
-        FullDivider()
-        Column(
-            Modifier
-                .weight(1f)
-                .padding(18.dp),
-        ) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Bottom,
-            ) {
-                Text("近 7 天", fontSize = 12.sp, color = Gomob.colors.fg2)
-                Text(
-                    "${HISTORY_ITEMS.size}",
-                    style = Gomob.type.numInline.copy(fontSize = 18.sp),
-                    color = Gomob.colors.accent,
-                )
-            }
-            Column(
-                Modifier
-                    .clip(Gomob.shapes.r3)
-                    .background(Gomob.colors.bg2),
-            ) {
-                HISTORY_ITEMS.forEachIndexed { i, item ->
-                    HistoryRow(item)
-                    if (i != HISTORY_ITEMS.lastIndex) FullDivider()
+            item {
+                HairlineCard(padding = 0.dp) {
+                    Column {
+                        HISTORY_ITEMS.forEachIndexed { i, item ->
+                            HistoryRow(item)
+                            if (i != HISTORY_ITEMS.lastIndex) FullDivider()
+                        }
+                    }
                 }
             }
         }
@@ -1227,8 +1162,9 @@ private fun ChatComposer(
         modifier
             .zIndex(10f)
             .offset { IntOffset(x = 0, y = -keyboardTravel) }
-            // 玻璃吸底条：内容从底下滚过时透出模糊背景；导航栏 inset 吃在玻璃内侧
-            .glassChrome(topEdge = true)
+            // 玻璃吸底条：内容从底下滚过时透出模糊背景；导航栏 inset 吃在玻璃内侧。
+            // 不画顶缘线 —— 输入区与内容之间靠模糊+tint 自然分层, 叠线显生硬
+            .glassChrome()
             .navigationBarsPadding()
             .clickable(
                 interactionSource = inputClickSource,

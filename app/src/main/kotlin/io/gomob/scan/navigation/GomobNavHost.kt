@@ -55,6 +55,7 @@ import io.gomob.designsystem.theme.Gomob
 import io.gomob.feature.collaboration.CollaborationRoute
 import io.gomob.feature.collaboration.FirstPersonViewerRoute
 import io.gomob.feature.collaboration.ReviewDetailRoute
+import io.gomob.feature.home.ChatHistoryRoute
 import io.gomob.feature.home.HomeAiChatRoute
 import io.gomob.feature.home.HomeRoute
 import io.gomob.feature.home.InspectionDetailRoute
@@ -62,6 +63,7 @@ import io.gomob.feature.message.ConversationRoute
 import io.gomob.feature.message.ConversationInfoRoute
 import io.gomob.feature.message.ChatSearchRoute
 import io.gomob.feature.message.ContactDetailRoute
+import io.gomob.feature.message.ContactsRoute
 import io.gomob.feature.message.ExpertDetailRoute
 import io.gomob.feature.message.IncomingCallOverlay
 import io.gomob.feature.message.LocalVideoPreviewRoute
@@ -185,8 +187,12 @@ fun GomobNavHost(
                         onOpenAgent = { key ->
                             nav.navigate("home/agent/${Uri.encode(key)}")
                         },
+                        onOpenHistory = { nav.navigate("home/history") },
                     )
                 }
+            }
+            composable("home/history") {
+                ChatHistoryRoute(onBack = { nav.popBackStack() })
             }
             composable("home/chat/{prompt}") { entry ->
                 HomeAiChatRoute(
@@ -255,8 +261,17 @@ fun GomobNavHost(
                                 "message/video-call/${Uri.encode(roomId)}/${mode.routeValue}/${Uri.encode(title)}",
                             )
                         },
+                        onOpenContacts = { nav.navigate("message/contacts") },
                     )
                 }
+            }
+            composable("message/contacts") {
+                ContactsRoute(
+                    onBack = { nav.popBackStack() },
+                    onOpenContactDetail = { id ->
+                        nav.navigate("message/contact/${Uri.encode(id)}")
+                    },
+                )
             }
             composable("message/contact/{id}") {
                 ContactDetailRoute(

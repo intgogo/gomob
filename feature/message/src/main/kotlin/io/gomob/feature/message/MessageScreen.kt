@@ -65,6 +65,7 @@ import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.ScreenHeader
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
@@ -109,6 +110,7 @@ fun MessageRoute(
     onOpenExpertDetail: (String) -> Unit = {},
     onOpenContactDetail: (String) -> Unit = {},
     onOpenVideoCall: (roomId: String, title: String, mode: VideoCallMode) -> Unit = { _, _, _ -> },
+    onOpenContacts: () -> Unit = {},
     requestedTab: MessageEntryTab? = null,
     onRequestedTabConsumed: () -> Unit = {},
     viewModel: MessageListViewModel = hiltViewModel(),
@@ -119,9 +121,12 @@ fun MessageRoute(
     val helpState by viewModel.helpUiState.collectAsStateWithLifecycle()
     val contactActionError by viewModel.contactActionError.collectAsStateWithLifecycle()
     val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     var tab by rememberSaveable { mutableStateOf((requestedTab ?: MessageEntryTab.List).toMsgTab()) }
-    var contactsOpen by rememberSaveable { mutableStateOf(false) }
     var adHocPickerOpen by rememberSaveable { mutableStateOf(false) }
+    // 搜索状态提升到 header(玻璃内固定一行), 两个 tab 各自记忆关键词
+    var listQuery by rememberSaveable { mutableStateOf("") }
+    var roomQuery by rememberSaveable { mutableStateOf("") }
     val hasMessageUnread = (state as? MessageListUiState.Content)
         ?.conversations
         ?.any { it.unreadCount > 0 } == true
@@ -133,7 +138,7 @@ fun MessageRoute(
         messageState = state,
         multiLineRoomsState = multiLineRoomsState,
         helpState = helpState,
-        contactActionError = contactActionError.takeUnless { contactsOpen },
+        contactActionError = contactActionError,
     )
 
     LaunchedEffect(requestedTab) {
@@ -145,14 +150,12 @@ fun MessageRoute(
 
     LaunchedEffect(Unit) {
         viewModel.openConversationEvents.collect { conversationId ->
-            contactsOpen = false
             onOpenConversation(conversationId.toString())
         }
     }
 
     LaunchedEffect(Unit) {
         viewModel.openSearchMessageEvents.collect { event ->
-            contactsOpen = false
             onOpenConversationTarget(event.conversationId.toString(), event.localKey)
         }
     }
@@ -162,6 +165,14 @@ fun MessageRoute(
             adHocPickerOpen = false
             onOpenVideoCall(event.roomId, event.title, event.mode)
         }
+    }
+
+    val currentQuery = if (tab == MsgTab.List) listQuery else roomQuery
+    // 有搜索词时返回键先清词收键盘, 再退页面
+    BackHandler(enabled = currentQuery.isNotBlank()) {
+        if (tab == MsgTab.List) listQuery = "" else roomQuery = ""
+        focusManager.clearFocus()
+        keyboardController?.hide()
     }
 
     val listTabState = rememberLazyListState()
@@ -175,13 +186,22 @@ fun MessageRoute(
                     eyebrow = "实时协同 · 监管督查 · 多人会审",
                     modifier = Modifier.clearInputFocusOnPointerDown(focusManager),
                     trailing = {
-                        ContactsIconButton(
-                            onClick = {
-                                focusManager.clearFocus()
-                                viewModel.clearContactActionError()
-                                contactsOpen = true
-                            },
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            AdHocCallIconButton(
+                                onClick = {
+                                    focusManager.clearFocus()
+                                    viewModel.clearContactActionError()
+                                    adHocPickerOpen = true
+                                },
+                            )
+                            ContactsIconButton(
+                                onClick = {
+                                    focusManager.clearFocus()
+                                    viewModel.clearContactActionError()
+                                    onOpenContacts()
+                                },
+                            )
+                        }
                     },
                 )
                 SegmentedTabs(
@@ -193,22 +213,25 @@ fun MessageRoute(
                         tab = it
                     },
                 )
+                // 紧凑搜索固定在玻璃 header 内(微信式), 列表从其下方直接开始
+                Box(
+                    Modifier.padding(
+                        start = Gomob.spacing.s20,
+                        end = Gomob.spacing.s20,
+                        top = Gomob.spacing.s8,
+                        bottom = Gomob.spacing.s12,
+                    ),
+                ) {
+                    SearchBar(
+                        query = currentQuery,
+                        onQueryChange = { if (tab == MsgTab.List) listQuery = it else roomQuery = it },
+                        onActiveChange = {},
+                        placeholder = if (tab == MsgTab.List) "搜索消息 / 联系人" else "搜索群聊",
+                    )
+                }
             }
         },
         overlay = { padding ->
-            ContactsDrawer(
-                visible = contactsOpen,
-                state = helpState,
-                errorText = contactActionError,
-                onClose = {
-                    contactsOpen = false
-                    viewModel.clearContactActionError()
-                },
-                onOpenContactDetail = { contact ->
-                    contactsOpen = false
-                    onOpenContactDetail(contact.detailId)
-                },
-            )
             AdHocCallPicker(
                 visible = adHocPickerOpen,
                 state = helpState,
@@ -242,6 +265,7 @@ fun MessageRoute(
                 state = state,
                 searchState = searchState,
                 helpState = helpState,
+                query = listQuery,
                 onOpenConversation = { viewModel.openConversation(it.id) },
                 onOpenMessage = viewModel::openSearchMessage,
                 onOpenContactDetail = { onOpenContactDetail(it.detailId) },
@@ -250,15 +274,12 @@ fun MessageRoute(
             )
             MsgTab.Help -> MultiLineRoomList(
                 state = multiLineRoomsState,
+                query = roomQuery,
                 onRefresh = {
                     viewModel.refreshHelpExperts()
                     viewModel.refreshHelpRoom()
                 },
                 onOpenRoom = { room -> viewModel.openConversation(room.id) },
-                onStartAdHoc = {
-                    viewModel.clearContactActionError()
-                    adHocPickerOpen = true
-                },
                 listState = helpTabState,
                 contentPadding = padding,
             )
@@ -335,179 +356,112 @@ private fun ContactsIconButton(onClick: () -> Unit) {
     }
 }
 
+/**
+ * 联系人 — 全屏玻璃二级页（替代旧右侧抽屉, 与其它二级页同款风格）。
+ * 自持一份 [MessageListViewModel] 拉联系人分组; 点行进入联系人详情。
+ */
 @Composable
-private fun ContactsDrawer(
-    visible: Boolean,
-    state: HelpExpertsUiState,
-    errorText: String?,
-    onClose: () -> Unit,
-    onOpenContactDetail: (ContactRowUi) -> Unit,
+fun ContactsRoute(
+    onBack: () -> Unit,
+    onOpenContactDetail: (String) -> Unit,
+    viewModel: MessageListViewModel = hiltViewModel(),
 ) {
-    BackHandler(enabled = visible, onBack = onClose)
-    AnimatedVisibility(
-        visible = visible,
-        enter = fadeIn(),
-        exit = fadeOut(),
-    ) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.62f))
-                .clickable(onClick = onClose),
-        )
-    }
-    AnimatedVisibility(
-        visible = visible,
-        enter = slideInHorizontally(initialOffsetX = { it }),
-        exit = slideOutHorizontally(targetOffsetX = { it }),
-        modifier = Modifier.fillMaxSize(),
-    ) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.CenterEnd) {
-            ContactsDrawerContent(
-                state = state,
-                errorText = errorText,
-                onOpenContactDetail = onOpenContactDetail,
-            )
-        }
-    }
-}
-
-@Composable
-private fun ContactsDrawerContent(
-    state: HelpExpertsUiState,
-    errorText: String?,
-    onOpenContactDetail: (ContactRowUi) -> Unit,
-) {
+    val helpState by viewModel.helpUiState.collectAsStateWithLifecycle()
+    val errorText by viewModel.contactActionError.collectAsStateWithLifecycle()
     var query by rememberSaveable { mutableStateOf("") }
-    val sections = remember(state) { buildContactSections(state) }
+    val sections = remember(helpState) { buildContactSections(helpState) }
     var expandedSectionIds by rememberSaveable { mutableStateOf(listOf("recent")) }
     val visibleSections = remember(sections, query) { sections.filterContacts(query) }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
-    val drawerClickSource = remember { MutableInteractionSource() }
     fun dismissSearchInput() {
         focusManager.clearFocus()
         keyboardController?.hide()
     }
 
-    Box(
-        Modifier
-            .fillMaxWidth(0.82f)
-            .fillMaxHeight(),
-    ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .fillMaxHeight()
-                .background(Gomob.colors.bg1)
-                // edge-to-edge 后全屏侧滑面板自己避让系统栏
-                .windowInsetsPadding(WindowInsets.systemBars)
-                .clickable(
-                    interactionSource = drawerClickSource,
-                    indication = null,
-                    onClick = { dismissSearchInput() },
-                ),
-        ) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 14.dp),
-                verticalAlignment = Alignment.Top,
-            ) {
-                Column {
-                    Text(
-                        "CONTACTS",
-                        fontSize = 10.sp,
-                        fontFamily = FontFamily.Monospace,
-                        letterSpacing = 0.14.em,
-                        color = Gomob.colors.fg3,
+    val listState = rememberLazyListState()
+    GlassHeaderScaffold(
+        listState = listState,
+        header = {
+            Column {
+                BackHeader(
+                    title = "选择联系人",
+                    eyebrow = "消息中心",
+                    onBack = onBack,
+                )
+                Box(
+                    Modifier.padding(
+                        start = Gomob.spacing.s20,
+                        end = Gomob.spacing.s20,
+                        bottom = Gomob.spacing.s12,
+                    ),
+                ) {
+                    SearchBar(
+                        query = query,
+                        onQueryChange = { query = it },
+                        onActiveChange = {},
+                        placeholder = "搜索联系人",
                     )
-                    Spacer(Modifier.height(Gomob.spacing.s2))
-                    Text("选择联系人", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = Gomob.colors.fg0)
                 }
             }
-            ContactSearchBar(query = query, onQueryChange = { query = it })
-            LazyColumn(
-                Modifier.weight(1f).fillMaxWidth(),
-                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                visibleSections.forEach { section ->
-                    val expanded = query.isNotBlank() || section.id in expandedSectionIds
-                    item(key = "section-${section.id}") {
-                        ContactSectionHeader(
-                            section = section,
-                            expanded = expanded,
-                            onClick = {
-                                expandedSectionIds = if (section.id in expandedSectionIds) {
-                                    expandedSectionIds - section.id
-                                } else {
-                                    expandedSectionIds + section.id
-                                }
-                            },
-                        )
-                    }
-                    if (expanded) {
-                        itemsIndexed(section.contacts, key = { _, contact -> contact.id }) { index, contact ->
-                            Column {
-                                ContactRow(
-                                    contact = contact,
-                                    onClick = { onOpenContactDetail(contact) },
-                                )
-                                if (index != section.contacts.lastIndex) {
-                                    ContactListDivider()
-                                }
+        },
+        overlay = { padding ->
+            FloatingMessageError(
+                text = errorText,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = padding.calculateBottomPadding() + 22.dp),
+            )
+        },
+    ) { padding ->
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
+                .clearInputFocusOnPointerDown(focusManager) {
+                    keyboardController?.hide()
+                },
+            contentPadding = PaddingValues(
+                start = 18.dp,
+                end = 18.dp,
+                top = padding.calculateTopPadding() + Gomob.spacing.s8,
+                bottom = padding.calculateBottomPadding() + Gomob.spacing.s24,
+            ),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            visibleSections.forEach { section ->
+                val expanded = query.isNotBlank() || section.id in expandedSectionIds
+                item(key = "section-${section.id}") {
+                    ContactSectionHeader(
+                        section = section,
+                        expanded = expanded,
+                        onClick = {
+                            expandedSectionIds = if (section.id in expandedSectionIds) {
+                                expandedSectionIds - section.id
+                            } else {
+                                expandedSectionIds + section.id
+                            }
+                        },
+                    )
+                }
+                if (expanded) {
+                    itemsIndexed(section.contacts, key = { _, contact -> contact.id }) { index, contact ->
+                        Column {
+                            ContactRow(
+                                contact = contact,
+                                onClick = {
+                                    dismissSearchInput()
+                                    onOpenContactDetail(contact.detailId)
+                                },
+                            )
+                            if (index != section.contacts.lastIndex) {
+                                ContactListDivider()
                             }
                         }
                     }
                 }
             }
         }
-        FloatingMessageError(
-            text = errorText,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .padding(bottom = 22.dp),
-        )
-    }
-}
-
-@Composable
-private fun ContactSearchBar(query: String, onQueryChange: (String) -> Unit) {
-    Row(
-        Modifier
-            .padding(horizontal = 18.dp)
-            .fillMaxWidth()
-            .height(38.dp)
-            .clip(Gomob.shapes.r2)
-            .background(Gomob.colors.bg2)
-            .padding(horizontal = Gomob.spacing.s12),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-    ) {
-        Icon(
-            GomobIcons.Search,
-            contentDescription = null,
-            tint = Gomob.colors.fg3,
-            modifier = Modifier.size(14.dp),
-        )
-        BasicTextField(
-            value = query,
-            onValueChange = onQueryChange,
-            modifier = Modifier.weight(1f),
-            singleLine = true,
-            textStyle = TextStyle(fontSize = 12.sp, lineHeight = 18.sp, color = Gomob.colors.fg0),
-            cursorBrush = SolidColor(Gomob.colors.accent),
-            decorationBox = { innerTextField ->
-                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
-                    if (query.isEmpty()) {
-                        Text("搜索 姓名 / 工号 / 职责", fontSize = 12.sp, color = Gomob.colors.fg3)
-                    }
-                    innerTextField()
-                }
-            },
-        )
     }
 }
 
@@ -829,6 +783,7 @@ private fun ListPane(
     state: MessageListUiState,
     searchState: MessageListSearchUiState,
     helpState: HelpExpertsUiState,
+    query: String,
     onOpenConversation: (ConversationRowUi) -> Unit,
     onOpenMessage: (MessageListSearchMessageUi) -> Unit,
     onOpenContactDetail: (ContactRowUi) -> Unit,
@@ -836,32 +791,19 @@ private fun ListPane(
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
 ) {
-    var searchActive by remember { mutableStateOf(false) }
-    var query by rememberSaveable { mutableStateOf("") }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
-    val exitSearch = remember(focusManager, keyboardController) {
-        {
-            searchActive = false
-            query = ""
-            focusManager.clearFocus()
-            keyboardController?.hide()
-            Unit
-        }
-    }
     val dismissSearchFocus = remember(focusManager, keyboardController) {
         {
-            searchActive = false
             focusManager.clearFocus()
             keyboardController?.hide()
             Unit
         }
     }
-    BackHandler(enabled = searchActive || query.isNotBlank(), onBack = exitSearch)
     val normalizedQuery = query.trim()
     val searching = normalizedQuery.isNotBlank()
 
-    // 搜索框并入列表首项, 整体从玻璃 header 下穿过再避让
+    // 搜索框已上移玻璃 header, 列表内容从其下方开始并从玻璃下穿过
     LazyColumn(
         state = listState,
         modifier = modifier
@@ -874,13 +816,6 @@ private fun ListPane(
             bottom = contentPadding.calculateBottomPadding() + Gomob.spacing.s24,
         ),
     ) {
-        item(key = "conversation-search") {
-            SearchContainer(
-                query = query,
-                onQueryChange = { query = it },
-                onActiveChange = { searchActive = it },
-            )
-        }
         if (searching) {
             item {
                 MessageListSearchPanel(
@@ -922,21 +857,6 @@ private fun ListPane(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun SearchContainer(
-    query: String,
-    onQueryChange: (String) -> Unit,
-    onActiveChange: (Boolean) -> Unit,
-) {
-    Box(
-        Modifier
-            .padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20, bottom = 8.dp)
-            .fillMaxWidth(),
-    ) {
-        SearchBar(query = query, onQueryChange = onQueryChange, onActiveChange = onActiveChange)
     }
 }
 
@@ -1335,41 +1255,18 @@ private fun MsgAvatar(seed: String, kind: AvatarKind) {
     )
 }
 
+/** 发起多人连线 — header 右上角图标入口(原大 banner 降级)。 */
 @Composable
-private fun StartAdHocCallEntry(onClick: () -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = Gomob.spacing.s20, vertical = Gomob.spacing.s8)
-            .clip(Gomob.shapes.r2)
-            .background(Gomob.colors.accentSoft)
-            .clickable(onClick = onClick)
-            .padding(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s12),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+private fun AdHocCallIconButton(onClick: () -> Unit) {
+    Box(
+        Modifier.size(Gomob.spacing.touchMin).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
     ) {
-        Box(
-            Modifier
-                .size(36.dp)
-                .clip(CircleShape)
-                .background(Gomob.colors.accent),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = Icons.Filled.VideoCall,
-                contentDescription = null,
-                tint = Color.Black,
-                modifier = Modifier.size(20.dp),
-            )
-        }
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text("发起多人连线", style = Gomob.type.bodySm, color = Gomob.colors.fg0, fontWeight = FontWeight.SemiBold)
-            Text("从联系人中多选成员，立即开启视频会议", style = Gomob.type.caption, color = Gomob.colors.fg2)
-        }
         Icon(
-            imageVector = Icons.Filled.ChevronRight,
-            contentDescription = null,
+            imageVector = Icons.Filled.VideoCall,
+            contentDescription = "发起多人连线",
             tint = Gomob.colors.fg2,
+            modifier = Modifier.size(22.dp),
         )
     }
 }
@@ -1377,14 +1274,13 @@ private fun StartAdHocCallEntry(onClick: () -> Unit) {
 @Composable
 private fun MultiLineRoomList(
     state: MultiLineRoomsUiState,
+    query: String,
     onRefresh: () -> Unit,
     onOpenRoom: (MultiLineRoomRowUi) -> Unit,
-    onStartAdHoc: () -> Unit,
     listState: LazyListState,
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
 ) {
-    var query by rememberSaveable { mutableStateOf("") }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     fun dismissSearchInput() {
@@ -1401,7 +1297,7 @@ private fun MultiLineRoomList(
             rooms.filter { it.matchesMultiLineRoomKeyword(keyword, normalizedKeyword) }
         }
     }
-    // 发起入口 + 搜索框并入列表首项, 整体从玻璃 header 下穿过再避让
+    // 搜索框已上移玻璃 header, 群聊列表直接开始并从玻璃下穿过
     LazyColumn(
         state = listState,
         modifier = modifier
@@ -1414,15 +1310,6 @@ private fun MultiLineRoomList(
             bottom = contentPadding.calculateBottomPadding() + Gomob.spacing.s24,
         ),
     ) {
-        item(key = "adhoc-entry") {
-            StartAdHocCallEntry(onClick = onStartAdHoc)
-        }
-        item(key = "room-search") {
-            MultiLineRoomSearchBar(
-                query = query,
-                onQueryChange = { query = it },
-            )
-        }
         when (state) {
             MultiLineRoomsUiState.Loading -> item {
                 StateBlock(text = "正在加载多人连线", tone = StatusTone.Neutral)
@@ -1449,25 +1336,6 @@ private fun MultiLineRoomList(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun MultiLineRoomSearchBar(
-    query: String,
-    onQueryChange: (String) -> Unit,
-) {
-    Box(
-        Modifier
-            .padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20, bottom = 8.dp)
-            .fillMaxWidth(),
-    ) {
-        SearchBar(
-            query = query,
-            onQueryChange = onQueryChange,
-            onActiveChange = {},
-            placeholder = "搜索群聊",
-        )
     }
 }
 
