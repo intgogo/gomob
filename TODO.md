@@ -355,3 +355,18 @@
 |----|------|------|------|
 | M12.5 | **时序 flaky 收敛**（剩余；cv_engine_smoke 已加 --max-time）：cv_vinref_compare / vinref_lifecycle / cv_vin_compare / model_canary_switch / cv_hmac_auth / cv_models_smoke / shaperef_lifecycle 固定 sleep 等就绪 + curl 无超时。改轮询健康检查 + `curl --max-time`。 | 慢机不假失败；hang 不挂死 CI。 | — |
 | M12.6 | **假采样 / 契约手工复刻**：scan_bundle_roundtrip 在 Python 手工复刻 Kotlin 布局而非用真产物 → 改用真产物校验；device_realtime_interaction host-sim（已诚实披露，低优）记录在案。 | 契约 harness 用真实序列化产物对比。 | — |
+
+## M13 激光外廓测量精度收敛（2026-07-09，"多次扫描误差大"根因修复）
+
+> 根因诊断（真机 job183/184/185 = JCHY 100742 真值 L1777/W533/H759；`docs/agent-memory/finding_laser_dimension_error_rootcause_2026-07-09.md`）：
+> 融合云逐扫描重复性 1mm，但输出漂 9/20/11mm 且 L 系统性 +3.5% —— ①地面逐扫描 RANSAC 重拟合(法向漂 2°，互换地面即复现对方读数=主方差源)；②宽度 trimEnds 10mm bin 量化(520/530/540)；③两单元只见对立面幕帘，native 点到点 ICP 有对立面偏置 → B→A 沿车长轴错 67mm；④悬空车体被背景相减吃底 → H 偏短 13~24mm。
+
+| ID | 任务 | 验收 | 文档 |
+|----|------|------|------|
+| M13.1 | ✅ **持久化工位地面**：migration `0021_laser_ground_plane` + `repo.LaserGroundRepo` + `laser.GroundStore/DBGroundStore` + runner 接线——空工位背景采集时拟合入库，扫描测量复用（`stats.ground_source=persisted`），逐扫描重拟合仅漂移告警（>1.5°/50mm 提示重采背景）。 | ✅ `go test ./internal/laser`（`TestRunnerPersistsAndReusesGround` 持久/复用/回退三段）；migration 0021 已应用 .160(版本 21)。 | finding_laser_dimension_error_rootcause |
+| M13.2 | ✅ **测量统计量收敛**：`MeasureParams` 加 `WidthBinMM`(bg_subtract 置 1 消 10mm 量化)、`SpanTrimPct`(长宽 [0.5,99.5] 分位跨度替代极值，trimEnds 降级为 <0.8× 灾难残留守卫)、`SupportBG`(悬空车体 车高=车顶 P99.9 − 支撑面 P95，修背景相减吃底)。JCHY 设备 ROI / 裁剪框基线路径零值不动。 | ✅ `TestSpanTrimPctRejectsSpikes`/`TestWidthBinFineNoQuantization`/`TestSupportRelativeHeight` + `TestMeasure_VendorGroundTruth` 真值回归不退化。 | 同上 |
+| M13.3 | ✅ **B→A 点到面精修**：`refine_btoa.go` `RefineBToA`（Go 版点到面 ICP + 法向相容性拒绝对立面配对，体素 35mm/法向 k12/退火 200→60mm/守卫 150mm·5°），site 融合后精修 native 外参；围栏裁 B 与融合摆 B 同用精修后变换（消 44mm 不一致）；`stats.b_to_a_refine` 落 pairs/rms/delta 监控。 | ✅ 合成房间恢复 60mm/2° 扰动至 5mm/0.2°、超守卫拒绝、过稀拒绝；真机复算见 M13.4。 | 同上 |
+| M13.4 | ✅ **真实点云复算验收** + `cmd/laserreplay`（生产管线离线复算工具）：job183/184/185 分镜云 + 背景经新管线 → **L 1768/1772/1771(−0.3~−0.5%)、W 525/531/530(−0.5~−1.4%)、H 762/763/764(+0.4~+0.6%)，互差 L4.1/W5.2/H1.5mm**（旧链 L+3.5%、W ±20 量化、H −2~−3%）。 | ✅ .160 上 laserreplay 对三 job 实测（上表）；`go build/vet` 净。 | 同上 |
+| M13.5 | ✅ **harness `laser_repeatability`**：run.sh 拉部署机最近 N 次 done 扫描 stats → analyze.py 判 重复性(σ≤5mm/极差≤15mm)+准确度(可选 `GOMOB_LASER_TRUTH_LWH`，≤1%)+卫生(ground_source=persisted / refine applied / refine_dt>100mm 提示重标 site)。 | ✅ 对旧链现网数据正确判"异常"(σ=48/440/1004mm 全暴露)；新链部署后应转"正常"。 | 同上 |
+| M13.6 | 🟡 **部署生效 + 真机复核**：.160 重启 laserworker(新二进制已构建 `gomob-laserworker.new`，migration 已应用，重启脚本待用户确认)→ 重采一次空工位背景(入库持久地面)→ 同物体连扫 ≥3 次 → `./dev.sh harness laser_repeatability`(带真值)应"正常"。 | harness 正常(σ≤5mm、偏差≤1%、ground_source=persisted、refine applied)。 | — |
+| M13.7 | **现场重标 site 标记外参**（4 角点版，ops 择期）：当前标记外参偏 ~60mm 靠精修救回(refine_dt 44~74mm)；重标后 refine_dt 应 <10mm，harness 卫生检查绿。C++ `native/measurement` 镜像同步 M13.2 统计量（Android 端参考实现,不阻塞服务端）。 | refine_dt<10mm；C++ 镜像 host 测试过。 | docs/architecture/17 §9.5 |

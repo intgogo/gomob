@@ -42,6 +42,27 @@ type MeasureParams struct {
 	// 设备世界系(unit_a≈设备系)下叠加：设备 ROI 路径平移 ROIMin/Max、裁剪框路径平移 Box.Center。
 	// 地面相对路径(UseGround)因偏移在设备系、与地面正交基不对齐，暂不应用（待逐型在地面系标定）。零=不偏移。
 	CarOffset [3]float32
+
+	// 背景相减前景可能残留少量侧向墙/桌面尾巴；>0 时按 OBB 宽轴直方图密度支撑取车身宽。
+	// 默认 0 保持原厂真值/裁剪框路径的极值外廓语义。
+	WidthSupportFrac float32
+
+	// WidthBinMM 宽度支撑直方图 bin 宽(mm)；0 → max(10, ClusterLeaf)(旧语义)。真机实测 10mm bin 把
+	// 车宽量化成 10mm 倍数、逐扫描 ±10~20mm 跳变(job183/184/185 出 530/520/540)，bg_subtract 路径
+	// 显式置 1 消量化(1mm bin 下同数据出 522/526/527，波动 5mm)。
+	WidthBinMM float32
+
+	// SpanTrimPct 鲁棒跨度分位(%)：>0 时车长/车宽用 [p, 100−p] 分位差替代极值跨度(max−min)，
+	// 抗单点噪声与幕帘毛边(真机混合像素毛边实测 ~15~25mm)。0 = 保持极值语义
+	// (JCHY 设备 ROI / 裁剪框基线路径不动，harness 真值门不受影响)。
+	SpanTrimPct float32
+
+	// SupportBG 可选空工位背景云([x,y,z,...] mm，与被测云同世界系)。车体悬空(架在台面/支架上，
+	// bottom > HeightMin+120)时，背景相减会把贴支撑面 tol(~40mm) 内的车底点当背景吃掉，使
+	// zSpan(前景自身跨度) 系统性偏短(真机实测 −13~−24mm)。提供背景云时改量
+	// 车高 = 车顶(P99.9 离地高) − 支撑面高(背景云在车辆足迹内、低于车底的 P95 离地高)，
+	// 物理上就是"从支撑面到车顶"。真机 job183/184/185 实测 751~757 vs 真值 759。
+	SupportBG []float32
 }
 
 // DefaultMeasureParams 与 C++ measure_types.h MeasureParams 默认一致（原厂设备系 ROI 路径）。
@@ -156,10 +177,47 @@ func measureBody(xyzMM []float32, p MeasureParams) (roiPts, cleaned []pt, d Dime
 		return nil, nil, d
 	}
 	l, w, ang := minAreaRectXY(body, p.OBBStepDeg)
+	if p.SpanTrimPct > 0 {
+		// 鲁棒分位跨度：极值跨度对幕帘毛边/单点噪声敏感(真机毛边 ~15~25mm 直接进长宽)，
+		// 按 [p, 100−p] 分位差量。OBB 选角仍走极值面积(角度 0.25° 量化、对毛边不敏感)。
+		ls, ws, _ := projectLWZ(body, ang)
+		lo := float64(p.SpanTrimPct)
+		l = spanPct(ls, lo, 100-lo)
+		w = spanPct(ws, lo, 100-lo)
+	}
+	if p.WidthSupportFrac > 0 {
+		_, ws, _ := projectLWZ(body, ang)
+		wMin, wMax := minMax(ws)
+		bin := p.WidthBinMM
+		if bin <= 0 {
+			bin = maxf(10, p.ClusterLeaf)
+		}
+		lo, hi := trimEnds(ws, wMin, wMax, bin, p.WidthSupportFrac)
+		rw := hi - lo
+		if p.SpanTrimPct > 0 {
+			// 鲁棒跨度已抗毛边；支撑修剪只作灾难残留守卫(侧向大段稀疏尾巴，如残留墙/桌面
+			// 把宽撑大数倍)——修剪显著小于跨度(<0.8×)才采纳，避免削掉真实幕帘边缘。
+			if rw > 0 && rw < 0.8*w {
+				w = rw
+			}
+		} else if rw > 0 && rw < w {
+			w = rw
+		}
+	}
 	d.LengthMM, d.WidthMM, d.OBBAngleDeg = l, w, ang
 	if p.UseGround {
-		// 地面系下地面在 z=0，车体离地最高即车高（比 zSpan 更贴真实：从地面量到车顶）。
-		d.HeightMM = maxZ(body)
+		// 地面系下优先从地面量到车顶；若前景主簇明显悬空（模型车/台面/背景相减残留），
+		// 没有可靠接地证据，改用车体自身高度，避免把台面离地高度算进车高。
+		bottom, top := robustZExtents(body)
+		if bottom > p.HeightMin+120 {
+			if h, ok := supportRelativeHeight(body, p, ang, bottom); ok {
+				d.HeightMM = h
+			} else {
+				d.HeightMM = zSpan(body)
+			}
+		} else {
+			d.HeightMM = top
+		}
 	} else {
 		d.HeightMM = zSpan(body)
 	}
@@ -198,14 +256,70 @@ func toGroundFrame(in []pt, n [3]float32, d float32) []pt {
 	return out
 }
 
-func maxZ(body []pt) float32 {
-	m := float32(-math.MaxFloat32)
+// supportRelativeHeight 悬空车体的支撑面相对车高：车顶(P99.9 离地高) − 支撑面高。
+// 支撑面高 = 背景云中落在车辆 OBB 足迹内(收缩 60mm 去边缘混杂)、低于车底(bottom+50mm)的点的
+// P95 离地高——即车正下方台面/支架的上表面。背景不足(无 SupportBG / 足迹内 <200 点)返回 ok=false，
+// 上层回退 zSpan。物理动机见 MeasureParams.SupportBG 注释。
+func supportRelativeHeight(body []pt, p MeasureParams, angleDeg, bottom float32) (float32, bool) {
+	if len(p.SupportBG) < 3 || len(body) == 0 {
+		return 0, false
+	}
+	// body 在 OBB 帧的投影与 长/宽轴指派(u/v 跨度大者为长)——bg 必须沿用同一指派。
+	const d2r = math.Pi / 180.0
+	c, s := float32(math.Cos(float64(angleDeg)*d2r)), float32(math.Sin(float64(angleDeg)*d2r))
+	var umin, umax, vmin, vmax float32 = math.MaxFloat32, -math.MaxFloat32, math.MaxFloat32, -math.MaxFloat32
 	for _, q := range body {
-		if q.z > m {
-			m = q.z
+		u := q.x*c + q.y*s
+		v := -q.x*s + q.y*c
+		umin, umax = minf(umin, u), maxf(umax, u)
+		vmin, vmax = minf(vmin, v), maxf(vmax, v)
+	}
+	swapped := (vmax - vmin) > (umax - umin) // true: v 轴是车长
+	ls, ws, zs := projectLWZ(body, angleDeg)
+	const shrink = 60
+	l0, l1 := percentile(ls, 1)+shrink, percentile(ls, 99)-shrink
+	w0, w1 := percentile(ws, 1)+shrink, percentile(ws, 99)-shrink
+	if l1 <= l0 || w1 <= w0 {
+		return 0, false
+	}
+	bg := toGroundFrame(toPoints(p.SupportBG), p.GroundN, p.GroundD)
+	zCap := bottom + 50
+	var sup []float32
+	for _, q := range bg {
+		if q.z >= zCap {
+			continue
+		}
+		u := q.x*c + q.y*s
+		v := -q.x*s + q.y*c
+		lv, wv := u, v
+		if swapped {
+			lv, wv = v, u
+		}
+		if lv >= l0 && lv <= l1 && wv >= w0 && wv <= w1 {
+			sup = append(sup, q.z)
 		}
 	}
-	return m
+	if len(sup) < 200 {
+		return 0, false
+	}
+	supportZ := percentile(sup, 95)
+	top := percentile(zs, 99.9)
+	h := top - supportZ
+	if h <= 0 {
+		return 0, false
+	}
+	return h, true
+}
+
+func robustZExtents(body []pt) (bottom, top float32) {
+	if len(body) == 0 {
+		return 0, 0
+	}
+	zs := make([]float32, len(body))
+	for i, q := range body {
+		zs[i] = q.z
+	}
+	return percentile(zs, 0.5), percentile(zs, 99.5)
 }
 
 type pt struct{ x, y, z float32 }

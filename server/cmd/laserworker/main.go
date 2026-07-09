@@ -87,6 +87,8 @@ func main() {
 	// 持久车位框（M9.11）：runner 测量优先用框、handler 提供 get/put/preview，同一实例。
 	cropBoxes := laser.NewDBCropBoxStore(repo.NewLaserCropBoxRepo(pool))
 	runner.CropBoxes = cropBoxes
+	// 持久地面平面（M13）：背景采集时拟合入库，扫描测量复用，消逐扫描 RANSAC 重拟合方差。
+	runner.Grounds = laser.NewDBGroundStore(repo.NewLaserGroundRepo(pool))
 	// 设备出云竖直翻转约定（默认开）：对每点 z 取反，使端侧默认正立显示，三朵云/测量/车位框同系。
 	runner.FlipVertical = parseBool("GOMOB_LASER_FLIP_VERTICAL", true)
 

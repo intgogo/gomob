@@ -195,6 +195,7 @@ type Runner struct {
 	Publisher Publisher    // 可空（不发 NATS）
 	Gate      DeviceGate   // 可空（replay/test）
 	CropBoxes CropBoxStore // 可空（无则回退自动地面测量）：持久车位框，按 bayKey=unit_a_ip 取
+	Grounds   GroundStore  // 可空（无则回退逐扫描 RANSAC）：持久地面平面，背景采集时拟合入库（M13）
 	Live      ScanFunc
 	Replay    ScanFunc
 	// FlipVertical：设备出云竖直翻转的硬件约定（雷达倒装），true 则对每点 z 取反。用户拍板「默认相机
@@ -528,7 +529,27 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 		return nil, fmt.Errorf("%s", msg)
 	}
 	cloudA = filterXYZForUnit(cloudA, 0, spec.RegionFilter)
-	cloudB = filterXYZForUnit(cloudB, 1, spec.RegionFilter)
+	// B→A 点到面精修（M13）：native 稠密 ICP 是点到点——两单元看到的是同一物体/家具的**对立面**，
+	// 点到点会把对立面往一起拉，产生表面厚度量级的系统性偏置（真机实测沿车长轴错位 ~67mm →
+	// 车长 +3.5%）。点到面 + 法向相容性拒绝天然排除对立面配对；对已围栏粗滤的分镜云跑，
+	// 真机验证从任意初值收敛到同一变换、外廓达真值 <1%。守卫超限/对应不足时沿用 native 初值（非致命）。
+	var refineStats RefineBToAStats
+	rfB := spec.RegionFilter
+	if spec.Align == "site" {
+		preB := filterXYZForUnit(cloudB, 1, spec.RegionFilter)
+		res.BToA, refineStats = RefineBToA(cloudA, preB, res.BToA, DefaultRefineBToAParams())
+		if refineStats.Applied {
+			r.Log.Info("B→A 点到面精修", "job", spec.JobID, "pairs", refineStats.Pairs,
+				"rms_mm", refineStats.RMSMM, "delta_trans_mm", refineStats.DeltaTransMM, "delta_rot_deg", refineStats.DeltaRotDeg)
+		} else {
+			r.Log.Warn("B→A 点到面精修未采纳，沿用 native 外参", "job", spec.JobID,
+				"reason", refineStats.Reason, "pairs", refineStats.Pairs)
+		}
+		// 围栏一致性：B 的围栏裁剪与融合摆放必须用同一 B→A（精修后），否则围栏对 B 的有效位置
+		// 漂移一个精修量（旧实现请求外参裁、精修外参摆，实测差 ~44mm）。仅 site 融合有跨单元外参。
+		rfB = regionFilterWithBToA(spec.RegionFilter, res.BToA)
+	}
+	cloudB = filterXYZForUnit(cloudB, 1, rfB)
 	// 融合云稍后从已过滤的分镜云重建（见 gotFus 前），不再独立过滤 native 融合云：分镜云在各自设备系、
 	// 融合云在世界系被独立过滤，region 墙边界点可能差几个，导致 nf≠na+nb 让融合色按段对齐失败→全无色。
 	if len(colorAXYZ)/3 == len(rgbA) && len(rgbA) > 0 {
@@ -545,7 +566,8 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 		rgbA = nil
 	}
 	if len(colorBXYZ)/3 == len(rgbB) && len(rgbB) > 0 {
-		colorXYZ, colorRGB := filterXYZRGBForUnit(colorBXYZ, rgbB, 1, spec.RegionFilter)
+		// 与 cloudB 同一过滤器（site 时含精修后 B→A），保证点数逐一对齐（颜色按段对齐依赖 nf==na+nb）。
+		colorXYZ, colorRGB := filterXYZRGBForUnit(colorBXYZ, rgbB, 1, rfB)
 		if len(colorXYZ)/3 == len(cloudB)/3 {
 			cloudB = colorXYZ
 			rgbB = colorRGB
@@ -635,6 +657,8 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 	bgCaptured := false
 	bgSet := false
 	fgPts := 0
+	groundSource := ""
+	var groundDriftDeg, groundDriftMM float32 = -1, -1 // -1 = 未算（无持久地面/重拟合无效）
 	carOffset := CarTypeOffset(spec.VehicleTypeID)
 	switch {
 	case rawOnly:
@@ -651,11 +675,36 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 			bgCaptured = true
 			bgSet = true
 			measMode = "background_captured"
+			// 持久化地面（M13）：空工位背景是拟合地面的最佳时机（无车遮挡）。固定安装下地面不动，
+			// 此后每次扫描复用，消除逐扫描 RANSAC 重拟合方差（真机实测该方差 = W ±20mm 的主因）。
+			ground = DetectGround(cloudFus, DefaultGroundParams())
+			if ground.Valid && r.Grounds != nil {
+				if gerr := r.Grounds.SaveGround(ctx, spec.UnitAIP, ground); gerr != nil {
+					r.Log.Warn("持久化地面失败(不影响背景)", "job", spec.JobID, "err", gerr)
+				} else {
+					r.Log.Info("已持久化工位地面", "job", spec.JobID, "bay", spec.UnitAIP,
+						"n", []float32{ground.NX, ground.NY, ground.NZ}, "d", ground.D, "inlier", ground.InlierRatio)
+				}
+			}
 		}
 	default:
-		// 地面检测：融合后 RANSAC 拟合地面平面。一份数据两用：① 端侧视角预设的"上"方向基准；
-		// ② 背景相减/裁剪框后用地面正交基测量（高度从地面量起）。非致命——检不到只记 valid=false。
-		ground = DetectGround(cloudFus, DefaultGroundParams())
+		// 地面基准（M13 改持久优先）：固定安装下地面不动——优先用背景采集时持久化的地面
+		// （逐扫描 RANSAC 重拟合法向漂 ~2°/d 漂 ~36mm，是 W/H 逐扫描方差的主因）；
+		// 无持久地面才回退逐扫描拟合。重拟合结果仅作漂移告警（工位被挪动/设备松动的信号）。
+		refit := DetectGround(cloudFus, DefaultGroundParams())
+		ground = refit
+		groundSource = "refit"
+		if pg, ok := r.loadGround(ctx, spec.UnitAIP); ok {
+			ground = pg
+			groundSource = "persisted"
+			if refit.Valid {
+				groundDriftDeg, groundDriftMM = groundDrift(pg, refit)
+				if groundDriftDeg > 1.5 || groundDriftMM > 50 {
+					r.Log.Warn("逐扫描地面与持久地面漂移偏大（工位被挪动/设备松动？建议重采背景）",
+						"job", spec.JobID, "drift_deg", groundDriftDeg, "drift_mm", groundDriftMM)
+				}
+			}
+		}
 		if !ground.Valid {
 			r.Log.Warn("地面检测失败(点云稀疏?)", "job", spec.JobID, "inlier_ratio", ground.InlierRatio)
 		}
@@ -696,10 +745,16 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 			measCloud = fg
 			if ground.Valid {
 				mp = GroundMeasureParams([3]float32{ground.NX, ground.NY, ground.NZ}, ground.D, 30, 5000)
+				// 支撑面相对车高（M13）：车体架在台面/支架上时，背景相减吃掉贴支撑面的车底点，
+				// zSpan 系统性偏短 −13~−24mm；给背景云让 measure 从支撑面量到车顶。
+				mp.SupportBG = bgXYZ
 			} else {
 				mp = DefaultMeasureParams()
 				mp.UseROI = false // 前景已隔离到车，直接整云主簇→OBB
 			}
+			mp.WidthSupportFrac = 0.15 // 背景相减前景易有侧向稀疏残留；灾难残留守卫（见 measureBody）。
+			mp.WidthBinMM = 1          // 消 10mm bin 量化（真机实测宽被量化成 520/530/540）
+			mp.SpanTrimPct = 0.5       // 鲁棒分位跨度：长宽 [0.5,99.5] 分位差，抗幕帘毛边/单点噪声
 			measMode, doMeasure = "bg_subtract", true
 		default:
 			// 无车位框、无背景：没有任何空间隔离手段 → 不把房间尺寸当车测（诚实闸，提示前端采集背景/圈框）。
@@ -761,6 +816,11 @@ func (r *Runner) Run(ctx context.Context, spec RunSpec, sink Sink) (*repo.LaserS
 			"car_offset":      carOffset,
 			"compliance":      compl,
 			"ground":          ground,
+			// M13 精度收敛监控：地面来源/漂移 + B→A 精修量（标定健康度，漂移大 = 工位被动过）
+			"ground_source":    groundSource,
+			"ground_drift_deg": groundDriftDeg,
+			"ground_drift_mm":  groundDriftMM,
+			"b_to_a_refine":    refineStats,
 		}),
 	}
 	job, err := r.Jobs.Complete(ctx, spec.JobID, comp)
@@ -959,6 +1019,46 @@ func sanitizeObjectSeg(s string) string {
 			return '_'
 		}
 	}, s)
+}
+
+// loadGround 取该装机点(bayKey=unit_a_ip)持久地面平面；无 store / 未设置 / 取错均回 ok=false
+// （非致命：回退逐扫描 RANSAC）。
+func (r *Runner) loadGround(ctx context.Context, bayKey string) (GroundPlane, bool) {
+	if r.Grounds == nil || bayKey == "" {
+		return GroundPlane{}, false
+	}
+	g, ok, err := r.Grounds.GetGround(ctx, bayKey)
+	if err != nil {
+		r.Log.Warn("取持久地面失败", "err", err, "bay", bayKey)
+		return GroundPlane{}, false
+	}
+	return g, ok
+}
+
+// groundDrift 两个地面平面的差：法向夹角(度) + d 差(mm)。诊断"工位被挪动/设备松动"。
+func groundDrift(a, b GroundPlane) (deg, mm float32) {
+	dot := float64(a.NX*b.NX + a.NY*b.NY + a.NZ*b.NZ)
+	if dot > 1 {
+		dot = 1
+	}
+	if dot < -1 {
+		dot = -1
+	}
+	deg = float32(math.Acos(math.Abs(dot)) * 180 / math.Pi)
+	mm = float32(math.Abs(float64(a.D - b.D)))
+	return
+}
+
+// regionFilterWithBToA 围栏过滤器换用给定 B→A（精修后），保证 B 的围栏裁剪与融合摆放同一变换。
+// 未启用围栏/原本无 B→A（unit_b 不做世界系映射）时原样返回。
+func regionFilterWithBToA(f PointRegionFilter, m [16]float32) PointRegionFilter {
+	if !f.Enabled || len(f.BToA) != 16 {
+		return f
+	}
+	nb := make([]float32, 16)
+	copy(nb, m[:])
+	f.BToA = nb
+	return f
 }
 
 // loadBackground 取本工位空工位背景融合云([x,y,z,...] mm)；无 Reader / 未采集(对象不存在) / 取错 →

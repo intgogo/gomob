@@ -53,6 +53,7 @@
 - [**激光 A 站(.101)相机纹理补齐 2026-06-15**](finding_laser_a_station_texture_2026-06-15.md) — 原只投影 .102(B)、A 硬涂中性灰;补 .101 采图+calib_101 投影+unit_a 带色。标定 `lidar_cli device calib` 从设备拉,两站名义安装同→config 共用、差异全在 calib JSON。
 - [**现场共享标记场自标定 A↔B site 外参 2026-06-15**](finding_laser_site_marker_calib_2026-06-15.md) — 贴 ArUco(36h11),solvePnP+cameraToWorld+umeyama 解 B→A(align=site)。一键 site-calib + 实时取景 site-framing(边扫边推 RGB 帧)。★相机仅转动出帧 0.33fps。★OpenCV 锁 4.6。
 - [**激光双机标定改 4 角点 6DoF 2026-06-17**](finding_laser_site_marker_corner_pose_2026-06-17.md) — 仅中心点 umeyama 在 ≤4/共面标记下偏 ~20°(真机融合错位 480mm,从 MinIO 拉云数值证)。改每标记 4 角点带 solvePnP 朝向→单标记即约束 6DoF,2 共面标记复原到机器精度;min_common 4→2。融合/翻转 plumbing 经验证无误。改 lidar_cli 即生效。
+- [**激光外廓多扫误差大根因四连 M13 2026-07-09**](finding_laser_dimension_error_rootcause_2026-07-09.md) — 点云重复性 1mm 但输出漂 20mm:①地面逐扫重拟合(主方差)②宽 10mm bin 量化③点到点 ICP 对立面偏置 B→A 错 67mm(L+3.5%)④背景相减吃车底。修:持久化地面+1mm bin+分位跨度+点到面精修+支撑面车高,复算达 ±1%。
 - [模拟器在本机的稳定配置 2026-05-08](finding_emulator_setup_2026-05-04.md) — emulator 36.x 必须 `DISPLAY=:1 -gpu host`，并禁 netsim/虚拟 WiFi。
 - [Android 实时 WS 与 devserver 注意点](finding_android_realtime_ws_devserver_2026-05-09.md) — App WS 用 http scheme；devserver 包装器需透传 Hijacker。
 - [**本地 dev 全栈启动配方 2026-06-04**](finding_dev_stack_local_startup_2026-06-04.md) — devserver(:18808) 手动起易挂→App 全链 unexpected end of stream；附一键 build+env 拉起、dev seed shenhm/shenhm123、症状诊断。
