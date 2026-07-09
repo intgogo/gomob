@@ -1284,8 +1284,34 @@ label {
 .overlay-svg .ov-vehicle { stroke: #4fd1ff; stroke-width: 1.6; fill: none; opacity: 0.9; }
 .overlay-svg .ov-cargo { stroke: #ffd54a; stroke-width: 1.6; fill: none; opacity: 0.95; }
 .overlay-svg .ov-axle { stroke: #ff7a6b; stroke-width: 2.2; fill: none; opacity: 0.95; }
-.overlay-svg .ov-dim { stroke: #9be07a; stroke-width: 1.1; fill: none; opacity: 0.85; }
-.overlay-svg .ov-dim-label { fill: #eaffdf; font-size: 11px; font-family: ui-monospace, SFMono-Regular, monospace; text-anchor: middle; paint-order: stroke; stroke: rgba(10, 14, 18, 0.85); stroke-width: 3px; }
+.overlay-svg .ov-dim { stroke: #9be07a; stroke-width: 1.3; fill: none; opacity: 0.95; }
+.overlay-svg .ov-dim-ext { stroke: #9be07a; stroke-width: 1; fill: none; opacity: 0.45; stroke-dasharray: 3 3; }
+.overlay-svg .ov-lwh { stroke: #4fd1ff; stroke-width: 1.3; fill: none; opacity: 0.95; }
+.overlay-svg .ov-lwh-ext { stroke: #4fd1ff; stroke-width: 1; fill: none; opacity: 0.45; stroke-dasharray: 3 3; }
+.overlay-svg .ov-arrow-dim { fill: #9be07a; }
+.overlay-svg .ov-arrow-lwh { fill: #4fd1ff; }
+/* 测量标注立体徽章：渐变底 + 亮上边 + 外投影，噪点点云上保持可读（M13.10） */
+.overlay-pane .ov-dim-chip {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 7px;
+  background: linear-gradient(180deg, rgba(44, 56, 66, 0.96), rgba(14, 20, 26, 0.96));
+  border: 1px solid rgba(155, 224, 122, 0.55);
+  border-top-color: rgba(255, 255, 255, 0.4);
+  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 3;
+}
+.overlay-pane .ov-dim-chip i { font-style: normal; font-size: 10px; color: rgba(215, 240, 205, 0.75); }
+.overlay-pane .ov-dim-chip b { font: 700 12.5px/1.25 ui-monospace, SFMono-Regular, Menlo, monospace; color: #d9ffc8; letter-spacing: 0.2px; }
+.overlay-pane .ov-dim-chip.lwh { border-color: rgba(79, 209, 255, 0.6); border-top-color: rgba(255, 255, 255, 0.4); }
+.overlay-pane .ov-dim-chip.lwh i { color: rgba(200, 232, 248, 0.8); }
+.overlay-pane .ov-dim-chip.lwh b { color: #d9f3ff; }
 .measure-badge.warn { background: rgba(240, 190, 90, 0.18); color: #f0be5a; border: 1px solid rgba(240, 190, 90, 0.5); }
 .ov-legend { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 500; }
 .ov-dot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-left: 4px; }
