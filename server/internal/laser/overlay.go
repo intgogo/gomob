@@ -27,9 +27,11 @@ func BuildVehicleOverlay(world []float32, p MeasureParams, ap AxleParams, cbp Ca
 	if !d.Valid || len(cleaned) < 50 {
 		return VehicleOverlay{}
 	}
-	// 车体框用 cleaned(主簇→ROR)，与测量 OBB 一致、剔端噪/离群；轴心/货箱用 roiPts(自带 trim)。
-	ax := DetectAxles(roiPts, d.OBBAngleDeg, ap)
-	cb := DetectCargoBox(roiPts, d.OBBAngleDeg, cbp)
+	// 车体框用 cleaned(主簇→ROR)，与测量 OBB 一致、剔端噪/离群；轴心/货箱用 roiPts(自带 trim)，
+	// 但裁到车体足迹内并过合理性闸——与 MeasureFull 同源，叠加轴线与测量数字保持一致。
+	det := clipToBodyFootprint(roiPts, cleaned, d, footprintMarginMM)
+	ax := gateAxlePlausibility(DetectAxles(det, d.OBBAngleDeg, ap), d)
+	cb := DetectCargoBox(det, d.OBBAngleDeg, cbp)
 
 	O, A0, A1, A2 := invTransform(p)
 	ldir, wdir := lengthWidthDirs(cleaned, d.OBBAngleDeg)

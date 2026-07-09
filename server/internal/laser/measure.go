@@ -123,11 +123,67 @@ func Measure(xyzMM []float32, p MeasureParams) Dimensions {
 // MeasureFull 跑测量管线，同时返回外廓 LWH + 轴距/前后悬 + 货箱（同一车体点、同一 OBB 帧，不重复裁剪）。
 // 测量无效时 AxleResult/CargoBox.Valid=false。轴心检测见 axle.go，货箱见 cargobox.go（均几何 PCL-free）。
 func MeasureFull(xyzMM []float32, p MeasureParams, ap AxleParams) (Dimensions, AxleResult, CargoBox) {
-	roiPts, _, d := measureBody(xyzMM, p)
+	roiPts, body, d := measureBody(xyzMM, p)
 	if !d.Valid {
 		return d, AxleResult{}, CargoBox{}
 	}
-	return d, DetectAxles(roiPts, d.OBBAngleDeg, ap), DetectCargoBox(roiPts, d.OBBAngleDeg, DefaultCargoBoxParams())
+	det := clipToBodyFootprint(roiPts, body, d, footprintMarginMM)
+	axle := DetectAxles(det, d.OBBAngleDeg, ap)
+	axle = gateAxlePlausibility(axle, d)
+	return d, axle, DetectCargoBox(det, d.OBBAngleDeg, DefaultCargoBoxParams())
+}
+
+// footprintMarginMM 车体足迹裁剪外扩量：容纳轮胎微凸出车体投影、OBB 角度量化误差与
+// ROR 剔掉的车体尾端真实稀疏点(JCHY 后悬锚回归实测 30mm 不够)。
+const footprintMarginMM = 60
+
+// footprintMinBodyRatio 足迹裁剪启用门槛：主簇占 roi 比例低于此值时，主簇不能代表车体
+// (稀疏合成壳/碎裂簇)，按它裁剪反而会裁掉真轮——跳过裁剪，仅靠合理性闸兜底。
+const footprintMinBodyRatio = 0.3
+
+// clipToBodyFootprint 把 pts 裁到 body(主簇车体)的 OBB 俯视足迹内(u/v 极值 ±margin)。
+// 轴距/货箱检测须跑在 裁剪后、聚类前 的点上(保住与车体不连通的悬挂轮)，但必须限定在车体足迹
+// 正下方——足迹外的前景残留(地面杂物/台面边缘)会把接触带地面锚 z0 与车头尾端点 trim 锚到杂物上，
+// 产出"总轴距>车长"这类物理不可能数(真机 job189 网页反馈)。不裁 z：悬挂轮/接触带靠 z 工作。
+// 边界用主簇极值而非分位：cleaned 已过主簇+ROR，极值可信，分位会把车尾端锚裁短(JCHY 后悬回归)。
+func clipToBodyFootprint(pts, body []pt, d Dimensions, margin float32) []pt {
+	if len(body) == 0 || len(pts) == 0 || d.BodyRatio < footprintMinBodyRatio {
+		return pts
+	}
+	const d2r = math.Pi / 180.0
+	c, s := float32(math.Cos(float64(d.OBBAngleDeg)*d2r)), float32(math.Sin(float64(d.OBBAngleDeg)*d2r))
+	us := make([]float32, len(body))
+	vs := make([]float32, len(body))
+	for i, q := range body {
+		us[i] = q.x*c + q.y*s
+		vs[i] = -q.x*s + q.y*c
+	}
+	uMin, uMax := minMax(us)
+	vMin, vMax := minMax(vs)
+	u0, u1 := uMin-margin, uMax+margin
+	v0, v1 := vMin-margin, vMax+margin
+	out := pts[:0:0]
+	for _, q := range pts {
+		u := q.x*c + q.y*s
+		v := -q.x*s + q.y*c
+		if u >= u0 && u <= u1 && v >= v0 && v <= v1 {
+			out = append(out, q)
+		}
+	}
+	return out
+}
+
+// gateAxlePlausibility 轴距合理性硬闸：总轴距不可能超过车长（轮在车体正下方），
+// 超出说明检测被残留/杂物污染——宁可不出数也不出物理不可能数（真机 job189 网页反馈）。
+// 仅在车长可信时判（与足迹裁剪同一可靠性判据）：主簇退化时 LengthMM 无意义，不能拿来当闸。
+func gateAxlePlausibility(a AxleResult, d Dimensions) AxleResult {
+	if !d.Valid || d.BodyRatio < footprintMinBodyRatio {
+		return a
+	}
+	if a.Valid && a.TotalWheelbaseMM > d.LengthMM {
+		return AxleResult{}
+	}
+	return a
 }
 
 // measureBody 跑裁剪→主簇→ROR→OBB+车高，返回：roiPts(裁剪后/聚类前，供轴心/货箱检测，含被聚类
