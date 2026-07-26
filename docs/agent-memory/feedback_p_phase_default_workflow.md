@@ -14,7 +14,7 @@ type: feedback
 
 **How to apply:**
 - 计划落在 `TODO.md` 的 "## 进行中: <topic>" 节，不另起 `docs/plans/` 临时文档（单一真理源）。
-- 出计划前先过 [行动前三问](principle_three_questions_before_acting.md)：要解决什么、最优解是什么、改动的因果边界在哪。
+- 出计划前先过 [开场一问：历史上下文](principle_context_first.md)，再想清楚：要解决什么、最优解是什么、改动的因果边界在哪。
 - 计划的写作质量（无占位符、批判性复审、零仓库上下文清晰度）遵循 [plan/spec/TODO 写作质量硬规](feedback_plan_writing_quality.md)。
 - 超大计划（跨多 Phase / 多 metric / 长时序）升格成 `docs/architecture/<NN>-<topic>.md` 专题文档，TODO.md 只放索引行。
 

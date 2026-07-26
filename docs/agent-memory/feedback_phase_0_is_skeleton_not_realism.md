@@ -24,7 +24,7 @@ type: feedback
 | 同步 | 重同步策略可简化 | RGB / depth 时间戳必须真带、真比对, 偏差超阈值真丢帧 |
 
 **How to apply:**
-- 搭骨架前先问 [行动前先想三个问题](principle_three_questions_before_acting.md): 这条通道的真实数据源在哪? 现在能不能直接接? 能接就接, 别先填假值占位.
+- 搭骨架前先查 [历史上下文](principle_context_first.md), 再想: 这条通道的真实数据源在哪? 现在能不能直接接? 能接就接, 别先填假值占位.
 - 骨架的"未完成"用空实现 + 明确 TODO 表达, 不用假数据表达. native 重建没写好就让 `NativeBridge` 返回明确的"未实现 / 空结果", 让上层知道这里还没真, 而不是返回一团看起来像点云的假数组.
 - 缺的是下游模块时按 [整体改不打补丁](feedback_holistic_not_patching.md) 去补下游, 不在采集骨架里加假 fallback / 退化路径冒充已实现.
 - 厂商 SDK / 真机不在手时, 走 host harness 或通用 UVC 真链路自测(见 [mock 只在 IO 边界, 守恒不变](feedback_mock_first_io_conserved.md)): mock 只替换最外层 USB / 文件 IO, 帧契约和 native 调用仍是真的; 不把整条重建链路换成离线资产回放还宣称跑通了.

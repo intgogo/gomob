@@ -70,8 +70,9 @@ __pycache__/
 .VSCodeCounter
 .kotlin/
 
-# 本地 agent 状态/设置（不入库）
-.claude/
+# 本地 agent 状态/设置不入库; skills 是共享工作流资产, 豁免入库
+.claude/*
+!.claude/skills/
 
 # Go 编译产物（laserworker / cvengine 可执行）
 /server/laserworker

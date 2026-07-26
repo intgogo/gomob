@@ -5,7 +5,7 @@
 
 ## 顶级原则（principle）
 
-- [动手前必答三问](principle_three_questions_before_acting.md) — 每次任务动手前先答清「我要什么/我有什么/我要怎么做」三问；任一答不上来先调研或澄清，不动手。
+- [开场一问：有没有历史上下文](principle_context_first.md) — 任务动手前先查 docs/context/INDEX.md 读命中模块的历史上下文；收尾增量归档。
 - [第一性原则选最优, 开发设计不做妥协](principle_first_principles_no_compromise.md) — 方案分叉时按第一性推导最优解, 先调研行业最佳再突破, 不因成本/风险退到小步妥协。
 - [省算力的优化必须结果等价](principle_compute_equivalent_optimization.md) — 为省算力/带宽/电做的优化不得偷降扫描保真度，须 harness 证明与全量等价。
 

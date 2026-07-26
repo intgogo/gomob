@@ -6,9 +6,9 @@
 **构建产物、运行日志、截图、采样数据统一输出到 `.dev/` 目录 (gitignored)**
 **遇到需要用户决策的设计分叉 / 多选项 / 参数取值时, 必须启用 `AskUserQuestion` 工具结构化提问**
 
-## ★ 宗旨 — 动手前必答三问
+## ★ 宗旨 — 开场一问, 必问
 
-**"我要什么? 我有什么? 我要怎么做?"** — 每次动手前先确认这三问: 目标与验收是什么、现有代码 / 文档 / native / harness 里已有什么、路径分几步怎么验证。任一问不清楚 → 先调研 / 先提问, 不动手。三问未明就开工, 是方向性、根本性错误的根源。详见 `docs/agent-memory/principle_three_questions_before_acting.md`。
+**"有没有历史上下文?"** — 每次任务动手前, 先查 `docs/context/INDEX.md`, 命中哪个模块就先读哪篇历史上下文文档 (可多篇), 站在全部已有决策、证伪结论和禁区之上再动手, 不做失忆重启式的全新探索。没命中任何模块的全新领域 → 记下收尾时新建对应 context 文档。上下文在手后, 目标与验收仍以 `TODO.md` 为真理源, 要求不清楚先问用户。详见 `docs/agent-memory/principle_context_first.md`。
 
 ## ★ 顶级原则 — 第一性, 最优解, 不妥协
 
@@ -25,10 +25,11 @@
 
 本文件之后按序接力, 按需深入, 不一次加载全部长文档:
 
-1. `docs/agent-memory/AGENTS_MEMORY.md` — 跨 Agent 共享记忆索引 (硬规则 / 项目认知 / 复用经验), 先看硬规则和最近方向变更。
-2. `docs/architecture.md` — 架构总入口, 先看总览 (7 层分层 + 模块映射), 再按专题深入; `docs/architecture/registry/` 是机器可校验的治理真理源。
-3. 对应专题的 `*-summary.md` (长文档一页摘要, 优先读), 再决定是否深入正文。
-4. `TODO.md` — 当前任务唯一真理源, 找任务、验收标准、相关设计文档。
+1. `docs/context/INDEX.md` — 模块级历史上下文索引 (开场一问的入口), 按任务命中模块读对应文档。
+2. `docs/agent-memory/AGENTS_MEMORY.md` — 跨 Agent 共享记忆索引 (硬规则 / 项目认知 / 复用经验), 先看硬规则和最近方向变更。
+3. `docs/architecture.md` — 架构总入口, 先看总览 (7 层分层 + 模块映射), 再按专题深入; `docs/architecture/registry/` 是机器可校验的治理真理源。
+4. 对应专题的 `*-summary.md` (长文档一页摘要, 优先读), 再决定是否深入正文。
+5. `TODO.md` — 当前任务唯一真理源, 找任务、验收标准、相关设计文档。
 
 不要把旧方案和当前主线混在一起加载。按任务查专题。
 
@@ -94,6 +95,13 @@
 - 长文档优先补 `*-summary.md`, 不堆长前言。
 - 每个开发阶段结束后同步更新文档, 保持文档与代码一致。
 - 架构改动同步更新 `docs/architecture/registry/`: 变更模块边界 / 依赖 / 能力成熟度时, 同步改 `modules.yaml` / `dependencies.yaml` / `capabilities.yaml`。
+
+## 历史上下文维护 (docs/context/)
+
+- `docs/context/` 按模块沉淀**连续叙事**的历史上下文 (使命与现状 / 决策时间线 / 禁区与已证伪路线 / 关键资产指针 / 未竟事项), `INDEX.md` 是唯一入口。与 `docs/agent-memory/` 分工: context 是模块级连线叙事, agent-memory 是点状经验, 互相引用不复制。
+- **任务收尾硬规**: 产生新决策 / 新证伪 / 方向变更 / 里程碑进展的任务, 收尾时必须增量更新对应模块 context 文档并刷新头部"最后更新 / 截至 commit"戳, 与设计文档维护同级义务; 可用 `/context-archive` skill 一键归档。纯执行、无新信息的会话不硬凑。
+- 全新领域 → 按模板新建 `docs/context/<module>.md` 并在 `INDEX.md` 加一行。
+- 写作硬规同记忆: 简洁、引用不复制、无占位符; 已证伪路线写进"禁区"节而不是删掉 — 禁区是防重走弯路的护栏。
 
 ## 记忆写作硬规 (防臃肿)
 
