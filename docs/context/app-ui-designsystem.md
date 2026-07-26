@@ -1,12 +1,12 @@
 # App UI 与设计系统 — 历史上下文
 
-> 最后更新: 2026-07-26 | 截至 commit: 36653a4 | 维护规则见 AGENTS.md「历史上下文维护」节
+> 最后更新: 2026-07-26 | 截至 commit: a979415 | 维护规则见 AGENTS.md「历史上下文维护」节
 
 ## 使命与当前状态
 
 本模块负责 gomob 全部 Compose 界面与 `core/designsystem` 设计系统层: 5 tab 信息架构 (首页/消息/协作/3D/我的)、token 体系 (GomobColors/Type/Shapes/Spacing)、公共组件 (ScreenHeader/BackHeader/HairlineCard/MetricTile/TabBar/SegmentedTabs/Chip)、以及 2026-07 起的毛玻璃体系 (Haze 真模糊 chrome + 拟玻璃面板 + 真 edge-to-edge)。视觉基调经历三段演进: 暗色科技风 (05 月初) → light-first/mint (05-30) → **固定浅色、彻底删除暗色链** (M14.2, 2026-07-12)。
 
-当前状态: M14 毛玻璃焕新主体已提交 (07fdf97/9df21c9/36653a4=HEAD, 真机走查过一轮); **工作区存在大量未提交改动** = M14.5 设计稿 21 屏二轮对齐 + M14.2 固定浅色 + 登录后 QA 截图反馈通道 (07 文档 §8.5) 等, `./dev.sh build/test/ci` 全绿, 但 **M14.5 真机逐屏走查未做** (当时无设备在线)。设计真理源在 `.dev/design/` (gitignored): `proto.html` 21 屏交互原型 + `spec.html` token 修订表, 冲突时以 proto 为准。
+当前状态: M14 毛玻璃主体、M14.2 固定浅色、M14.5 设计稿二轮对齐与登录后 QA 反馈通道已在 a979415 落盘；代码构建与测试门此前全绿，M14.5 真机逐屏走查仍未做（当时无设备在线）。设计真理源在 `.dev/design/` (gitignored): `proto.html` 21 屏交互原型 + `spec.html` token 修订表, 冲突时以 proto 为准。
 
 ## 决策时间线
 
@@ -37,14 +37,14 @@ A/B/融合三窗同款轨道 + 第一视角漫游标注车位框, 属激光站�
 同日插曲: Codex 用旧上下文把 46 个文件覆写回玻璃改造前快照 (`07fdf97^`), 逐字节比对确认后恢复, 零内容损失 (幸而玻璃工作已提交); 另发现 install -r 因 debug 签名不同静默失败, 靠 APK MD5 比对识破。证据: docs/agent-memory/finding_haze_nested_sources_transparent_2026-07-09.md、docs/architecture/07 §8、会话消化稿 2026-07-09 (3aaf07b3)。
 
 ### 2026-07-10 三线并发: API29 兼容 + 设计交接包出站 + M14.5 二轮对齐
-- **36653a4 (HEAD)**: 主题 API 29 兼容修正 (新增 values-v29/themes.xml)。
+- **36653a4**: 主题 API 29 兼容修正 (新增 values-v29/themes.xml)。
 - **设计交接包** (会话 49e0f628): 制作 `.dev/design-handoff-m14.zip` 发给 Claude Design, README 写明六条不可破坏硬约束 (玻璃两档依据/单 HazeState 拓扑/主题组合/可读性/性能/Compose 可落地), 强制设计产出落到 GomobSpacing/GomobType 具体字段。用户纠偏定调: "**我们主要是做 light 的页面, dark 不要截**"。同会话把外廓页右上下拉改"3D 工位选择"(静态表只放真实 1 号工位, 终态=服务端工位注册表下发), Berxel 相机入口暂隐但链路保留。
-- **M14.5 二轮对齐** (会话 1d543fa2): 用户带回 design.zip, 指出"codex 已做一轮但跟设计差别挺大"。设计真理源固定 `.dev/design/spec.html + proto.html` (21 屏), **spec 与 proto 冲突以 proto 为准**。codex 首轮偏差定性三类: ①卡片用不透明 bg1 丢玻璃质感 ②若干屏结构没按原型 (聊天设置微信硬编码色/设置仍是抽屉/外廓无分镜网格) ③大量字号尺寸细节。执行架构 = 6 只读对照 agent 出差异清单 → 主线改共享组件 → 5 并行修复 agent。关键改动: 我的页路由重构 (设置抽屉→独立子页 `profile/settings`, 删 SettingsDrawer ~260 行)、ChatComposer 折叠态改"pill+外置发送"56dp、聊天设置整屏 token 化、外廓工位分镜 2×2 网格 (未接入镜头显式标注非假数据)。**无后端能力的设计动作一律不放假按钮, 留 `TODO(终态)`** (结束并融合/确认入档/RGB 缩略/在线点/1:1 拉群等)。build/test/ci 绿; **真机走查未做, 改动至今未提交** (即当前工作区脏改动的主体)。证据: TODO.md M14.5、/root/.claude/projects/-root-lilw-gomob/memory/project_m14_design_alignment_2026-07-10.md、docs/architecture/07 §8.4。
+- **M14.5 二轮对齐** (会话 1d543fa2): 用户带回 design.zip, 指出"codex 已做一轮但跟设计差别挺大"。设计真理源固定 `.dev/design/spec.html + proto.html` (21 屏), **spec 与 proto 冲突以 proto 为准**。codex 首轮偏差定性三类: ①卡片用不透明 bg1 丢玻璃质感 ②若干屏结构没按原型 (聊天设置微信硬编码色/设置仍是抽屉/外廓无分镜网格) ③大量字号尺寸细节。执行架构 = 6 只读对照 agent 出差异清单 → 主线改共享组件 → 5 并行修复 agent。关键改动: 我的页路由重构 (设置抽屉→独立子页 `profile/settings`, 删 SettingsDrawer ~260 行)、ChatComposer 折叠态改"pill+外置发送"56dp、聊天设置整屏 token 化、外廓工位分镜 2×2 网格 (未接入镜头显式标注非假数据)。**无后端能力的设计动作一律不放假按钮, 留 `TODO(终态)`** (结束并融合/确认入档/RGB 缩略/在线点/1:1 拉群等)。代码改动已在 a979415 落盘；**真机走查未做**。证据: TODO.md M14.5、/root/.claude/projects/-root-lilw-gomob/memory/project_m14_design_alignment_2026-07-10.md、docs/architecture/07 §8.4。
 
-### 2026-07-12 M14.2 主题固定浅色 (工作区未提交)
+### 2026-07-12 M14.2 主题固定浅色 (已在 a979415 落盘)
 删除外观模式/ThemeMode/明暗持久化链, 原生 Activity 基主题改 Light, 设计系统删五套暗色色板与不可达暗分支, 默认 Mint。TODO M14.2 已标 ✅ (真机验证含冷启保留 Coral)。这是浅色化终局: 用户只在 5 套浅色主题间选色。证据: TODO.md M14.2、docs/architecture/07 §5。
 
-### 2026-07-16 前后 (未提交) 登录后内部 QA 截图反馈通道
+### 2026-07-16 前后 (已在 a979415 落盘) 登录后内部 QA 截图反馈通道
 隐藏入口挂 ScreenHeader/BackHeader 等标题栏 (大标题连点 5 次、相邻间隔 ≤700ms 触发, 见 `component/FeedbackTitleTrigger.kt`); `AppFeedbackHost` 只包登录后业务壳; Filament 页截图走 `FeedbackCaptureSurface` (停 Choreographer + flushAndWait + DST_OVER 合成); 标注编辑器 + `POST /v1/feedback` 落 `.dev/app-feedback/`。规范已写入 docs/architecture/07 §8.5; 实施会话无消化稿, 日期依 `.dev/app-feedback/` 产物时间 (07-16) 反推, 细节以 §8.5 与代码为准。
 
 ## 禁区与已证伪路线
@@ -79,7 +79,6 @@ A/B/融合三窗同款轨道 + 第一视角漫游标注车位框, 属激光站�
 ## 未竟事项
 
 - **M14.5 真机逐屏走查** (最紧要): 五根页+会话+VIN+外廓+设置/资料/案例/主题/历史对照 proto.html 逐屏过, 键盘/撤回/开关/路由回归; 先 `adb mdns services` 连测试机。外廓专项已在 emulator-5556 过一轮 (TODO M14.5 验收栏; 软件模拟实例, 见禁区 11)。
-- **工作区提交收口**: 当前脏改动混合 M14.5 + M14.2 + QA 反馈 + M14.4 VIN OCR + M4.6 (后两者属 vin-pipeline, 见 docs/context/vin-pipeline.md; 注意 TODO 里 M14.4 编号被"版式回迁"与"外部 VIN OCR 接入"两条复用); 提交时按模块/hunk 分拆, 勿一锅端。
 - M14.1: 5 套浅色主题逐屏走查 (尤其 Gold/Coral 玻璃 tint 可读性) + API<31 降级遮罩验证 (需 Android 10/11 设备)。
 - M14.3: 玻璃滚动性能采样 (systrace/JankStats, P95 <16.7ms 或给量化结论; 必要时 HazeInputScale)。
 - M5.5~5.7 UI 验收: 通话页/直播观看页/录像回放的 uiautomator+harness 验收未闭环 (主线见 docs/context/infra-server.md)。

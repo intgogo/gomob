@@ -1,12 +1,12 @@
 # VIN 数码拓印流水线 — 历史上下文
 
-> 最后更新: 2026-07-26 | 截至 commit: 36653a4 | 维护规则见 AGENTS.md「历史上下文维护」节
+> 最后更新: 2026-07-26 | 截至 commit: a979415 | 维护规则见 AGENTS.md「历史上下文维护」节
 
 ## 使命与当前状态
 
 VIN 数码拓印 = 用 RS-D550 深度 + HLSD8 彩色两颗独立 USB 相机同步采集钢印 VIN, 经原厂标定做承印平面正射还原, 输出 4425×600 权威规范图, 交外部 OCR 识别出 17 位车架号 + 逐字符置信度。当前架构定型为: **手机只负责同步采集/原始落盘/上传/回显/触发 OCR; 标定解析、正射还原、17 字符刚性格架规范化、OCR 代理全在服务端 Go cvengine** (2026-06-18 用户拍板, 此后未变)。
 
-截至 HEAD (36653a4, 2026-07-10): 服务端还原链 (原厂 BIN + 双轴 25px/mm + 4425×600) 与多角度固定坐标一致性 harness 已闭环 (M4.4/M4.5 验收指标全过、M4.7 契约落地、M4.8 ✅); M14.4 外部 OCR 接入与 M4.6 曝光同步/预览对齐/自动拍摄在**工作区推进至 2026-07-17+ 未 commit** (git status ~387 文件, 含 cvengine/scan3d/network 全链), 验证记录落在 TODO.md 与 08-summary。真机 (Android 16, RS-D550+HLSD8) 已连续多轮"自动对准→自动快门→还原→17 位 OCR"全通。剩余完成门只有两条: 曝光等效同步 ≤25ms 的物理证明、网页标定版本发布管理。
+截至 a979415（2026-07-26）: 服务端还原链 (原厂 BIN + 双轴 25px/mm + 4425×600) 与多角度固定坐标一致性 harness 已闭环 (M4.4/M4.5 验收指标全过、M4.7 契约落地、M4.8 ✅); 外部 OCR、预览对齐、自动拍摄和双相机稳定性链已在 a979415 落盘，验证记录落在 TODO.md 与 08-summary。真机 (Android 16, RS-D550+HLSD8) 已连续多轮"自动对准→自动快门→还原→17 位 OCR"全通。剩余完成门只有两条: 曝光等效同步 ≤25ms 的物理证明、网页标定版本发布管理。
 
 ## 决策时间线
 
@@ -46,8 +46,8 @@ App 尚无采集能力时, 服务端先落 cgo+OpenCV 的 cv-engine: `vin_charac
 ### 2026-07-14 5fps 双相机快门事务订正 (M4.6)
 两颗 5fps 相机无共同硬触发。VINCreator 逆向+实机日志证明原厂快门是"跳 3 张彩色→至少收 3+3 帧→±100ms 内挑一对"的多帧事务; gomob 旧实现错误简化成"点击后第一组合格帧+等 500ms"。改为: 记录点击水位、整批候选取全局最小回调差 ≤100ms、失败最多重采 6 轮; 真机固定相位 53-55ms。**语义硬规: 这是"回调差"不是曝光同步**, 元数据写 `timestampKind=host_callback_monotonic`。证据: `docs/agent-memory/finding_vin_5fps_callback_pairing_2026-07-14.md`。
 
-### 2026-07-10~17 M14.4 外部 OCR + M4.6 预览对齐/自动拍摄 (工作区, 未 commit)
-- **M14.4 外部 OCR** (07-10 用户拍板): 识别调 `192.168.9.166:35000` 外部算法; Android 不直连, 正射 PNG 经 JWT 发 Gomob `POST /cv/ocr/v1/vin_recognize`, 服务端生成 `nanos+RSA-SHA1` 签名转调 `vin_detect`, 私钥不进 APK。单字符素材只取所选 item 的 `more[].origin_image_data` (真实 64×128 WebP), **不发 skip_image、不用整行 `vin_detect_image`**; 服务端解析为 `character_crops[]` 全量解码校验后下发 (M4.7)。老 `vin_pipeline` (VMASK 字形比对 verdict) 与新链**并存**: 服务端端点/worker/harness 仍在 (`handler.go` 仍挂 `POST /cv/ocr/v1/vin_pipeline`), 但端侧已不再调用 —— `CVEngineApi` 现仅 `vin_preview_calibration`/`vin_recognize`/`vin_restore` 三端点, VIN 识别主链已切外部 OCR。
+### 2026-07-10~17 M14.4 外部 OCR + M4.6 预览对齐/自动拍摄 (已在 a979415 落盘)
+- **M14.4 外部 OCR** (07-10 用户拍板): 识别调 `192.168.9.166:35000` 外部算法; Android 不直连, 正射 PNG 经 JWT 发 Gomob `POST /cv/ocr/v1/vin_recognize`, 服务端生成 `nanos+RSA-SHA1` 签名转调 `vin_detect`。RSA 私钥不进源码、镜像或 APK；cv-engine 只从 `GOMOB_VIN_ALGO_PRIVATE_KEY_FILE` 指向的部署侧只读挂载加载，变量缺失、文件不可读或 PEM 格式错误时在 HTTP 监听前 fail-fast。单字符素材只取所选 item 的 `more[].origin_image_data` (真实 64×128 WebP), **不发 skip_image、不用整行 `vin_detect_image`**; 服务端解析为 `character_crops[]` 全量解码校验后下发 (M4.7)。老 `vin_pipeline` (VMASK 字形比对 verdict) 与新链**并存**: 服务端端点/worker/harness 仍在 (`handler.go` 仍挂 `POST /cv/ocr/v1/vin_pipeline`), 但端侧已不再调用 —— `CVEngineApi` 现仅 `vin_preview_calibration`/`vin_recognize`/`vin_restore` 三端点, VIN 识别主链已切外部 OCR。
 - **预览空间对齐** (07-16): 新端点 `GET /cv/ocr/v1/vin_preview_calibration` 按完整 rig 下发只读原厂投影快照; App 深度预览逐像素 `disparity×8→3D→R/T→私有畸变→HLSD8 域` + 3×3 splat + z-buffer, 只改显示、落盘仍原始 RGBD。harness `vin_preview_alignment`: 覆盖 95.4%、Kotlin P95<30ms; 固定深度 2D 近似 P95 漂移 13.12px 证明不能用平移替代动态投影。
 - **质量门+自动拍摄** (07-17): ROI 3×3 覆盖≥95% + 点支撑≥15% + 可靠中位距离≤400mm 三门; 达标后 5 帧/≥800ms/极差≤5mm 稳定观察自动快门, 还原成功 exactly-once 自动 OCR; 结果态冻结本次帧并按序释放双相机 lease。
 - **稳定性 soak** (07-16): 连拍 7 次全首轮收齐, 3 轮退出重进内存无单调增长, 无 native fatal。
@@ -86,6 +86,5 @@ App 尚无采集能力时, 服务端先落 cgo+OpenCV 的 cv-engine: `vin_charac
 
 - **M4.6 曝光同步物理证明**: 用 PTS/SCR 或同步光学事件建立曝光时刻映射, 证明曝光等效差 ≤25ms; 软件回调门 (≤100ms) 不能替代。禁止用模板对齐/非等比拉伸绕过。
 - **M4.6 网页标定管理闭环**: VIN 远程采集、姿态/角点质量、交叉验证、审核、按完整 rig/profile 发布标定版本的网页端; 当前只能用原厂 BIN, 标定职责迁移未闭环。
-- **M14.4 收尾销账**: TODO M14.4 仍挂"Android 16 真机复跑真实外部 OCR"; 但 M4.6 07-17 记录已有真机多轮 17 位 OCR 成功 (APK 装 `192.168.9.17:35987`), 该项疑似已被覆盖未销账, 接手先对齐 TODO 口径。
-- **工作区落盘**: 07-10 之后的 M14.4/M4.6 大量改动仍未 commit (与 M14.5 UI 改动混在工作区, ~387 文件), 接手先看 `git status` 与 TODO 对应节再动。
+- **M14.4 收尾销账**: 外部 OCR 代码与 Android 16 真机复跑已随 a979415 落盘；仅需整理 TODO/验收口径。
 - **M7 尾巴销账**: TODO M7 备注仍挂 "VIN catalog 车型选择客户端"; 实证端侧已无 `vehicle_model_id`/`vinPipeline` 任何引用, M14.4 契约只收 `image_binary`, 该尾巴已被契约演进吸收 (车型字形比对能力保留在服务端 vinref/vin_pipeline), 待 TODO 正式销账。

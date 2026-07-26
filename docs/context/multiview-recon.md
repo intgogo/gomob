@@ -1,6 +1,6 @@
 # 多视角 RGBD 重建与深度质量 — 历史上下文
 
-> 最后更新: 2026-07-26 | 截至 commit: 36653a4 | 维护规则见 AGENTS.md「历史上下文维护」节
+> 最后更新: 2026-07-26 | 截至 commit: a979415 | 维护规则见 AGENTS.md「历史上下文维护」节
 
 ## 使命与当前状态
 
@@ -47,7 +47,7 @@
 底座与服务端早已全真, 缺口在端侧中段 (入口卡片指向硬编码 mock 屏、真管线是孤儿路由)。M7.1-M7.6 落齐: `Scan3dBundleUploader` 逐字段复刻 `rgbd_bundle.py` zip 契约 (uint16 小端 mm + conf u8)、`VehicleContourScanViewModel` 8 角度真采集 → 上传 → 等 fusion_done → `GlbModelView` (filament gltfio) 回看; 服务端补 `/v1/scans/{session_key}/result` 流式中转 (GLB 不在 asset 体系且手机连不到 MinIO 内网; owner==nil 必须拒绝)。跨语言契约由 harness `scan_bundle_roundtrip` 守门; 5 维度对抗 review 19 条已修 (EnvelopeErrorInterceptor 全缓冲会 OOM 流式 GLB 等雷点在案)。**遗留**: RGB↔depth 是 approx resize 对齐 (texture 受基线视差偏移, 终态 M2 registration)、真机门控。证据: commit d2ea3e3; `docs/agent-memory/finding_scan_vin_wiring_2026-06-02.md`; TODO M7。
 
 ### 2026-06-04 之后: 冻结待真机, 业务重心转移
-06 月起焦点转向激光工位 (M8'/M9/M13, 固定双机位承接车辆外廓量测业务) 与 VIN 服务端化; 本线无新功能 commit, 仅横切维护批次触及本线文件 (e9bcbd2 全量审查整改、03565f5 tsdf widen、07fdf97 M14 UI 焕新)。07-01 App 端外廓屏被重做为激光工位纯操作端, 右上角设备下拉「3D 工位 / 3D 相机」; **07-10 起「3D 相机」入口暂隐藏** — `VehicleContourScanRoute` 的 mode 硬编码 Laser、下拉改纯工位选择 StationSwitcher, `BerxelScanScreen` 8 角度采集链路代码原样保留但 **UI 不可达**, 恢复 = trailing 换回 `DeviceSwitcher` (两轮改动截至 HEAD 36653a4 均未 commit, 在工作区; 详见 `docs/context/laser-station.md` / `docs/context/app-ui-designsystem.md`)。多视角线现状即上述"软件全通、真机端到端未闭环"。
+06 月起焦点转向激光工位 (M8'/M9/M13, 固定双机位承接车辆外廓量测业务) 与 VIN 服务端化; 本线无新功能 commit, 仅横切维护批次触及本线文件 (e9bcbd2 全量审查整改、03565f5 tsdf widen、07fdf97 M14 UI 焕新)。07-01 App 端外廓屏被重做为激光工位纯操作端, 右上角设备下拉「3D 工位 / 3D 相机」; **07-10 起「3D 相机」入口暂隐藏** — `VehicleContourScanRoute` 的 mode 硬编码 Laser、下拉改纯工位选择 StationSwitcher, `BerxelScanScreen` 8 角度采集链路代码原样保留但 **UI 不可达**, 恢复 = trailing 换回 `DeviceSwitcher`（上述两轮改动已随 a979415 落盘; 详见 `docs/context/laser-station.md` / `docs/context/app-ui-designsystem.md`）。多视角线现状即上述"软件全通、真机端到端未闭环"。
 
 ## 禁区与已证伪路线
 

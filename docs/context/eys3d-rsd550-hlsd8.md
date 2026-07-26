@@ -1,12 +1,12 @@
 # eYs3D RS-D550 + HLSD8 双相机自研驱动 — 历史上下文
 
-> 最后更新: 2026-07-26 | 截至 commit: 36653a4 | 维护规则见 AGENTS.md「历史上下文维护」节
+> 最后更新: 2026-07-26 | 截至 commit: a979415 | 维护规则见 AGENTS.md「历史上下文维护」节
 
 ## 使命与当前状态
 
 本模块负责扫描机上的**第二套相机硬件**: Etron/eYs3D **RS-D550 深度模组**(0x3438:0x0206, 双 IR 目 + 中间 5MP RGB + IR 投射器, 深度由片上 ASIC 算) 与 **HLSD8 13MP RGB 相机**(0x0C45:0x6366, Image+/Sonix, 标准 UVC MJPEG, ~4160×832)。二者是**两颗物理独立的 USB 相机**(2026-06-10 才发现), 共同支撑 VIN 数码拓印的 RGBD 采集。目标最初是"零厂商 SDK 全自研 UVC 驱动"(host-first→Android), 经 Android bulk 取流攻坚后, **终态定为: 控制/协议层自研认知 + 取流引擎 native 直驱厂商 libUVCCamera C++ 类(零 Java 编排, M6.9.9)**。
 
-当前状态(HEAD=36653a4): **能用** — RS-D550 mode25 真立体深度(640×128, `DISPARITY_X8_U16` 视差×8 原始值) + L'(1280×256 MJPEG) + HLSD8 RGB 三路真机稳定 ~5fps, 深度有效率中位 51.8%(vendor DepthFilter 补洞后, 旧稀疏 7~23% 已改善); 生命周期竞态已修(2026-07-16, 3 轮启动/teardown 对称、连续 7 次 VIN 采集无崩溃); VIN 页固定绑定双相机, 快门回调差 53~55ms。**不能用/未完**: 仅 arm64-v8a(v7a 已定论不补); 自研零厂商取流栈在 Android 撞 -EPROTO 硬墙未破(挂起保留); 双相机曝光级同步(≤25ms 物理证明)未闭环(M4.6)。
+当前状态（截至 a979415）: **能用** — RS-D550 mode25 真立体深度(640×128, `DISPARITY_X8_U16` 视差×8 原始值) + L'(1280×256 MJPEG) + HLSD8 RGB 三路真机稳定 ~5fps, 深度有效率中位 51.8%(vendor DepthFilter 补洞后, 旧稀疏 7~23% 已改善); 生命周期竞态已修(2026-07-16, 3 轮启动/teardown 对称、连续 7 次 VIN 采集无崩溃); VIN 页固定绑定双相机, 快门回调差 53~55ms。**不能用/未完**: 仅 arm64-v8a(v7a 已定论不补); 自研零厂商取流栈在 Android 撞 -EPROTO 硬墙未破(挂起保留); 双相机曝光级同步(≤25ms 物理证明)未闭环(M4.6)。
 
 ## 决策时间线
 
@@ -77,7 +77,7 @@ VIN 页固定绑定 RS-D550+HLSD8(禁误回落 Berxel/内置彩色); 预览空�
 - `native/eys3d/host/` — host 会话/replay_stream(proven 开流序列)/stream_loop; `native/camera/` — 厂商无关抽象层。
 - `native/hlsd8/hlsd8_uvc_session.{h,cpp}` — HLSD8 标准 UVC color-only 会话。
 - `core/native-bridge/.../camera/` — `Eys3dCameraService.kt`/`Hlsd8CameraService.kt`/`CameraSource.kt`/`CameraSourceProvider.kt`/`CameraDetection.kt`/`CameraStack.kt` 双相机 Kotlin 编排。
-- `third_party/eys3d-vendor/lib/` — 11 个 VINCreator 精确版 vendor .so(仅 arm64); `third_party/libuvc-android/` — 自研 libuvc_gomob 源(checked-in)。
+- `third_party/eys3d-vendor/lib/` — RS-D550 厂商 C++ 栈仍仅 arm64；HLSD8 标准 UVC 的 `libuvc1/libusb1001/libjpeg-turbo15001` 按 ABI 成组投放，原厂 `libusb100` SHA 见目录 README；生产禁止 `libusb100real`/VINSHIM。`third_party/libuvc-android/` 为自研 libuvc_gomob 源(checked-in)。
 - `tests/harness/eys3d_vendor_cpp/` — 生产路径真机 harness(起流链/fps/valid/零 JNI); `tests/harness/eys3d_mode25/` — host 自研路径回归。
 - `tests/harness/vin_calib/`(含 `calibration_2510DRK44C.json` 双相机标定)、`tests/harness/vin_preview_alignment/` — 双相机对齐 harness。
 - `tests/vincreator-apk/` + `REVERSE-ENGINEERING.md` — 原厂 oracle APK 与逆向报告(.dev/vincreator-jadx 为反编译产物)。
