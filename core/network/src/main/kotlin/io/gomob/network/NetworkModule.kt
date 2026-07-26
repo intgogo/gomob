@@ -56,6 +56,8 @@ object NetworkModule {
             // ping/healthz 路径短，统一短超时让 UI 反馈快
             .connectTimeout(5, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
+            // 截图反馈和资产上传包含大请求体，默认 10 秒写超时在弱网下不足。
+            .writeTimeout(60, TimeUnit.SECONDS)
             .build()
     }
 
@@ -106,4 +108,8 @@ object NetworkModule {
     @Provides
     @Singleton
     fun provideCVEngineApi(retrofit: Retrofit): CVEngineApi = retrofit.create(CVEngineApi::class.java)
+
+    @Provides
+    @Singleton
+    fun provideFeedbackApi(retrofit: Retrofit): FeedbackApi = retrofit.create(FeedbackApi::class.java)
 }

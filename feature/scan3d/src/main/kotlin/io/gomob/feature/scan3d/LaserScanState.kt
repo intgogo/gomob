@@ -20,9 +20,20 @@ sealed interface LaserScanState {
         val ptsA: Int,
         val ptsB: Int,
         val alignMethod: String,
+        val siteRevision: String? = null,
+        val regionRevision: String? = null,
+        val siteQualityVerified: Boolean = false,
+        val siteQualityOverride: Boolean = false,
+        val productionEligible: Boolean = false,
         val measurement: VehicleMeasurement,
         val ground: GroundPlane,
+        /** measured PCD 内容身份已通过校验；主视图始终是 fused，不由本字段选择显示云。 */
+        val measuredCloudVerified: Boolean = false,
         val pointIntegrityWarning: String? = null,
     ) : LaserScanState
-    data class Error(val msg: String) : LaserScanState
+    data class Error(
+        val msg: String,
+        /** true 表示服务端任务仍可能在运行，离页前必须再次确认停止。 */
+        val activeScan: Boolean = false,
+    ) : LaserScanState
 }

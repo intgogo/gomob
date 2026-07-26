@@ -4,15 +4,30 @@ gomob 移动应用的后端服务（Go）。
 
 ## 子服务
 
-| 二进制 | 端口 | 职责 |
-|--------|------|------|
-| `gomob-gateway` | HTTP `:8808` / UDP discovery `:18809` | 反代 + JWT 校验 + wss 升级（App 唯一入口） |
-| `gomob-api` | `:50051` | 业务 CRUD（查验 / 车辆 / 智能预审 / 抽查复核） |
-| `gomob-auth` | `:50052` | 注册（含审核流） / 登录 / 改密 / token |
-| `gomob-asset` | `:50053` | 图片 / 3D 扫描 / PDF 上传下载 |
-| `gomob-signaling` | `:50054` | 消息中心 + WebRTC 视频信令 |
-| `gomob-worker` | `:50055` | 智能预审 AI / 缩略图 / PDF 生成（异步） |
-| `gomob-devserver` | HTTP `:18808` / UDP discovery `:18809` | 开发模式单进程合体（仅本地） |
+| 二进制 / 服务 | 默认端口 | 职责 |
+|--------------|----------|------|
+| `gomob-devserver` | HTTP `:18808` / UDP discovery `:18809` | 开发模式单进程合体，App 联调推荐入口 |
+| `gomob-gateway` | HTTP `:18808` / UDP discovery `:18809` | 反代 + JWT 校验 + 限流 + wss 升级（App 唯一入口） |
+| `gomob-api` | HTTP `:18080` | 业务 CRUD（查验 / 车辆 / 智能预审 / 抽查复核）与参考库 BFF |
+| `gomob-auth` | HTTP `:18082` | 注册 / 登录 / 改密 / token |
+| `gomob-asset` | HTTP `:18083` | 图片 / 3D 扫描 / PDF / 模型上传下载 |
+| `gomob-signaling` | HTTP / WS `:18084` | 消息中心 + WebRTC 视频信令 + 扫描实时事件 |
+| `gomob-worker` | health HTTP `:18085` | 智能预审 AI / 缩略图 / PDF 生成（异步） |
+| `gomob-device` | HTTP `:18086` | 设备注册 / 心跳 / 标定参数 / 租约 |
+| `gomob-laserworker` | HTTP `:18087` | 双单元激光采集 / 点云融合 / MinIO 落盘 / NATS 实时推点 |
+| `gomob-cvengine` | HTTP `:18810` | VIN / 车型 / 字形等 CV 推理与图像还原 |
+| `gomob-llmgateway` | HTTP `:18811` | LLM provider 适配 / 模板编排 / 配额 / 流式输出 |
+| `gomob-shaperef` | HTTP `:18056` | 3D 外廓参考库 |
+| `gomob-modelregistry` | HTTP `:18057` | 模型版本 / 灰度 / 激活 / 热更新事件 |
+| `gomob-vinref` | HTTP `:18058` | VIN 字形参考库 |
+| `gomob-catalog` | HTTP `:18059` | 车型主数据 |
+| `gomob-admin` | HTTP `:19090` | 管理面 BFF |
+| `gomob-asrworker` | 无 HTTP 端口 | 语音转写任务消费者，调用 `asr_service` |
+| `gomob-fusionworker` | 无 HTTP 端口 | RGBD 融合任务消费者，调用 `fusion_service` |
+| `laserstationweb` | HTTP `127.0.0.1:5177` | 3D 激光扫描工位管理台；启动必须设置 `GOMOB_LASER_STATION_PASSWORD` |
+| `asr_service` | HTTP `:18091` | FireRedASR2S 语音转写推理 |
+| `fusion_service` | HTTP `:18092` | Open3D 多视角 RGBD 融合 |
+| `sam_service` | HTTP `:18093` | HQ-SAM 高精度 mask 分割 |
 
 ## 快速上手
 
@@ -29,6 +44,10 @@ LiveKit dev server（`ws://127.0.0.1:7880`, `devkey/secret`）、应用 PG
 migrations，再启动 `gomob-devserver`。真机 / 模拟器测试消息中心时执行
 `./dev.sh reverse`，会把设备侧 `127.0.0.1:8808` 和 `127.0.0.1:7880`
 分别反向代理到宿主机 devserver 与 LiveKit。
+
+启用外部 VIN OCR 时，cv-engine 必须通过只读部署密钥挂载提供
+`GOMOB_VIN_ALGO_PRIVATE_KEY_FILE`。私钥不得写入源码、镜像或 APK；变量缺失时
+cv-engine 会拒绝启动。
 
 详细架构见 `../docs/architecture/server/`：
 - `00-server-overview.md` — 总览（部署形态 / 服务划分 / 协议）

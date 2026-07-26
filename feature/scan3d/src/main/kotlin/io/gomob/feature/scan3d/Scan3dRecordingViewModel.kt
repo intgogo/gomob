@@ -139,7 +139,7 @@ class Scan3dRecordingViewModel @Inject constructor(
             source.colorFrames.collect { frame ->
                 counter++
                 if (counter % PREVIEW_DECIMATION != 0) return@collect
-                val bmp = withContext(Dispatchers.Default) { FrameRenderer.colorRgb24ToBitmap(frame) }
+                val bmp = withContext(Dispatchers.Default) { FrameRenderer.colorToBitmap(frame) }
                 _colorPreview.value = bmp
             }
         }

@@ -37,4 +37,4 @@ curl -s 127.0.0.1:18808/healthz   # → ok
 
 **模拟器侧（emulator-5556）**：起 App 前补反向端口
 `adb -s emulator-5556 reverse tcp:18808 tcp:18808; reverse tcp:8808 tcp:18808; reverse tcp:7880 tcp:7880; reverse tcp:19000 tcp:19000`。
-模拟器黑屏 / GPU 见 [[finding_emulator_setup_2026-05-04]]（`-gpu host`+`DISPLAY=:1`，gfxstream `Failed to find ColorBuffer` 冷重启即解）。
+模拟器黑屏 / GPU 见 [[finding_emulator_setup_2026-05-04]]（`DISPLAY=:1` + host + SkiaVK/Vulkan；不要只传裸 `-gpu host`）。

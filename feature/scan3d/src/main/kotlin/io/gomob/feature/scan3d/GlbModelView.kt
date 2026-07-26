@@ -15,8 +15,10 @@ import com.google.android.filament.LightManager
 import com.google.android.filament.Renderer
 import com.google.android.filament.utils.ModelViewer
 import com.google.android.filament.utils.Utils
+import io.gomob.ui.feedback.FeedbackCaptureSurface
 import java.io.File
 import java.nio.ByteBuffer
+import java.util.concurrent.TimeUnit
 
 /**
  * 云端融合结果 GLB 回看视图。
@@ -43,7 +45,9 @@ fun GlbModelView(
 }
 
 @SuppressLint("ViewConstructor", "ClickableViewAccessibility")
-internal class GlbSurfaceView(context: android.content.Context) : SurfaceView(context) {
+internal class GlbSurfaceView(context: android.content.Context) :
+    SurfaceView(context),
+    FeedbackCaptureSurface {
 
     private val choreographer = Choreographer.getInstance()
     private val modelViewer: ModelViewer = ModelViewer(this)
@@ -51,6 +55,7 @@ internal class GlbSurfaceView(context: android.content.Context) : SurfaceView(co
     private var loadedPath: String? = null
     private var running = false
     private var destroyed = false
+    private var feedbackCapturePaused = false
 
     init {
         Utils.init()
@@ -127,7 +132,7 @@ internal class GlbSurfaceView(context: android.content.Context) : SurfaceView(co
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        if (destroyed) return
+        if (destroyed || feedbackCapturePaused) return
         running = true
         choreographer.postFrameCallback(frameCallback)
     }
@@ -136,5 +141,21 @@ internal class GlbSurfaceView(context: android.content.Context) : SurfaceView(co
         super.onDetachedFromWindow()
         running = false
         choreographer.removeFrameCallback(frameCallback)
+    }
+
+    override fun pauseForFeedbackCapture() {
+        feedbackCapturePaused = true
+        running = false
+        choreographer.removeFrameCallback(frameCallback)
+        if (!destroyed && !modelViewer.engine.flushAndWait(TimeUnit.SECONDS.toNanos(5))) {
+            throw IllegalStateException("GLB 渲染帧同步超时")
+        }
+    }
+
+    override fun resumeAfterFeedbackCapture() {
+        feedbackCapturePaused = false
+        if (destroyed || !isAttachedToWindow || running) return
+        running = true
+        choreographer.postFrameCallback(frameCallback)
     }
 }

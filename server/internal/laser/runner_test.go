@@ -59,6 +59,15 @@ func (f *fakeCloudStore) PutCloud(_ context.Context, sessionKey, name string, xy
 	return LaserObjectKey(sessionKey, name), nil
 }
 
+func (f *fakeCloudStore) PutMeasuredCloud(
+	ctx context.Context,
+	sessionKey, name string,
+	xyz []float32,
+	_ MeasuredCloudArtifact,
+) (string, error) {
+	return f.PutCloud(ctx, sessionKey, name, xyz)
+}
+
 func (f *fakeCloudStore) putCloudLocked(name string, xyz []float32) {
 	if f.counts == nil {
 		f.counts = map[string]int{}
@@ -275,7 +284,10 @@ func TestRunnerSiteJSONMaterializedForNative(t *testing.T) {
 		SessionKey: "sess-site",
 		Align:      "site",
 		SiteJSON:   siteJSON,
-		Replay:     true,
+		SiteCalibration: SiteCalibrationSnapshot{
+			Source: "aruco", MatrixSHA256: "abc123",
+		},
+		Replay: true,
 	}, &recordSink{}); err != nil {
 		t.Fatalf("Run 失败: %v", err)
 	}
@@ -284,6 +296,15 @@ func TestRunnerSiteJSONMaterializedForNative(t *testing.T) {
 	}
 	if _, err := os.Stat(gotPath); !os.IsNotExist(err) {
 		t.Fatalf("site 临时文件应在扫描后清理，stat err=%v", err)
+	}
+	var stats struct {
+		SiteCalibration SiteCalibrationSnapshot `json:"site_calibration"`
+	}
+	if err := json.Unmarshal(jobs.lastCompletion.Stats, &stats); err != nil {
+		t.Fatalf("解析完成 stats: %v", err)
+	}
+	if stats.SiteCalibration.Source != "aruco" || stats.SiteCalibration.MatrixSHA256 != "abc123" {
+		t.Fatalf("外参来源快照未落 stats: %+v", stats.SiteCalibration)
 	}
 }
 
@@ -619,21 +640,32 @@ func TestRunnerDualCropBox(t *testing.T) {
 	bigBox := CropBox{Center: [3]float32{0, 0, 0}, Up: [3]float32{0, 0, 1}, YawDeg: 0, Half: [3]float32{5000, 5000, 5000}}
 	// 自带 BToA=单位阵的扫描（默认 ScanResult 零矩阵会把 B 点全压到原点；测真实 transform 用单位阵）。
 	dualScan := func(_, _, _, _ string, _ float32, cb ScanCallbacks) (ScanResult, error) {
+		groundPatch := func(offset float32) []float32 {
+			points := make([]float32, 0, 100*3)
+			for x := 0; x < 10; x++ {
+				for y := 0; y < 10; y++ {
+					points = append(points, offset+float32(x*100), float32(y*100), 0)
+				}
+			}
+			return points
+		}
+		a, b := groundPatch(0), groundPatch(1000)
+		fused := append(append([]float32(nil), a...), b...)
 		if cb.OnStatus != nil {
 			cb.OnStatus("scanning", 0, 0)
 		}
 		if cb.OnPoints != nil {
-			cb.OnPoints(PointFrame{Unit: 0, XYZmm: make([]float32, 300), HAngleDeg: 0})
-			cb.OnPoints(PointFrame{Unit: 0, XYZmm: make([]float32, 300), HAngleDeg: 90})
-			cb.OnPoints(PointFrame{Unit: 1, XYZmm: make([]float32, 300), HAngleDeg: 0})
-			cb.OnPoints(PointFrame{Unit: 1, XYZmm: make([]float32, 300), HAngleDeg: 90})
-			cb.OnPoints(PointFrame{Unit: 2, XYZmm: make([]float32, 600), HAngleDeg: 0})
+			cb.OnPoints(PointFrame{Unit: 0, XYZmm: a[:50*3], HAngleDeg: 0})
+			cb.OnPoints(PointFrame{Unit: 0, XYZmm: a[50*3:], HAngleDeg: 90})
+			cb.OnPoints(PointFrame{Unit: 1, XYZmm: b[:50*3], HAngleDeg: 0})
+			cb.OnPoints(PointFrame{Unit: 1, XYZmm: b[50*3:], HAngleDeg: 90})
+			cb.OnPoints(PointFrame{Unit: 2, XYZmm: fused, HAngleDeg: 0})
 		}
 		if cb.OnStatus != nil {
 			cb.OnStatus("fusing", 0, 0)
 			cb.OnStatus("done", 0, 0)
 		}
-		return ScanResult{PtsA: 200, PtsB: 200, Fused: 200, AfterCrop: 200, Align: "icp",
+		return ScanResult{PtsA: 100, PtsB: 100, Fused: 200, AfterCrop: 200, Align: "icp",
 			BToA: [16]float32{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}}, nil
 	}
 	runMode := func(t *testing.T, store *fakeCropBoxStore) string {
@@ -641,7 +673,11 @@ func TestRunnerDualCropBox(t *testing.T) {
 		r := newTestRunner(jobs, &fakeCloudStore{}, nil)
 		r.Replay = dualScan
 		r.CropBoxes = store
-		if _, err := r.Run(context.Background(), RunSpec{JobID: 1, SessionKey: "s", UnitAIP: bay, Replay: true}, &recordSink{}); err != nil {
+		if _, err := r.Run(context.Background(), RunSpec{
+			JobID: 1, SessionKey: "s", UnitAIP: bay, Replay: true,
+			SiteCalibration:   SiteCalibrationSnapshot{MatrixSHA256: "site-test-revision"},
+			RegionCalibration: RegionCalibrationSnapshot{PointsSHA256: "region-test-revision"},
+		}, &recordSink{}); err != nil {
 			t.Fatalf("Run 失败: %v", err)
 		}
 		var stats map[string]any

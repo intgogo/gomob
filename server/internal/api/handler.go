@@ -9,12 +9,15 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"io.gomob/server/internal/feedback"
 	"io.gomob/server/pkg/audit"
 	"io.gomob/server/pkg/httpx"
 	"io.gomob/server/pkg/logger"
@@ -45,6 +48,7 @@ type Handler struct {
 	messages      *repo.MessageRepo
 	media         *repo.MediaRepo
 	transcripts   *repo.TranscriptRepo
+	feedback      feedback.Store
 	audit         audit.Recorder
 	enforcer      rbac.Enforcer
 	realtime      RealtimeMessageNotifier
@@ -63,6 +67,7 @@ func NewHandler(pool *pgxpool.Pool, audit audit.Recorder, enforcer rbac.Enforcer
 		messages:      repo.NewMessageRepo(pool),
 		media:         repo.NewMediaRepo(pool),
 		transcripts:   repo.NewTranscriptRepo(pool, defaultTranscriptConfig()),
+		feedback:      feedback.Store{Dir: feedbackDirFromEnv(), Now: time.Now},
 		audit:         audit,
 		enforcer:      enforcer,
 		log:           logger.New("api.handler"),
@@ -107,6 +112,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/conversations/{id}/messages/{messageId}/recall", h.RecallConversationMessage)
 	mux.HandleFunc("POST /v1/conversations/{id}/call-invites", h.CreateConversationCallInvite)
 	mux.HandleFunc("POST /v1/conversations/{id}/read", h.MarkConversationRead)
+	mux.HandleFunc("DELETE /v1/conversations/{id}", h.DeleteConversation)
 	mux.HandleFunc("POST /v1/conversations/{id}/leave", h.LeaveConversation)
 	mux.HandleFunc("POST /v1/messages/transcribe-draft", h.TranscribeDraftVoice)
 	mux.HandleFunc("POST /v1/messages/{id}/transcript/retry", h.RetryMessageTranscript)
@@ -119,6 +125,24 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/live-sessions", h.ListLiveSessions)
 	mux.HandleFunc("POST /v1/live-sessions", h.CreateLiveSession)
 	mux.HandleFunc("POST /v1/livekit/webhook", h.LiveKitWebhook)
+
+	// 端侧问题反馈
+	mux.HandleFunc("POST /v1/feedback", h.SubmitFeedback)
+}
+
+func feedbackDirFromEnv() string {
+	raw := os.Getenv("GOMOB_APP_FEEDBACK_DIR")
+	if raw == "" {
+		raw = os.Getenv("GOMOB_FEEDBACK_DIR")
+	}
+	if raw == "" {
+		raw = ".dev/app-feedback"
+	}
+	abs, err := filepath.Abs(raw)
+	if err != nil {
+		return raw
+	}
+	return abs
 }
 
 // ---------- 通用工具 ----------

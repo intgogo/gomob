@@ -116,7 +116,7 @@ file(GLOB EYS3D_PORTABLE_SOURCES CONFIGURE_DEPENDS "eys3d/portable/*.cpp")
 file(GLOB EYS3D_ANDROID_SOURCES CONFIGURE_DEPENDS "eys3d/android/*.cpp")
 
 # hlsd8/ HLSD8 RGB 相机（Image+/Sonix 0x0C45:0x6366，独立第二颗 USB 相机，标准 UVC MJPEG）。
-# 与 eYs3D 同 libuvc_lusb100 后端，但 color-only、无 XU arming。
+# 运行时 dlopen VINCreator 的 libuvc1→libusb1001，与 RS-D550 的 libuvc→libusb100 物理隔离。
 file(GLOB HLSD8_SOURCES CONFIGURE_DEPENDS "hlsd8/*.cpp")
 set(EYS3D_STREAM_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/eys3d/host/eys3d_stream_loop.cpp
@@ -137,8 +137,7 @@ file(GLOB RECON_SOURCES CONFIGURE_DEPENDS "reconstruction/*.cpp")
 # host 单测仍可独立编（scripts/lidar-host-test.sh）。稳定一里程碑后再评估彻底删除。
 file(GLOB LIDAR_SOURCES CONFIGURE_DEPENDS "lidar/*.cpp")
 
-# vin/ 子模块（占位）
-file(GLOB VIN_SOURCES CONFIGURE_DEPENDS "vin/*.cpp")
+# vin/ 几何参考只由 scripts/native-host-test.sh 显式编译；手机端不进 .so。
 
 # calibration/ 子模块（占位）
 file(GLOB CALIB_SOURCES CONFIGURE_DEPENDS "calibration/*.cpp")
@@ -152,7 +151,6 @@ add_library(gomob_native SHARED
     ${DEPTH_SOURCES}
     ${FUSION_SOURCES}
     ${RECON_SOURCES}
-    ${VIN_SOURCES}
     ${CALIB_SOURCES}
     ${BERXEL_SOURCES}
     ${BERXEL_PORTABLE_SOURCES}

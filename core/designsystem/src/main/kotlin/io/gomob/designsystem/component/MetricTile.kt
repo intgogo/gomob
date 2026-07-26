@@ -12,6 +12,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.sp
 import io.gomob.designsystem.theme.Gomob
 
 enum class MetricTrend { Up, Down, Flat }
@@ -29,6 +30,7 @@ fun MetricTile(
     delta: String? = null,
     trend: MetricTrend = MetricTrend.Flat,
     caption: String? = null,
+    compact: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val deltaColor: Color = when (trend) {
@@ -40,25 +42,31 @@ fun MetricTile(
     HairlineCard(
         modifier = modifier
             .fillMaxWidth()
-            .defaultMinSize(minHeight = Gomob.spacing.metricTileMinH),
+            .defaultMinSize(
+                minHeight = if (compact) Gomob.spacing.metricTileCompactMinH else Gomob.spacing.metricTileMinH,
+            ),
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8)) {
-            Text(text = label, style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
+        Column(verticalArrangement = Arrangement.spacedBy(if (compact) Gomob.spacing.s6 else Gomob.spacing.s8)) {
+            Text(text = label, style = Gomob.type.caption, color = Gomob.colors.fg2)
 
             Row(verticalAlignment = Alignment.Bottom) {
                 Text(
                     text = value,
-                    style = Gomob.type.metricLg,
-                    color = Gomob.colors.accentStrong,
+                    style = if (compact) Gomob.type.metricMd.copy(fontSize = 24.sp) else Gomob.type.metricLg,
+                    color = Gomob.colors.accent,
                 )
                 if (delta != null) {
                     Spacer(Modifier.width(Gomob.spacing.s8))
-                    Text(text = delta, style = Gomob.type.numInline, color = deltaColor)
+                    Text(
+                        text = delta,
+                        style = Gomob.type.numInline.copy(fontSize = 11.sp),
+                        color = deltaColor,
+                    )
                 }
             }
 
             if (caption != null) {
-                Text(text = caption, style = Gomob.type.caption, color = Gomob.colors.fg3)
+                Text(text = caption, style = Gomob.type.micro, color = Gomob.colors.fg3)
             }
         }
     }

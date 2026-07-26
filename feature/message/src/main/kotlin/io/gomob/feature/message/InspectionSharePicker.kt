@@ -162,7 +162,7 @@ private fun InspectionShareDivider() {
             .fillMaxWidth()
             .padding(start = 70.dp, end = Gomob.spacing.s14)
             .height(Gomob.spacing.hairline)
-            .background(Gomob.colors.line1.copy(alpha = 0.03f)),
+            .background(Gomob.colors.line1),
     )
 }
 

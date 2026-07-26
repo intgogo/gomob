@@ -164,7 +164,7 @@ class DepthCameraViewModel @Inject constructor(
                     _rgbStat.value = PreviewStat(frame.frameIndex, frame.width, frame.height, emaMs.toFps())
                     if (lastRenderMs != 0L && now - lastRenderMs < COLOR_PREVIEW_MIN_INTERVAL_MS) return@collect
                     lastRenderMs = now
-                    val bmp = withContext(Dispatchers.Default) { FrameRenderer.colorRgb24ToBitmap(frame) }
+                    val bmp = withContext(Dispatchers.Default) { FrameRenderer.colorToBitmap(frame) }
                     if (bmp != null) _rgbPreview.value = bmp
                 }
             }
@@ -182,7 +182,7 @@ class DepthCameraViewModel @Inject constructor(
                 _colorStat.value = PreviewStat(frame.frameIndex, frame.width, frame.height, emaMs.toFps())
                 if (lastRenderMs != 0L && now - lastRenderMs < COLOR_PREVIEW_MIN_INTERVAL_MS) return@collect
                 lastRenderMs = now
-                val bmp = withContext(Dispatchers.Default) { FrameRenderer.colorRgb24ToBitmap(frame) }
+                val bmp = withContext(Dispatchers.Default) { FrameRenderer.colorToBitmap(frame) }
                 if (bmp != null) _colorPreview.value = bmp
             }
         }

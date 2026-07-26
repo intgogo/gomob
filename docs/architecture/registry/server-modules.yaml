@@ -26,6 +26,8 @@ categories:
     name: 资产与存储
   - id: ai
     name: AI / 异步 / 算法
+  - id: scanning
+    name: 3D 扫描编排与量测
   - id: device
     name: 设备管理
   - id: catalog
@@ -102,7 +104,7 @@ services:
     storage:
       - { kind: redis, used_for: "online presence / pending_calls / unread" }
     nats:
-      subscribe: ["inspection.preliminary_done", "model.version.activated"]
+      subscribe: ["inspection.preliminary_done", "model.version.activated", "scan.fusion_done", "laser.points", "laser.status", "laser.frame"]
     description: "wss 双向通道 / WebRTC SDP+ICE 转发 / 待接来电（仅 wss 在线推送）"
 
   # —— AI / 异步 / 算法 ——
@@ -133,7 +135,23 @@ services:
       subscribe: ["model.version.activated"]
     auth: dual_track   # JWT + HMAC 验签
     gpu: optional
-    description: "CV 算法引擎（VIN 检测 / 字形比对 / 拓印），从 gosmart 迁移；启动时拉 active 模型"
+    description: "CV 算法引擎（VIN 平面正射 + 17 字符刚性格架规范化 / 外部 OCR 代理 / 本地字形比对）；VINOBB/VINCHAR 由 model-registry 加载"
+
+  - name: laserworker
+    cmd: server/cmd/laserworker
+    impl: server/internal/laser
+    category: scanning
+    binary: gomob-laserworker
+    expose:
+      - { protocol: http, port: 18087, scope: internal, purpose: "/v1/scans/laser* 由 gateway/devserver 反代" }
+    storage:
+      - { kind: postgres, used_for: "laser_scan_jobs / site / region / background revision / ground / crop box / measured artifact manifest" }
+      - { kind: minio, used_for: "unitA/unitB/fused/measured PCD 与 raw A/B 背景 revision；measured 以内容哈希校验" }
+    nats:
+      publish: ["scan.fusion_done", "laser.points", "laser.status", "laser.frame"]
+    external:
+      - { name: lts-t1-station, kind: lidar_ptz_pair, access: "HTTP :4000 + TCP 4001/4003/4010，同网段" }
+    description: "双单元激光工位权威编排：真实采集、site/region/acquisition/background 同域处理、canonical measured artifact、CAS 状态机和客户端同源结果"
 
   - name: llm-gateway
     cmd: server/cmd/llmgateway
@@ -241,6 +259,11 @@ storage_instances:
     description: "服务间异步事件总线"
 
 external_dependencies:
+  - name: gosmart-vin
+    kind: cv_provider
+    endpoint: "http://192.168.9.166:35000"
+    consumed_by: [cv-engine]
+    description: "车架号 OCR；旧式 nanos + RSA-SHA1 验签，仅允许 cv-engine 服务端代理调用"
   - name: deepseek
     kind: llm_provider
     consumed_by: [llm-gateway]
@@ -248,3 +271,7 @@ external_dependencies:
     kind: turn_server
     consumed_by: [signaling]
     description: "WebRTC NAT 穿透 fallback"
+  - name: lts-t1-station
+    kind: lidar_ptz_pair
+    consumed_by: [laserworker]
+    description: "固定安装的 A/B 激光单元；生产背景与 site revision 绑定"

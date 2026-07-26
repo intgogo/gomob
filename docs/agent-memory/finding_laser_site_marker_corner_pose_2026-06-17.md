@@ -23,14 +23,14 @@ ICP 也救不动（双机视角差大 ~148° → 重叠少；且从 20° 偏差�
   算 4 角点相机系坐标。
 - `aggregateMarkerWorld`→`aggregateMarkerCorners`（每标记 4 角点投世界、跨帧均值）；`solveSiteExtrinsic`
   对所有公共标记的 4 角点做 umeyama。
-- **单个标记的 4 角点即非共线、含朝向 → 完全约束 6DoF 旋转**，少量/共面也解得准。`min_common` 4→2
-  （`framing_stream.h` + `siteframing.go`/`sitecalib.go` 默认；web 不传该参，故 Go 默认生效）。
+- **单个标记的 4 角点即非共线、含朝向 → 完全约束 6DoF 旋转**，少量/共面也解得准。核心求解器最低 `min_common=2`；
+  但 production site 保存门仍要求公共标记 ≥4、RMS≤5mm，不能把“数学可解”当“生产可验收”。
 - host 测试 `test_site_marker_calib.cpp`：**2 共面标记复原 B→A 到机器精度(2e-16)**；2mm 噪声下误差 <1cm。
 
 修复在 `lidar_cli`（标定走 exec，非 cgo 融合库）：worker CWD=`/root/lilw/gomob` 默认 exec
 `server/native/lidar/build/lidar_cli` → 重建该二进制即对下次标定生效，无需重启 worker；min_common 的 Go
 默认改动才需重建 worker。
 
-**用户须知**：旧 scan 166 用的是旧外参，不会自动变好；必须**用新 lidar_cli 重新标定一次 + 重新扫描**才看到对齐。
+**用户须知**：旧 scan 166 用的是旧外参，不会自动变好；必须用新 lidar_cli 重标、把质量指标保存到服务端；site revision 改变后还要在确认空工位的前提下重采 A/B raw 背景，再重新扫描。
 
 诊断脚本与采样留 `.dev/scan166/`。相关：[[finding_two_cameras_hlsd8_rgb_2026-06-10]]、设计文档 `docs/architecture/17-laser-camera-lidar-calibration.md` §多单元拼接。

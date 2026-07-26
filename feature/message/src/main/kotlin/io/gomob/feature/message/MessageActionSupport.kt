@@ -315,10 +315,11 @@ private fun ForwardContactRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        MessageAvatarImage(
-            seed = "forward-${contact.target.stableKey}-${contact.name}",
+        InitialAvatarTile(
+            text = contact.name,
             size = 32.dp,
-            shape = Gomob.shapes.r1,
+            shape = Gomob.shapes.r2,
+            fontSize = 13.sp,
             online = contact.online,
         )
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
@@ -355,7 +356,7 @@ private fun ForwardContactDivider() {
             .fillMaxWidth()
             .padding(start = 52.dp, end = 10.dp)
             .height(Gomob.spacing.hairline)
-            .background(Gomob.colors.line1.copy(alpha = 0.03f)),
+            .background(Gomob.colors.line1),
     )
 }
 

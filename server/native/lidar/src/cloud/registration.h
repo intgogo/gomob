@@ -21,17 +21,6 @@ struct RegistrationResult {
 RegistrationResult registerTwoUnits(const CloudXYZ& source, const CloudXYZ& target,
                                     double voxel = 0.08, double max_corr = 1.0, int iters = 60);
 
-// ICP-refine `source`->`target` starting from `init` (no yaw sweep) on dense clouds. Polishes a
-// marker/site extrinsic the last ~1° (marker solvePnP at 2-5m can't nail orientation; dense ICP can).
-// MONOTONIC-SAFE: sets improved=true and returns the refined transform ONLY if ICP converges AND lowers
-// the clamped mean-nearest-neighbour residual vs `init`; otherwise improved=false and returns `init`.
-// So enabling it can never make fusion worse than the marker extrinsic alone.
-// `max_corr` is the FINAL (tightest) correspondence distance (m); internally ICP ramps from 4×max_corr
-// down to max_corr to stay robust to a moderately-off init while locking onto the true overlap.
-RegistrationResult refineRegistration(const CloudXYZ& source, const CloudXYZ& target,
-                                      const Eigen::Matrix4d& init, bool& improved,
-                                      double voxel = 0.03, double max_corr = 0.05, int iters = 60);
-
 // Apply a 4x4 transform to a copy of the cloud.
 CloudXYZ::Ptr applyTransform(const CloudXYZ& cloud, const Eigen::Matrix4d& T);
 

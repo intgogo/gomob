@@ -1,7 +1,6 @@
 package io.gomob.feature.message
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.BasicTextField
@@ -10,6 +9,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -40,8 +40,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -50,6 +54,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -63,11 +68,10 @@ import io.gomob.data.message.ConversationInfoRepository
 import io.gomob.data.message.ConversationInfoSettings
 import io.gomob.data.message.ConversationInfoStoredMember
 import io.gomob.data.message.MessageRepository
-import io.gomob.designsystem.component.LocalFeedbackTitleLongPress
-import io.gomob.designsystem.component.feedbackTitleLongPress
+import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.glass.GlassHeaderScaffold
+import io.gomob.designsystem.glass.glassPanelBg
 import io.gomob.designsystem.icons.GomobIcons
-import io.gomob.designsystem.motion.fixedDuringPageDrag
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.model.message.ConversationSummary
 import io.gomob.model.message.MessageRecord
@@ -208,11 +212,13 @@ fun ConversationInfoRoute(
     }
 
     val scrollState = rememberScrollState()
+    // 页面骨架:GlassHeaderScaffold 自带 bg0 + 氛围光 + 玻璃 header;卡片全部拟玻璃
     GlassHeaderScaffold(
         scrollState = scrollState,
         header = {
-            ConversationInfoTopBar(
-                title = state.headerTitle,
+            BackHeader(
+                title = "聊天设置",
+                eyebrow = state.groupName,
                 onBack = onBack,
             )
         },
@@ -220,85 +226,97 @@ fun ConversationInfoRoute(
         Column(
             Modifier
                 .fillMaxSize()
-                // 页面底色铺满视口（含玻璃顶栏下方），滚动内容从其上穿过
-                .background(ConversationInfoPageBg)
-                .verticalScroll(scrollState),
+                .verticalScroll(scrollState)
+                .padding(horizontal = Gomob.spacing.pageGutter),
+            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.cardGap),
         ) {
             // verticalScroll 无 contentPadding → 首尾 Spacer 承接 scaffold 避让区
             Spacer(Modifier.height(padding.calculateTopPadding()))
-            ConversationMemberGrid(
-                members = state.members,
-                onOpenUserDetail = onOpenUserDetail,
-                onAddMember = { memberDialog = ConversationInfoMemberDialog.Add },
-                onRemoveMember = { memberDialog = ConversationInfoMemberDialog.Remove },
-            )
-            ConversationInfoDivider()
-            ConversationInfoRow(
-                title = if (state.group) "群聊名称" else "聊天名称",
-                value = state.groupName,
-                onClick = { editTarget = ConversationInfoEditTarget.Name },
-            )
             if (state.group) {
-                ConversationInfoRow(
-                    title = "群二维码",
-                    trailingIcon = GomobIcons.ID,
-                    onClick = { qrOpen = true },
-                )
-                ConversationInfoRow(
-                    title = "群公告",
-                    value = state.announcement.ifBlank { "未设置" },
-                    onClick = { editTarget = ConversationInfoEditTarget.Announcement },
-                )
-                ConversationInfoRow(
-                    title = "群管理",
-                    value = "${state.members.size} 人",
-                    onClick = { memberDialog = ConversationInfoMemberDialog.Management },
-                )
-                ConversationInfoRow(
-                    title = "备注",
-                    value = state.remark.ifBlank { "未设置" },
-                    onClick = { editTarget = ConversationInfoEditTarget.Remark },
-                    showDivider = false,
+                ConversationInfoCard {
+                    ConversationMemberGrid(
+                        members = state.members,
+                        onOpenUserDetail = onOpenUserDetail,
+                        onAddMember = { memberDialog = ConversationInfoMemberDialog.Add },
+                        onRemoveMember = { memberDialog = ConversationInfoMemberDialog.Remove },
+                    )
+                }
+            } else {
+                ConversationDirectMemberCard(
+                    peer = state.members.firstOrNull { !it.self },
+                    fallbackName = state.groupName,
+                    onOpenUserDetail = onOpenUserDetail,
+                    // TODO(终态): 服务端建群 API 就绪后改为真正拉群;当前复用添加成员链路
+                    onStartGroup = { memberDialog = ConversationInfoMemberDialog.Add },
                 )
             }
-            ConversationInfoDivider()
-            ConversationInfoRow(
-                title = "查找聊天内容",
-                onClick = { onOpenSearch(state.conversationId.toString()) },
-                showDivider = false,
-            )
-            ConversationInfoDivider()
-            ConversationInfoSwitchRow(
-                title = "消息免打扰",
-                checked = state.muted,
-                onToggle = viewModel::toggleMuted,
-            )
-            if (state.group) {
+            ConversationInfoCard {
+                ConversationInfoRow(
+                    title = if (state.group) "群聊名称" else "聊天名称",
+                    value = state.groupName,
+                    onClick = { editTarget = ConversationInfoEditTarget.Name },
+                    showDivider = state.group,
+                )
+                if (state.group) {
+                    ConversationInfoRow(
+                        title = "群二维码",
+                        trailingIcon = GomobIcons.ID,
+                        onClick = { qrOpen = true },
+                    )
+                    ConversationInfoRow(
+                        title = "群公告",
+                        value = state.announcement.ifBlank { "未设置" },
+                        onClick = { editTarget = ConversationInfoEditTarget.Announcement },
+                    )
+                    ConversationInfoRow(
+                        title = "群管理",
+                        value = "${state.members.size} 人",
+                        onClick = { memberDialog = ConversationInfoMemberDialog.Management },
+                    )
+                    ConversationInfoRow(
+                        title = "备注",
+                        value = state.remark.ifBlank { "未设置" },
+                        onClick = { editTarget = ConversationInfoEditTarget.Remark },
+                        showDivider = false,
+                    )
+                }
+            }
+            // 功能行组:查找 / 置顶 / 免打扰(群聊追加折叠与强提醒说明)
+            ConversationInfoCard {
+                ConversationInfoRow(
+                    title = "查找聊天记录",
+                    onClick = { onOpenSearch(state.conversationId.toString()) },
+                )
                 ConversationInfoSwitchRow(
-                    title = "折叠该聊天",
-                    checked = state.folded,
-                    onToggle = viewModel::toggleFolded,
+                    title = "置顶聊天",
+                    checked = state.pinned,
+                    onToggle = viewModel::togglePinned,
                 )
-                ConversationInfoNoticeRow(
-                    title = "以下消息仍通知",
-                    subtitle = "@我、@所有人和群公告",
-                    onClick = { context.showMessageActionToast("已开启默认强提醒规则") },
+                ConversationInfoSwitchRow(
+                    title = "消息免打扰",
+                    checked = state.muted,
+                    onToggle = viewModel::toggleMuted,
+                    showDivider = state.group,
                 )
+                if (state.group) {
+                    ConversationInfoSwitchRow(
+                        title = "折叠该聊天",
+                        checked = state.folded,
+                        onToggle = viewModel::toggleFolded,
+                    )
+                    ConversationInfoNoticeRow(
+                        title = "以下消息仍通知",
+                        subtitle = "@我、@所有人和群公告",
+                        onClick = { context.showMessageActionToast("已开启默认强提醒规则") },
+                    )
+                }
             }
-            ConversationInfoSwitchRow(
-                title = "置顶聊天",
-                checked = state.pinned,
-                onToggle = viewModel::togglePinned,
-                showDivider = false,
-            )
-            ConversationInfoDivider()
-            ConversationDangerRow(
+            ConversationDangerCard(
                 title = "清空聊天记录",
                 onClick = { clearConfirmOpen = true },
             )
             if (state.group) {
-                ConversationInfoDivider()
-                ConversationDangerRow(
+                ConversationDangerCard(
                     title = "退出群聊",
                     onClick = { leaveConfirmOpen = true },
                 )
@@ -308,10 +326,10 @@ fun ConversationInfoRoute(
                     text = message,
                     style = Gomob.type.caption,
                     color = Gomob.colors.danger,
-                    modifier = Modifier.padding(Gomob.spacing.s20),
+                    modifier = Modifier.padding(vertical = Gomob.spacing.s4),
                 )
             }
-            Spacer(Modifier.height(padding.calculateBottomPadding() + Gomob.spacing.s28))
+            Spacer(Modifier.height(padding.calculateBottomPadding() + Gomob.spacing.s16))
         }
     }
 }
@@ -568,10 +586,11 @@ private fun ConversationMemberManageRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
     ) {
-        MessageAvatarImage(
-            seed = member.avatarSeed,
+        InitialAvatarTile(
+            text = member.name,
             size = 38.dp,
             shape = Gomob.shapes.r2,
+            fontSize = 14.sp,
         )
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2)) {
             Text(member.name, style = Gomob.type.bodySm, color = Gomob.colors.fg0, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -597,55 +616,6 @@ private fun ConversationMemberManageRow(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun ConversationInfoTopBar(
-    title: String,
-    onBack: () -> Unit,
-) {
-    val feedbackTrigger = LocalFeedbackTitleLongPress.current
-    // 顶栏在 GlassHeaderScaffold header 槽内 → 不画实底，由玻璃层负责
-    Box(
-        Modifier
-            .fixedDuringPageDrag()
-            .fillMaxWidth()
-            .height(Gomob.spacing.headerHeight),
-    ) {
-        Box(
-            Modifier
-                .align(Alignment.CenterStart)
-                .size(Gomob.spacing.touchMin)
-                .clickable(onClick = onBack),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = GomobIcons.ChevronLeft,
-                contentDescription = "返回",
-                tint = Gomob.colors.fg1,
-                modifier = Modifier.size(26.dp),
-            )
-        }
-        Text(
-            text = title,
-            style = Gomob.type.body.copy(fontWeight = FontWeight.Medium),
-            color = Gomob.colors.fg0,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center,
-            modifier = Modifier
-                .align(Alignment.Center)
-                .fillMaxWidth()
-                .then(
-                    if (feedbackTrigger != null) {
-                        Modifier.feedbackTitleLongPress(title, feedbackTrigger)
-                    } else {
-                        Modifier
-                    },
-                )
-                .padding(horizontal = 84.dp),
-        )
     }
 }
 
@@ -975,6 +945,83 @@ private fun buildConversationInfoMembers(
         .distinctBy { member -> member.userId?.let { "user-$it" } ?: member.stableKey }
 }
 
+/** 聊天设置页统一拟玻璃卡容器。 */
+@Composable
+private fun ConversationInfoCard(content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .glassPanelBg(shape = Gomob.shapes.r3),
+        content = content,
+    )
+}
+
+/** 48dp r3 虚线边框(发起群聊块 / 网格操作块共用)。 */
+private fun Modifier.dashedTileBorder(color: Color, cornerRadius: Dp): Modifier = drawBehind {
+    drawRoundRect(
+        color = color,
+        style = Stroke(
+            width = 1.dp.toPx(),
+            pathEffect = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 3.dp.toPx()), 0f),
+        ),
+        cornerRadius = CornerRadius(cornerRadius.toPx()),
+    )
+}
+
+/** 1:1 成员区:对话人首字母头像 + 发起群聊虚线块。 */
+@Composable
+private fun ConversationDirectMemberCard(
+    peer: ConversationInfoMemberUi?,
+    fallbackName: String,
+    onOpenUserDetail: (String) -> Unit,
+    onStartGroup: () -> Unit,
+) {
+    val peerName = peer?.name?.takeIf { it.isNotBlank() } ?: fallbackName
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .glassPanelBg(shape = Gomob.shapes.r3)
+            .padding(Gomob.spacing.s16),
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s16),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Column(
+            Modifier.clickable(enabled = peer?.userId != null) {
+                peer?.userId?.let { onOpenUserDetail("user-$it") }
+            },
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+        ) {
+            InitialAvatarTile(
+                text = peerName,
+                size = Gomob.spacing.avatar48,
+            )
+            Text(
+                text = peerName,
+                fontSize = 11.sp,
+                color = Gomob.colors.fg2,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Column(
+            Modifier.clickable(onClick = onStartGroup),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+        ) {
+            Box(
+                Modifier
+                    .size(Gomob.spacing.avatar48)
+                    .dashedTileBorder(Gomob.colors.lineStrong, 8.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("+", fontSize = 18.sp, color = Gomob.colors.fg3)
+            }
+            Text("发起群聊", fontSize = 11.sp, color = Gomob.colors.fg3, maxLines = 1)
+        }
+    }
+}
+
 @Composable
 private fun ConversationMemberGrid(
     members: List<ConversationInfoMemberUi>,
@@ -993,8 +1040,7 @@ private fun ConversationMemberGrid(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(ConversationInfoSurface)
-            .padding(horizontal = Gomob.spacing.s20, vertical = Gomob.spacing.s16),
+            .padding(Gomob.spacing.s16),
         verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s14),
     ) {
         rows.forEach { rowTiles ->
@@ -1038,15 +1084,14 @@ private fun ConversationMemberTile(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
     ) {
-        MessageAvatarImage(
-            seed = member.avatarSeed,
-            size = 48.dp,
-            shape = Gomob.shapes.r2,
+        InitialAvatarTile(
+            text = member.name,
+            size = Gomob.spacing.avatar48,
         )
         Text(
             text = member.name,
             style = Gomob.type.caption.copy(fontSize = 11.sp),
-            color = ConversationInfoSecondary,
+            color = Gomob.colors.fg2,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
@@ -1069,22 +1114,21 @@ private fun ConversationActionTile(
     ) {
         Box(
             Modifier
-                .size(48.dp)
-                .clip(Gomob.shapes.r2)
-                .border(Gomob.spacing.hairline, ConversationInfoActionBorder, Gomob.shapes.r2),
+                .size(Gomob.spacing.avatar48)
+                .dashedTileBorder(Gomob.colors.lineStrong, 8.dp),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 imageVector = tile.icon,
                 contentDescription = null,
-                tint = ConversationInfoTertiary,
+                tint = Gomob.colors.fg3,
                 modifier = Modifier.size(24.dp),
             )
         }
         Text(
             text = tile.label,
             style = Gomob.type.caption.copy(fontSize = 11.sp),
-            color = ConversationInfoTertiary,
+            color = Gomob.colors.fg3,
             maxLines = 1,
         )
     }
@@ -1098,19 +1142,19 @@ private fun ConversationInfoRow(
     onClick: () -> Unit,
     showDivider: Boolean = true,
 ) {
-    Column(Modifier.fillMaxWidth().background(ConversationInfoSurface)) {
+    Column(Modifier.fillMaxWidth()) {
         Row(
             Modifier
                 .fillMaxWidth()
                 .height(Gomob.spacing.rowSetting)
                 .clickable(onClick = onClick)
-                .padding(horizontal = Gomob.spacing.s20),
+                .padding(horizontal = Gomob.spacing.s14),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
                 text = title,
                 style = Gomob.type.body,
-                color = ConversationInfoPrimary,
+                color = Gomob.colors.fg0,
                 modifier = Modifier.weight(1f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -1119,7 +1163,7 @@ private fun ConversationInfoRow(
                 Text(
                     text = it,
                     style = Gomob.type.body,
-                    color = ConversationInfoSecondary,
+                    color = Gomob.colors.fg2,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     textAlign = TextAlign.End,
@@ -1130,19 +1174,19 @@ private fun ConversationInfoRow(
                 Icon(
                     imageVector = it,
                     contentDescription = null,
-                    tint = ConversationInfoSecondary,
+                    tint = Gomob.colors.fg2,
                     modifier = Modifier.padding(start = Gomob.spacing.s12).size(22.dp),
                 )
             }
             Icon(
                 imageVector = GomobIcons.ChevronRight,
                 contentDescription = "进入",
-                tint = ConversationInfoChevron,
+                tint = Gomob.colors.fg3,
                 modifier = Modifier.padding(start = Gomob.spacing.s8).size(18.dp),
             )
         }
         if (showDivider) {
-            ConversationHairline(startPadding = Gomob.spacing.s20)
+            ConversationHairline(startPadding = Gomob.spacing.s14)
         }
     }
 }
@@ -1153,42 +1197,39 @@ private fun ConversationInfoNoticeRow(
     subtitle: String,
     onClick: () -> Unit,
 ) {
-    Column(Modifier.fillMaxWidth().background(ConversationInfoSurface)) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .height(Gomob.spacing.rowSettingTall)
-                .clickable(onClick = onClick)
-                .padding(horizontal = Gomob.spacing.s20),
-            verticalAlignment = Alignment.CenterVertically,
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(Gomob.spacing.rowSettingTall)
+            .clickable(onClick = onClick)
+            .padding(horizontal = Gomob.spacing.s14),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(
+            Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2),
         ) {
-            Column(
-                Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2),
-            ) {
-                Text(
-                    text = title,
-                    style = Gomob.type.body,
-                    color = ConversationInfoPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    text = subtitle,
-                    style = Gomob.type.caption,
-                    color = ConversationInfoTertiary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Icon(
-                imageVector = GomobIcons.ChevronRight,
-                contentDescription = "进入",
-                tint = ConversationInfoChevron,
-                modifier = Modifier.padding(start = Gomob.spacing.s8).size(18.dp),
+            Text(
+                text = title,
+                style = Gomob.type.body,
+                color = Gomob.colors.fg0,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = subtitle,
+                style = Gomob.type.caption,
+                color = Gomob.colors.fg3,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
-        ConversationHairline(startPadding = Gomob.spacing.s20)
+        Icon(
+            imageVector = GomobIcons.ChevronRight,
+            contentDescription = "进入",
+            tint = Gomob.colors.fg3,
+            modifier = Modifier.padding(start = Gomob.spacing.s8).size(18.dp),
+        )
     }
 }
 
@@ -1199,37 +1240,41 @@ private fun ConversationInfoSwitchRow(
     onToggle: () -> Unit,
     showDivider: Boolean = true,
 ) {
-    Column(Modifier.fillMaxWidth().background(ConversationInfoSurface)) {
+    Column(Modifier.fillMaxWidth()) {
         Row(
             Modifier
                 .fillMaxWidth()
                 .height(Gomob.spacing.rowSetting)
                 .clickable(onClick = onToggle)
-                .padding(horizontal = Gomob.spacing.s20),
+                .padding(horizontal = Gomob.spacing.s14),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
                 text = title,
                 style = Gomob.type.body,
-                color = ConversationInfoPrimary,
+                color = Gomob.colors.fg0,
                 modifier = Modifier.weight(1f),
             )
             ConversationSwitch(checked = checked)
         }
         if (showDivider) {
-            ConversationHairline(startPadding = Gomob.spacing.s20)
+            ConversationHairline(startPadding = Gomob.spacing.s14)
         }
     }
 }
 
 @Composable
 private fun ConversationSwitch(checked: Boolean) {
+    // on 轨道 accent 半透明 / off 轨道 fg0 低透明,thumb 白
     Box(
         Modifier
             .width(Gomob.spacing.switchW)
             .height(Gomob.spacing.switchH)
             .clip(Gomob.shapes.pill)
-            .background(if (checked) ConversationInfoSwitchOn else ConversationInfoSwitchOff),
+            .background(
+                if (checked) Gomob.colors.accent.copy(alpha = 0.5f)
+                else Gomob.colors.fg0.copy(alpha = 0.12f),
+            ),
         contentAlignment = if (checked) Alignment.CenterEnd else Alignment.CenterStart,
     ) {
         Box(
@@ -1242,64 +1287,39 @@ private fun ConversationSwitch(checked: Boolean) {
     }
 }
 
+/** 独立危险动作卡:52dp danger 文本居中。 */
 @Composable
-private fun ConversationDangerRow(
+private fun ConversationDangerCard(
     title: String,
     onClick: () -> Unit,
 ) {
-    Column(Modifier.fillMaxWidth().background(ConversationInfoSurface)) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .height(Gomob.spacing.rowSetting)
-                .clickable(onClick = onClick)
-                .padding(horizontal = Gomob.spacing.s20),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center,
-        ) {
-            Text(
-                text = title,
-                style = Gomob.type.body.copy(fontWeight = FontWeight.Medium),
-                color = ConversationInfoDanger,
-                textAlign = TextAlign.Center,
-            )
-        }
-        ConversationHairline(startPadding = Gomob.spacing.s20)
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(52.dp)
+            .glassPanelBg(shape = Gomob.shapes.r3)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = title,
+            style = Gomob.type.body.copy(fontWeight = FontWeight.Medium),
+            color = Gomob.colors.danger,
+            textAlign = TextAlign.Center,
+        )
     }
 }
 
 @Composable
-private fun ConversationInfoDivider() {
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .height(Gomob.spacing.hairline)
-            .background(ConversationInfoHairline),
-    )
-}
-
-@Composable
-private fun ConversationHairline(startPadding: androidx.compose.ui.unit.Dp) {
+private fun ConversationHairline(startPadding: Dp) {
     Box(
         Modifier
             .fillMaxWidth()
             .padding(start = startPadding)
             .height(Gomob.spacing.hairline)
-            .background(ConversationInfoHairline),
+            .background(Gomob.colors.line1),
     )
 }
-
-private val ConversationInfoPageBg = Color(0xFFEDEDED)
-private val ConversationInfoSurface = Color.White
-private val ConversationInfoPrimary = Color(0xFF111111)
-private val ConversationInfoSecondary = Color(0xFF666666)
-private val ConversationInfoTertiary = Color(0xFF8A8A8A)
-private val ConversationInfoChevron = Color(0xFFC7C7C7)
-private val ConversationInfoHairline = Color(0xFFE7E7E7)
-private val ConversationInfoActionBorder = Color(0xFFD9D9D9)
-private val ConversationInfoSwitchOff = Color(0xFFD8D8D8)
-private val ConversationInfoSwitchOn = Color(0xFF07C160)
-private val ConversationInfoDanger = Color(0xFFFA5151)
 
 private sealed interface ConversationInfoGridTile {
     data class Member(val member: ConversationInfoMemberUi) : ConversationInfoGridTile

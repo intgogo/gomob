@@ -14,10 +14,10 @@ import (
 // Entry 一条审计记录。Before/After 已序列化为 JSON 字符串，便于跨服务一致存储。
 type Entry struct {
 	UserID    int64
-	Action    string    // 例: inspection.update_result
-	Target    string    // 例: inspection:123
-	BeforeRaw string    // JSON
-	AfterRaw  string    // JSON
+	Action    string // 例: inspection.update_result
+	Target    string // 例: inspection:123
+	BeforeRaw string // JSON
+	AfterRaw  string // JSON
 	IP        string
 	CreatedAt time.Time
 }
@@ -42,8 +42,8 @@ func Encode(v any) (string, error) {
 
 // InMemory 测试用，线程安全；按 Record 顺序保留。
 type InMemory struct {
-	mu      sync.Mutex
-	Entries []Entry
+	mu      sync.RWMutex
+	entries []Entry
 }
 
 func (m *InMemory) Record(_ context.Context, e Entry) error {
@@ -51,7 +51,31 @@ func (m *InMemory) Record(_ context.Context, e Entry) error {
 		e.CreatedAt = time.Now()
 	}
 	m.mu.Lock()
-	m.Entries = append(m.Entries, e)
-	m.mu.Unlock()
+	defer m.mu.Unlock()
+	m.entries = append(m.entries, e)
 	return nil
+}
+
+// Snapshot 返回当前审计记录副本，调用方可安全遍历和修改副本。
+func (m *InMemory) Snapshot() []Entry {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]Entry(nil), m.entries...)
+}
+
+// Count 返回当前审计记录数。
+func (m *InMemory) Count() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.entries)
+}
+
+// EntryAt 安全读取指定下标的审计记录。
+func (m *InMemory) EntryAt(index int) (Entry, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if index < 0 || index >= len(m.entries) {
+		return Entry{}, false
+	}
+	return m.entries[index], true
 }

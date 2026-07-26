@@ -230,9 +230,15 @@ native/eys3d/
 
 **ABI 纪律**(厂商 = NDK r12 `std::__ndk1`,gomob = NDK27 `std::__1`):不在 gomob 侧构造/析构任何 `__ndk1` 对象(shared_ptr/vector);回调里厂商 `vector<uchar>&` 当 3 指针 POD 只读(begin/end/cap);`dlopen(RTLD_LOCAL)` 隔离厂商自带 libusb100 不遮蔽 gomob libusb-1.0。
 
-**深度即 metric**:FrameGrabber 路径深度已是 metric mm(vendor `do_preview` 内 DepthFilter + 自载 ZD 表转好),直接喂 `core.OnDepthMmFrame`,**勿再套 ZD LUT**(否则二次查表错)。
+**深度格式订正**：FrameGrabber 回调实机值域与原厂 `restoreImageFlow` 证明是 mode25 原始 `disparity×8`，不是 metric mm。当前 native 只做字节透传，`DepthFrame.sampleFormat=DISPARITY_X8_U16`；VIN 服务端按原厂 BIN 的 `f/B/type` 恢复毫米坐标。禁止在上传前套未知 ZD LUT 丢失原厂输入。
 
 **踩坑订正**(均反汇编/源码实证,详见 finding):connect 参数序 `(vid,pid,fd,...)` 非 `(fd,vid,pid,...)`;usbfs = 根 `/dev/bus/usb` 非完整设备节点;`setExternalStoragePublicDirectory` 必设(connect 内 `strdup`,NULL 崩)— 现经 `configJson→options_json` 下发 app 专属目录;startPreview 需非空 ANativeWindow(`[uvcpreview+8]` 门控);未 setVM → 抓拍线程 `getVM()` 空崩。
+
+### 生命周期不变量（2026-07-16）
+
+厂商 `FrameGrabber::Open()` 创建 worker 后立即返回，worker 稍后才把 `isStarted` 置真。禁止在 `Open()` 返回后立即以一次 `isStarted=false` 判启动失败并销毁会话；这会让仍在启动的厂商线程继续访问已析构 mutex，最终 native abort。生产实现必须同时满足：worker 启动屏障在 started/failed/超时三态之一后才裁决；`Close()` 完成门和 join 先于 callback context、FrameGrabber、窗口及 UVCCamera 对象释放；回调上下文跨 teardown 保持稳定；Kotlin 将 native `Starting` 与 `Error/Stopped` 分开，启动期单次空 poll 不判死，首帧 deadline 为 10 秒。
+
+验证包括 `eys3d_vendor_worker_lifecycle_test` 的延迟启动/安全 Close 竞态、`CameraStackSessionStateTest`、`Eys3dSessionHealthTest`、`CameraStackConcurrencyTest`，以及真机 3 轮启动/首帧/teardown 对称循环。三轮屏障均 `started=1 waited=1ms`，同一 PID 无 SIGSEGV、destroyed-mutex 或 FATAL。
 
 **退役**:Java `Eys3dApcCamera.kt` shim 已删(git 历史可恢复)。厂商 shim 类 `com.esp.android.usb.camera.core.*` 仍保留(bindEys3dVendorJni 的 `FindClass`/`RegisterNatives`/`setVM` 需要),已加 proguard `-keep`。
 
@@ -240,16 +246,15 @@ native/eys3d/
 
 ### §内参(intrinsics 注入)
 
-depth/color 帧的 `CameraIntrinsics` 由 `Eys3dCameraService.rsd550Intrinsics(w,h)` 按本帧分辨率从出厂矫正标定缩放给出(canonical 常量见 `native/eys3d/portable/eys3d_driver.h kRsd550RectifiedFx`):
+mode25 深度内参由原厂 `VIN_BF301208.bin` 与 rectlog 交叉确认：
 
-- **基准 = 单目全幅矫正左目 1280×960**:`fx=fy=1229.205`,`cx=648.0`,`cy=482.865`(rectlog_1.bin 与 VIN 两来源交叉验证一致;cx≈宽/2、cy≈高/2 即该幅中心)。矫正后无畸变。
-- mode25 各流是该全幅的**各向异性下采样**(color 1280×256:sx=1、sy=256/960;depth 640×128:sx=0.5、sy=128/960)→ 内参线性缩放 `fx·sx, fy·sy, cx·sx, cy·sy`。深度与彩色 L' 同在矫正左目坐标系。
-- **★ device-gated 残留**:垂直方向是**纯缩放**(本式假设;`SCALE_DOWN_11_BITS` 模式名 + 预览非裁切佐证)还是**裁剪带**,影响 `fy`(两模型差 ~3.75×;`fx/cx/cy` 两模型一致、稳)。**验收法(已知尺寸量测,fronto-parallel 平面拟合对 fy 全局缩放不敏感故不可用)**:对准已知真实高 `H_real` 物体,读重建点云竖直跨度 `H_recon` —— `|H_recon/H_real−1|≤~5%` 则 SCALE 模型对;若 `H_recon≈3.75×H_real` 则实为 CROP,fy 改各向同性 `fx·(W/baseW)`。等价:重建竖/横比应等真实比。
-- **终态**:`adb pull` 每台设备 ZD/rectify flash 提取真内参 + native 单一标定真理源经 JNI 下发(TODO M6.5),届时删 Kotlin 兜底常量。
+- 全幅 1280×960 的 `f=1229.20996,cx=648,cy=482.865`；mode25 是竖向中心裁出的 1280×256 带，主点变为 `cy=130.865`，不是把 960 高各向异性压成 256。
+- 640×128 深度档对 1280×256 mode25 带统一缩放0.5：`fx=fy=614.60498,cx=324,cy=65.4325`。旧 `fy=163.9` 已撤销。
+- VIN 还原的运行时 K/R/T 真理源在服务端原厂 BIN；端侧内参只供预览与诊断。其他需要 metric mm 的 3D 消费者必须先按明确标定转换，不能把 `DISPARITY_X8_U16` 直接当毫米。
 
 ### harness
 
-`tests/harness/eys3d_vendor_cpp/`(device-gated,采 logcat):`run.sh` 拉起 App + 采样 → `analyze.py` 出可判定结论 —— ① 起流链 marker(零Java会话 + FrameGrabber 校验 + connect rc=0)② ourCb 帧 fps + poll 首帧 ③ valid_ratio/centerMm 质量 ④ 零 JNI(无 Java 帧路径 marker)。host 自研路径回归仍用 `tests/harness/eys3d_mode25/`。
+`tests/harness/eys3d_vendor_cpp/`(device-gated,采 logcat)：`run.sh` 只把 `logcat.txt + sample.json` 写入 `OUTPUT_DIR`，`analyze.py` 按统一目录契约输出 PASS/WARN/FAIL。判据为：① 起流链 marker；② ourCb 帧 fps + poll 首帧；③ valid_ratio 与 `centerDispX8` 是否落在 11bit 视差域；④ 零 JNI。2026-07-16 真机标准命令 PASS：RS-D550/HLSD8 均约 `5fps`、深度有效率中位 `51.8%`、帧路径零 JNI。host 自研路径回归仍用 `tests/harness/eys3d_mode25/`。
 
 ## 4. 里程碑
 

@@ -40,6 +40,8 @@ M5.9 语音消息转文字
 - 新建 `conversation_member_states`。
 - 新建 `media_rooms / media_participants / live_sessions / live_annotations / live_recordings`。
 - 新增 `server/migrations/0011_help_room.up.sql`：给 `conversations(subject_kind, subject_id)` 建 partial unique index，保证每个发起人只有一个 `subject_kind=online_help / subject_id=user_id` 的固定求助群。
+- 新增 `server/migrations/0030_conversation_user_hide.up.sql`：给成员状态增加可空的
+  `hidden_through_seq`，作为当前用户删除既有历史的权威含式水位。
 
 Down migration 必须按 FK 反向删除。
 
@@ -53,6 +55,9 @@ Down migration 必须按 FK 反向删除。
 - `UnreadCount(ctx, conversationID, userID)`：只统计 `last_read_seq` 之后的他人/系统消息，自己发出的消息不制造未读。
 - `EnsureMemberState(ctx, conversationID, userID)`：创建会话成员时同步建 state。
 - `GetOrCreateSubjectGroup(ctx, title, subjectKind, subjectID, memberIDs)`：按业务 subject 创建 / 复用固定群会话，并补齐成员和已读状态。
+- `HideForUser(ctx, conversationID, userID)`：锁定会话行，把当前 `next_seq-1` 同时写入
+  `hidden_through_seq` 和最低已读水位；不删除成员或共享消息。
+- `HistoryFloor(ctx, conversationID, userID)`：REST / WebSocket 历史共同使用该用户的可见下界。
 
 ### 2.3 API
 
@@ -64,15 +69,20 @@ Down migration 必须按 FK 反向删除。
 - `GET /v1/conversations/{id}/messages`
 - `POST /v1/conversations/{id}/messages`
 - `POST /v1/conversations/{id}/read`
+- `DELETE /v1/conversations/{id}`
 - `POST /v1/conversations/{id}/leave`
 
 返回格式遵守 `docs/architecture/server/02-api-contract.md`：int64 id 用字符串。
 `help-room` 是在线求助的固定多人聊天窗口：当前用户 + 固定专家加入同一个 `kind=group` 会话，App 只向该群发送消息，不再向每个专家拆分 P2P 消息。
 `leave` 只允许群聊；成功后删除当前用户的 `conversation_members` 和 `conversation_member_states`，会话历史继续保留给其它成员。
+`DELETE` 对所有会话类型只隐藏当前用户视角，返回排他边界 `deleted_before_seq`；客户端删除
+`server_seq < deleted_before_seq` 的本地消息。后续新消息序号达到该边界时会话自动恢复。
 
 ### 2.4 验收
 
 - `go test ./pkg/repo -run 'Conversation|Message'` 通过。
+- 设置 `GOMOB_TEST_DB_DSN` 后，`TestConversationHideForUserPostgres` 用隔离 schema 验证：
+  删除用户列表消失、对方数据不变、历史边界生效、新消息自动恢复且未读数正确。
 - 扩展 `tests/harness/ws_message_order`：
   - S16：同一个 `client_msg_id` 连发两次，只出现一个 `server_seq`。
   - S17：`POST /v1/conversations/{id}/read` 后 `unread_count=0`。

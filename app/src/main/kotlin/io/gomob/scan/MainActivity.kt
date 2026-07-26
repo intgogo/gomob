@@ -13,7 +13,6 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.LaunchedEffect
@@ -27,13 +26,13 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.AndroidEntryPoint
-import io.gomob.data.prefs.ThemeMode
 import io.gomob.designsystem.motion.DefaultPageDragBox
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.designsystem.theme.GomobTheme
 import io.gomob.feature.profile.AppearanceViewModel
 import io.gomob.nativebridge.berxel.BerxelService
 import io.gomob.nativebridge.berxel.BerxelStreamProfiles
+import io.gomob.nativebridge.camera.CameraSourceProvider
 import javax.inject.Inject
 import kotlinx.coroutines.delay
 
@@ -41,6 +40,7 @@ import kotlinx.coroutines.delay
 class MainActivity : ComponentActivity() {
 
     @Inject lateinit var berxelService: BerxelService
+    @Inject lateinit var cameraSourceProvider: CameraSourceProvider
 
     private var launchBackdropVisible by mutableStateOf(true)
     private var launchBackdropMayHide by mutableStateOf(true)
@@ -65,17 +65,10 @@ class MainActivity : ComponentActivity() {
         )
         setContent {
             val appearance: AppearanceViewModel = hiltViewModel()
-            val mode by appearance.mode.collectAsStateWithLifecycle()
             val colorScheme by appearance.colorScheme.collectAsStateWithLifecycle()
-            val systemDark = isSystemInDarkTheme()
-            val darkTheme = when (mode) {
-                ThemeMode.Dark -> true
-                ThemeMode.Light -> false
-                ThemeMode.System -> systemDark
-            }
             // 注意：launchBackdropVisible 必须在 composition 作用域读取，
             // 在 SideEffect lambda 内读不会建立 snapshot 订阅，splash 关闭时不会重跑。
-            val effectiveDark = launchBackdropVisible || darkTheme || !systemBarsPaddingRequired
+            val effectiveDark = launchBackdropVisible || !systemBarsPaddingRequired
             SideEffect {
                 val transparent = android.graphics.Color.TRANSPARENT
                 // 用当前真实背景语义作为 detectDarkMode，避免系统暗黑模式和 App 浅色模式错配。
@@ -85,7 +78,7 @@ class MainActivity : ComponentActivity() {
                     navigationBarStyle = SystemBarStyle.auto(transparent, transparent) { effectiveDark },
                 )
             }
-            GomobTheme(darkTheme = darkTheme, colorScheme = colorScheme) {
+            GomobTheme(colorScheme = colorScheme) {
                 // 真 edge-to-edge：不再全局吃 systemBars —— 玻璃 TabBar / Header 延伸到
                 // 系统栏底下，各屏经 GlassHeaderScaffold / TabBar 自己处理 inset。
                 // systemBarsPaddingRequired 仅保留"视频沉浸页"语义，驱动状态栏图标配色。
@@ -166,7 +159,7 @@ class MainActivity : ComponentActivity() {
      *
      * 关键: HONOR Magic OS / Android 15 实测，`usbManager.deviceList` 取到的 UsbDevice **没**
      * USB 读权限（即使 dumpsys 看到 device_permissions 有我们的 uid），但 intent extras 里的
-     * UsbDevice **有**权限。所以必须从这里抽出来，喂给 BerxelService。
+     * UsbDevice **有**权限。所以必须从这里抽出来，按型号交给对应相机服务缓存。
      */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
@@ -226,7 +219,7 @@ class MainActivity : ComponentActivity() {
         if (intent?.action != UsbManager.ACTION_USB_DEVICE_ATTACHED) return
         @Suppress("DEPRECATION")
         val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE) ?: return
-        berxelService.attachAuthorizedDevice(device)
+        cameraSourceProvider.attachAuthorizedDevice(device)
     }
 
     private fun isLaunchBackdropHoldRequested(intent: Intent?): Boolean =

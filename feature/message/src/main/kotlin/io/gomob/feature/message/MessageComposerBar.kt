@@ -2,25 +2,28 @@ package io.gomob.feature.message
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AddCircle
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Keyboard
@@ -45,10 +48,10 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import io.gomob.designsystem.icons.GomobIcons
-import io.gomob.designsystem.motion.fixedDuringPageDrag
 import io.gomob.designsystem.theme.Gomob
 
 @Composable
@@ -77,9 +80,13 @@ internal fun MessageComposerBar(
     onPickMention: (MentionCandidate) -> Unit = {},
 ) {
     var voiceInputMode by rememberSaveable { mutableStateOf(false) }
+    var toolsExpanded by rememberSaveable { mutableStateOf(false) }
     var voicePressTarget by remember { mutableStateOf<VoicePressTarget?>(null) }
     val focusManager = LocalFocusManager.current
     val canSendText = enabled && draft.isNotBlank() && !voiceInputMode
+    val hasExtraTools = onShareInspection != null || onPickImage != null ||
+        onTakePhoto != null || onStartVideoCall != null ||
+        onSendVideoClip != null || onOpenLocalVideo != null
 
     LaunchedEffect(onStartVoice) {
         if (onStartVoice == null) {
@@ -95,131 +102,216 @@ internal fun MessageComposerBar(
         else mentionCandidates.filter { it.name.contains(activeMentionQuery, ignoreCase = true) }
     }
 
-    // 吸底输入栏在 GlassHeaderScaffold overlay 槽内 → 不画实底，由 glassChrome 玻璃负责
-    Column(modifier.fixedDuringPageDrag().fillMaxWidth()) {
-        if (filteredMentionCandidates.isNotEmpty()) {
-            MentionPickerPanel(
-                candidates = filteredMentionCandidates,
-                onPick = onPickMention,
-            )
-        }
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
-            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
-        ) {
-            if (voiceInputMode && voicePressTarget != null) {
+    // 吸底输入栏由 GlassHeaderScaffold 固定完整 overlay；这里只负责内部内容，避免重复抵消拖动。
+    Column(modifier.fillMaxWidth()) {
+        // 扩展区同一时刻只呈现一种状态，避免候选、工具、引用和录音面板纵向叠加。
+        when {
+            voiceInputMode && voicePressTarget != null -> {
                 VoiceRecordLiftPanel(target = voicePressTarget ?: VoicePressTarget.Send)
             }
-            quoteDraft?.let {
-                ComposerQuotePreview(quoteDraft = it, onClear = onClearQuote)
+            toolsExpanded && hasExtraTools -> {
+                ComposerExpandedTools(
+                    enabled = enabled,
+                    onShareInspection = onShareInspection,
+                    onPickImage = onPickImage,
+                    onTakePhoto = onTakePhoto,
+                    onStartVideoCall = onStartVideoCall,
+                    onSendVideoClip = onSendVideoClip,
+                    onOpenLocalVideo = onOpenLocalVideo,
+                    onAction = { action ->
+                        toolsExpanded = false
+                        action()
+                    },
+                )
             }
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+            !voiceInputMode && filteredMentionCandidates.isNotEmpty() -> {
+                MentionPickerPanel(
+                    candidates = filteredMentionCandidates,
+                    onPick = onPickMention,
+                )
+            }
+            !voiceInputMode && quoteDraft != null -> {
+                Box(Modifier.padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s6)) {
+                    ComposerQuotePreview(quoteDraft = quoteDraft, onClear = onClearQuote)
+                }
+            }
+        }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(Gomob.spacing.compactComposerHeight)
+                .padding(horizontal = Gomob.spacing.pageGutter),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+        ) {
+            onStartVoice?.let {
+                ComposerVoiceToggle(
+                    voiceMode = voiceInputMode,
+                    enabled = enabled,
+                    onClick = {
+                        voiceInputMode = !voiceInputMode
+                        voicePressTarget = null
+                        toolsExpanded = false
+                        if (voiceInputMode) {
+                            focusManager.clearFocus()
+                            onInputFocusChanged(false)
+                        }
+                    },
+                )
+            }
+            Box(
+                Modifier
+                    .weight(1f)
+                    .height(Gomob.spacing.touchMin),
+                contentAlignment = Alignment.Center,
             ) {
-                onStartVoice?.let {
-                    ComposerVoiceToggle(
-                        voiceMode = voiceInputMode,
+                if (voiceInputMode && onStartVoice != null) {
+                    VoiceHoldToTalkButton(
                         enabled = enabled,
-                        onClick = {
-                            voiceInputMode = !voiceInputMode
+                        recording = voiceRecording,
+                        target = voicePressTarget,
+                        onPressStart = {
+                            focusManager.clearFocus()
+                            onInputFocusChanged(false)
+                            voicePressTarget = VoicePressTarget.Send
+                            onStartVoice()
+                        },
+                        onTargetChange = { voicePressTarget = it },
+                        onPressEnd = { target ->
                             voicePressTarget = null
-                            if (voiceInputMode) {
-                                focusManager.clearFocus()
-                                onInputFocusChanged(false)
+                            when (target) {
+                                VoicePressTarget.Send -> onSendVoice?.invoke()
+                                VoicePressTarget.Cancel -> onCancelVoice?.invoke()
+                                VoicePressTarget.Transcribe -> onTranscribeVoice?.invoke()
                             }
                         },
                     )
-                }
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .clip(Gomob.shapes.r3)
-                        .background(Gomob.colors.bg2),
-                ) {
-                    if (voiceInputMode && onStartVoice != null) {
-                        VoiceHoldToTalkButton(
+                } else {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(40.dp)
+                            .clip(Gomob.shapes.r2)
+                            .background(Gomob.colors.bg1.copy(alpha = 0.8f))
+                            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
+                            .padding(horizontal = Gomob.spacing.s12),
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        BasicTextField(
+                            value = draft,
+                            onValueChange = onDraftChange,
                             enabled = enabled,
-                            recording = voiceRecording,
-                            target = voicePressTarget,
-                            onPressStart = {
-                                focusManager.clearFocus()
-                                onInputFocusChanged(false)
-                                voicePressTarget = VoicePressTarget.Send
-                                onStartVoice()
-                            },
-                            onTargetChange = { voicePressTarget = it },
-                            onPressEnd = { target ->
-                                voicePressTarget = null
-                                when (target) {
-                                    VoicePressTarget.Send -> onSendVoice?.invoke()
-                                    VoicePressTarget.Cancel -> onCancelVoice?.invoke()
-                                    VoicePressTarget.Transcribe -> onTranscribeVoice?.invoke()
-                                }
-                            },
-                        )
-                    } else {
-                        Box(
-                            Modifier
+                            modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(min = 42.dp, max = 122.dp)
-                                .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
-                            contentAlignment = Alignment.CenterStart,
-                        ) {
-                            BasicTextField(
-                                value = draft,
-                                onValueChange = onDraftChange,
-                                enabled = enabled,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(min = 24.dp, max = 98.dp)
-                                    .onFocusChanged { onInputFocusChanged(it.isFocused) },
-                                singleLine = false,
-                                minLines = 1,
-                                maxLines = 5,
-                                textStyle = Gomob.type.bodySm.copy(color = Gomob.colors.fg0),
-                                cursorBrush = SolidColor(Gomob.colors.accent),
-                            )
-                            if (draft.isEmpty()) {
-                                Text(placeholder, style = Gomob.type.bodySm, color = Gomob.colors.fg3)
-                            }
+                                .onFocusChanged {
+                                    if (it.isFocused) toolsExpanded = false
+                                    onInputFocusChanged(it.isFocused)
+                                },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                            keyboardActions = KeyboardActions(
+                                onSend = {
+                                    if (canSendText) {
+                                        toolsExpanded = false
+                                        onSendText()
+                                    }
+                                },
+                            ),
+                            textStyle = Gomob.type.bodySm.copy(color = Gomob.colors.fg0),
+                            cursorBrush = SolidColor(Gomob.colors.accent),
+                        )
+                        if (draft.isEmpty()) {
+                            Text(placeholder, style = Gomob.type.bodySm, color = Gomob.colors.fg3)
                         }
                     }
                 }
             }
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .height(38.dp)
-                    .padding(start = if (onStartVoice != null) 4.dp else 0.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
-            ) {
-                onShareInspection?.let {
-                    ComposerToolIcon(Icons.Filled.AddCircle, "分享业务流水", enabled = enabled, onClick = it)
-                }
-                onPickImage?.let {
-                    ComposerToolIcon(Icons.Filled.Image, "图片", enabled = enabled, onClick = it)
-                }
-                onTakePhoto?.let {
-                    ComposerToolIcon(Icons.Filled.PhotoCamera, "拍摄", enabled = enabled, onClick = it)
-                }
-                onStartVideoCall?.let {
-                    ComposerToolIcon(Icons.Filled.Videocam, "视频通话", enabled = enabled, onClick = it)
-                }
-                onOpenLocalVideo?.let {
-                    ComposerToolIcon(Icons.Filled.Videocam, "开启第一视角视频", enabled = enabled, onClick = it)
-                }
-                Spacer(Modifier.weight(1f))
-                ComposerSendButton(
-                    enabled = canSendText,
-                    onClick = onSendText,
+            if (hasExtraTools) {
+                ComposerToolIcon(
+                    icon = Icons.Filled.Add,
+                    label = if (toolsExpanded) "收起更多操作" else "展开更多操作",
+                    enabled = enabled,
+                    active = toolsExpanded,
+                    onClick = {
+                        val expand = !toolsExpanded
+                        if (expand) {
+                            if (voiceRecording) onCancelVoice?.invoke()
+                            voiceInputMode = false
+                            voicePressTarget = null
+                        }
+                        toolsExpanded = expand
+                        focusManager.clearFocus()
+                        onInputFocusChanged(false)
+                    },
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun ComposerExpandedTools(
+    enabled: Boolean,
+    onShareInspection: (() -> Unit)?,
+    onPickImage: (() -> Unit)?,
+    onTakePhoto: (() -> Unit)?,
+    onStartVideoCall: (() -> Unit)?,
+    onSendVideoClip: (() -> Unit)?,
+    onOpenLocalVideo: (() -> Unit)?,
+    onAction: (() -> Unit) -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+    ) {
+        onShareInspection?.let {
+            ComposerExpandedTool(Icons.Filled.Add, "业务流水", enabled) { onAction(it) }
+        }
+        onPickImage?.let {
+            ComposerExpandedTool(Icons.Filled.Image, "图片", enabled) { onAction(it) }
+        }
+        onTakePhoto?.let {
+            ComposerExpandedTool(Icons.Filled.PhotoCamera, "拍摄", enabled) { onAction(it) }
+        }
+        onSendVideoClip?.let {
+            ComposerExpandedTool(Icons.Filled.Videocam, "视频", enabled) { onAction(it) }
+        }
+        onStartVideoCall?.let {
+            ComposerExpandedTool(Icons.Filled.Videocam, "视频通话", enabled) { onAction(it) }
+        }
+        onOpenLocalVideo?.let {
+            ComposerExpandedTool(Icons.Filled.Videocam, "第一视角", enabled) { onAction(it) }
+        }
+    }
+}
+
+@Composable
+private fun ComposerExpandedTool(
+    icon: ImageVector,
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Column(
+        Modifier
+            .width(68.dp)
+            .clip(Gomob.shapes.r2)
+            .background(Gomob.colors.bg2)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(vertical = Gomob.spacing.s8),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
+    ) {
+        Icon(
+            icon,
+            contentDescription = label,
+            tint = if (enabled) Gomob.colors.fg2 else Gomob.colors.fg3.copy(alpha = 0.45f),
+            modifier = Modifier.size(Gomob.spacing.icon20),
+        )
+        Text(label, style = Gomob.type.micro, color = Gomob.colors.fg2, maxLines = 1)
     }
 }
 
@@ -343,22 +435,29 @@ private fun ComposerVoiceToggle(
 ) {
     Box(
         Modifier
-            .size(42.dp)
-            .clip(Gomob.shapes.r3)
-            .background(if (voiceMode) Gomob.colors.accentSoft else Gomob.colors.bg2)
+            .size(Gomob.spacing.touchMin)
+            .clip(Gomob.shapes.r2)
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            imageVector = if (voiceMode) Icons.Filled.Keyboard else GomobIcons.VoiceCircle,
-            contentDescription = if (voiceMode) "切换文字输入" else "切换语音输入",
-            tint = when {
-                !enabled -> Gomob.colors.fg3.copy(alpha = 0.45f)
-                voiceMode -> Gomob.colors.accent
-                else -> Gomob.colors.fg2
-            },
-            modifier = Modifier.size(22.dp),
-        )
+        Box(
+            Modifier
+                .size(40.dp)
+                .clip(Gomob.shapes.r2)
+                .background(if (voiceMode) Gomob.colors.accentSoft else Gomob.colors.bg3),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = if (voiceMode) Icons.Filled.Keyboard else GomobIcons.VoiceCircle,
+                contentDescription = if (voiceMode) "切换文字输入" else "切换语音输入",
+                tint = when {
+                    !enabled -> Gomob.colors.fg3.copy(alpha = 0.45f)
+                    voiceMode -> Gomob.colors.accent
+                    else -> Gomob.colors.fg2
+                },
+                modifier = Modifier.size(22.dp),
+            )
+        }
     }
 }
 
@@ -382,7 +481,8 @@ private fun VoiceHoldToTalkButton(
     Box(
         Modifier
             .fillMaxWidth()
-            .heightIn(min = 42.dp)
+            .height(Gomob.spacing.touchMin)
+            .clip(Gomob.shapes.r2)
             .background(if (recording) Gomob.colors.accentSoft else Gomob.colors.bg2)
             .pointerInput(enabled, actionLiftPx) {
                 awaitEachGesture {
@@ -541,44 +641,28 @@ private fun ComposerToolIcon(
 ) {
     Box(
         Modifier
-            .size(34.dp)
+            .size(Gomob.spacing.touchMin)
             .clip(Gomob.shapes.r2)
-            .background(if (active) Gomob.colors.dangerSoft else Gomob.colors.bg1)
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            icon,
-            contentDescription = label,
-            tint = when {
-                !enabled -> Gomob.colors.fg3.copy(alpha = 0.45f)
-                active -> Gomob.colors.danger
-                else -> Gomob.colors.fg2
-            },
-            modifier = Modifier.size(18.dp),
-        )
-    }
-}
-
-@Composable
-private fun ComposerSendButton(
-    enabled: Boolean,
-    onClick: () -> Unit,
-) {
-    Box(
-        Modifier
-            .width(40.dp)
-            .height(34.dp)
-            .clip(Gomob.shapes.r2)
-            .background(if (enabled) Gomob.colors.accent else Gomob.colors.bg2)
-            .clickable(enabled = enabled, onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            GomobIcons.Send,
-            contentDescription = "发送",
-            tint = if (enabled) Gomob.colors.bg0 else Gomob.colors.fg3,
-            modifier = Modifier.size(16.dp),
-        )
+        Box(
+            Modifier
+                .size(40.dp)
+                .clip(Gomob.shapes.r2)
+                .background(if (active) Gomob.colors.accentSoft else Gomob.colors.bg3),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                icon,
+                contentDescription = label,
+                tint = when {
+                    !enabled -> Gomob.colors.fg3.copy(alpha = 0.45f)
+                    active -> Gomob.colors.accent
+                    else -> Gomob.colors.fg2
+                },
+                modifier = Modifier.size(18.dp),
+            )
+        }
     }
 }

@@ -298,7 +298,10 @@ func (r *ConversationRepo) FindForUser(ctx context.Context, userID, convID int64
 			FROM messages um
 			WHERE um.conversation_id = c.id
 			  AND um.deleted_at IS NULL
-			  AND um.server_seq > COALESCE(cms.last_read_seq, 0)
+			  AND um.server_seq > GREATEST(
+			      COALESCE(cms.last_read_seq, 0),
+			      COALESCE(cms.hidden_through_seq, 0)
+			  )
 			  AND (um.sender_id IS NULL OR um.sender_id <> $1)
 		) unread ON true
 		WHERE c.id = $2`
@@ -342,13 +345,18 @@ func (r *ConversationRepo) ListForUser(ctx context.Context, userID int64, limit 
 		WITH member_convs AS (
 			SELECT c.id, c.kind, c.title, c.p2p_key, c.subject_kind, c.subject_id,
 			       c.next_seq, c.created_at, c.updated_at,
-			       COALESCE(cms.last_read_seq, 0) AS last_read_seq
+			       COALESCE(cms.last_read_seq, 0) AS last_read_seq,
+			       cms.hidden_through_seq
 			FROM conversations c
 			JOIN conversation_members cm
 			  ON cm.conversation_id = c.id AND cm.user_id = $1
 			LEFT JOIN conversation_member_states cms
 			  ON cms.conversation_id = c.id AND cms.user_id = $1
 			WHERE ($2 = 0 OR c.id < $2)
+			  AND (
+			      cms.hidden_through_seq IS NULL
+			      OR c.next_seq - 1 > cms.hidden_through_seq
+			  )
 			ORDER BY c.updated_at DESC, c.id DESC
 			LIMIT $3
 		)
@@ -363,6 +371,7 @@ func (r *ConversationRepo) ListForUser(ctx context.Context, userID int64, limit 
 			SELECT id, sender_id, server_seq, kind, payload, client_msg_id, created_at, edited_at, deleted_at
 			FROM messages
 			WHERE conversation_id = mc.id
+			  AND server_seq > COALESCE(mc.hidden_through_seq, -1)
 			ORDER BY server_seq DESC
 			LIMIT 1
 		) lm ON true
@@ -379,7 +388,10 @@ func (r *ConversationRepo) ListForUser(ctx context.Context, userID int64, limit 
 			FROM messages um
 			WHERE um.conversation_id = mc.id
 			  AND um.deleted_at IS NULL
-			  AND um.server_seq > mc.last_read_seq
+			  AND um.server_seq > GREATEST(
+			      mc.last_read_seq,
+			      COALESCE(mc.hidden_through_seq, 0)
+			  )
 			  AND (um.sender_id IS NULL OR um.sender_id <> $1)
 		) unread ON true
 		ORDER BY mc.updated_at DESC, mc.id DESC`
@@ -460,6 +472,77 @@ func (r *ConversationRepo) EnsureMemberState(ctx context.Context, convID, userID
 	return err
 }
 
+// HistoryFloor 返回当前用户可见历史的排他下界；仅 server_seq > floor 的消息可见。
+func (r *ConversationRepo) HistoryFloor(ctx context.Context, convID, userID int64) (int64, error) {
+	if convID <= 0 || userID <= 0 {
+		return 0, ErrNotFound
+	}
+	const q = `
+		SELECT COALESCE(cms.hidden_through_seq, 0)
+		FROM conversation_members cm
+		LEFT JOIN conversation_member_states cms
+		  ON cms.conversation_id = cm.conversation_id AND cms.user_id = cm.user_id
+		WHERE cm.conversation_id=$1 AND cm.user_id=$2`
+	var floor int64
+	if err := r.pool.QueryRow(ctx, q, convID, userID).Scan(&floor); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, err
+	}
+	return floor, nil
+}
+
+// HideForUser 隐藏当前用户截至调用时的全部会话历史，但保留成员关系和共享消息。
+//
+// 与 AppendIdempotent 一样锁 conversations 行，使“删除”和新消息分配 server_seq
+// 线性化：先完成的消息被隐藏，后完成的消息序号更大并自然恢复会话。
+func (r *ConversationRepo) HideForUser(ctx context.Context, convID, userID int64) (int64, error) {
+	if convID <= 0 || userID <= 0 {
+		return 0, errors.New("隐藏会话参数无效")
+	}
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var hiddenThroughSeq int64
+	if err := tx.QueryRow(ctx, `
+		SELECT c.next_seq - 1
+		FROM conversations c
+		JOIN conversation_members cm
+		  ON cm.conversation_id = c.id AND cm.user_id = $2
+		WHERE c.id = $1
+		FOR UPDATE OF c, cm
+	`, convID, userID).Scan(&hiddenThroughSeq); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, err
+	}
+
+	const upsert = `
+		INSERT INTO conversation_member_states(
+			conversation_id, user_id, last_read_seq, hidden_through_seq, updated_at
+		)
+		VALUES($1, $2, $3, $3, now())
+		ON CONFLICT (conversation_id, user_id) DO UPDATE
+		SET last_read_seq = GREATEST(conversation_member_states.last_read_seq, EXCLUDED.last_read_seq),
+		    hidden_through_seq = GREATEST(
+		        COALESCE(conversation_member_states.hidden_through_seq, 0),
+		        EXCLUDED.hidden_through_seq
+		    ),
+		    updated_at = now()`
+	if _, err := tx.Exec(ctx, upsert, convID, userID, hiddenThroughSeq); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return hiddenThroughSeq, nil
+}
+
 // MarkRead 更新用户在会话内的已读水位，返回更新后的未读数。
 func (r *ConversationRepo) MarkRead(ctx context.Context, convID, userID, lastReadSeq int64) (int64, error) {
 	if lastReadSeq < 0 {
@@ -534,7 +617,10 @@ func (r *ConversationRepo) UnreadCount(ctx context.Context, convID, userID int64
 			FROM messages m
 			WHERE m.conversation_id = c.id
 			  AND m.deleted_at IS NULL
-			  AND m.server_seq > COALESCE(cms.last_read_seq, 0)
+			  AND m.server_seq > GREATEST(
+			      COALESCE(cms.last_read_seq, 0),
+			      COALESCE(cms.hidden_through_seq, 0)
+			  )
 			  AND (m.sender_id IS NULL OR m.sender_id <> $2)
 		)
 		FROM conversations c
@@ -671,6 +757,11 @@ func (r *MessageRepo) ListSince(ctx context.Context, convID, since int64, limit 
 // ListLatest 返回 conversation 最新 limit 条消息（升序）；用于首屏/预热缓存。
 // 同 ListSince，包含已撤回的消息让客户端能感知；UI 上由 deleted_at 决定渲染。
 func (r *MessageRepo) ListLatest(ctx context.Context, convID int64, limit int) ([]Message, error) {
+	return r.ListLatestAfter(ctx, convID, 0, limit)
+}
+
+// ListLatestAfter 返回 server_seq > after 的最新 limit 条消息（升序）。
+func (r *MessageRepo) ListLatestAfter(ctx context.Context, convID, after int64, limit int) ([]Message, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 30
 	}
@@ -681,12 +772,12 @@ func (r *MessageRepo) ListLatest(ctx context.Context, convID int64, limit int) (
 			SELECT id, conversation_id, sender_id, server_seq, kind, payload, client_msg_id,
 			       created_at, edited_at, deleted_at
 			FROM messages
-			WHERE conversation_id=$1
+			WHERE conversation_id=$1 AND server_seq > $2
 			ORDER BY server_seq DESC
-			LIMIT $2
+			LIMIT $3
 		) latest
 		ORDER BY server_seq ASC`
-	rows, err := r.pool.Query(ctx, q, convID, limit)
+	rows, err := r.pool.Query(ctx, q, convID, after, limit)
 	if err != nil {
 		return nil, err
 	}

@@ -1,7 +1,12 @@
 package io.gomob.nativebridge.camera
 
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.os.Build
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.gomob.nativebridge.berxel.BerxelService
 import javax.inject.Inject
@@ -24,6 +29,25 @@ class CameraSourceProvider @Inject constructor(
     private val eys3d: Eys3dCameraService,
     private val hlsd8: Hlsd8CameraService,
 ) {
+    private val usbDetachReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != UsbManager.ACTION_USB_DEVICE_DETACHED) return
+            @Suppress("DEPRECATION")
+            val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE) ?: return
+            detachDevice(device)
+        }
+    }
+
+    init {
+        val filter = IntentFilter(UsbManager.ACTION_USB_DEVICE_DETACHED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            appContext.registerReceiver(usbDetachReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            appContext.registerReceiver(usbDetachReceiver, filter)
+        }
+    }
+
     /** 当前活动**深度主相机**取流源。eYs3D 在场走 eYs3D，否则（Berxel/无）走 Berxel。 */
     fun active(): CameraSource = when (detectModel()) {
         is CameraModel.Eys3d -> eys3d
@@ -37,6 +61,34 @@ class CameraSourceProvider @Inject constructor(
     fun auxRgb(): CameraSource? {
         val usb = appContext.getSystemService(Context.USB_SERVICE) as UsbManager
         return if (CameraDetection.detectAuxRgb(usb) is CameraModel.Hlsd8) hlsd8 else null
+    }
+
+    /** VIN 固定使用 RS-D550 深度源，不能在未插设备时静默绑定到 Berxel。 */
+    fun vinDepth(): CameraSource = eys3d
+
+    /** VIN 固定使用 HLSD8 彩色源；未插设备由服务自身报告 NoDevice 并等待热插拔。 */
+    fun vinRgb(): CameraSource = hlsd8
+
+    /**
+     * 缓存 USB attach intent 携带的授权设备实例，并在页面已有消费者时立即开流。
+     * 部分 OEM 的 [UsbManager.deviceList] 实例没有同等权限，不能丢掉 intent 中的对象。
+     */
+    fun attachAuthorizedDevice(device: UsbDevice) {
+        when (CameraModel.fromUsbIds(device.vendorId, device.productId)) {
+            is CameraModel.Eys3d -> eys3d.attachAuthorizedDevice(device)
+            is CameraModel.Hlsd8 -> hlsd8.attachAuthorizedDevice(device)
+            is CameraModel.Berxel -> berxel.attachAuthorizedDevice(device)
+            else -> Unit
+        }
+    }
+
+    /** 物理拔线立即失效对应会话，不能等 30 秒 watchdog 或继续持有旧 fd。 */
+    fun detachDevice(device: UsbDevice) {
+        when (CameraModel.fromUsbIds(device.vendorId, device.productId)) {
+            is CameraModel.Eys3d -> eys3d.detachDevice(device)
+            is CameraModel.Hlsd8 -> hlsd8.detachDevice(device)
+            else -> Unit
+        }
     }
 
     /** 当前识别到的深度主相机型号（供 UI 显型号 / 路由判定）。 */

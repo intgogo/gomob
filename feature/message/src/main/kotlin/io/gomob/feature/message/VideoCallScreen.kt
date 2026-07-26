@@ -62,6 +62,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.gomob.data.message.MediaSessionRepository
+import io.gomob.designsystem.component.LocalFeedbackTitleTrigger
+import io.gomob.designsystem.component.feedbackTitleFiveTap
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 import io.livekit.android.LiveKit
@@ -93,6 +95,8 @@ fun VideoCallRoute(
     val participants by viewModel.participants.collectAsStateWithLifecycle()
     val localControls by viewModel.localControls.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val pageTitle = title.ifBlank { "视频通话" }
+    val feedbackTrigger = LocalFeedbackTitleTrigger.current
     var hasMediaPermission by remember {
         mutableStateOf(
             listOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO).all {
@@ -176,8 +180,19 @@ fun VideoCallRoute(
                     modifier = Modifier.size(24.dp),
                 )
             }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(title.ifBlank { "视频通话" }, style = Gomob.type.body, color = Color.White, maxLines = 1)
+            Column(
+                Modifier
+                    .weight(1f)
+                    .then(
+                        if (feedbackTrigger != null) {
+                            Modifier.feedbackTitleFiveTap(pageTitle, feedbackTrigger)
+                        } else {
+                            Modifier
+                        },
+                    ),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(pageTitle, style = Gomob.type.body, color = Color.White, maxLines = 1)
                 Text(state.subtitle(participants.size), style = Gomob.type.caption, color = Color.White.copy(alpha = 0.68f), maxLines = 1)
             }
         }

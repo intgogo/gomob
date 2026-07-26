@@ -99,6 +99,23 @@ func TestToLastMessageDTOCarriesClientMsgID(t *testing.T) {
 	}
 }
 
+func TestDeleteConversationDTOContract(t *testing.T) {
+	body, err := json.Marshal(deleteConversationDTO{
+		ConversationID:   "42",
+		DeletedBeforeSeq: 8,
+	})
+	if err != nil {
+		t.Fatalf("序列化删除会话响应失败: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("解析删除会话响应失败: %v", err)
+	}
+	if got["conversation_id"] != "42" || got["deleted_before_seq"] != float64(8) {
+		t.Fatalf("删除会话响应契约错误: %s", body)
+	}
+}
+
 func TestNotifyRealtimeMessageOnlyForInsertedMessages(t *testing.T) {
 	notifier := &fakeRealtimeNotifier{}
 	h := &Handler{realtime: notifier}

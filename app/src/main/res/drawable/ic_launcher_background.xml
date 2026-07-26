@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 主凸面：缩小高光区域并拉开明暗层次。 -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:centerColor="#0F8A75"
+                android:centerX="0.34"
+                android:centerY="0.27"
+                android:endColor="#045D50"
+                android:gradientRadius="76dp"
+                android:startColor="#2BAF98"
+                android:type="radial" />
+        </shape>
+    </item>
+
+    <!-- 左上反光与右下暗部共同强化外凸方向。 -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:centerColor="#10FFFFFF"
+                android:centerX="0.24"
+                android:centerY="0.18"
+                android:endColor="#00FFFFFF"
+                android:gradientRadius="48dp"
+                android:startColor="#32FFFFFF"
+                android:type="radial" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:centerColor="#1000241F"
+                android:centerX="0.86"
+                android:centerY="0.86"
+                android:endColor="#0000241F"
+                android:gradientRadius="54dp"
+                android:startColor="#2600241F"
+                android:type="radial" />
+        </shape>
+    </item>
+</layer-list>

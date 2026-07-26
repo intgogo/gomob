@@ -4,8 +4,8 @@
 
 激光双单元 A(.101)/B(.102) 拼进同一世界系，原只有两条路：冻结 `site_extrinsic.json` 或 ICP
 （`registerTwoUnits`，靠点云重叠，对称车型会配歪）。本轮新增**现场共享标记场自标定**：现场贴
-`DICT_APRILTAG_36h11` ArUco（**无需测量靶坐标/特制板**），两单元各 pan 拍图 → 解 B→A → 写
-`site_extrinsic.json` → 现有 `align=site` 融合直接吃。区别于工厂"490 标记场 + 平面墙"的**单元
+`DICT_APRILTAG_36h11` ArUco（**无需测量靶坐标/特制板**），两单元各 pan 拍图 → 解 B→A → 连同 RMS/common
+保存到服务端 `laser_site_calibration` → `align=site` 只读该版本。区别于工厂"490 标记场 + 平面墙"的**单元
 相机↔雷达**完整标定（那个本仓不重跑，靠厂商 Windows 工具）。
 
 ## How to apply（复用要点）
@@ -17,7 +17,7 @@
   CLI `lidar_cli calib-site-markers <imgA> <cfgA> <calibA> <imgB> <cfgB> <calibB> <out.json> [len_m] [min_common]`、
   harness `tests/test_site_marker_calib.cpp`（精确复原机器精度；σ=2mm 噪声下 B→A 误差 0.9mm/RMS 1.6mm）。
 - **现场流程**：打印已知边长 ArUco（量准）贴 ≥6 个重叠区(≥4 公共) → 每单元 `device capture ip 4003` +
-  `replay img` 导出 `*_h<度>.jpg` → `calib-site-markers` → `site_extrinsic.json` → `align=site`。
+  `replay img` 导出 `*_h<度>.jpg` → `calib-site-markers` → 质量门 RMS≤5mm/common≥4 → 服务端保存 → 重采 raw A/B 背景 → `align=site`。
 - **★ OpenCV 雷点**：`/usr/local` 有 OpenCV **4.5.5（无 aruco）** 会被 CMake 默认选中导致 `src/calib`
   整个被排除（"calib sources EXCLUDED"）。必须 `-DOpenCV_DIR=/usr/lib64/cmake/OpenCV` 锁系统 **4.6.0
   （带 aruco contrib）**；`server/scripts/laser-cgo-setup.sh` 已锁。

@@ -15,16 +15,16 @@
 **在 gomob 全链中的位置（承上启下）：**
 
 ```
-采集层(已逆向)              测量/建模层(本次逆向 = 本应用)         gomob 现状
+采集层(已逆向)              测量/建模层(本次逆向 = 本应用)         gomob 当前实现
 /root/lilw/lidar           JCHY_simple_3.0.0                      docs/architecture/15
-QtTrainScan                ──消费 PCD/全景/parameters───►          采集→融合点云(瘦客户端)
-CA-FE 帧→融合点云           PCL分割+PointSIFT+按车型测量            ❌ 尚无测量/建模层
-(docs/16 上游)              (docs/16 本层)                         (本文 §9 给出补齐路线)
+QtTrainScan                ──消费 PCD/全景/parameters───►          laserworker 采集/工位裁剪/融合
+CA-FE 帧→融合点云           PCL分割+PointSIFT+按车型测量            Go 几何 LWH/轴/悬长/货箱/overlay
+(docs/16 上游)              (docs/16 本层)                         measured PCD → App/Web 同源显示
 ```
 
 - **上游（采集层）**：gomob 已在 `docs/architecture/15-laser-scanner-integration.md` 把 `/root/lilw/lidar` 的 CA-FE 帧采集 + 两单元融合点云迁进服务端瘦客户端方案。
-- **本层（本次逆向）**：JCHY 把融合后的彩色点云做成「车辆 → 尺寸数字」的测量结果。gomob 当前**只到融合点云，没有这一层**。
-- **下游（gomob 缺口）**：要做到与 JCHY 测量对等，gomob 需新增测量/建模管线、PointSIFT 部件分割、车型参数表、各测量算法（见 §9）。
+- **本层（本次逆向）**：JCHY 把融合后的彩色点云做成「车辆 → 尺寸数字」的测量结果。gomob 已补服务端几何测量层，并把实际测量输入保存为 `measured.pcd`。
+- **剩余差距**：gomob 已覆盖常规车辆 L/W/H、轴距/前后悬、货箱外形和 overlay，但尚未达到 JCHY 的逐车型自动分类、PointSIFT 部件分割、罐体/栏板/护栏专项测量与逐车型法规判定。见 §9。
 
 ---
 
@@ -385,7 +385,7 @@ JCHY 内嵌**与 `/root/lilw/lidar`（QtTrainScan）同套采集代码**（同�
 
 ---
 
-## 9. gomob 差距分析（关键交付）
+## 9. gomob 当前覆盖与剩余差距（2026-07-12）
 
 ### 9.1 现状对照
 
@@ -394,51 +394,38 @@ JCHY 内嵌**与 `/root/lilw/lidar`（QtTrainScan）同套采集代码**（同�
 | 激光采集 | QtTrainScan 同源（CA-FE/zstd） | ✅ 已迁服务端（`docs/15`，laserworker 直连 .101/.102） | 无 |
 | 两单元融合点云 | 两 PCD union | ✅ 服务端融合（`laser_scan_jobs` 表 + `scan.fusion_done`） | 无 |
 | 点云上色 | `PointCloudColorizer`（PTZ 纹理投影） | ⚠️ 采集侧有点，但 gomob 主线 RGBD 上色不复用激光 PTZ 帧 | 需端/云上色（若要纹理） |
-| **车型分类** | `getVehicleType` 几何 + `CompareCloudType` | ❌ 无 | **全缺** |
-| **部件语义分割** | PointSIFT(TF) `findObjectD::predict` | ❌ 无 | **全缺**（需模型 + 推理） |
-| **外廓测量** | `CLocater` 全套（LWH/轴距/罐体/栏板/护栏） | ❌ 无 | **全缺** |
-| 车型参数表 | `carType.ini`（31 行已解密） | ❌ 无 | 可直接移植 §4.3 表 |
-| 结果落库 | `Result.ini` + `CarSQL.db Measure` | ⚠️ gomob 有 Room/scan_session，但无车辆测量 schema | 需新增 schema |
+| 工位/目标隔离 | 固定设备 ROI | ✅ 服务端 site+region；区域裁剪后 A/B 空工位背景同域相减；crop box 仅兼容 fallback | 真机新 revision 重验待完成 |
+| **车型分类** | `getVehicleType` 几何 + `CompareCloudType` | ⚠️ 26 型目录和 carType 偏移表已落，生产任务尚无可靠自动判型 | 需多车型标注样本与分类闭环 |
+| **部件语义分割** | PointSIFT(TF) `findObjectD::predict` | ❌ 未接 | 原厂模型缺失；罐体/异型仍缺语义能力 |
+| **外廓 L/W/H** | `CLocater` OBB/包围盒 | ✅ `measure.go` 几何测量，真实基线与 M13 精度修正已覆盖 | 当前工位须按新 production gate 重验 |
+| **轴距/悬长** | 轮/接触带分割 | ✅ `axle.go` 几何接触带 + 合理性门 | 多车型/真实全尺寸车覆盖仍不足 |
+| **货箱** | `calutePickingBox`/栏板逻辑 | ✅ `cargobox.go` 输出外长/外宽/深度和 overlay | 内宽仅参考；专项栏板语义未完成 |
+| **罐体/栏板/护栏** | 三段罐体、容积、栏板/护栏高度 | ❌ 未完成 | 需要样本、算法和真值 harness |
+| 车型参数表 | `carType.ini`（31 行已解密） | ✅ 已有 26 型目录与偏移映射 | 精确消费语义/自动选型仍待坐实 |
+| canonical 结果 | `Result.ini` + `CarSQL.db Measure` | ✅ `measured_object_key` + `MeasuredCloudArtifact`（坐标 schema/源点数/XYZ SHA-256/工位 revision/最终 B→A SHA-256）；App/Web 消费同一 REST/WS 模型 | 同一真实 scan 双端验收仍未完成 |
+| 查验资产归档 | `CarSQL.db Measure` 按车/任务保存 | ⚠️ laserworker 仅在请求携带 `inspection_id` 时做权限/工位/状态校验 | App/Web 未传 inspection/车辆/车型，结果未登记 `inspection_assets` |
+| 法规合规 | JCHY `[LIMT]` + 车型逻辑 | ⚠️ 历史通用固定上限已禁止产生合规结论；当前返回 `compliance_determined=false`/“法规未判定” | **不得宣称逐车型合规完成**；需车辆/车型绑定、版本化法规表与条款证据 |
 
-**结论**：gomob 激光集成到「采集 → 融合点云」为止（`docs/15`），**完全没有测量/建模层**。本节给出补齐路线。
+**结论**：gomob 已不再停在融合点云，现有生产链为「工位权威配置 → A/B 区域背景同域隔离 → 几何测量 → measured PCD/overlay → App/Web 同源显示」。它已经覆盖常规车辆的核心几何量，但不能等同于 JCHY 全车型测量/建模层，更不能据此宣称逐车型法规合规。
 
-### 9.2 需新增的能力（要素清单）
+### 9.2 当前实现原则与剩余能力
 
-1. **测量管线模块**（建议 `native/measurement/` 或服务端 Go/C++ worker）：复刻 §3 管线 ②④⑤⑥⑦。
-2. **PCL 算子或 Eigen 重写**：gomob 端侧无 PCL；需在 NDK 引 PCL（重）**或**用 Eigen + 自写算子重写 `PassThrough/SOR/VoxelGrid/EuclideanCluster/minAreaRect(OBB)/getMinMax3D`（轻，推荐云端 Go+gonum 或 C++ Eigen）。
-3. **PointSIFT 模型依赖**：四套 `*_seg.ckpt`（wheel/oilTank/cementTank/heavyTruck）+ `tf_user_ops_pointSIFT.dll` GPU 自定义算子。原厂 `models/` 目录为空（仅真机有），**网络结构/类别数未知**（见 §10）→ 须从真机取模型或重训。gomob 若不上 DL，可先做几何-only 测量（牵引/常规/平板可行，罐车/异型精度受限）。
-4. **车型参数表**：直接移植 §4.3 解密表（31 行 Type<n>_x/_y/_z）+ §4.1 枚举 + `CalibSetting.ini` ROI。
-5. **各测量算法**：轴距（轮检测+Y 排序）、前后悬、罐体三段双直径+容积（`vol_s=0.96`）、栏板深度、四向护栏离地高、对称度。
-6. **结果 schema**：对齐 `Result.ini` 字段（或 Room 实体）+ 合规判定（`[LIMT]` 阈值）。
-7. **标定输入**：复用 `docs/05-calibration-pipeline.md` 框架，新增激光-相机外参（四元数 + corr_offset）。
+1. **隔离先于测量**：融合场景不能直接量车。生产输入必须是 live A/B 用 canonical site 进入背景绑定的 region 裁剪域，分设备相减后再按本次最终 B→A 合并的 `measCloud`；该输入另存 `measured.pcd`。
+2. **测量与可视化同源**：`MeasureFull`、轴/货箱、overlay、`measured_points` 和客户端主点云都来自同一 `measCloud`。`fused.pcd` 只表达区域内场景，不得作为无声 fallback。
+3. **内容身份先于对象键**：MinIO object key 只是定位。只有任务 manifest、响应头、PCD 注释与完整 XYZ 都匹配 `MeasuredCloudArtifact` 时，尺寸、轴/货箱与 overlay 才有效。
+4. **几何-only 先覆盖可证明项**：当前 Go 实现复刻 PassThrough/聚类/ROR/OBB/接触带/货箱几何，保持 PCL-free 和单测可复现。罐车、异型和语义部件不靠硬编码假结果补齐。
+5. **业务归属不能可选**：生产起扫必须绑定 station、inspection、vehicle 和 vehicle type，并在任务完成时幂等写入 `inspection_assets`。当前服务端只实现了可选 inspection 校验，客户端与资产归档未闭环。
+6. **车型/专项缺口**：需要多车型标注会话、PointSIFT 模型或可验证替代算法，再完成自动判型、罐体三段/容积、栏板/护栏等专项测量。
+7. **合规必须版本化**：通用 L/W/H 上限不等于逐车型法规表。当前安全行为是 `compliance_determined=false`，不是“暂时用通用值”。终态需绑定车辆/车型、轴数/用途/特殊结构、法规版本、生效日、适用条件与条款证据；在此之前 Web 显示“法规未判定”，App 不显示合规结论。
 
-### 9.3 建议里程碑骨架（harness 可验收单元，对齐 TODO.md 风格，无占位符）
+### 9.3 实施状态与验收入口
 
 > docs: docs/architecture/16-jchy-vehicle-measurement-app.md；上游 docs/architecture/15-laser-scanner-integration.md
 
-- **M9.1 测量管线骨架 + ROI 裁剪 + 主簇分割**
-  - 实现：融合 PCD → PassThrough(`[Param]` ROI) → SOR → VoxelGrid → EuclideanCluster 取车体主簇（Eigen 重写或 PCL）。
-  - 验收 harness `vehicle_measure/`：喂 `Data/100742/{1,2}.pcd`，输出主簇点数稳定，裁剪框覆盖率与原厂一致（点全落 `[Param]` 内）。
-
-- **M9.2 LWH + 轴距 + 前后悬（几何-only，常规车）**
-  - 实现：俯视投影 → minAreaRect OBB 取长宽、Z 包围盒取高；轮检测 + Y 排序算轴距 + 前后悬。
-  - 验收 harness：对 `100742` 复算 `Length≈1777 Width≈533 Height≈759 Wheelbase 710/399/261 总1370 FrontOverhang≈261 RearOverhang≈163`，各项误差 < 1%（对齐 carInfo 基准 + Result.ini）。
-
-- **M9.3 车型几何分类 + carType 偏移表接入**
-  - 实现：移植 §4.3 表 + `getVehicleType/BoxOrCangShan` 几何规则；判型后叠加 Type<n>_x/_y/_z。
-  - 验收 harness：对若干会话判型与原厂 `Result.ini carType` 一致；常规/牵引/平板分类准确率 = 100%（已知样本）。
-
-- **M9.4 罐体三段 + 容积 + 栏板/护栏专项**
-  - 实现：罐体切段（前/中/后）+ 投影轮廓拟合双直径 + 容积（`vol_s=0.96`）；栏板深度/四向护栏离地高。
-  - 验收 harness：备罐车/栏板车会话（需补样本），三段 `长X直径1X直径2`、容积、栏板深度与原厂 Result 对齐（误差阈待定标）。
-
-- **M9.5 PointSIFT 部件分割接入（DL 路径，可选/难分割目标）**
-  - 实现：取真机四套 `*_seg.ckpt` 或重训；`generate_tensor → predict(PointXYZ→PointXYZL) → decodeCloud`；轮/罐难分割场景替几何 fallback。
-  - 验收 harness：分割 IoU vs 几何基线提升；DL 开关下罐车/异型测量精度提升可量化。
-
-- **M9.6 结果 schema + 合规判定 + 落库**
-  - 实现：Room 实体对齐 `Result.ini` + `Measure` 表；`[LIMT]` 阈值合规标记。
-  - 验收：端到端一次会话产出完整测量 + 合规结论，与原厂一致。
+- **已实现**：M9.1/M9.2/M9.4/M9.4b/M9.4c/M9.6 的几何测量主体、M13 精度修正、`measured.pcd`/`MeasuredCloudArtifact` 与 App/Web 结果契约。离线真值与合成回归见 `TODO.md` 对应条目。
+- **当前生产门**：site RMS≤5mm/公共标记≥4；background revision 与 site/设备/扫描配置一致；refine 必须 applied、pairs≥1000、RMS≤15mm、Δt≤50mm、ΔR≤1°；ground drift≤1.5°/50mm。任一失败不产 canonical measured。refine 当前仍缺对立面/fitness/覆盖/条件数/holdout 门，见 M13.18。
+- **本轮真机验收**：`TODO.md` M13.12。必须先完成 M13.15 的客户端 inspection 绑定、M13.16 标定门和 M13.18 refine 对应质量门，再在用户确认空工位后重标、重采背景，并以同车/同 inspection 连续扫描 ≥3 次；`laser_background`、`laser_repeatability`、`laser_app_web_parity` 生产模式同时转绿，App/Web 对同一 `scan_id` 对账。
+- **仍待实现**：M9.3b 自动判型、M9.5 罐体/栏板/护栏专项、PointSIFT 或可证明替代方案、M13.15 inspection/车辆/资产归档和 M13.17 逐车型法规证据链。
 
 ---
 

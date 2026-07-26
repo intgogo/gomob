@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.LazyGridState
@@ -32,6 +33,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.haze
+import io.gomob.designsystem.motion.fixedDuringPageDrag
 import io.gomob.designsystem.theme.Gomob
 
 /**
@@ -64,9 +66,11 @@ fun GlassHeaderScaffold(
     // 采样源只有当前屏的内容层这一处 —— 源不嵌套(层中录层会把外层录空, hazeChild 全透明)
     val hazeState = LocalHazeState.current ?: remember { HazeState() }
     val density = LocalDensity.current
+    val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val defaultHeaderHeight = Gomob.spacing.headerHeight
     // 首帧用 headerHeight token 预估，避免内容跳位；onSizeChanged 后收敛到实测值
-    var headerHeightPx by remember {
-        mutableIntStateOf(with(density) { DefaultHeaderEstimate.roundToPx() })
+    var headerHeightPx by remember(density, statusBarTop) {
+        mutableIntStateOf(with(density) { (statusBarTop + defaultHeaderHeight).roundToPx() })
     }
     val scrolled by remember(listState, scrollState, gridState) {
         derivedStateOf {
@@ -105,6 +109,8 @@ fun GlassHeaderScaffold(
             Box(
                 Modifier
                     .align(Alignment.TopCenter)
+                    // 固定完整玻璃面，而不是只反向移动内部标题文字。
+                    .fixedDuringPageDrag()
                     .fillMaxWidth()
                     .onSizeChanged { headerHeightPx = it.height }
                     .glassChrome(bottomEdge = true, edgeAlpha = edgeAlpha),
@@ -115,7 +121,9 @@ fun GlassHeaderScaffold(
 
         // 浮层槽位：吸底输入条 / 侧滑面板等。拿到 LocalHazeState 可对内容做真模糊
         CompositionLocalProvider(LocalHazeState provides hazeState) {
-            overlay(padding)
+            Box(Modifier.fillMaxSize().fixedDuringPageDrag()) {
+                overlay(padding)
+            }
         }
     }
 }
@@ -130,6 +138,3 @@ val LocalGlassHeader = staticCompositionLocalOf { false }
  * 值会动画变化，用 compositionLocalOf 做细粒度失效。
  */
 val LocalContentBottomInset = compositionLocalOf { 0.dp }
-
-/** ScreenHeader(title+eyebrow) 视觉高度预估值，仅用于首帧占位。 */
-private val DefaultHeaderEstimate: Dp = 88.dp

@@ -335,6 +335,19 @@ class MessageRepository @Inject constructor(
         forgetConversationLocal(conversationId)
     }
 
+    /**
+     * 仅为当前用户删除会话及删除前历史；服务端收到后续新消息时会让会话重新出现。
+     */
+    suspend fun deleteConversation(conversationId: Long) {
+        if (conversationId <= 0) return
+        try {
+            api.deleteConversation(conversationId.toString())
+        } catch (error: ApiException) {
+            if (!error.isConversationGone) throw error
+        }
+        forgetConversationLocal(conversationId)
+    }
+
     suspend fun helpExperts(): List<HelpExpert> {
         val resp = api.helpExperts()
         val data = resp.data ?: throw ApiException(50001, 500, "专家列表响应缺数据")

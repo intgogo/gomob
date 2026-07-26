@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -17,40 +18,83 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // SiteCalib POST /v1/scans/laser/site-calib?unit_a_ip=&unit_b_ip=&marker_len=0.15&min_common=4
 func (h *Handler) SiteCalib(w http.ResponseWriter, r *http.Request) {
-	ipA := h.cfg.DefaultUnitAIP
-	if v, ok := normalizeOptionalIPv4(r.URL.Query().Get("unit_a_ip")); ok && v != "" {
-		ipA = v
+	if callerUserID(r) == 0 {
+		writeErr(w, http.StatusUnauthorized, "需要鉴权")
+		return
 	}
-	ipB := h.cfg.DefaultUnitBIP
-	if v, ok := normalizeOptionalIPv4(r.URL.Query().Get("unit_b_ip")); ok && v != "" {
-		ipB = v
+	if !isAdmin(r) {
+		writeErr(w, http.StatusForbidden, "执行工位标定需 admin 角色")
+		return
+	}
+	ipA, ipB, status, message := h.managedStationUnitIPs(
+		r.URL.Query().Get("unit_a_ip"),
+		r.URL.Query().Get("unit_b_ip"),
+	)
+	if status != 0 {
+		writeErr(w, status, message)
+		return
 	}
 	markerLen := strings.TrimSpace(r.URL.Query().Get("marker_len"))
 	if markerLen == "" {
 		markerLen = "0.15"
 	}
+	markerLenValue, err := strconv.ParseFloat(markerLen, 64)
+	if err != nil || math.IsNaN(markerLenValue) || math.IsInf(markerLenValue, 0) || markerLenValue <= 0 {
+		writeErr(w, http.StatusBadRequest, "marker_len 必须是正数（米）")
+		return
+	}
 	minCommon := strings.TrimSpace(r.URL.Query().Get("min_common"))
 	if minCommon == "" {
-		minCommon = "2" // 角点法单标记即可解，2 做冗余（旧中心法需 ≥4）
+		minCommon = "4"
+	}
+	minCommonValue, err := strconv.Atoi(minCommon)
+	if err != nil || minCommonValue < minProductionSiteCommonMarkers {
+		writeErr(w, http.StatusBadRequest, "min_common 不得低于生产下限 "+strconv.Itoa(minProductionSiteCommonMarkers))
+		return
 	}
 
-	if !h.sessions.tryReserve() {
+	if !h.sessions.tryReserve(reservationFraming) {
 		writeErr(w, http.StatusConflict, "有扫描/标定进行中，请稍后再试")
 		return
 	}
-	defer h.sessions.release()
+	motionPossible := false
+	devicesReady := false
+	stopAttempted := false
+	var stopReadyErr error
+	defer func() {
+		if !motionPossible || devicesReady {
+			h.sessions.release()
+			return
+		}
+		if !stopAttempted {
+			stopReadyErr = h.stopFramingUnitsAndWaitReady(context.Background(), ipA, ipB)
+		}
+		if stopReadyErr == nil {
+			h.sessions.release()
+			return
+		}
+		h.log.Error("自动标定异常收尾未确认 A/B READY，保持会话锁并后台重试", "err", stopReadyErr)
+		go h.recoverFramingReservationUntilReady(ipA, ipB)
+	}()
 
 	ctx := r.Context()
 	if pr := h.probe.Probe(ctx, ipA); !pr.Reachable || !pr.Online {
 		writeErr(w, http.StatusBadGateway, "unitA("+ipA+") 不可达或子系统离线: "+pr.Err)
 		return
+	} else if pr.State != StateReady {
+		writeErr(w, http.StatusConflict, "unitA("+ipA+") 当前状态为 "+pr.State+"，仅 READY 允许启动自动标定")
+		return
 	}
 	if pr := h.probe.Probe(ctx, ipB); !pr.Reachable || !pr.Online {
 		writeErr(w, http.StatusBadGateway, "unitB("+ipB+") 不可达或子系统离线: "+pr.Err)
+		return
+	} else if pr.State != StateReady {
+		writeErr(w, http.StatusConflict, "unitB("+ipB+") 当前状态为 "+pr.State+"，仅 READY 允许启动自动标定")
 		return
 	}
 
@@ -77,11 +121,19 @@ func (h *Handler) SiteCalib(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	h.runner.Gate = h.newGate(ipA, ipB)
+	h.runner.Gate = h.withReadyCheckedGate(ipA, ipB, "自动标定", h.newGate(ipA, ipB))
+	motionPossible = true
 	if err := h.runner.CaptureMarkers(ctx, ipA, ipB); err != nil {
 		writeErr(w, http.StatusBadGateway, "标定采图失败: "+err.Error())
 		return
 	}
+	stopAttempted = true
+	stopReadyErr = h.stopFramingUnitsAndWaitReady(context.WithoutCancel(ctx), ipA, ipB)
+	if stopReadyErr != nil {
+		writeErr(w, http.StatusBadGateway, stopReadyErr.Error())
+		return
+	}
+	devicesReady = true
 
 	outJSON := filepath.Join(base, "site_extrinsic.json")
 	res, err := solveSiteMarkers(ctx, dirA, dirB, outJSON, markerLen, minCommon)
@@ -89,7 +141,22 @@ func (h *Handler) SiteCalib(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if err := h.finalizeSolvedSiteCalibration(r, ipA, ipB, "laser.site_calib", res); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+func (h *Handler) recoverFramingReservationUntilReady(ipA, ipB string) {
+	for {
+		if err := h.stopFramingUnitsAndWaitReady(context.Background(), ipA, ipB); err == nil {
+			h.sessions.release()
+			h.log.Info("自动标定异常收尾已恢复，A/B 均回到 READY")
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // CaptureMarkers 触发两单元 gated sweep + 采图（图像落盘由 dump env 控制），align=raw 不融合/不存储。

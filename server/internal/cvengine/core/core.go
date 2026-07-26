@@ -20,12 +20,29 @@ import (
 	"image"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"io.gomob/server/internal/cvengine/gocv"
 )
+
+const ortDeviceIDEnv = "GOMOB_CVENGINE_ORT_DEVICE_ID"
+
+// ortDeviceID 返回底层 ORT 设备语义：-1=CPU 多线程，0..=CUDA，100..=TensorRT 设备号+100。
+// 默认必须显式走 -1；旧代码把 0 误当 CPU，在 CPU-only ORT 上会回落成单线程 CPU。
+func ortDeviceID() (int, error) {
+	raw := strings.TrimSpace(os.Getenv(ortDeviceIDEnv))
+	if raw == "" {
+		return -1, nil
+	}
+	deviceID, err := strconv.Atoi(raw)
+	if err != nil || deviceID < -1 {
+		return 0, fmt.Errorf("%s 必须是 -1 或非负整数，实际 %q", ortDeviceIDEnv, raw)
+	}
+	return deviceID, nil
+}
 
 // Kind 加载方式（决定走哪条 cgo 路径）。
 type Kind string
@@ -36,6 +53,9 @@ const (
 	// KindMask yolo 实例分割：gocv.CreateORTMask（直接用 onnxruntime + std/mean 预处理 + 自带 RunMask）。
 	// VMASK / LTMASK 等用这个。
 	KindMask Kind = "mask"
+	// KindYolo yolo 检测：gocv.CreateORTYolo（onnxruntime 多输出 + anchors/strides 解码）。
+	// VINCHAR 逐字符检测用这个，不能误走 MaskRCNN 解码。
+	KindYolo Kind = "yolo"
 	// KindCom 通用原始输出模型：gocv.CreateORTCom（onnxruntime 直链，吐扁平 []float32，
 	// 后处理由调用方自己做）。yolo-obb（VIN 字符 OBB，输出 [1,6,8400]）用这个。
 	KindCom Kind = "com"
@@ -51,8 +71,10 @@ type Status struct {
 	LoadedAt    string `json:"loaded_at,omitempty"`
 	Error       string `json:"error,omitempty"`
 	OpenCVEmpty bool   `json:"opencv_empty,omitempty"` // 加载没报错但 net.Empty() 仍为 true 的异常
-	// Mask 类专用：注册时用的 classes / iSize / std / mean
+	// Mask/Yolo 类专用配置。
 	Classes []string `json:"classes,omitempty"`
+	Strides []int    `json:"strides,omitempty"`
+	Anchors []int    `json:"anchors,omitempty"`
 }
 
 // Entry 内部条目：Net + Status + 在途推理引用计数。
@@ -70,15 +92,15 @@ type Entry struct {
 	released bool       // replace/ReleaseAll 已请求释放；归零后真正 Release
 }
 
-// acquire 在途推理 +1；entry 已被请求释放（net 即将/已失效）返 false。
-func (e *Entry) acquire() bool {
+// acquire 在途推理 +1，并返回在本次引用期间稳定的 net。
+func (e *Entry) acquire() (*gocv.Net, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.released || e.net == nil {
-		return false
+		return nil, false
 	}
 	e.inflight++
-	return true
+	return e.net, true
 }
 
 // release 在途推理 -1；若已被请求释放且归零，真正 Release 底层 net。
@@ -184,6 +206,32 @@ type MaskOptions struct {
 	Mean    gocv.Scalar // 归一化 mean（默认 0）
 }
 
+// YoloOptions 是传统 YOLOv5 三输出检测模型的解码配置。
+type YoloOptions struct {
+	Classes []string
+	Strides []int
+	Anchors []int
+}
+
+var defaultYoloStrides = []int{32, 16, 8}
+var defaultYoloAnchors = []int{
+	116, 90, 156, 198, 373, 326,
+	30, 61, 62, 45, 59, 119,
+	10, 13, 16, 30, 33, 23,
+}
+
+// DefaultYoloOptions 对齐 GoSmart YOLOv5 默认 anchors/strides。
+func DefaultYoloOptions(classes ...string) YoloOptions {
+	if len(classes) == 0 {
+		classes = []string{"obj"}
+	}
+	return YoloOptions{
+		Classes: append([]string(nil), classes...),
+		Strides: append([]int(nil), defaultYoloStrides...),
+		Anchors: append([]int(nil), defaultYoloAnchors...),
+	}
+}
+
 // DefaultMaskOptions 给 VMASK 一类 yolo seg 默认值（与 gosmart .ini 缺省一致）。
 func DefaultMaskOptions(classes ...string) MaskOptions {
 	if len(classes) == 0 {
@@ -227,9 +275,14 @@ func (r *Registry) RegisterMaskONNX(tag, path string, opts MaskOptions) error {
 		return err
 	}
 
-	// gpuId=0 modelId=0 走 CPU 路径；gosmart 时代加 100 走 TensorRT，本机当前未配 GPU 不切。
+	deviceID, err := ortDeviceID()
+	if err != nil {
+		st.Error = err.Error()
+		r.put(tag, &Entry{status: st})
+		return err
+	}
 	iSize := image.Point{X: opts.IWidth, Y: opts.IHeight}
-	net := gocv.CreateORTMask(0, 0, opts.Classes, weights, iSize, opts.IChan, opts.Std, opts.Mean)
+	net := gocv.CreateORTMask(deviceID, 0, opts.Classes, weights, iSize, opts.IChan, opts.Std, opts.Mean)
 	if net == nil || net.Empty() {
 		st.Error = "CreateORTMask 失败（onnxruntime 加载或 input shape 推断失败）"
 		st.OpenCVEmpty = true
@@ -240,6 +293,71 @@ func (r *Registry) RegisterMaskONNX(tag, path string, opts MaskOptions) error {
 	st.Loaded = true
 	st.LoadedAt = time.Now().UTC().Format(time.RFC3339Nano)
 
+	if old := r.replace(tag, &Entry{net: net, status: st}); old != nil {
+		old.requestRelease()
+	}
+	return nil
+}
+
+// RegisterYoloONNX 加载传统 YOLOv5 三输出检测模型。
+func (r *Registry) RegisterYoloONNX(tag, path string, opts YoloOptions) error {
+	tag = strings.TrimSpace(strings.ToUpper(tag))
+	if tag == "" {
+		return errors.New("tag 必填")
+	}
+	if len(opts.Classes) == 0 || len(opts.Strides) == 0 || len(opts.Anchors) == 0 {
+		return errors.New("yolo classes/strides/anchors 必填")
+	}
+	if len(opts.Anchors) != len(opts.Strides)*6 {
+		return fmt.Errorf("yolo anchors 数量必须为 strides×6，实际 anchors=%d strides=%d",
+			len(opts.Anchors), len(opts.Strides))
+	}
+	for _, stride := range opts.Strides {
+		if stride <= 0 {
+			return errors.New("yolo stride 必须为正数")
+		}
+	}
+	for _, anchor := range opts.Anchors {
+		if anchor <= 0 {
+			return errors.New("yolo anchor 必须为正数")
+		}
+	}
+	st := Status{
+		Tag: tag, Kind: KindYolo, Path: path,
+		Classes: append([]string(nil), opts.Classes...),
+		Strides: append([]int(nil), opts.Strides...),
+		Anchors: append([]int(nil), opts.Anchors...),
+	}
+
+	fi, err := os.Stat(path)
+	if err != nil {
+		st.Error = fmt.Sprintf("stat: %v", err)
+		r.put(tag, &Entry{status: st})
+		return err
+	}
+	st.SizeBytes = fi.Size()
+	weights, err := os.ReadFile(path)
+	if err != nil {
+		st.Error = fmt.Sprintf("read: %v", err)
+		r.put(tag, &Entry{status: st})
+		return err
+	}
+
+	deviceID, err := ortDeviceID()
+	if err != nil {
+		st.Error = err.Error()
+		r.put(tag, &Entry{status: st})
+		return err
+	}
+	net := gocv.CreateORTYolo(deviceID, 0, opts.Classes, weights, opts.Strides, opts.Anchors)
+	if net == nil || net.Empty() {
+		st.Error = "CreateORTYolo 失败（onnxruntime 加载或输出 shape 不兼容）"
+		st.OpenCVEmpty = true
+		r.put(tag, &Entry{status: st})
+		return errors.New(st.Error)
+	}
+	st.Loaded = true
+	st.LoadedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	if old := r.replace(tag, &Entry{net: net, status: st}); old != nil {
 		old.requestRelease()
 	}
@@ -276,7 +394,13 @@ func (r *Registry) RegisterComONNX(tag, path string, std float64, mean gocv.Scal
 	}
 
 	// iSize/iChan = 0 → 从模型 input shape 自动推断（CreateORTCom 内部 ORTSession_GetInputShapes）。
-	net := gocv.CreateORTCom(0, 0, weights, image.Point{}, 0, std, mean)
+	deviceID, err := ortDeviceID()
+	if err != nil {
+		st.Error = err.Error()
+		r.put(tag, &Entry{status: st})
+		return err
+	}
+	net := gocv.CreateORTCom(deviceID, 0, weights, image.Point{}, 0, std, mean)
 	if net == nil || net.Empty() {
 		st.Error = "CreateORTCom 失败（onnxruntime 加载或 input shape 推断失败）"
 		st.OpenCVEmpty = true
@@ -300,7 +424,7 @@ func (r *Registry) RunCom(tag string, blob gocv.Mat) ([]float32, error) {
 	r.mu.RLock()
 	e, ok := r.entries[strings.ToUpper(tag)]
 	r.mu.RUnlock()
-	if !ok || e.net == nil {
+	if !ok {
 		return nil, ErrNotFound
 	}
 	if e.status.Kind != KindCom {
@@ -308,22 +432,32 @@ func (r *Registry) RunCom(tag string, blob gocv.Mat) ([]float32, error) {
 	}
 	// acquire 期间持有在途引用：即便此刻热更 replace 顶掉本 entry，底层 net 也延迟到归零才 Release，
 	// 不会在 gocv.RunCom 跑 cgo 推理时被销毁（UAF 防护）。
-	if !e.acquire() {
+	net, acquired := e.acquire()
+	if !acquired {
 		return nil, ErrNotFound
 	}
 	defer e.release()
-	return gocv.RunCom(e.net, blob), nil
+	return gocv.RunCom(net, blob), nil
 }
 
-// Get 拿底层 gocv.Net；未注册或加载失败返 ErrNotFound。
-func (r *Registry) Get(tag string) (*gocv.Net, error) {
+// CheckKind 检查 tag 已加载且模型类型符合预期，不向调用方暴露可被热更的裸指针。
+func (r *Registry) CheckKind(tag string, expected Kind) error {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	e, ok := r.entries[strings.ToUpper(tag)]
-	if !ok || e.net == nil {
-		return nil, ErrNotFound
+	r.mu.RUnlock()
+	if !ok {
+		return ErrNotFound
 	}
-	return e.net, nil
+	if e.status.Kind != expected {
+		return ErrWrongKind
+	}
+	e.mu.Lock()
+	available := !e.released && e.net != nil
+	e.mu.Unlock()
+	if !available {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // List 返回所有注册过的 tag 状态（含失败的，便于 /cv/v1/models 查问题）。
@@ -354,12 +488,8 @@ func (r *Registry) LoadedCount() int {
 // ReleaseAll 关停时调用：把所有 net 释放。
 //
 // 经 requestRelease 走在途引用计数：关停瞬间若仍有在途推理，net 延迟到归零才真正 Release，避免 UAF。
-//
-// TODO(G14-thread): 每个 KindMask/KindGeneral Net 在 gocv/dnn.go 里起了一个 `for { <-net.inChan }`
-// 串行化推理 goroutine（onnxruntime 非线程安全），该 goroutine 无退出路径 ——
-// Net.Release 只释放 C++ 侧 net，Go 侧 goroutine 仍阻塞在 channel recv 上永不退出（goroutine + ORT session 泄漏）。
-// 终态：在 gocv.Net 加 done channel，Release 时 close(done) 让推理 goroutine select 退出后再释放 C 资源。
-// 该修复需改 internal/cvengine/gocv/dnn.go（本轮 G14 范围外，结构性改动，单列）。
+// ORT 与 OpenCV 异步 worker 会先退出并完成线程内资源清理，再析构 native 句柄。
+// Atlas/Lynxi 尚无安全 Destroy API，Release 会明确报错并拒绝误走 OpenCV 析构。
 func (r *Registry) ReleaseAll() {
 	r.mu.Lock()
 	entries := make([]*Entry, 0, len(r.entries))
@@ -388,13 +518,14 @@ func (r *Registry) replace(tag string, e *Entry) *Entry {
 
 // LoadFromEnv 解析 GOMOB_CVENGINE_MODELS 环境变量并注册。语法：
 //
-//	GOMOB_CVENGINE_MODELS="VMET=/path/vmet1.onnx,VMASK:mask=/path/vins0.onnx[:cls1|cls2]"
+//	GOMOB_CVENGINE_MODELS="VMET=/path/vmet1.onnx,VMASK:mask=/path/vmask.onnx:vin,VINCHAR:yolo=/path/vins.onnx:0|1|..."
 //
 // 形式：
 //
 //	TAG=path                   走 KindGeneral（gocv.ReadNet）
 //	TAG:mask=path              走 KindMask（gocv.CreateORTMask），classes=["obj"] 默认
 //	TAG:mask=path:cls1|cls2    classes 自定义（| 分隔）
+//	TAG:yolo=path:cls1|cls2    走 KindYolo，anchors/strides 用 GoSmart 默认值
 //
 // 返回逐项加载结果（即使部分失败也尽力加载完所有项）。
 func (r *Registry) LoadFromEnv(envValue string) []Status {
@@ -422,22 +553,24 @@ func (r *Registry) LoadFromEnv(envValue string) []Status {
 
 		tag := strings.ToUpper(strings.TrimSpace(left))
 		kind := KindGeneral
-		// TAG:mask=path → kind=mask；TAG:com=path → kind=com
+		// TAG:mask=path → kind=mask；TAG:yolo=path → kind=yolo；TAG:com=path → kind=com
 		if colon := strings.IndexByte(left, ':'); colon > 0 {
 			tag = strings.ToUpper(strings.TrimSpace(left[:colon]))
 			k := strings.ToLower(strings.TrimSpace(left[colon+1:]))
 			switch k {
 			case string(KindMask):
 				kind = KindMask
+			case string(KindYolo):
+				kind = KindYolo
 			case string(KindCom):
 				kind = KindCom
 			}
 		}
 
-		// rest 可能再带 :cls1|cls2 给 mask classes
+		// rest 可能再带 :cls1|cls2 给 mask/yolo classes
 		path := rest
 		var classes []string
-		if kind == KindMask {
+		if kind == KindMask || kind == KindYolo {
 			if colon := strings.IndexByte(rest, ':'); colon > 0 {
 				path = rest[:colon]
 				classes = strings.Split(rest[colon+1:], "|")
@@ -451,6 +584,8 @@ func (r *Registry) LoadFromEnv(envValue string) []Status {
 		switch kind {
 		case KindMask:
 			_ = r.RegisterMaskONNX(tag, path, DefaultMaskOptions(classes...))
+		case KindYolo:
+			_ = r.RegisterYoloONNX(tag, path, DefaultYoloOptions(classes...))
 		case KindCom:
 			// 通用原始输出：默认 std=1/255、mean=0（÷255 归一），与端侧 yolo-obb 预处理一致。
 			_ = r.RegisterComONNX(tag, path, 1.0/255.0, gocv.Scalar{})
@@ -475,7 +610,7 @@ func (r *Registry) RunMask(tag string, img gocv.Mat, confThreshold, maskThreshol
 	r.mu.RLock()
 	e, ok := r.entries[strings.ToUpper(tag)]
 	r.mu.RUnlock()
-	if !ok || e.net == nil {
+	if !ok {
 		err = ErrNotFound
 		return
 	}
@@ -484,16 +619,41 @@ func (r *Registry) RunMask(tag string, img gocv.Mat, confThreshold, maskThreshol
 		return
 	}
 	// acquire 防热更 UAF：见 RunCom 注释。
-	if !e.acquire() {
+	net, acquired := e.acquire()
+	if !acquired {
 		err = ErrNotFound
 		return
 	}
 	defer e.release()
 	var ids []int
-	contours, rrects, ids, scores = gocv.RunMask(e.net, img, confThreshold, maskThreshold, nmsThreshold, rudeScale)
-	classes = gocv.GetClasses(e.net, ids)
+	contours, rrects, ids, scores = gocv.RunMask(net, img, confThreshold, maskThreshold, nmsThreshold, rudeScale)
+	classes = gocv.GetClasses(net, ids)
 	return
 }
 
+// RunYolo 跑 KindYolo 模型，返回原图坐标框、类别 id 和置信度。
+func (r *Registry) RunYolo(
+	tag string,
+	img gocv.Mat,
+	confThreshold, nmsThreshold, rudeScale float32,
+) ([]image.Rectangle, []int, []float32, error) {
+	r.mu.RLock()
+	e, ok := r.entries[strings.ToUpper(tag)]
+	r.mu.RUnlock()
+	if !ok {
+		return nil, nil, nil, ErrNotFound
+	}
+	if e.status.Kind != KindYolo {
+		return nil, nil, nil, ErrWrongKind
+	}
+	net, acquired := e.acquire()
+	if !acquired {
+		return nil, nil, nil, ErrNotFound
+	}
+	defer e.release()
+	boxes, ids, scores := gocv.RunYolo(net, img, confThreshold, nmsThreshold, rudeScale)
+	return boxes, ids, scores, nil
+}
+
 // ErrWrongKind 调用了与注册 Kind 不匹配的方法（如对 KindGeneral 调 RunMask）。
-var ErrWrongKind = errors.New("model kind 不匹配（需要 mask kind）")
+var ErrWrongKind = errors.New("model kind 不匹配")

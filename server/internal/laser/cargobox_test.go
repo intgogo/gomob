@@ -79,6 +79,32 @@ func TestCargoBox_SyntheticGroundTruth(t *testing.T) {
 	}
 }
 
+func makeVehicleWithThinCargoResidual() []float32 {
+	body := makeBoxGo(1800, 550, 520, 0, 0, 0, 0, 20)
+	add := func(x, y, z float32) {
+		body = append(body, x, y, z)
+	}
+	for x := float32(1200); x <= 1280; x += 10 {
+		for y := float32(250); y <= 300; y += 10 {
+			for z := float32(300); z <= 2300; z += 20 {
+				add(x, y, z)
+			}
+		}
+	}
+	return body
+}
+
+func TestCargoBox_RejectsThinVerticalResidual(t *testing.T) {
+	body := toPoints(makeVehicleWithThinCargoResidual())
+	cb := DetectCargoBox(body, 0, DefaultCargoBoxParams())
+	if cb.Valid || cb.HasBox {
+		t.Fatalf("细长高残留不应识别成货箱: %+v", cb)
+	}
+	if cargoBoxPhysicallyCredible(CargoBox{OuterLengthMM: 80, OuterWidthMM: 51, DepthMM: 2294}, 1839, 572, 2333, 20) {
+		t.Fatal("183 反馈里的 80×51×2294mm 不可能货箱通过了物理闸")
+	}
+}
+
 // TestCargoBox_VendorSanity 原厂 100742 货箱分割 sanity（无数值真值，验分割合理 + 外尺寸与 rim 一致）。
 func TestCargoBox_VendorSanity(t *testing.T) {
 	a := loadVendorPCD(t, vendorSession+"/1.pcd")

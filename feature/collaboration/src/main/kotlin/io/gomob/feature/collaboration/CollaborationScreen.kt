@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,6 +17,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -28,10 +29,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
@@ -43,14 +48,15 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import io.gomob.data.message.LiveSessionRepository
 import io.gomob.data.message.MediaSessionRepository
 import io.gomob.designsystem.component.HairlineCard
+import io.gomob.designsystem.component.HeaderTabItem
+import io.gomob.designsystem.component.HeaderTabs
 import io.gomob.designsystem.component.MetricTile
 import io.gomob.designsystem.component.MetricTrend
 import io.gomob.designsystem.component.ScreenHeader
-import io.gomob.designsystem.component.SegmentedTabItem
-import io.gomob.designsystem.component.SegmentedTabs
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
 import io.gomob.designsystem.glass.GlassHeaderScaffold
+import io.gomob.designsystem.glass.glassPanelBg
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.model.message.LiveSessionSummary
@@ -62,10 +68,19 @@ import javax.inject.Inject
 
 const val COLLAB_ROUTE = "collaboration"
 
+// 暗面板固定色（非主题 token）：视频缩略图底与 scan3d 视口同款暗面板，明暗主题下保持一致
+private val VideoPanelBg = Color(0xFF0B0E13)
+
+// 暗面板固定亮红（非主题 token）：LIVE 角标只出现在固定暗面板上，不随主题翻转
+private val LiveBadgeRed = Color(0xFFF87171)
+
+// 暗面板固定亮青（非主题 token）：缩略图居中头像块首字用色
+private val AvatarInitialTeal = Color(0xFF5EEAD4)
+
 private val SUB_TABS = listOf(
-    SegmentedTabItem("第一视角"),
-    SegmentedTabItem("抽查复核"),
-    SegmentedTabItem("案例公开"),
+    HeaderTabItem("第一视角"),
+    HeaderTabItem("抽查复核"),
+    HeaderTabItem("案例公开"),
 )
 
 // ---- 第一视角 mock 数据 ----
@@ -128,7 +143,9 @@ fun CollaborationRoute(
     onOpenLiveStream: (String) -> Unit = {},
     viewModel: CollaborationViewModel = hiltViewModel(),
 ) {
-    var sub by remember { mutableStateOf(0) }
+    val pagerState = rememberPagerState(pageCount = { SUB_TABS.size })
+    val pagerScope = rememberCoroutineScope()
+    val sub = pagerState.currentPage
     val liveSessions by viewModel.liveSessions.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) {
         viewModel.refreshLiveSessions()
@@ -138,10 +155,9 @@ fun CollaborationRoute(
     val boardScrollStates = listOf(rememberScrollState(), rememberScrollState(), rememberScrollState())
 
     // TODO(demo-data R1): 复核“127 待办”、案例“780 案例”徽标为占位假数据，未接真实统计 API。
-    val (eyebrow, badge, badgeTone) = when (sub) {
-        0 -> Triple("团队 · 实时第一视角直播", "${liveSessions.size} 在线", StatusTone.Accent)
-        1 -> Triple("团队 · 抽查复核 / 工单分发", "127 待办", StatusTone.Warn)
-        else -> Triple("团队 · 公开案例库", "780 案例", StatusTone.Neutral)
+    val (badge, badgeTone) = when (sub) {
+        1 -> "127 待办" to StatusTone.Warn
+        else -> "780 案例" to StatusTone.Neutral
     }
     GlassHeaderScaffold(
         scrollState = boardScrollStates[sub],
@@ -149,35 +165,46 @@ fun CollaborationRoute(
             Column {
                 ScreenHeader(
                     title = "多方协作",
-                    eyebrow = eyebrow,
-                    trailing = { StatusTag(text = badge, tone = badgeTone, showDot = true) },
+                    trailing = {
+                        if (sub == 0) {
+                            OnlineCountPill(text = "${liveSessions.size} 在线")
+                        } else {
+                            StatusTag(text = badge, tone = badgeTone, showDot = true)
+                        }
+                    },
                 )
-                SegmentedTabs(
+                HeaderTabs(
                     items = SUB_TABS,
                     selectedIndex = sub,
-                    onSelect = { sub = it },
-                    modifier = Modifier.padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20, bottom = 14.dp),
+                    onSelect = { page ->
+                        pagerScope.launch { pagerState.animateScrollToPage(page) }
+                    },
                 )
             }
         },
     ) { padding ->
-        Box(Modifier.fillMaxSize()) {
-            when (sub) {
-                0 -> FirstPersonBoard(
-                    liveSessions = liveSessions,
-                    onOpenLiveStream = onOpenLiveStream,
-                    scrollState = boardScrollStates[0],
-                    padding = padding,
-                )
-                1 -> ReviewBoard(
-                    onOpenReview = onOpenReview,
-                    scrollState = boardScrollStates[1],
-                    padding = padding,
-                )
-                else -> CaseLibBoard(
-                    scrollState = boardScrollStates[2],
-                    padding = padding,
-                )
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize(),
+        ) { page ->
+            Box(Modifier.fillMaxSize()) {
+                when (page) {
+                    0 -> FirstPersonBoard(
+                        liveSessions = liveSessions,
+                        onOpenLiveStream = onOpenLiveStream,
+                        scrollState = boardScrollStates[0],
+                        padding = padding,
+                    )
+                    1 -> ReviewBoard(
+                        onOpenReview = onOpenReview,
+                        scrollState = boardScrollStates[1],
+                        padding = padding,
+                    )
+                    else -> CaseLibBoard(
+                        scrollState = boardScrollStates[2],
+                        padding = padding,
+                    )
+                }
             }
         }
     }
@@ -205,6 +232,28 @@ class CollaborationViewModel @Inject constructor(
 // ============================================================================
 // 第一视角 — 实时直播 + 录像分享
 // ============================================================================
+
+/** header 右上"N 在线"小 pill：胶囊 + okSoft 底 + ok 点/字 */
+@Composable
+private fun OnlineCountPill(text: String) {
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(Gomob.colors.okSoft)
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+    ) {
+        Box(
+            Modifier
+                .size(5.dp)
+                .clip(CircleShape)
+                .background(Gomob.colors.ok),
+        )
+        Text(text, fontSize = 11.sp, color = Gomob.colors.ok)
+    }
+}
+
 @Composable
 private fun FirstPersonBoard(
     liveSessions: List<LiveSessionSummary>,
@@ -220,7 +269,7 @@ private fun FirstPersonBoard(
             .padding(
                 start = Gomob.spacing.s16,
                 end = Gomob.spacing.s16,
-                top = padding.calculateTopPadding(),
+                top = padding.calculateTopPadding() + Gomob.spacing.s12,
                 bottom = padding.calculateBottomPadding(),
             ),
         verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
@@ -230,8 +279,9 @@ private fun FirstPersonBoard(
                 label = "在线视角",
                 value = liveSessions.size.toString(),
                 delta = "实时",
-                trend = MetricTrend.Up,
+                trend = MetricTrend.Flat,
                 caption = "较昨日",
+                compact = true,
                 modifier = Modifier.weight(1f),
             )
             MetricTile(
@@ -240,11 +290,23 @@ private fun FirstPersonBoard(
                 delta = "+18%",
                 trend = MetricTrend.Up,
                 caption = "覆盖 4 站",
+                compact = true,
                 modifier = Modifier.weight(1f),
             )
         }
 
-        Text("在线视角", style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("在线视角", style = Gomob.type.sectionTitle, color = Gomob.colors.fg1)
+            Text(
+                "LIVE · ${liveSessions.size}",
+                style = Gomob.type.numInline.copy(fontSize = 11.sp),
+                color = Gomob.colors.fg3,
+            )
+        }
 
         if (liveSessions.isEmpty()) {
             HairlineCard(padding = Gomob.spacing.s16) {
@@ -265,14 +327,25 @@ private fun FirstPersonBoard(
             }
         }
 
-        Text("近期录像", style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("近期录像", style = Gomob.type.sectionTitle, color = Gomob.colors.fg1)
+            Text(
+                "%02d 条".format(RECORDINGS.size),
+                style = Gomob.type.numInline.copy(fontSize = 11.sp),
+                color = Gomob.colors.fg3,
+            )
+        }
 
         HairlineCard(padding = 0.dp) {
             Column {
                 RECORDINGS.forEachIndexed { i, r ->
                     RecordingRow(r)
                     if (i != RECORDINGS.lastIndex) {
-                        ListRowDivider(start = 112.dp)
+                        ListRowDivider(start = 74.dp)
                     }
                 }
             }
@@ -290,55 +363,72 @@ private fun LiveStreamTile(
 ) {
     Column(
         modifier
-            .clip(Gomob.shapes.r2)
-            .background(Gomob.colors.bg1)
+            .glassPanelBg(shape = Gomob.shapes.r3)
             .clickable(onClick = onClick),
     ) {
-        // 视频缩略图 16:9 占位
+        // 视频缩略图 16:9 占位 — 暗面板固定色底
         Box(
             Modifier
                 .fillMaxWidth()
-                .aspectRatio(16f / 9f)
-                .background(Gomob.colors.bg2),
+                .height(68.dp)
+                .background(VideoPanelBg),
         ) {
-            // LIVE 角标
+            // LIVE 角标 — 暗面板固定亮红，非主题 token
             Row(
                 Modifier
                     .padding(Gomob.spacing.s8)
                     .clip(Gomob.shapes.r1)
-                    .background(Gomob.colors.danger.copy(alpha = 0.92f))
-                    .padding(horizontal = Gomob.spacing.s8, vertical = 2.dp),
+                    .background(LiveBadgeRed.copy(alpha = 0.18f))
+                    .padding(horizontal = 7.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Box(
                     Modifier
-                        .size(6.dp)
+                        .size(5.dp)
                         .clip(CircleShape)
-                        .background(Gomob.colors.bg0),
+                        .background(LiveBadgeRed),
                 )
-                Text("LIVE", style = Gomob.type.caption, color = Gomob.colors.bg0)
+                Text(
+                    "LIVE",
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 1.sp,
+                    color = LiveBadgeRed,
+                )
             }
-            // 警示
-            // 时长
-            Box(
-                Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(Gomob.spacing.s8)
-                    .clip(Gomob.shapes.r1)
-                    .background(Gomob.colors.bg0.copy(alpha = 0.72f))
-                    .padding(horizontal = Gomob.spacing.s6, vertical = 2.dp),
-            ) {
-                Text("LIVE", style = Gomob.type.numInline, color = Gomob.colors.fg0)
+            // 居中装饰：发布者首字头像块（无名则留空）
+            val initial = session.title.trim().take(1)
+            if (initial.isNotEmpty()) {
+                Box(
+                    Modifier
+                        .align(Alignment.Center)
+                        .size(36.dp)
+                        .clip(Gomob.shapes.r3)
+                        .background(Gomob.colors.accent.copy(alpha = 0.25f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        initial,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = AvatarInitialTeal,
+                    )
+                }
             }
         }
         // meta
         Column(
-            Modifier.padding(Gomob.spacing.s12),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+            Modifier.padding(horizontal = Gomob.spacing.s12, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
         ) {
-            Text(session.title, style = Gomob.type.body, color = Gomob.colors.fg0)
-            Text("发布者 #${session.publisherId}", style = Gomob.type.caption, color = Gomob.colors.fg3)
+            Text(
+                session.title,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                color = Gomob.colors.fg0,
+            )
+            Text("发布者 #${session.publisherId}", style = Gomob.type.micro, color = Gomob.colors.fg3)
         }
     }
 }
@@ -348,9 +438,9 @@ private fun ListRowDivider(start: androidx.compose.ui.unit.Dp) {
     Box(
         Modifier
             .fillMaxWidth()
-            .padding(start = start, end = Gomob.spacing.s16)
-            .height(Gomob.spacing.hairline)
-            .background(Gomob.colors.line1.copy(alpha = 0.03f)),
+            .padding(start = start)
+            .height(1.dp)
+            .background(Gomob.colors.line1),
     )
 }
 
@@ -359,36 +449,44 @@ private fun RecordingRow(r: Recording) {
     Row(
         Modifier
             .fillMaxWidth()
+            .height(Gomob.spacing.rowList)
             .clickable {}
-            .padding(Gomob.spacing.s12),
+            .padding(horizontal = Gomob.spacing.s14),
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // 缩略图
         Box(
             Modifier
-                .size(width = 88.dp, height = 56.dp)
-                .clip(Gomob.shapes.r1)
-                .background(Gomob.colors.bg2),
+                .size(width = 48.dp, height = 32.dp)
+                .clip(Gomob.shapes.r2)
+                .background(Gomob.colors.bg3),
             contentAlignment = Alignment.Center,
         ) {
             Text(
                 r.duration,
-                style = Gomob.type.numInline.copy(fontSize = 14.sp),
-                color = Gomob.colors.fg0,
+                style = Gomob.type.numInline.copy(fontSize = 11.sp),
+                color = Gomob.colors.fg1,
             )
         }
         Column(
             Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            Text(r.title, style = Gomob.type.body, color = Gomob.colors.fg0)
+            Text(
+                r.title,
+                style = Gomob.type.bodySm.copy(fontWeight = FontWeight.Medium),
+                color = Gomob.colors.fg0,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
             Text(
                 "${r.inspector} · ${r.time} · ${r.views} 次观看",
-                style = Gomob.type.caption,
-                color = Gomob.colors.fg2,
+                style = Gomob.type.micro,
+                color = Gomob.colors.fg3,
             )
         }
+        Text("›", fontSize = 15.sp, color = Gomob.colors.fg3)
     }
 }
 
@@ -414,7 +512,7 @@ private fun ReviewBoard(
             .padding(
                 start = Gomob.spacing.s20,
                 end = Gomob.spacing.s20,
-                top = padding.calculateTopPadding(),
+                top = padding.calculateTopPadding() + Gomob.spacing.s12,
                 bottom = padding.calculateBottomPadding(),
             ),
         verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
@@ -685,7 +783,7 @@ private fun CaseLibBoard(
             .padding(
                 start = Gomob.spacing.s16,
                 end = Gomob.spacing.s16,
-                top = padding.calculateTopPadding(),
+                top = padding.calculateTopPadding() + Gomob.spacing.s12,
                 bottom = padding.calculateBottomPadding(),
             ),
         verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),

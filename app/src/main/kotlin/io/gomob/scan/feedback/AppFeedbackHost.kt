@@ -6,19 +6,25 @@ import android.content.ContextWrapper
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Path as AndroidPath
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
 import android.graphics.Rect
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.PixelCopy
+import android.view.SurfaceView
+import android.view.View
+import android.view.ViewGroup
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.Canvas as ComposeCanvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -29,6 +35,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
@@ -52,12 +59,15 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path as ComposePath
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
@@ -65,6 +75,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -74,9 +85,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.gomob.data.feedback.FeedbackBox
+import io.gomob.data.feedback.FeedbackPathPoint
 import io.gomob.data.feedback.FeedbackRepository
-import io.gomob.designsystem.component.LocalFeedbackTitleLongPress
+import io.gomob.designsystem.component.LocalFeedbackTitleTrigger
 import io.gomob.designsystem.theme.Gomob
+import io.gomob.scan.BuildConfig
+import io.gomob.ui.feedback.FeedbackCaptureSurface
 import java.io.ByteArrayOutputStream
 import javax.inject.Inject
 import kotlin.coroutines.resume
@@ -116,7 +130,12 @@ fun AppFeedbackHost(
             vm.reset()
             scope.launch {
                 val result = runCatching {
-                    captureWindowBitmap(activity).scaledForFeedback()
+                    // 等五连击最后一帧完成，避免把按压态或尚未提交的绘制帧截进去。
+                    withFrameNanos { }
+                    val captured = captureWindowBitmap(activity)
+                    captured.scaledForFeedback().also { scaled ->
+                        if (scaled !== captured) captured.recycle()
+                    }
                 }
                 result
                     .onSuccess { shot -> editor = FeedbackEditorState(pageTitle = title, screenshot = shot) }
@@ -128,7 +147,7 @@ fun AppFeedbackHost(
         }
     }
 
-    CompositionLocalProvider(LocalFeedbackTitleLongPress provides trigger) {
+    CompositionLocalProvider(LocalFeedbackTitleTrigger provides trigger) {
         Box(Modifier.fillMaxSize()) {
             content()
             editor?.let { current ->
@@ -146,6 +165,7 @@ fun AppFeedbackHost(
                     onDismiss = {
                         vm.reset()
                         editor = null
+                        if (!current.screenshot.isRecycled) current.screenshot.recycle()
                     },
                 )
             }
@@ -164,7 +184,7 @@ class AppFeedbackViewModel @Inject constructor(
         _submitState.value = FeedbackSubmitState.Idle
     }
 
-    fun submit(pageTitle: String, screenshot: Bitmap, markers: List<AppFeedbackMarker>) {
+    internal fun submit(pageTitle: String, screenshot: Bitmap, markers: List<AppFeedbackMarker>) {
         if (
             markers.isEmpty() ||
             _submitState.value == FeedbackSubmitState.Submitting ||
@@ -174,17 +194,25 @@ class AppFeedbackViewModel @Inject constructor(
         viewModelScope.launch {
             runCatching {
                 val scaled = withContext(Dispatchers.Default) { screenshot.scaledForFeedback() }
-                val annotated = withContext(Dispatchers.Default) { scaled.annotated(markers) }
-                val imageData = withContext(Dispatchers.Default) { scaled.toPngDataUrl() }
-                val annotatedData = withContext(Dispatchers.Default) { annotated.toPngDataUrl() }
-                repository.submit(
-                    title = "App 问题反馈 · $pageTitle",
-                    pageUrl = "gomob://app/$pageTitle",
-                    userAgent = androidUserAgent(),
-                    imageDataUrl = imageData,
-                    annotatedDataUrl = annotatedData,
-                    boxes = markers.map { it.toFeedbackBox() },
-                )
+                try {
+                    val annotated = withContext(Dispatchers.Default) { scaled.annotated(markers) }
+                    val imageData = withContext(Dispatchers.Default) { scaled.toPngDataUrl() }
+                    val annotatedData = try {
+                        withContext(Dispatchers.Default) { annotated.toPngDataUrl() }
+                    } finally {
+                        annotated.recycle()
+                    }
+                    repository.submit(
+                        title = "App 问题反馈 · $pageTitle",
+                        pageUrl = "gomob://app/$pageTitle",
+                        userAgent = androidUserAgent(),
+                        imageDataUrl = imageData,
+                        annotatedDataUrl = annotatedData,
+                        boxes = markers.map { it.toFeedbackBox() },
+                    )
+                } finally {
+                    if (scaled !== screenshot) scaled.recycle()
+                }
             }.onSuccess { result ->
                 _submitState.value = FeedbackSubmitState.Submitted(result.id)
             }.onFailure { err ->
@@ -201,73 +229,67 @@ sealed interface FeedbackSubmitState {
     data class Error(val message: String) : FeedbackSubmitState
 }
 
-data class AppFeedbackMarker(
+internal data class AppFeedbackMarker(
     val id: Long,
-    val x: Float,
-    val y: Float,
-    val w: Float,
-    val h: Float,
+    val points: List<FeedbackPoint>,
     val note: String,
 ) {
-    fun toFeedbackBox(): FeedbackBox = FeedbackBox(
-        x = x.toDouble(),
-        y = y.toDouble(),
-        w = w.toDouble(),
-        h = h.toDouble(),
-        note = note,
-    )
+    val bounds: FeedbackBounds
+        get() = requireNotNull(feedbackBounds(points)) { "圈画路径不能为空" }
+
+    fun toFeedbackBox(): FeedbackBox {
+        val box = bounds
+        return FeedbackBox(
+            x = box.x.toDouble(),
+            y = box.y.toDouble(),
+            w = box.w.toDouble(),
+            h = box.h.toDouble(),
+            note = note,
+            points = points.map { FeedbackPathPoint(it.x.toDouble(), it.y.toDouble()) },
+        )
+    }
 }
 
-private data class FeedbackEditorState(
+internal data class FeedbackEditorState(
     val pageTitle: String,
     val screenshot: Bitmap,
     val markers: List<AppFeedbackMarker> = emptyList(),
 )
 
-@Composable
-private fun CaptureProgress() {
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.42f)),
-        contentAlignment = Alignment.Center,
-    ) {
-        Row(
-            modifier = Modifier
-                .clip(Gomob.shapes.r3)
-                .background(Gomob.colors.bg1)
-                .border(1.dp, Gomob.colors.line2, Gomob.shapes.r3)
-                .padding(horizontal = 18.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-            Text("正在截图", color = Gomob.colors.fg0, fontSize = 14.sp)
-        }
-    }
-}
+private data class FeedbackNoteDialogState(
+    val markerId: Long?,
+    val points: List<FeedbackPoint>,
+    val initialNote: String,
+)
 
 @Composable
-private fun FeedbackEditorOverlay(
+internal fun FeedbackEditorOverlay(
     state: FeedbackEditorState,
     submitState: FeedbackSubmitState,
     onStateChange: (FeedbackEditorState) -> Unit,
     onSubmit: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    BackHandler(onBack = onDismiss)
-    var pendingPoint by remember(state.screenshot) { mutableStateOf<Offset?>(null) }
-    var pendingNote by remember(pendingPoint) { mutableStateOf("") }
+    val context = LocalContext.current
+    val dismissEnabled = submitState != FeedbackSubmitState.Submitting
+    BackHandler(enabled = dismissEnabled, onBack = onDismiss)
+    var noteDialog by remember(state.screenshot) { mutableStateOf<FeedbackNoteDialogState?>(null) }
     val canSubmit = state.markers.isNotEmpty() &&
+        state.markers.all { it.note.isNotBlank() } &&
+        submitState != FeedbackSubmitState.Submitting &&
+        submitState !is FeedbackSubmitState.Submitted
+    val drawingEnabled = noteDialog == null &&
         submitState != FeedbackSubmitState.Submitting &&
         submitState !is FeedbackSubmitState.Submitted
 
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .testTag("feedback_editor")
             .background(Color(0xF20B1018))
             // edge-to-edge 后全屏浮层自己避让系统栏
             .windowInsetsPadding(WindowInsets.systemBars)
+            .imePadding()
             .padding(12.dp),
     ) {
         Column(Modifier.fillMaxSize()) {
@@ -279,13 +301,28 @@ private fun FeedbackEditorOverlay(
                     Text("问题反馈", color = Color.White, fontSize = 18.sp)
                     Text(state.pageTitle, color = Color(0xFFB8C7D9), fontSize = 12.sp, maxLines = 1)
                 }
-                TextButton(onClick = onDismiss) { Text("关闭") }
+                TextButton(enabled = dismissEnabled, onClick = onDismiss) { Text("关闭") }
             }
-            Spacer(Modifier.height(10.dp))
+            Text(
+                "在截图上用手指圈出问题区域，松手后填写对应反馈",
+                color = Color(0xFFB8C7D9),
+                fontSize = 12.sp,
+            )
+            Spacer(Modifier.height(8.dp))
             FeedbackShotStage(
                 bitmap = state.screenshot,
                 markers = state.markers,
-                onTap = { point -> pendingPoint = point },
+                enabled = drawingEnabled,
+                onStrokeFinished = { points ->
+                    noteDialog = FeedbackNoteDialogState(
+                        markerId = null,
+                        points = points,
+                        initialNote = "",
+                    )
+                },
+                onInvalidStroke = {
+                    Toast.makeText(context, "请拖动手指完整圈出问题区域", Toast.LENGTH_SHORT).show()
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
@@ -296,43 +333,62 @@ private fun FeedbackEditorOverlay(
                 submitState = submitState,
                 canSubmit = canSubmit,
                 onDelete = { id -> onStateChange(state.copy(markers = state.markers.filterNot { it.id == id })) },
+                onEdit = { marker ->
+                    noteDialog = FeedbackNoteDialogState(
+                        markerId = marker.id,
+                        points = marker.points,
+                        initialNote = marker.note,
+                    )
+                },
                 onSubmit = onSubmit,
             )
         }
     }
 
-    if (pendingPoint != null) {
+    noteDialog?.let { dialog ->
+        val markerNumber = dialog.markerId
+            ?.let { id -> state.markers.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.plus(1) }
+            ?: (state.markers.size + 1)
+        var note by remember(dialog) { mutableStateOf(dialog.initialNote) }
         AlertDialog(
-            onDismissRequest = { pendingPoint = null },
+            onDismissRequest = { noteDialog = null },
             containerColor = Gomob.colors.bg2.copy(alpha = 0.97f),
             shape = Gomob.shapes.r3,
-            title = { Text("问题描述") },
+            title = { Text("标注 $markerNumber 的反馈内容") },
             text = {
                 OutlinedTextField(
-                    value = pendingNote,
-                    onValueChange = { pendingNote = it.take(500) },
+                    value = note,
+                    onValueChange = { note = it.take(500) },
                     minLines = 3,
                     maxLines = 5,
                     placeholder = { Text("这处哪里不对") },
+                    modifier = Modifier.testTag("feedback_note_input"),
                 )
             },
             confirmButton = {
                 Button(
-                    enabled = pendingNote.isNotBlank(),
+                    enabled = note.isNotBlank(),
+                    modifier = Modifier.testTag("feedback_note_confirm"),
                     onClick = {
-                        val p = pendingPoint ?: return@Button
-                        val marker = markerFromPoint(
-                            id = System.nanoTime(),
-                            point = p,
-                            note = pendingNote.trim(),
-                        )
-                        onStateChange(state.copy(markers = state.markers + marker))
-                        pendingPoint = null
+                        val cleanNote = note.trim()
+                        val nextMarkers = if (dialog.markerId == null) {
+                            state.markers + AppFeedbackMarker(
+                                id = System.nanoTime(),
+                                points = dialog.points,
+                                note = cleanNote,
+                            )
+                        } else {
+                            state.markers.map { marker ->
+                                if (marker.id == dialog.markerId) marker.copy(note = cleanNote) else marker
+                            }
+                        }
+                        onStateChange(state.copy(markers = nextMarkers))
+                        noteDialog = null
                     },
-                ) { Text("添加") }
+                ) { Text(if (dialog.markerId == null) "添加" else "保存") }
             },
             dismissButton = {
-                TextButton(onClick = { pendingPoint = null }) { Text("取消") }
+                TextButton(onClick = { noteDialog = null }) { Text("取消") }
             },
         )
     }
@@ -342,7 +398,9 @@ private fun FeedbackEditorOverlay(
 private fun FeedbackShotStage(
     bitmap: Bitmap,
     markers: List<AppFeedbackMarker>,
-    onTap: (Offset) -> Unit,
+    enabled: Boolean,
+    onStrokeFinished: (List<FeedbackPoint>) -> Unit,
+    onInvalidStroke: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val ratio = bitmap.width.toFloat() / bitmap.height.toFloat()
@@ -356,22 +414,38 @@ private fun FeedbackShotStage(
         val stageWidth = if (maxRatio > ratio) maxHeight * ratio else maxWidth
         val stageHeight = if (maxRatio > ratio) maxHeight else maxWidth / ratio
         var stageSize by remember { mutableStateOf(IntSize.Zero) }
+        var draftPoints by remember(bitmap) { mutableStateOf<List<FeedbackPoint>>(emptyList()) }
         Box(
             Modifier
                 .width(stageWidth)
                 .height(stageHeight)
+                .testTag("feedback_shot_stage")
                 .border(1.dp, Color(0xFF314155))
-                .pointerInput(stageSize) {
-                    detectTapGestures { offset ->
-                        if (stageSize.width > 0 && stageSize.height > 0) {
-                            onTap(
-                                Offset(
-                                    x = (offset.x / stageSize.width).coerceIn(0f, 1f),
-                                    y = (offset.y / stageSize.height).coerceIn(0f, 1f),
-                                ),
-                            )
-                        }
-                    }
+                .pointerInput(stageSize, enabled) {
+                    if (!enabled || stageSize == IntSize.Zero) return@pointerInput
+                    fun normalize(offset: Offset): FeedbackPoint = normalizedFeedbackPoint(
+                        xPx = offset.x,
+                        yPx = offset.y,
+                        widthPx = stageSize.width,
+                        heightPx = stageSize.height,
+                    )
+                    detectDragGestures(
+                        onDragStart = { offset -> draftPoints = listOf(normalize(offset)) },
+                        onDrag = { change, _ ->
+                            change.consume()
+                            draftPoints = appendFeedbackPoint(draftPoints, normalize(change.position))
+                        },
+                        onDragCancel = { draftPoints = emptyList() },
+                        onDragEnd = {
+                            val completed = draftPoints
+                            draftPoints = emptyList()
+                            if (isMeaningfulFeedbackStroke(completed)) {
+                                onStrokeFinished(completed)
+                            } else {
+                                onInvalidStroke()
+                            }
+                        },
+                    )
                 },
         ) {
             Image(
@@ -381,42 +455,70 @@ private fun FeedbackShotStage(
                 modifier = Modifier.fillMaxSize()
                     .then(Modifier.onSizeChanged { stageSize = it }),
             )
-            MarkerCanvas(markers = markers, modifier = Modifier.fillMaxSize())
+            MarkerCanvas(
+                markers = markers,
+                draftPoints = draftPoints,
+                modifier = Modifier.fillMaxSize().testTag("feedback_marker_canvas"),
+            )
         }
     }
 }
 
 @Composable
-private fun MarkerCanvas(markers: List<AppFeedbackMarker>, modifier: Modifier = Modifier) {
+private fun MarkerCanvas(
+    markers: List<AppFeedbackMarker>,
+    draftPoints: List<FeedbackPoint>,
+    modifier: Modifier = Modifier,
+) {
     ComposeCanvas(modifier) {
-        val stroke = 2.5.dp.toPx()
+        val strokeWidth = 3.dp.toPx()
+        val badgeRadius = 11.dp.toPx()
         val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = android.graphics.Color.WHITE
             textSize = 14.sp.toPx()
             typeface = Typeface.DEFAULT_BOLD
+            textAlign = Paint.Align.CENTER
         }
-        markers.forEachIndexed { index, box ->
-            val left = box.x * size.width
-            val top = box.y * size.height
-            val w = box.w * size.width
-            val h = box.h * size.height
-            drawRect(
-                color = Color(0x33FF3B30),
-                topLeft = Offset(left, top),
-                size = Size(w, h),
+        fun drawPath(points: List<FeedbackPoint>, color: Color, close: Boolean) {
+            if (points.size < 2) return
+            val path = ComposePath().apply {
+                moveTo(points.first().x * size.width, points.first().y * size.height)
+                points.drop(1).forEach { lineTo(it.x * size.width, it.y * size.height) }
+                if (close) close()
+            }
+            drawPath(
+                path = path,
+                color = color,
+                style = Stroke(
+                    width = strokeWidth,
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round,
+                ),
             )
-            drawRect(
-                color = Color(0xFFFF3B30),
-                topLeft = Offset(left, top),
-                size = Size(w, h),
-                style = Stroke(width = stroke),
+        }
+        fun drawNumber(number: Int, bounds: FeedbackBounds, color: Color) {
+            val center = Offset(
+                x = (bounds.x * size.width).coerceIn(badgeRadius, size.width - badgeRadius),
+                y = (bounds.y * size.height).coerceIn(badgeRadius, size.height - badgeRadius),
             )
             drawCircle(
-                color = Color(0xFFFF3B30),
-                radius = 10.dp.toPx(),
-                center = Offset(left, top),
+                color = color,
+                radius = badgeRadius,
+                center = center,
             )
-            drawContext.canvas.nativeCanvas.drawText("${index + 1}", left - 4.dp.toPx(), top + 5.dp.toPx(), labelPaint)
+            val baseline = center.y - (labelPaint.ascent() + labelPaint.descent()) / 2f
+            drawContext.canvas.nativeCanvas.drawText(number.toString(), center.x, baseline, labelPaint)
+        }
+        markers.forEachIndexed { index, marker ->
+            drawPath(marker.points, Color(0xFFFF3B30), close = true)
+            drawNumber(index + 1, marker.bounds, Color(0xFFFF3B30))
+        }
+        if (draftPoints.isNotEmpty()) {
+            val draftBounds = feedbackBounds(draftPoints)
+            drawPath(draftPoints, Color(0xFFFFB020), close = false)
+            if (draftBounds != null) {
+                drawNumber(markers.size + 1, draftBounds, Color(0xFFFFB020))
+            }
         }
     }
 }
@@ -427,8 +529,11 @@ private fun FeedbackMarkerList(
     submitState: FeedbackSubmitState,
     canSubmit: Boolean,
     onDelete: (Long) -> Unit,
+    onEdit: (AppFeedbackMarker) -> Unit,
     onSubmit: () -> Unit,
 ) {
+    val editingEnabled = submitState != FeedbackSubmitState.Submitting &&
+        submitState !is FeedbackSubmitState.Submitted
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -440,7 +545,17 @@ private fun FeedbackMarkerList(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("已标注 ${markers.size} 处", color = Gomob.colors.fg0, fontSize = 14.sp, modifier = Modifier.weight(1f))
-            Button(enabled = canSubmit, onClick = onSubmit) {
+            if (markers.isNotEmpty() && submitState !is FeedbackSubmitState.Submitted) {
+                TextButton(
+                    enabled = editingEnabled,
+                    onClick = { onDelete(markers.last().id) },
+                ) { Text("撤销") }
+            }
+            Button(
+                enabled = canSubmit,
+                onClick = onSubmit,
+                modifier = Modifier.testTag("feedback_submit"),
+            ) {
                 if (submitState == FeedbackSubmitState.Submitting) {
                     CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(8.dp))
@@ -455,13 +570,20 @@ private fun FeedbackMarkerList(
         }
         Column(
             modifier = Modifier
-                .height(96.dp)
+                .height(132.dp)
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            if (markers.isEmpty()) {
+                Text(
+                    "尚未标注，请先在截图上圈画问题区域",
+                    color = Gomob.colors.fg3,
+                    fontSize = 12.sp,
+                )
+            }
             markers.forEachIndexed { index, marker ->
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().testTag("feedback_marker_${index + 1}"),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
@@ -481,31 +603,129 @@ private fun FeedbackMarkerList(
                         modifier = Modifier.weight(1f).widthIn(min = 0.dp),
                         maxLines = 2,
                     )
-                    TextButton(onClick = { onDelete(marker.id) }) { Text("删除") }
+                    TextButton(
+                        enabled = editingEnabled,
+                        onClick = { onEdit(marker) },
+                    ) { Text("修改") }
+                    TextButton(
+                        enabled = editingEnabled,
+                        onClick = { onDelete(marker.id) },
+                    ) { Text("删除") }
                 }
             }
         }
     }
 }
 
-private fun markerFromPoint(id: Long, point: Offset, note: String): AppFeedbackMarker {
-    val w = 0.14f
-    val h = 0.08f
-    val x = (point.x - w / 2f).coerceIn(0f, 1f - w)
-    val y = (point.y - h / 2f).coerceIn(0f, 1f - h)
-    return AppFeedbackMarker(id = id, x = x, y = y, w = w, h = h, note = note)
-}
-
-private suspend fun captureWindowBitmap(activity: Activity): Bitmap = suspendCancellableCoroutine { cont ->
+internal suspend fun captureWindowBitmap(activity: Activity): Bitmap {
+    check(Looper.myLooper() == Looper.getMainLooper()) { "页面截图必须在主线程执行" }
     val view = activity.window.decorView.rootView
     val width = view.width
     val height = view.height
     if (width <= 0 || height <= 0) {
-        cont.resumeWithException(IllegalStateException("窗口尺寸无效"))
-        return@suspendCancellableCoroutine
+        throw IllegalStateException("窗口尺寸无效")
     }
-    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+    val surfaceViews = view.visibleSurfaceViews()
+    if (surfaceViews.isEmpty()) {
+        return runCatching { copyWindowBitmap(activity, width, height) }
+            .getOrElse { drawViewBitmap(view) }
+    }
+
+    val captureSurfaces = surfaceViews.map { surfaceView ->
+        surfaceView as? FeedbackCaptureSurface
+            ?: throw IllegalStateException("当前独立渲染画面尚不支持可靠截图")
+    }
+    val pausedSurfaces = mutableListOf<FeedbackCaptureSurface>()
+    try {
+        captureSurfaces.forEach { surface ->
+            pausedSurfaces += surface
+            surface.pauseForFeedbackCapture()
+        }
+        val windowBitmap = drawViewBitmap(view)
+        try {
+            compositeVisibleSurfaces(view, surfaceViews, windowBitmap)
+            return windowBitmap
+        } catch (err: Throwable) {
+            windowBitmap.recycle()
+            throw err
+        }
+    } finally {
+        pausedSurfaces.asReversed().forEach { surface ->
+            runCatching { surface.resumeAfterFeedbackCapture() }
+        }
+    }
+}
+
+private suspend fun compositeVisibleSurfaces(
+    rootView: View,
+    surfaceViews: List<SurfaceView>,
+    windowBitmap: Bitmap,
+) {
+    val width = windowBitmap.width
+    val height = windowBitmap.height
+
+    val canvas = Canvas(windowBitmap)
+    val surfacePaint = Paint().apply {
+        xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_OVER)
+    }
+    val rootScreen = IntArray(2).also(rootView::getLocationOnScreen)
+    val rootWindow = IntArray(2).also(rootView::getLocationInWindow)
+    val screenToWindowX = rootScreen[0] - rootWindow[0]
+    val screenToWindowY = rootScreen[1] - rootWindow[1]
+
+    for (surfaceView in surfaceViews) {
+        val surfaceBitmap = copySurfaceBitmap(surfaceView)
+        try {
+            val surfaceWindow = IntArray(2).also(surfaceView::getLocationInWindow)
+            val visibleOnScreen = Rect()
+            if (!surfaceView.getGlobalVisibleRect(visibleOnScreen)) continue
+            val dst = Rect(
+                visibleOnScreen.left - screenToWindowX,
+                visibleOnScreen.top - screenToWindowY,
+                visibleOnScreen.right - screenToWindowX,
+                visibleOnScreen.bottom - screenToWindowY,
+            )
+            if (!dst.intersect(0, 0, width, height)) continue
+            val src = Rect(
+                dst.left - surfaceWindow[0],
+                dst.top - surfaceWindow[1],
+                dst.right - surfaceWindow[0],
+                dst.bottom - surfaceWindow[1],
+            )
+            src.intersect(0, 0, surfaceBitmap.width, surfaceBitmap.height)
+            if (src.isEmpty || dst.isEmpty) continue
+            if (!hasTransparentSurfaceHole(windowBitmap, dst)) {
+                throw IllegalStateException("当前独立渲染画面无法与页面控件可靠合成")
+            }
+            canvas.drawBitmap(surfaceBitmap, src, dst, surfacePaint)
+        } finally {
+            surfaceBitmap.recycle()
+        }
+    }
+}
+
+private fun hasTransparentSurfaceHole(bitmap: Bitmap, rect: Rect): Boolean {
+    val stepX = (rect.width() / 64).coerceAtLeast(1)
+    val stepY = (rect.height() / 64).coerceAtLeast(1)
+    var sampled = 0
+    var transparent = 0
+    var y = rect.top
+    while (y < rect.bottom) {
+        var x = rect.left
+        while (x < rect.right) {
+            sampled++
+            if (android.graphics.Color.alpha(bitmap.getPixel(x, y)) < 250) transparent++
+            x += stepX
+        }
+        y += stepY
+    }
+    return sampled > 0 && transparent.toFloat() / sampled >= 0.01f
+}
+
+private suspend fun copyWindowBitmap(activity: Activity, width: Int, height: Int): Bitmap =
+    suspendCancellableCoroutine { cont ->
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        cont.invokeOnCancellation { bitmap.recycle() }
         PixelCopy.request(
             activity.window,
             Rect(0, 0, width, height),
@@ -516,19 +736,48 @@ private suspend fun captureWindowBitmap(activity: Activity): Bitmap = suspendCan
                     cont.resume(bitmap)
                 } else {
                     bitmap.recycle()
-                    runCatching { drawViewBitmap(view) }
-                        .onSuccess { cont.resume(it) }
-                        .onFailure { cont.resumeWithException(it) }
+                    cont.resumeWithException(IllegalStateException("窗口 PixelCopy 失败：$result"))
                 }
             },
             Handler(Looper.getMainLooper()),
         )
-    } else {
-        bitmap.recycle()
-        runCatching { drawViewBitmap(view) }
-            .onSuccess { cont.resume(it) }
-            .onFailure { cont.resumeWithException(it) }
     }
+
+private suspend fun copySurfaceBitmap(surfaceView: SurfaceView): Bitmap =
+    suspendCancellableCoroutine { cont ->
+        if (!surfaceView.holder.surface.isValid) {
+            cont.resumeWithException(IllegalStateException("独立渲染画面尚未就绪，请稍后重试"))
+            return@suspendCancellableCoroutine
+        }
+        val bitmap = Bitmap.createBitmap(surfaceView.width, surfaceView.height, Bitmap.Config.ARGB_8888)
+        cont.invokeOnCancellation { bitmap.recycle() }
+        PixelCopy.request(
+            surfaceView,
+            bitmap,
+            { result ->
+                if (!cont.isActive) return@request
+                if (result == PixelCopy.SUCCESS) {
+                    cont.resume(bitmap)
+                } else {
+                    bitmap.recycle()
+                    cont.resumeWithException(IllegalStateException("独立渲染画面截图失败：$result"))
+                }
+            },
+            Handler(Looper.getMainLooper()),
+        )
+    }
+
+private fun View.visibleSurfaceViews(): List<SurfaceView> {
+    val result = mutableListOf<SurfaceView>()
+    fun collect(view: View) {
+        if (!view.isShown || view.alpha <= 0f || view.width <= 0 || view.height <= 0) return
+        if (view is SurfaceView && view.holder.surface.isValid) result += view
+        if (view is ViewGroup) {
+            for (index in 0 until view.childCount) collect(view.getChildAt(index))
+        }
+    }
+    collect(this)
+    return result
 }
 
 private fun drawViewBitmap(view: android.view.View): Bitmap {
@@ -538,7 +787,7 @@ private fun drawViewBitmap(view: android.view.View): Bitmap {
     return bitmap
 }
 
-private fun Bitmap.scaledForFeedback(maxSide: Int = 1600): Bitmap {
+private fun Bitmap.scaledForFeedback(maxSide: Int = 1400): Bitmap {
     val side = maxOf(width, height)
     if (side <= maxSide) return this
     val scale = maxSide.toFloat() / side.toFloat()
@@ -551,45 +800,51 @@ private fun Bitmap.annotated(markers: List<AppFeedbackMarker>): Bitmap {
     val out = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(out)
     canvas.drawBitmap(this, 0f, 0f, null)
-    val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x33FF3B30 }
     val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0xFFFF3B30.toInt()
         style = Paint.Style.STROKE
         strokeWidth = (width / 420f).coerceAtLeast(3f)
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
     }
     val labelBg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFF3B30.toInt() }
     val labelText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = android.graphics.Color.WHITE
         textSize = (width / 70f).coerceAtLeast(18f)
         typeface = Typeface.DEFAULT_BOLD
+        textAlign = Paint.Align.CENTER
     }
-    markers.forEachIndexed { index, box ->
-        val left = box.x * width
-        val top = box.y * height
-        val right = left + box.w * width
-        val bottom = top + box.h * height
-        canvas.drawRect(left, top, right, bottom, fill)
-        canvas.drawRect(left, top, right, bottom, stroke)
-        val label = "${index + 1} ${box.note}".trim()
-        val labelHeight = (width / 50f).coerceAtLeast(26f)
-        val labelWidth = (labelText.measureText(label) + 18f).coerceAtMost(width - left - 8f).coerceAtLeast(32f)
-        val labelTop = (top - labelHeight).coerceAtLeast(0f)
-        canvas.drawRect(left, labelTop, left + labelWidth, labelTop + labelHeight, labelBg)
-        canvas.drawText(label, left + 8f, labelTop + labelHeight - 8f, labelText)
+    val badgeRadius = (width / 55f).coerceAtLeast(18f)
+    markers.forEachIndexed { index, marker ->
+        val path = AndroidPath().apply {
+            val first = marker.points.first()
+            moveTo(first.x * width, first.y * height)
+            marker.points.drop(1).forEach { lineTo(it.x * width, it.y * height) }
+            close()
+        }
+        canvas.drawPath(path, stroke)
+        val bounds = marker.bounds
+        val centerX = (bounds.x * width).coerceIn(badgeRadius, width - badgeRadius)
+        val centerY = (bounds.y * height).coerceIn(badgeRadius, height - badgeRadius)
+        canvas.drawCircle(centerX, centerY, badgeRadius, labelBg)
+        val baseline = centerY - (labelText.ascent() + labelText.descent()) / 2f
+        canvas.drawText((index + 1).toString(), centerX, baseline, labelText)
     }
     return out
 }
 
 private fun Bitmap.toPngDataUrl(): String {
     val bytes = ByteArrayOutputStream().use { out ->
-        compress(Bitmap.CompressFormat.PNG, 100, out)
+        check(compress(Bitmap.CompressFormat.PNG, 100, out)) { "PNG 编码失败" }
         out.toByteArray()
     }
     return "data:image/png;base64," + android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
 }
 
 private fun androidUserAgent(): String =
-    "gomob-android model=${Build.MODEL} manufacturer=${Build.MANUFACTURER} android=${Build.VERSION.RELEASE} sdk=${Build.VERSION.SDK_INT}"
+    "gomob-android/${BuildConfig.VERSION_NAME} code=${BuildConfig.VERSION_CODE} " +
+        "model=${Build.MODEL} manufacturer=${Build.MANUFACTURER} " +
+        "android=${Build.VERSION.RELEASE} sdk=${Build.VERSION.SDK_INT}"
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this

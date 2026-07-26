@@ -66,10 +66,12 @@ const val SCAN_VEHICLE_ROUTE = "scan3d/vehicle"
 fun VehicleContourScanRoute(
     onBack: () -> Unit,
 ) {
-    // 设备模式：顶栏右上角下拉选切换。3D 工位（激光）= 服务端瘦客户端点云页；3D 相机 = 现有 Berxel 界面。
-    // 各自子屏独立持有自己的 ViewModel（berxel 相机仅在相机模式才初始化，避免无谓连相机）。
-    var mode by rememberSaveable { mutableStateOf(ScanDeviceMode.Berxel) }
-    val switcher = @Composable { DeviceSwitcher(mode = mode, onSelect = { mode = it }) }
+    // 右上角下拉现在选 3D 工位（LaserStations 静态表，单工位期过渡）；选中值为预留状态位，
+    // 多工位部署后再接 endpoint 切换。3D 相机（Berxel）入口暂时隐藏：mode 固定 Laser，
+    // 恢复入口时把 trailing 换回 DeviceSwitcher 即可（BerxelScanScreen 及其链路原样保留）。
+    val mode = ScanDeviceMode.Laser
+    var stationId by rememberSaveable { mutableStateOf(LaserStations.first().id) }
+    val switcher = @Composable { StationSwitcher(stationId = stationId, onSelect = { stationId = it }) }
     when (mode) {
         ScanDeviceMode.Berxel -> BerxelScanScreen(onBack = onBack, switcher = switcher)
         ScanDeviceMode.Laser -> LaserScanScreen(onBack = onBack, switcher = switcher)

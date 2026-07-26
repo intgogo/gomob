@@ -3,6 +3,7 @@ package io.gomob.network
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import okhttp3.ResponseBody
+import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
@@ -28,13 +29,34 @@ interface LaserScanApi {
     @GET("v1/scans/laser/{id}")
     suspend fun status(@Path("id") scanId: Long): LaserScanStatusResponse
 
+    /** 当前工位正在进行的扫描；App 重进页面后据此恢复会话。 */
+    @GET("v1/scans/laser/active")
+    suspend fun active(): LaserScanStatusResponse
+
+    /** 当前工位最近一次已完成扫描；无活动任务时恢复上次权威结果。 */
+    @GET("v1/scans/laser/latest")
+    suspend fun latestInfo(): LaserScanStatusResponse
+
+    /** 3D 根页只消费最近扫描摘要，保留主干现有界面契约。 */
+    @GET("v1/scans/laser/latest")
+    suspend fun latest(): LaserLatestScanResponse
+
     /** 流式下载一朵 PCD。name ∈ fused|unit_a|unit_b。 */
     @Streaming
     @GET("v1/scans/laser/{id}/cloud/{name}")
     suspend fun downloadCloud(
         @Path("id") scanId: Long,
         @Path("name") name: String,
-    ): ResponseBody
+        @Query("max_points") maxPoints: Int? = null,
+    ): Response<ResponseBody>
+
+    /** 恢复进行中扫描时下载服务端实时快照。name ∈ unit_a|unit_b。 */
+    @Streaming
+    @GET("v1/scans/laser/active/cloud/{name}")
+    suspend fun downloadActiveCloud(
+        @Path("name") name: String,
+        @Query("max_points") maxPoints: Int? = null,
+    ): Response<ResponseBody>
 
     // --- 持久车位框（M9.11，契约 handler.go crop-box / crop-preview 端点）---
 
@@ -243,12 +265,67 @@ data class LaserMeasurement(
     val valid: Boolean = false,
 )
 
+/** 服务端测量层导出的世界系几何；所有坐标均为融合点云坐标系下的 mm。 */
+@Serializable
+data class LaserVehicleOverlay(
+    val valid: Boolean = false,
+    @SerialName("vehicle_box") val vehicleBox: List<List<Float>> = emptyList(),
+    @SerialName("has_cargo_box") val hasCargoBox: Boolean = false,
+    @SerialName("cargo_box") val cargoBox: List<List<Float>> = emptyList(),
+    @SerialName("axle_lines") val axleLines: List<List<List<Float>>> = emptyList(),
+)
+
+/** 活动扫描实际使用的服务端区域墙；只作恢复诊断，不由 App 重新裁剪。 */
+@Serializable
+data class LaserPointRegionFilter(
+    val enabled: Boolean = false,
+    val points: List<List<Float>> = emptyList(),
+    @SerialName("b_to_a") val bToA: List<Float> = emptyList(),
+)
+
 /** GET 状态 / stop 的统一视图（字段随状态机渐次出现，未就绪为 null）。对齐 handler.go jobView。 */
 @Serializable
+data class LaserMeasuredCloudArtifact(
+    @SerialName("xyz_sha256") val xyzSha256: String = "",
+    @SerialName("coordinate_schema") val coordinateSchema: String = "",
+    @SerialName("source_points") val sourcePoints: Int = 0,
+    @SerialName("site_revision") val siteRevision: String? = null,
+    @SerialName("region_revision") val regionRevision: String? = null,
+    @SerialName("background_revision") val backgroundRevision: Long? = null,
+    @SerialName("final_b_to_a_sha256") val finalBToASha256: String = "",
+)
+
+/** 3D 根页的最近扫描摘要；完整恢复使用 [LaserScanStatusResponse]。 */
+@Serializable
+data class LaserLatestScanResponse(
+    val found: Boolean,
+    @SerialName("scan_id") val scanId: Long? = null,
+    val status: String? = null,
+    val points: Int? = null,
+    @SerialName("background_captured") val backgroundCaptured: Boolean = false,
+)
+
+@Serializable
 data class LaserScanStatusResponse(
-    @SerialName("scan_id") val scanId: Long,
+    @SerialName("scan_id") val scanId: Long = 0,
     @SerialName("session_key") val sessionKey: String? = null,
-    val status: String,
+    val status: String = "",
+    val active: Boolean = false,
+    val found: Boolean = false,
+    @SerialName("live_state") val liveState: String? = null,
+    @SerialName("frames_a") val framesA: Int = 0,
+    @SerialName("frames_b") val framesB: Int = 0,
+    @SerialName("unit_a_ip") val unitAIp: String? = null,
+    @SerialName("unit_b_ip") val unitBIp: String? = null,
+    @SerialName("live_points_a") val livePointsA: Int = 0,
+    @SerialName("live_points_b") val livePointsB: Int = 0,
+    @SerialName("fusion_available") val fusionAvailable: Boolean? = null,
+    @SerialName("region_filter") val regionFilter: LaserPointRegionFilter? = null,
+    @SerialName("site_revision") val siteRevision: String? = null,
+    @SerialName("region_revision") val regionRevision: String? = null,
+    @SerialName("site_quality_verified") val siteQualityVerified: Boolean = false,
+    @SerialName("site_quality_override") val siteQualityOverride: Boolean = false,
+    @SerialName("production_eligible") val productionEligible: Boolean = false,
     val align: String? = null,
     @SerialName("align_method") val alignMethod: String? = null,
     val points: Int? = null,
@@ -257,5 +334,44 @@ data class LaserScanStatusResponse(
     @SerialName("result_object_key") val resultObjectKey: String? = null,
     @SerialName("unit_a_object_key") val unitAObjectKey: String? = null,
     @SerialName("unit_b_object_key") val unitBObjectKey: String? = null,
+    @SerialName("measured_object_key") val measuredObjectKey: String? = null,
+    @SerialName("measured_artifact") val measuredArtifact: LaserMeasuredCloudArtifact? = null,
+    @SerialName("meas_mode") val measMode: String? = null,
+    @SerialName("measure_reason") val measureReason: String? = null,
+    @SerialName("meas_reason") val legacyMeasureReason: String? = null,
+    @SerialName("background_captured") val backgroundCaptured: Boolean = false,
+    @SerialName("background_set") val backgroundSet: Boolean = false,
+    @SerialName("background_compatible") val backgroundCompatible: Boolean? = null,
+    @SerialName("background_incompatible") val backgroundIncompatible: Boolean = false,
+    @SerialName("background_reason") val backgroundReason: String? = null,
+    @SerialName("background_revision_id") val backgroundRevisionId: Long? = null,
+    @SerialName("background_schema") val backgroundSchema: String? = null,
+    @SerialName("fg_points") val foregroundPoints: Int = 0,
+    @SerialName("measured_points") val measuredPoints: Int = 0,
+    @SerialName("length_mm") val lengthMm: Float = 0f,
+    @SerialName("width_mm") val widthMm: Float = 0f,
+    @SerialName("height_mm") val heightMm: Float = 0f,
+    @SerialName("measure_valid") val measureValid: Boolean = false,
+    @SerialName("compliance_determined") val complianceDetermined: Boolean = false,
+    @SerialName("compliance_reason") val complianceReason: String? = null,
+    val compliant: Boolean = false,
+    val violations: List<String> = emptyList(),
+    @SerialName("num_axles") val numAxles: Int = 0,
+    @SerialName("wheelbases_mm") val wheelbasesMm: List<Float> = emptyList(),
+    @SerialName("total_wheelbase_mm") val totalWheelbaseMm: Float = 0f,
+    @SerialName("front_overhang_mm") val frontOverhangMm: Float = 0f,
+    @SerialName("rear_overhang_mm") val rearOverhangMm: Float = 0f,
+    @SerialName("axle_valid") val axleValid: Boolean = false,
+    @SerialName("has_cargo_box") val hasCargoBox: Boolean = false,
+    @SerialName("box_outer_length_mm") val boxOuterLengthMm: Float = 0f,
+    @SerialName("box_outer_width_mm") val boxOuterWidthMm: Float = 0f,
+    @SerialName("box_depth_mm") val boxDepthMm: Float = 0f,
+    @SerialName("box_inner_width_mm") val boxInnerWidthMm: Float = 0f,
+    val overlay: LaserVehicleOverlay? = null,
+    @SerialName("ground_nx") val groundNx: Float = 0f,
+    @SerialName("ground_ny") val groundNy: Float = 0f,
+    @SerialName("ground_nz") val groundNz: Float = 0f,
+    @SerialName("ground_d") val groundD: Float = 0f,
+    @SerialName("ground_valid") val groundValid: Boolean = false,
     val error: String? = null,
 )

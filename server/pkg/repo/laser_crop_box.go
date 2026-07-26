@@ -42,3 +42,9 @@ func (r *LaserCropBoxRepo) Upsert(ctx context.Context, bayKey, unit string, box 
 		bayKey, unit, box)
 	return err
 }
+
+// Delete 删除某装机点某单元裁剪框；未设置时保持幂等。
+func (r *LaserCropBoxRepo) Delete(ctx context.Context, bayKey, unit string) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM laser_crop_box WHERE bay_key=$1 AND unit=$2`, bayKey, unit)
+	return err
+}

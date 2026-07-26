@@ -132,7 +132,7 @@ class VehicleContourScanViewModel @Inject constructor(
                 latestColor = frame
                 if (n++ % PREVIEW_DECIMATION == 0) {
                     _colorPreview.value = withContext(Dispatchers.Default) {
-                        FrameRenderer.colorRgb24ToBitmap(frame)
+                        FrameRenderer.colorToBitmap(frame)
                     }
                 }
             }
@@ -278,7 +278,7 @@ class VehicleContourScanViewModel @Inject constructor(
         // color → Bitmap → 缩放到 depth 分辨率。
         // TODO(M2): 现仅 resize 不做真配准，texture 受 color/depth 基线视差影响有偏移；
         //   终态接 SDK registration / 外参标定后逐像素对齐（registeredToColor=true）。
-        val colorBmp = FrameRenderer.colorRgb24ToBitmap(color)
+        val colorBmp = FrameRenderer.colorToBitmap(color)
             ?: throw IllegalStateException("color 帧解码失败")
         val scaled = if (colorBmp.width == w && colorBmp.height == h) {
             colorBmp

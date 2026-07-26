@@ -24,6 +24,11 @@ data class GomobSpacing(
     val s28: Dp = 28.dp,
     val s32: Dp = 32.dp,
 
+    // 全局版式语义
+    val pageGutter: Dp = 16.dp,
+    val cardGap: Dp = 12.dp,
+    val sectionGap: Dp = 20.dp,
+
     // 细线
     val hairline: Dp = 0.5.dp,
 
@@ -33,8 +38,11 @@ data class GomobSpacing(
     // 组件高度
     val rowSetting: Dp = 56.dp,
     val rowSettingTall: Dp = 64.dp,    // 单选 / 副标题加密的列表行
-    val tabBarHeight: Dp = 56.dp,
+    val rowList: Dp = 64.dp,
+    val rowConversation: Dp = 68.dp,
+    val tabBarHeight: Dp = 54.dp,
     val headerHeight: Dp = 52.dp,
+    val compactComposerHeight: Dp = 64.dp,
     val chipHeight: Dp = 20.dp,
 
     // 状态点 / 圆指示器（CircleShape 直径）
@@ -51,6 +59,8 @@ data class GomobSpacing(
     val avatar28: Dp = 28.dp,
     val avatar40: Dp = 40.dp,
     val avatar48: Dp = 48.dp,
+    val avatarConversation: Dp = 44.dp,
+    val avatarHero: Dp = 56.dp,
     val btnCircle72: Dp = 72.dp,        // 拍摄主按钮
 
     // 自制开关 / 单选环
@@ -72,6 +82,7 @@ data class GomobSpacing(
     // 卡片 padding
     val cardPadding: Dp = 14.dp,
     val metricTileMinH: Dp = 96.dp,
+    val metricTileCompactMinH: Dp = 88.dp,
 )
 
 internal val DefaultSpacing = GomobSpacing()

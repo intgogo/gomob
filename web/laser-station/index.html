@@ -3,33 +3,103 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f6f7f9" />
     <title>3D 扫描工位管理台</title>
-    <link rel="stylesheet" href="./styles.css?v=20260709-ov-dims3" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg?v=20260714" />
+    <link rel="stylesheet" href="./styles.css?v=20260715-glass-console7" />
   </head>
   <body>
+    <div class="ambient-glow" aria-hidden="true"></div>
     <div class="app-shell">
       <header class="topbar">
-        <div class="topbar-title">
-          <h1>3D 扫描工位</h1>
-          <div class="topbar-subline">
-            <span id="wsState" class="state-pill">未连接</span>
-            <div id="scanMeta" class="scan-meta-line"></div>
+        <div class="product-mark">
+          <span class="product-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M4.5 7.25 12 3l7.5 4.25v9.5L12 21l-7.5-4.25z" />
+              <path d="m4.8 7.4 7.2 4.1 7.2-4.1M12 11.5V21" />
+            </svg>
+          </span>
+          <div class="product-copy">
+            <span>车辆外廓测量</span>
+            <h1>3D 扫描工位</h1>
           </div>
+          <span id="wsState" class="state-pill">未连接</span>
         </div>
+
         <div class="station-summary">
-          <span>当前工位</span>
+          <label for="stationSelect">当前工位</label>
           <select id="stationSelect"></select>
           <em id="activeCameraLabel">A 192.168.9.101 / B 192.168.9.102</em>
         </div>
+
+        <section class="station-readiness" aria-label="工位就绪状态">
+          <div class="readiness-heading">
+            <span>工位就绪链</span>
+            <strong id="readinessSummary" aria-live="polite">检查中</strong>
+          </div>
+          <div class="readiness-track">
+            <button class="readiness-step" type="button" data-open-panel="device" data-device-role="a" data-readiness="device-a">
+              <span class="readiness-dot" aria-hidden="true"></span>
+              <span>设备 A</span>
+              <strong id="readinessDeviceA">检查中</strong>
+            </button>
+            <button class="readiness-step" type="button" data-open-panel="device" data-device-role="b" data-readiness="device-b">
+              <span class="readiness-dot" aria-hidden="true"></span>
+              <span>设备 B</span>
+              <strong id="readinessDeviceB">检查中</strong>
+            </button>
+            <button class="readiness-step" type="button" data-open-panel="calib" data-readiness="site">
+              <span class="readiness-dot" aria-hidden="true"></span>
+              <span>工位外参</span>
+              <strong id="readinessSite">检查中</strong>
+            </button>
+            <button class="readiness-step" type="button" data-open-panel="calib" data-readiness="region">
+              <span class="readiness-dot" aria-hidden="true"></span>
+              <span>扫描区域</span>
+              <strong id="readinessRegion">检查中</strong>
+            </button>
+            <button class="readiness-step" type="button" data-open-panel="calib" data-readiness="background">
+              <span class="readiness-dot" aria-hidden="true"></span>
+              <span>空场背景</span>
+              <strong id="readinessBackground">检查中</strong>
+            </button>
+          </div>
+        </section>
+
         <div class="topbar-actions">
           <span id="bgStatusChip" class="bg-chip" hidden></span>
-          <button id="captureBgBtn" title="扫描空工位作为背景；之后每次扫描自动减掉房间、抠出车">采集空工位背景</button>
-          <button id="startScanBtn" class="primary">开始扫描</button>
-          <button data-open-panel="station">配置</button>
+          <button id="feedbackBtn" class="icon-action feedback-entry" title="截图并标注当前页面问题" aria-label="问题反馈">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v11H8l-4 3z" /><path d="M8 9h8M8 12.5h5" /></svg>
+          </button>
+          <button id="startScanBtn" class="primary scan-action">开始扫描</button>
         </div>
       </header>
 
-      <main class="cloud-workspace">
+      <div class="workspace-frame">
+        <nav class="workspace-rail" aria-label="工位维护导航">
+          <div class="rail-caption">维护</div>
+          <button class="workspace-nav-button" type="button" data-open-panel="station" aria-label="工位与相机">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V7l8-4 8 4v12" /><path d="M8 19v-6h8v6M2.5 19h19" /></svg>
+            <span>工位</span>
+          </button>
+          <button class="workspace-nav-button" type="button" data-open-panel="scan" aria-label="扫描显示">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7V4h3M16 4h3v3M19 17v3h-3M8 20H5v-3" /><path d="M8 12h8M12 8v8" /></svg>
+            <span>扫描</span>
+          </button>
+          <button class="workspace-nav-button" type="button" data-open-panel="device" aria-label="扫描单元">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6.5h14v11H5z" /><path d="M8 10h8M8 14h5M9 3.5v3M15 3.5v3M9 17.5v3M15 17.5v3" /></svg>
+            <span>设备</span>
+          </button>
+          <button class="workspace-nav-button" type="button" data-open-panel="calib" aria-label="工位几何标定">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h16M12 4v16" /><circle cx="12" cy="12" r="4" /><path d="M6.5 6.5 4 4M17.5 6.5 20 4M6.5 17.5 4 20M17.5 17.5 20 20" /></svg>
+            <span>标定</span>
+          </button>
+          <div class="rail-spacer"></div>
+          <span class="rail-system-mark" aria-hidden="true">G</span>
+        </nav>
+
+        <main class="cloud-workspace">
+        <div class="viewport-grid" aria-hidden="true"></div>
         <canvas id="cloudCanvas"></canvas>
         <div id="markerLayer" class="marker-layer"></div>
 
@@ -49,10 +119,11 @@
         </div>
 
         <div class="viewer-badge">
-          <div>
+          <div class="viewer-title-row">
             <strong id="cloudTitle">分镜点云</strong>
-            <span id="cloudHint">右键平移 · 左键旋转 · 滚轮缩放</span>
+            <span id="cloudHint">拖动旋转 · 双指或滚轮缩放</span>
           </div>
+          <div id="scanMeta" class="scan-meta-line"></div>
         </div>
 
         <div id="measurePanel" class="measure-panel" hidden>
@@ -65,14 +136,14 @@
 
         <div class="viewport-toolbar">
           <div class="tool-group">
-            <button data-cloud-mode="split" class="active">分镜</button>
-            <button data-cloud-mode="fused">融合</button>
+            <button data-cloud-mode="split" class="active" aria-pressed="true">分镜</button>
+            <button data-cloud-mode="fused" aria-pressed="false">融合</button>
           </div>
           <div class="tool-group">
-            <button data-view="top">顶视</button>
-            <button data-view="side">侧视</button>
-            <button data-view="free">自由</button>
-            <button data-control-mode="roam">漫游</button>
+            <button data-view="top" aria-pressed="false">顶视</button>
+            <button data-view="side" aria-pressed="false">侧视</button>
+            <button data-view="free" aria-pressed="true">自由</button>
+            <button data-control-mode="roam" aria-pressed="false">漫游</button>
             <button id="resetViewBtn">重置</button>
           </div>
           <div id="calibToolbar" class="tool-group calib-tools" hidden>
@@ -87,46 +158,79 @@
           </div>
         </div>
 
-        <div id="emptyHint" class="empty-hint">等待点云数据</div>
-
-        <div id="scanBanner" class="scan-banner" hidden>
-          <span class="scan-spinner"></span>
-          <div class="scan-banner-text">
-            <strong id="scanBannerTitle">采集中</strong>
-            <span id="scanBannerDetail"></span>
+        <div id="manualCloudPanel" class="manual-cloud-panel" hidden>
+          <div class="manual-cloud-head">
+            <strong>点云手动融合</strong>
+            <span id="manualCloudStatus">A 固定，调整 B→A</span>
+          </div>
+          <div class="manual-cloud-mode">
+            <button data-manual-cloud-mode="translate" class="active" aria-pressed="true">平移</button>
+            <button data-manual-cloud-mode="rotate" aria-pressed="false">旋转</button>
+            <button data-manual-cloud-mode="lift" aria-pressed="false">升降</button>
+          </div>
+          <div class="manual-cloud-grid">
+            <label>X(mm)<input id="manualCloudTx" type="number" step="1" value="0" readonly /></label>
+            <label>Y(mm)<input id="manualCloudTy" type="number" step="1" value="0" readonly /></label>
+            <label>Z(mm)<input id="manualCloudTz" type="number" step="1" value="0" readonly /></label>
+            <label>Rx(°)<input id="manualCloudRx" type="number" step="0.1" value="0" readonly /></label>
+            <label>Ry(°)<input id="manualCloudRy" type="number" step="0.1" value="0" readonly /></label>
+            <label>Rz(°)<input id="manualCloudRz" type="number" step="0.1" value="0" readonly /></label>
+          </div>
+          <div class="manual-cloud-footer">
+            <button id="manualCloudLoadCurrent">载入当前外参</button>
+            <button id="manualCloudReset" class="ghost">重置</button>
+            <button id="manualCloudClose" class="ghost">退出</button>
+            <button id="manualCloudSave" class="primary">保存诊断结果</button>
           </div>
         </div>
 
-      </main>
+        <div id="emptyHint" class="empty-hint">等待点云数据</div>
+
+        <div id="scanBanner" class="scan-banner" aria-live="off" hidden>
+          <span class="scan-spinner" aria-hidden="true"></span>
+          <div class="scan-banner-text">
+            <strong id="scanBannerTitle">采集中</strong>
+            <span id="scanBannerDetail" aria-hidden="true"></span>
+          </div>
+          <span id="scanBannerAnnouncement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></span>
+        </div>
+
+        </main>
+      </div>
     </div>
 
     <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
-    <aside id="configDrawer" class="config-drawer" aria-hidden="true">
+    <aside id="configDrawer" class="config-drawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle" aria-hidden="true" inert>
       <header class="drawer-header">
         <div>
-          <h2>工位配置</h2>
-          <p>工位、相机、扫描参数与 AB 标定</p>
+          <span class="drawer-kicker">维护与标定</span>
+          <h2 id="drawerTitle">工位控制中心</h2>
+          <p>管理工位几何、扫描单元与采集参数</p>
         </div>
-        <button id="closeConfigBtn">关闭</button>
+        <button id="closeConfigBtn" class="drawer-close" aria-label="关闭工位控制中心"><span aria-hidden="true">×</span></button>
       </header>
 
-      <nav class="drawer-tabs">
-        <button data-drawer-tab="station" class="active">工位</button>
-        <button data-drawer-tab="scan">扫描</button>
-        <button data-drawer-tab="device">相机</button>
-        <button data-drawer-tab="calib">标定</button>
+      <nav class="drawer-tabs" role="tablist" aria-label="工位控制中心分类">
+        <button id="drawerTabStation" role="tab" aria-selected="true" aria-controls="drawerPanelStation" data-drawer-tab="station" class="active"><span>01</span>工位</button>
+        <button id="drawerTabScan" role="tab" aria-selected="false" aria-controls="drawerPanelScan" data-drawer-tab="scan" tabindex="-1"><span>02</span>扫描</button>
+        <button id="drawerTabDevice" role="tab" aria-selected="false" aria-controls="drawerPanelDevice" data-drawer-tab="device" tabindex="-1"><span>03</span>设备</button>
+        <button id="drawerTabCalib" role="tab" aria-selected="false" aria-controls="drawerPanelCalib" data-drawer-tab="calib" tabindex="-1"><span>04</span>标定</button>
       </nav>
 
       <div class="drawer-body">
-        <section class="section drawer-panel active" data-drawer-panel="station">
+        <section id="drawerPanelStation" class="section drawer-panel active" role="tabpanel" aria-labelledby="drawerTabStation" data-drawer-panel="station">
           <div class="station-block">
             <div class="drawer-subhead">
-              <h2>工位</h2>
+              <div>
+                <span class="section-kicker">浏览器工作区</span>
+                <h2>工位草稿</h2>
+              </div>
               <div class="button-row compact">
                 <button id="addStationBtn">新增</button>
-                <button id="deleteStationBtn" class="ghost">删除</button>
+                <button id="deleteStationBtn" class="danger-soft">删除</button>
               </div>
             </div>
+            <p class="hint">这里维护网页中的工位入口；正式外参、区域和背景仍以服务端记录为准。</p>
             <label>
               工位名称
               <input id="stationNameInput" />
@@ -135,7 +239,10 @@
 
           <div class="station-block nested">
             <div class="drawer-subhead">
-              <h2>工位相机</h2>
+              <div>
+                <span class="section-kicker">双单元拓扑</span>
+                <h2>扫描单元</h2>
+              </div>
               <span id="stationCameraCount">0 台</span>
             </div>
             <div id="cameraList" class="camera-list"></div>
@@ -151,108 +258,143 @@
             </div>
           </div>
 
-          <div class="station-block secondary">
-            <h2>服务连接</h2>
-            <label>
-              Gateway
-              <input id="endpointInput" autocomplete="off" spellcheck="false" />
-            </label>
-            <label>
-              Token
-              <textarea id="tokenInput" rows="4" spellcheck="false"></textarea>
-            </label>
-            <div class="button-row">
-              <button id="saveConnectionBtn">保存</button>
-              <button id="connectWsBtn">连接实时</button>
+          <details class="diagnostic-disclosure">
+            <summary>
+              <span><strong>高级连接诊断</strong><small>Gateway 与短期访问令牌</small></span>
+              <span aria-hidden="true">展开</span>
+            </summary>
+            <div class="diagnostic-content">
+              <label>
+                Gateway
+                <input id="endpointInput" autocomplete="off" spellcheck="false" />
+              </label>
+              <label>
+                Token
+                <textarea id="tokenInput" rows="4" spellcheck="false" data-sensitive="true"></textarea>
+              </label>
+              <div class="button-row">
+                <button id="saveConnectionBtn">保存连接</button>
+                <button id="connectWsBtn">重连实时通道</button>
+              </div>
             </div>
-          </div>
+          </details>
         </section>
 
-        <section class="section drawer-panel" data-drawer-panel="scan">
-          <h2>扫描</h2>
-          <div class="scan-grid">
-            <label>
-              保留率
-              <input id="keepRatioInput" type="number" min="0.05" max="1" step="0.05" value="1" />
-            </label>
+        <section id="drawerPanelScan" class="section drawer-panel" role="tabpanel" aria-labelledby="drawerTabScan" data-drawer-panel="scan">
+          <div class="panel-intro">
+            <span class="section-kicker">显示与采样</span>
+            <h2>扫描工作面</h2>
+            <p>服务端决定原始采集保留率；网页只控制本机显示预算。</p>
           </div>
-          <label>
-            容量/镜头
-            <select id="pointBudgetInput">
-              <option value="600000">60 万</option>
-              <option value="1200000" selected>120 万</option>
-              <option value="2200000">220 万</option>
-            </select>
-          </label>
-        </section>
-
-        <section class="section drawer-panel" data-drawer-panel="device">
-          <h2>相机控制</h2>
-          <label>
-            当前相机
-            <select id="deviceSelect"></select>
-          </label>
-          <div class="button-row">
-            <button id="refreshDeviceBtn">刷新</button>
-            <button data-command="SCAN_WATCH">守望</button>
-            <button data-command="SCAN_STOP">停止</button>
-          </div>
-          <div class="button-row">
-            <button data-command="ALIGN_ZERO">回零</button>
-            <button data-command="CLEAR_ERROR">清错</button>
-            <button data-command="SOFT_REBOOT" class="danger">软重启</button>
-          </div>
-          <div id="deviceStatus" class="status-grid"></div>
-
-          <h2>扫描配置</h2>
-          <div class="settings-grid">
-            <label>扫描速度<input id="scanSpeedInput" type="number" step="0.1" /></label>
-            <label>回零速度<input id="zeroSpeedInput" type="number" step="0.1" /></label>
-            <label>初始位置<input id="scanStartInput" type="number" step="0.1" /></label>
-            <label>扫描角度<input id="scanAngleInput" type="number" step="0.1" /></label>
-            <label>结束角<input id="scanStopInput" type="number" step="0.1" readonly /></label>
-            <label>守望角<input id="watchingAngleInput" type="number" step="0.1" /></label>
-            <label>鬼点过滤<input id="ghostInput" type="number" step="0.1" /></label>
-            <label>相机 FPS<input id="cameraFpsInput" type="number" step="0.01" /></label>
-          </div>
-          <p id="scanAngleHint" class="field-hint"></p>
-          <div class="zone-row">
-            <label>过滤区起<input id="zoneMinInput" type="number" step="0.1" /></label>
-            <label>过滤区止<input id="zoneMaxInput" type="number" step="0.1" /></label>
-          </div>
-          <button id="applySettingsBtn" class="primary wide">下发配置</button>
-        </section>
-
-        <section class="section calibration-section drawer-panel" data-drawer-panel="calib">
           <div class="station-block">
-            <h2>一键自动标定（ArUco 标记场）</h2>
+            <label>
+              服务端有效保留率
+              <input id="keepRatioInput" type="text" value="读取中…" readonly />
+            </label>
+            <p class="field-hint">该值来自当前工位的服务端扫描配置，网页端不覆盖。</p>
+          </div>
+          <div class="station-block secondary">
+            <label>
+              浏览器显示点预算 / 单元
+              <select id="pointBudgetInput">
+                <option value="600000">60 万</option>
+                <option value="1200000" selected>120 万</option>
+                <option value="2200000">220 万</option>
+              </select>
+            </label>
+            <p class="field-hint">只影响当前浏览器渲染容量，不改变服务端权威点云与测量结果。</p>
+          </div>
+        </section>
+
+        <section id="drawerPanelDevice" class="section drawer-panel" role="tabpanel" aria-labelledby="drawerTabDevice" data-drawer-panel="device">
+          <div class="panel-intro">
+            <span class="section-kicker">扫描单元</span>
+            <h2>设备控制</h2>
+            <p>读取真实在线状态，并向当前选中的激光单元下发控制命令。</p>
+          </div>
+          <div class="station-block">
+            <label>
+              当前设备
+              <select id="deviceSelect"></select>
+            </label>
+            <div class="button-row device-command-row">
+              <button id="refreshDeviceBtn">刷新状态</button>
+              <button data-command="SCAN_WATCH">进入守望</button>
+              <button data-command="SCAN_STOP">停止运动</button>
+            </div>
+            <div class="button-row">
+              <button data-command="ALIGN_ZERO">回零</button>
+              <button data-command="CLEAR_ERROR">清除错误</button>
+            </div>
+            <div id="deviceStatus" class="status-grid"></div>
+          </div>
+
+          <div class="station-block secondary">
+            <div class="drawer-subhead">
+              <div>
+                <span class="section-kicker">运动与采集</span>
+                <h2>扫描参数</h2>
+              </div>
+            </div>
+            <div class="settings-grid">
+              <label>扫描速度<input id="scanSpeedInput" type="number" step="0.1" /></label>
+              <label>回零速度<input id="zeroSpeedInput" type="number" step="0.1" /></label>
+              <label>初始位置<input id="scanStartInput" type="number" step="0.1" /></label>
+              <label>扫描角度<input id="scanAngleInput" type="number" step="0.1" /></label>
+              <label>结束角<input id="scanStopInput" type="number" step="0.1" readonly /></label>
+              <label>守望角<input id="watchingAngleInput" type="number" step="0.1" /></label>
+              <label>鬼点过滤<input id="ghostInput" type="number" step="0.1" /></label>
+              <label>相机 FPS<input id="cameraFpsInput" type="number" step="0.01" /></label>
+            </div>
+            <p id="scanAngleHint" class="field-hint"></p>
+            <div class="zone-row">
+              <label>过滤区起<input id="zoneMinInput" type="number" step="0.1" /></label>
+              <label>过滤区止<input id="zoneMaxInput" type="number" step="0.1" /></label>
+            </div>
+            <button id="applySettingsBtn" class="primary wide">下发扫描参数</button>
+          </div>
+
+          <div class="station-block danger-zone">
+            <div>
+              <span class="section-kicker">中断性操作</span>
+              <h2>设备维护</h2>
+              <p class="hint">软重启会中断当前设备连接，执行前会再次确认。</p>
+            </div>
+            <button data-command="SOFT_REBOOT" class="danger">软重启当前设备</button>
+          </div>
+        </section>
+
+        <section id="drawerPanelCalib" class="section calibration-section drawer-panel" role="tabpanel" aria-labelledby="drawerTabCalib" data-drawer-panel="calib">
+          <div class="panel-intro">
+            <span class="section-kicker">工位几何准备</span>
+            <h2>标定工作流</h2>
+            <p>先建立 A/B 外参，再保存扫描区域；背景需在几何变更后重新采集。</p>
+          </div>
+
+          <div id="calibrationStepSite" class="station-block calibration-step primary-step" tabindex="-1">
+            <span class="step-number">01</span>
+            <div class="step-copy">
+              <h2>自动外参标定</h2>
+              <span>共享 ArUco 标记场 · 服务端权威 B→A</span>
+            </div>
             <p class="hint" id="autoCalibHint">贴好共享 ArUco 标记场后点此：两镜头各自动扫一圈 → 解算 A↔B 外参（约 30–90 秒）。</p>
-            <div class="button-row" style="align-items:center">
+            <div class="button-row marker-size-row">
               <label class="inline-field">标记边长(mm)
                 <input id="markerLenMm" type="number" min="10" step="1" value="150" />
               </label>
             </div>
-            <button id="autoCalibBtn" class="primary wide">⚡ 一键自动标定</button>
+            <button id="autoCalibBtn" class="primary wide">开始自动标定</button>
             <pre id="autoCalibResult" class="matrix-output" hidden></pre>
-            <button id="openFramingBtn" class="wide" style="margin-top:8px">📷 实时取景标定（看相机图）</button>
+            <button id="openFramingBtn" class="wide">打开实时取景标定</button>
             <p class="hint">点云看不清标记时用它：两镜头各扫一段，边扫边把相机 RGB 图 + 检测框推上来，直接看着对标记。</p>
           </div>
 
-          <div class="station-block secondary">
-            <h2>手动点对标定（无标记 · 装机标一次）</h2>
-            <p class="hint" id="calibHint">不用标记板：点「开始标注」，在 A、B 点云里依次点同一个真实特征（车角、轮子、后视镜…）。点 4+ 对、尽量散开不共线；点完「计算外参」。粗点即可，扫描时会自动 ICP 精修到毫米级。两台固定不动，标一次永久复用。</p>
-            <div class="button-row">
-              <button id="startCalibBtn">开始标注</button>
-              <button id="undoCalibBtn" class="ghost">撤销</button>
-              <button id="clearCalibBtn" class="ghost">清空</button>
+          <div id="calibrationStepRegion" class="station-block calibration-step" tabindex="-1">
+            <span class="step-number">02</span>
+            <div class="step-copy">
+              <h2>扫描区域</h2>
+              <span>点云边界 · 服务端共享虚拟墙</span>
             </div>
-            <div id="calibPairs" class="pair-list"></div>
-            <button id="solveCalibBtn" class="primary wide">计算外参 B→A</button>
-            <pre id="calibResult" class="matrix-output"></pre>
-          </div>
-
-          <div class="station-block secondary">
-            <h2>区域标定</h2>
             <p class="hint" id="regionHint">开始后在点云窗口依次标注区域边界点，完成后自动闭合为虚拟墙。</p>
             <div class="button-row">
               <button id="startRegionBtn">开始区域标定</button>
@@ -261,19 +403,61 @@
             </div>
             <div class="button-row">
               <button id="toggleRegionClipBtn">只显示墙内点云</button>
-              <button id="clearRegionBtn" class="ghost">清空区域</button>
+              <button id="discardRegionDraftBtn" class="ghost">放弃草稿</button>
+              <button id="clearRegionBtn" class="danger-soft">清空区域</button>
             </div>
             <div id="regionPoints" class="pair-list"></div>
           </div>
+
+          <div id="calibrationStepBackground" class="station-block calibration-step" tabindex="-1">
+            <span class="step-number">03</span>
+            <div class="step-copy">
+              <h2>空工位背景</h2>
+              <span>绑定当前外参与区域 revision</span>
+            </div>
+            <p class="hint">确认工位内没有车辆后采集。外参或区域变更时，旧背景会明确标记为不兼容并要求重采。</p>
+            <button id="captureBgDrawerBtn" class="wide">采集空工位背景</button>
+          </div>
+
+          <details class="diagnostic-disclosure calibration-diagnostics">
+            <summary>
+              <span><strong>诊断标定工具</strong><small>手动点云调整与 RGB 点对不会覆盖正式外参</small></span>
+              <span aria-hidden="true">展开</span>
+            </summary>
+            <div class="diagnostic-content">
+              <div class="station-block secondary">
+                <h2>点云手动融合诊断</h2>
+                <p class="hint" id="calibHint">以 A 点云为参考，手动调整 B 点云的平移/旋转；结果只保存为诊断记录。</p>
+                <button id="openManualCloudAlignBtn" class="wide">打开点云手动调整</button>
+                <pre id="manualCloudResult" class="matrix-output"></pre>
+              </div>
+
+              <div class="station-block secondary">
+                <h2>实时 RGB 手动点对</h2>
+                <p class="hint">自动识别失败时，在 A/B 两路 RGB 图上标同名物理点；普通单帧 2D 点对不会直接保存外参。</p>
+                <button id="openFramingManualBtn" class="wide">打开实时取景手动标点</button>
+                <div class="legacy-calib-controls" hidden>
+                  <div class="button-row">
+                    <button id="startCalibBtn">开始标注</button>
+                    <button id="undoCalibBtn" class="ghost">撤销</button>
+                    <button id="clearCalibBtn" class="ghost">清空</button>
+                  </div>
+                  <div id="calibPairs" class="pair-list"></div>
+                  <button id="solveCalibBtn" class="primary wide">计算外参 B→A</button>
+                  <pre id="calibResult" class="matrix-output"></pre>
+                </div>
+              </div>
+            </div>
+          </details>
         </section>
       </div>
     </aside>
 
     <!-- 实时取景标定：全屏。相机只在云台转动时出帧（约 0.33fps），扫一段→边扫边推 RGB 帧+ArUco 检测。 -->
-    <div id="framingOverlay" class="framing-overlay" hidden>
+    <div id="framingOverlay" class="framing-overlay" role="dialog" aria-modal="true" aria-labelledby="framingTitle" hidden>
       <header class="framing-header">
         <div>
-          <h2>实时取景标定</h2>
+          <h2 id="framingTitle">实时取景标定</h2>
           <span id="framingStatus" class="framing-status">设好扫描角后点「扫描取景」，两镜头各扫一段。</span>
         </div>
         <button id="closeFramingBtn">关闭</button>
@@ -296,14 +480,48 @@
         <button id="framingStopBtn" class="danger" hidden>停止</button>
       </div>
 
+      <div class="framing-manual">
+        <div>
+          <strong>手动点对</strong>
+          <span id="framingManualStatus">关闭</span>
+        </div>
+        <div class="framing-manual-actions">
+          <button id="framingManualToggle">开始手动标点</button>
+          <button id="framingManualUndo" class="ghost">撤销</button>
+          <button id="framingManualClear" class="ghost">清空</button>
+          <button id="framingManualSolve" class="primary">解算并保存</button>
+        </div>
+        <div id="framingManualPairs" class="framing-manual-pairs"></div>
+      </div>
+
       <div class="framing-panes">
         <section class="framing-pane">
-          <div class="framing-pane-head"><strong>A 镜头 (.101)</strong><span id="framingCountA">—</span></div>
+          <div class="framing-pane-head">
+            <strong>A 镜头 (.101)</strong>
+            <div class="framing-view-tools">
+              <button id="framingZoomOutA" title="缩小">-</button>
+              <button id="framingZoomInA" title="放大">+</button>
+              <button id="framingRotateLeftA" title="左旋 5 度">左旋</button>
+              <button id="framingRotateRightA" title="右旋 5 度">右旋</button>
+              <button id="framingResetViewA" title="复位">复位</button>
+            </div>
+            <span id="framingCountA">—</span>
+          </div>
           <div class="framing-stage"><canvas id="framingCanvasA" class="framing-canvas"></canvas></div>
           <div id="framingStripA" class="framing-strip"></div>
         </section>
         <section class="framing-pane">
-          <div class="framing-pane-head"><strong>B 镜头 (.102)</strong><span id="framingCountB">—</span></div>
+          <div class="framing-pane-head">
+            <strong>B 镜头 (.102)</strong>
+            <div class="framing-view-tools">
+              <button id="framingZoomOutB" title="缩小">-</button>
+              <button id="framingZoomInB" title="放大">+</button>
+              <button id="framingRotateLeftB" title="左旋 5 度">左旋</button>
+              <button id="framingRotateRightB" title="右旋 5 度">右旋</button>
+              <button id="framingResetViewB" title="复位">复位</button>
+            </div>
+            <span id="framingCountB">—</span>
+          </div>
           <div class="framing-stage"><canvas id="framingCanvasB" class="framing-canvas"></canvas></div>
           <div id="framingStripB" class="framing-strip"></div>
         </section>
@@ -312,7 +530,7 @@
       <pre id="framingResult" class="matrix-output" hidden></pre>
     </div>
 
-    <div id="toast" class="toast"></div>
-    <script type="module" src="./app.js?v=20260709-ov-dims3"></script>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="./app.js?v=20260715-glass-console7"></script>
   </body>
 </html>

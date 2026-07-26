@@ -10,6 +10,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import io.gomob.designsystem.theme.Gomob
 
 private const val CHAT_TIME_GAP_MILLIS = 5 * 60 * 1000L
@@ -73,12 +74,12 @@ internal fun ChatTimeDivider(label: String) {
     ) {
         Text(
             text = label,
-            style = Gomob.type.caption,
+            style = Gomob.type.numInline.copy(fontSize = 11.sp),
             color = Gomob.colors.fg3,
             modifier = Modifier
-                .clip(Gomob.shapes.r1)
-                .background(Gomob.colors.bg1.copy(alpha = 0.78f))
-                .padding(horizontal = 8.dp, vertical = 3.dp),
+                .clip(Gomob.shapes.pill)
+                .background(Gomob.colors.fg0.copy(alpha = 0.05f))
+                .padding(horizontal = 10.dp, vertical = 3.dp),
         )
     }
 }

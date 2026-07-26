@@ -34,12 +34,14 @@ type ActiveModel struct {
 	UpdatedAt string          `json:"updated_at"`
 }
 
-// Metadata cv-engine 关心的子集：kind=mask|general / classes=[...]。
+// Metadata cv-engine 关心的模型加载配置。
 //
 // 入库时 admin 需把这两个字段写进 model.metadata；缺省 cv-engine 当 general。
 type Metadata struct {
-	Kind    string   `json:"kind"`    // "mask" 走 RegisterMaskONNX；其它走 RegisterONNX
-	Classes []string `json:"classes"` // mask kind 的 类名
+	Kind    string   `json:"kind"`    // general / mask / yolo / com
+	Classes []string `json:"classes"` // mask/yolo 类名
+	Strides []int    `json:"strides,omitempty"`
+	Anchors []int    `json:"anchors,omitempty"`
 	IWidth  int      `json:"iwidth,omitempty"`
 	IHeight int      `json:"iheight,omitempty"`
 	IChan   int      `json:"ichan,omitempty"`
@@ -109,12 +111,14 @@ func (c *Client) GetActive(ctx context.Context, name string) (*ActiveModel, erro
 	return &m, nil
 }
 
-// ParseMetadata 容忍空 / 非法 metadata。
-func ParseMetadata(raw json.RawMessage) Metadata {
+// ParseMetadata 解析模型加载配置；空值使用 general，非法 JSON 必须显式失败。
+func ParseMetadata(raw json.RawMessage) (Metadata, error) {
 	var m Metadata
 	if len(raw) == 0 {
-		return m
+		return m, nil
 	}
-	_ = json.Unmarshal(raw, &m)
-	return m
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return Metadata{}, fmt.Errorf("解析 model metadata: %w", err)
+	}
+	return m, nil
 }

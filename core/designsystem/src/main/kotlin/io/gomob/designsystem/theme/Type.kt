@@ -22,6 +22,9 @@ private val Mono: FontFamily = FontFamily.Monospace
 @Immutable
 data class GomobType(
     val display: TextStyle,
+    val heroTitle: TextStyle,
+    val screenTitle: TextStyle,
+    val sectionTitle: TextStyle,
     val title: TextStyle,
     val body: TextStyle,
     val bodySm: TextStyle,
@@ -37,6 +40,18 @@ internal val DefaultType = GomobType(
     display = TextStyle(
         fontFamily = Sans, fontSize = 22.sp, fontWeight = FontWeight.Medium,
         lineHeight = 26.4.sp, letterSpacing = 0.em,
+    ),
+    heroTitle = TextStyle(
+        fontFamily = Sans, fontSize = 20.sp, fontWeight = FontWeight.SemiBold,
+        lineHeight = 27.sp, letterSpacing = 0.em,
+    ),
+    screenTitle = TextStyle(
+        fontFamily = Sans, fontSize = 18.sp, fontWeight = FontWeight.SemiBold,
+        lineHeight = 24.sp, letterSpacing = 0.em,
+    ),
+    sectionTitle = TextStyle(
+        fontFamily = Sans, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+        lineHeight = 18.sp, letterSpacing = 0.em,
     ),
     title = TextStyle(
         fontFamily = Sans, fontSize = 17.sp, fontWeight = FontWeight.Medium,

@@ -1,3 +1,4 @@
+//go:build linux
 // +build linux
 
 package gocv
@@ -24,7 +25,7 @@ func CreateLynxiYolo(gpuId int, classes []string, weights []byte, strides, ancho
 		runtime.LockOSThread()
 
 		bModel := toByteVector(weights)
-		net := Net{p: unsafe.Pointer(C.LynxiSession_Create(*bModel, C.int(gpuId)))}
+		net := Net{p: unsafe.Pointer(C.LynxiSession_Create(*bModel, C.int(gpuId))), nativeKind: netNativeLynxi}
 		if net.p == nil {
 			c <- &net
 			return
@@ -84,7 +85,7 @@ func CreateLynxiMask(gpuId int, classes []string, weights []byte, iSize image.Po
 		runtime.LockOSThread()
 
 		bModel := toByteVector(weights)
-		net := Net{p: unsafe.Pointer(C.LynxiSession_Create(*bModel, C.int(gpuId)))}
+		net := Net{p: unsafe.Pointer(C.LynxiSession_Create(*bModel, C.int(gpuId))), nativeKind: netNativeLynxi}
 		if net.p == nil {
 			c <- &net
 			return
@@ -145,7 +146,7 @@ func CreateLynxiYolact(gpuId int, classes []string, weights []byte, iSize image.
 		runtime.LockOSThread()
 
 		bModel := toByteVector(weights)
-		net := Net{p: unsafe.Pointer(C.LynxiSession_Create(*bModel, C.int(gpuId)))}
+		net := Net{p: unsafe.Pointer(C.LynxiSession_Create(*bModel, C.int(gpuId))), nativeKind: netNativeLynxi}
 		if net.p == nil {
 			c <- &net
 			return
@@ -206,7 +207,7 @@ func CreateLynxiMetric(gpuId int, weights []byte, clusters int, iSize image.Poin
 		runtime.LockOSThread()
 
 		bModel := toByteVector(weights)
-		net := Net{p: unsafe.Pointer(C.LynxiSession_Create(*bModel, C.int(gpuId)))}
+		net := Net{p: unsafe.Pointer(C.LynxiSession_Create(*bModel, C.int(gpuId))), nativeKind: netNativeLynxi}
 		if net.p == nil {
 			c <- &net
 			return
@@ -256,7 +257,7 @@ func CreateLynxiCom(gpuId int, weights []byte, iSize image.Point, iChan int, std
 		runtime.LockOSThread()
 
 		bModel := toByteVector(weights)
-		net := Net{p: unsafe.Pointer(C.LynxiSession_Create(*bModel, C.int(gpuId)))}
+		net := Net{p: unsafe.Pointer(C.LynxiSession_Create(*bModel, C.int(gpuId))), nativeKind: netNativeLynxi}
 		if net.p == nil {
 			c <- &net
 			return
@@ -306,7 +307,7 @@ func CreateLynxiMatting(gpuId int, weights []byte, iSize image.Point, iChan int,
 		runtime.LockOSThread()
 
 		bModel := toByteVector(weights)
-		net := Net{p: unsafe.Pointer(C.LynxiSession_Create(*bModel, C.int(gpuId)))}
+		net := Net{p: unsafe.Pointer(C.LynxiSession_Create(*bModel, C.int(gpuId))), nativeKind: netNativeLynxi}
 		if net.p == nil {
 			c <- &net
 			return
@@ -354,7 +355,7 @@ func CreateLynxiCenterFace(gpuId int, weights []byte, iSize image.Point, iChan i
 		runtime.LockOSThread()
 
 		bModel := toByteVector(weights)
-		net := Net{p: unsafe.Pointer(C.LynxiSession_Create(*bModel, C.int(gpuId)))}
+		net := Net{p: unsafe.Pointer(C.LynxiSession_Create(*bModel, C.int(gpuId))), nativeKind: netNativeLynxi}
 		if net.p == nil {
 			c <- &net
 			return
@@ -412,7 +413,7 @@ func CreateLynxiCenterPose(gpuId int, weights []byte, iSize image.Point, iChan i
 		runtime.LockOSThread()
 
 		bModel := toByteVector(weights)
-		net := Net{p: unsafe.Pointer(C.LynxiSession_Create(*bModel, C.int(gpuId)))}
+		net := Net{p: unsafe.Pointer(C.LynxiSession_Create(*bModel, C.int(gpuId))), nativeKind: netNativeLynxi}
 		if net.p == nil {
 			c <- &net
 			return
@@ -470,7 +471,7 @@ func CreateLynxiClassify(gpuId int, weights []byte, classes []string, iSize imag
 		runtime.LockOSThread()
 
 		bModel := toByteVector(weights)
-		net := Net{p: unsafe.Pointer(C.LynxiSession_Create(*bModel, C.int(gpuId)))}
+		net := Net{p: unsafe.Pointer(C.LynxiSession_Create(*bModel, C.int(gpuId))), nativeKind: netNativeLynxi}
 		if net.p == nil {
 			c <- &net
 			return

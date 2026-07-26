@@ -7,7 +7,10 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,8 +32,9 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -44,18 +48,24 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -66,12 +76,16 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.designsystem.component.BackHeader
+import io.gomob.designsystem.component.HeaderTabItem
+import io.gomob.designsystem.component.HeaderTabs
 import io.gomob.designsystem.component.ScreenHeader
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
 import io.gomob.designsystem.glass.GlassHeaderScaffold
+import io.gomob.designsystem.glass.glassPanelBg
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
+import kotlinx.coroutines.launch
 
 const val MESSAGE_ROUTE = "message"
 
@@ -122,11 +136,18 @@ fun MessageRoute(
     val contactActionError by viewModel.contactActionError.collectAsStateWithLifecycle()
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
-    var tab by rememberSaveable { mutableStateOf((requestedTab ?: MessageEntryTab.List).toMsgTab()) }
-    var adHocPickerOpen by rememberSaveable { mutableStateOf(false) }
+    val pagerState = rememberPagerState(
+        initialPage = if (requestedTab == MessageEntryTab.Help) 1 else 0,
+        pageCount = { 2 },
+    )
+    val pagerScope = rememberCoroutineScope()
+    val tab = if (pagerState.currentPage == 0) MsgTab.List else MsgTab.Help
     // 搜索状态提升到 header(玻璃内固定一行), 两个 tab 各自记忆关键词
     var listQuery by rememberSaveable { mutableStateOf("") }
     var roomQuery by rememberSaveable { mutableStateOf("") }
+    var searchExpanded by rememberSaveable { mutableStateOf(false) }
+    var deleteTargetConversationId by rememberSaveable { mutableStateOf<Long?>(null) }
+    val searchFocusRequester = remember { FocusRequester() }
     val hasMessageUnread = (state as? MessageListUiState.Content)
         ?.conversations
         ?.any { it.unreadCount > 0 } == true
@@ -143,9 +164,23 @@ fun MessageRoute(
 
     LaunchedEffect(requestedTab) {
         requestedTab?.let {
-            tab = it.toMsgTab()
+            pagerState.scrollToPage(if (it == MessageEntryTab.List) 0 else 1)
             onRequestedTabConsumed()
         }
+    }
+
+    LaunchedEffect(pagerState.currentPage) {
+        deleteTargetConversationId = null
+        focusManager.clearFocus()
+        keyboardController?.hide()
+    }
+
+    LaunchedEffect(state, deleteTargetConversationId) {
+        val targetId = deleteTargetConversationId ?: return@LaunchedEffect
+        val stillVisible = (state as? MessageListUiState.Content)
+            ?.conversations
+            ?.any { it.id == targetId } == true
+        if (!stillVisible) deleteTargetConversationId = null
     }
 
     LaunchedEffect(Unit) {
@@ -160,19 +195,25 @@ fun MessageRoute(
         }
     }
 
-    LaunchedEffect(Unit) {
-        viewModel.adHocVideoCallEvents.collect { event ->
-            adHocPickerOpen = false
-            onOpenVideoCall(event.roomId, event.title, event.mode)
+    val currentQuery = if (tab == MsgTab.List) listQuery else roomQuery
+    LaunchedEffect(searchExpanded) {
+        if (searchExpanded) {
+            searchFocusRequester.requestFocus()
+            keyboardController?.show()
         }
     }
-
-    val currentQuery = if (tab == MsgTab.List) listQuery else roomQuery
-    // 有搜索词时返回键先清词收键盘, 再退页面
-    BackHandler(enabled = currentQuery.isNotBlank()) {
-        if (tab == MsgTab.List) listQuery = "" else roomQuery = ""
-        focusManager.clearFocus()
-        keyboardController?.hide()
+    // 删除态优先收起；随后才是搜索态，最后交给导航返回。
+    BackHandler(
+        enabled = deleteTargetConversationId != null || searchExpanded || currentQuery.isNotBlank(),
+    ) {
+        if (deleteTargetConversationId != null) {
+            deleteTargetConversationId = null
+        } else {
+            if (tab == MsgTab.List) listQuery = "" else roomQuery = ""
+            searchExpanded = false
+            focusManager.clearFocus()
+            keyboardController?.hide()
+        }
     }
 
     val listTabState = rememberLazyListState()
@@ -181,67 +222,60 @@ fun MessageRoute(
         listState = if (tab == MsgTab.List) listTabState else helpTabState,
         header = {
             Column {
-                ScreenHeader(
-                    title = "消息中心",
-                    eyebrow = "实时协同 · 监管督查 · 多人会审",
-                    modifier = Modifier.clearInputFocusOnPointerDown(focusManager),
-                    trailing = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            AdHocCallIconButton(
-                                onClick = {
-                                    focusManager.clearFocus()
-                                    viewModel.clearContactActionError()
-                                    adHocPickerOpen = true
-                                },
-                            )
-                            ContactsIconButton(
-                                onClick = {
-                                    focusManager.clearFocus()
-                                    viewModel.clearContactActionError()
-                                    onOpenContacts()
-                                },
-                            )
-                        }
-                    },
-                )
-                SegmentedTabs(
-                    tab = tab,
-                    hasMessageUnread = hasMessageUnread,
-                    hasHelpUnread = hasHelpUnread,
-                    onChange = {
-                        focusManager.clearFocus()
-                        tab = it
-                    },
-                )
-                // 紧凑搜索固定在玻璃 header 内(微信式), 列表从其下方直接开始
-                Box(
-                    Modifier.padding(
-                        start = Gomob.spacing.s20,
-                        end = Gomob.spacing.s20,
-                        top = Gomob.spacing.s8,
-                        bottom = Gomob.spacing.s12,
-                    ),
-                ) {
-                    SearchBar(
+                if (searchExpanded) {
+                    SearchHeaderRow(
                         query = currentQuery,
                         onQueryChange = { if (tab == MsgTab.List) listQuery = it else roomQuery = it },
-                        onActiveChange = {},
                         placeholder = if (tab == MsgTab.List) "搜索消息 / 联系人" else "搜索群聊",
+                        focusRequester = searchFocusRequester,
+                        onClose = {
+                            if (tab == MsgTab.List) listQuery = "" else roomQuery = ""
+                            searchExpanded = false
+                            focusManager.clearFocus()
+                            keyboardController?.hide()
+                        },
+                    )
+                } else {
+                    ScreenHeader(
+                        title = "消息中心",
+                        modifier = Modifier.clearInputFocusOnPointerDown(focusManager),
+                        trailing = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                HeaderIconButton(
+                                    icon = GomobIcons.Search,
+                                    contentDescription = "搜索",
+                                    onClick = {
+                                        deleteTargetConversationId = null
+                                        searchExpanded = true
+                                    },
+                                )
+                                ContactsIconButton(
+                                    onClick = {
+                                        focusManager.clearFocus()
+                                        viewModel.clearContactActionError()
+                                        onOpenContacts()
+                                    },
+                                )
+                            }
+                        },
                     )
                 }
+                HeaderTabs(
+                    items = listOf(
+                        HeaderTabItem("消息列表", showDot = hasMessageUnread),
+                        HeaderTabItem("多人连线", showDot = hasHelpUnread),
+                    ),
+                    selectedIndex = if (tab == MsgTab.List) 0 else 1,
+                    onSelect = { index ->
+                        deleteTargetConversationId = null
+                        focusManager.clearFocus()
+                        keyboardController?.hide()
+                        pagerScope.launch { pagerState.animateScrollToPage(index) }
+                    },
+                )
             }
         },
         overlay = { padding ->
-            AdHocCallPicker(
-                visible = adHocPickerOpen,
-                state = helpState,
-                errorText = contactActionError,
-                onClose = {
-                    adHocPickerOpen = false
-                    viewModel.clearContactActionError()
-                },
-                onConfirm = { ids -> viewModel.startAdHocCall(ids) },
-            )
             FloatingMessageError(
                 text = pageNotice?.text,
                 tone = pageNotice?.tone ?: FloatingMessageTone.Danger,
@@ -260,36 +294,107 @@ fun MessageRoute(
             )
         },
     ) { padding ->
-        when (tab) {
-            MsgTab.List -> ListPane(
-                state = state,
-                searchState = searchState,
-                helpState = helpState,
-                query = listQuery,
-                onOpenConversation = { viewModel.openConversation(it.id) },
-                onOpenMessage = viewModel::openSearchMessage,
-                onOpenContactDetail = { onOpenContactDetail(it.detailId) },
-                listState = listTabState,
-                contentPadding = padding,
-            )
-            MsgTab.Help -> MultiLineRoomList(
-                state = multiLineRoomsState,
-                query = roomQuery,
-                onRefresh = {
-                    viewModel.refreshHelpExperts()
-                    viewModel.refreshHelpRoom()
-                },
-                onOpenRoom = { room -> viewModel.openConversation(room.id) },
-                listState = helpTabState,
-                contentPadding = padding,
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize(),
+        ) { page ->
+            when (page) {
+                0 -> ListPane(
+                    state = state,
+                    searchState = searchState,
+                    helpState = helpState,
+                    query = listQuery,
+                    onOpenConversation = { viewModel.openConversation(it.id) },
+                    deleteTargetConversationId = deleteTargetConversationId,
+                    onToggleDeleteState = { conversationId ->
+                        deleteTargetConversationId = nextConversationDeleteTarget(
+                            current = deleteTargetConversationId,
+                            pressed = conversationId,
+                        )
+                    },
+                    onDeleteConversation = { conversationId ->
+                        deleteTargetConversationId = null
+                        viewModel.deleteConversation(conversationId)
+                    },
+                    onOpenMessage = viewModel::openSearchMessage,
+                    onOpenContactDetail = { onOpenContactDetail(it.detailId) },
+                    listState = listTabState,
+                    contentPadding = padding,
+                )
+                else -> MultiLineRoomList(
+                    state = multiLineRoomsState,
+                    query = roomQuery,
+                    onRefresh = {
+                        viewModel.refreshHelpExperts()
+                        viewModel.refreshHelpRoom()
+                    },
+                    onOpenRoom = { room -> viewModel.openConversation(room.id) },
+                    listState = helpTabState,
+                    contentPadding = padding,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HeaderIconButton(
+    icon: ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+) {
+    // 44dp 命中区内衬 36dp 圆形 bg3 底
+    Box(
+        Modifier.size(Gomob.spacing.touchMin).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier
+                .size(36.dp)
+                .clip(CircleShape)
+                .background(Gomob.colors.bg3),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = contentDescription,
+                tint = Gomob.colors.fg1,
+                modifier = Modifier.size(Gomob.spacing.icon16),
             )
         }
     }
 }
 
-private fun MessageEntryTab.toMsgTab(): MsgTab = when (this) {
-    MessageEntryTab.List -> MsgTab.List
-    MessageEntryTab.Help -> MsgTab.Help
+@Composable
+private fun SearchHeaderRow(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    placeholder: String,
+    focusRequester: FocusRequester,
+    onClose: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(Gomob.spacing.headerHeight)
+            .padding(start = Gomob.spacing.pageGutter, end = Gomob.spacing.s4),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
+    ) {
+        SearchBar(
+            query = query,
+            onQueryChange = onQueryChange,
+            onActiveChange = {},
+            placeholder = placeholder,
+            focusRequester = focusRequester,
+            modifier = Modifier.weight(1f),
+        )
+        HeaderIconButton(
+            icon = Icons.Filled.Close,
+            contentDescription = "关闭搜索",
+            onClick = onClose,
+        )
+    }
 }
 
 private data class MessageRouteNotice(
@@ -343,17 +448,11 @@ private fun MultiLineRoomsUiState.floatingNotice(): MessageRouteNotice? = when (
 
 @Composable
 private fun ContactsIconButton(onClick: () -> Unit) {
-    Box(
-        Modifier.size(Gomob.spacing.touchMin).clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            GomobIcons.Contacts,
-            contentDescription = "联系人",
-            tint = Gomob.colors.fg2,
-            modifier = Modifier.size(Gomob.spacing.icon20),
-        )
-    }
+    HeaderIconButton(
+        icon = GomobIcons.Contacts,
+        contentDescription = "联系人",
+        onClick = onClick,
+    )
 }
 
 /**
@@ -370,7 +469,6 @@ fun ContactsRoute(
     val errorText by viewModel.contactActionError.collectAsStateWithLifecycle()
     var query by rememberSaveable { mutableStateOf("") }
     val sections = remember(helpState) { buildContactSections(helpState) }
-    var expandedSectionIds by rememberSaveable { mutableStateOf(listOf("recent")) }
     val visibleSections = remember(sections, query) { sections.filterContacts(query) }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -391,8 +489,8 @@ fun ContactsRoute(
                 )
                 Box(
                     Modifier.padding(
-                        start = Gomob.spacing.s20,
-                        end = Gomob.spacing.s20,
+                        start = Gomob.spacing.pageGutter,
+                        end = Gomob.spacing.pageGutter,
                         bottom = Gomob.spacing.s12,
                     ),
                 ) {
@@ -422,33 +520,28 @@ fun ContactsRoute(
                     keyboardController?.hide()
                 },
             contentPadding = PaddingValues(
-                start = 18.dp,
-                end = 18.dp,
+                start = Gomob.spacing.pageGutter,
+                end = Gomob.spacing.pageGutter,
                 top = padding.calculateTopPadding() + Gomob.spacing.s8,
                 bottom = padding.calculateBottomPadding() + Gomob.spacing.s24,
             ),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.cardGap),
         ) {
+            // 两组常展开:区标题行 + 行组拟玻璃卡
             visibleSections.forEach { section ->
-                val expanded = query.isNotBlank() || section.id in expandedSectionIds
                 item(key = "section-${section.id}") {
-                    ContactSectionHeader(
-                        section = section,
-                        expanded = expanded,
-                        onClick = {
-                            expandedSectionIds = if (section.id in expandedSectionIds) {
-                                expandedSectionIds - section.id
-                            } else {
-                                expandedSectionIds + section.id
-                            }
-                        },
-                    )
+                    ContactSectionHeader(section = section)
                 }
-                if (expanded) {
-                    itemsIndexed(section.contacts, key = { _, contact -> contact.id }) { index, contact ->
-                        Column {
+                item(key = "section-card-${section.id}") {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .glassPanelBg(shape = Gomob.shapes.r3),
+                    ) {
+                        section.contacts.forEachIndexed { index, contact ->
                             ContactRow(
                                 contact = contact,
+                                tone = section.tone,
                                 onClick = {
                                     dismissSearchInput()
                                     onOpenContactDetail(contact.detailId)
@@ -466,36 +559,25 @@ fun ContactsRoute(
 }
 
 @Composable
-private fun ContactSectionHeader(
-    section: ContactSectionUi,
-    expanded: Boolean,
-    onClick: () -> Unit,
-) {
-    val tone = section.tone.toContactTone()
+private fun ContactSectionHeader(section: ContactSectionUi) {
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(Gomob.shapes.r1)
-            .clickable(onClick = onClick)
-            .padding(horizontal = Gomob.spacing.s6, vertical = Gomob.spacing.s4),
+            .padding(horizontal = Gomob.spacing.s4),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
     ) {
-        Text(if (expanded) "⌄" else "›", fontSize = 11.sp, color = Gomob.colors.fg3)
-        Icon(
-            GomobIcons.Folder,
-            contentDescription = null,
-            tint = tone,
-            modifier = Modifier.size(13.dp),
-        )
         Text(
             section.title,
-            fontSize = 12.sp,
+            fontSize = 13.sp,
             fontWeight = FontWeight.Medium,
             color = Gomob.colors.fg1,
             modifier = Modifier.weight(1f),
         )
-        Text(section.countLabel, style = Gomob.type.numInline, color = Gomob.colors.fg3)
+        Text(
+            section.countLabel,
+            style = Gomob.type.numInline.copy(fontSize = 11.sp),
+            color = Gomob.colors.fg3,
+        )
     }
 }
 
@@ -503,30 +585,36 @@ private fun ContactSectionHeader(
 private fun ContactRow(
     contact: ContactRowUi,
     onClick: () -> Unit,
+    tone: WatchTone = WatchTone.Accent,
 ) {
+    // 行高 60 / 头像 40 r3;分隔线 start 66 = 行 padding 14 + 头像 40 + 间距 12
     Row(
         Modifier
             .fillMaxWidth()
-            .height(46.dp)
-            .clip(Gomob.shapes.r2)
-            .background(Color.Transparent)
+            .height(60.dp)
             .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp),
+            .padding(horizontal = Gomob.spacing.s14),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
     ) {
-        ContactAvatar(contact)
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+        InitialAvatarTile(
+            text = contact.initials.ifBlank { contact.name },
+            size = Gomob.spacing.avatar40,
+            tone = tone,
+            fontSize = 15.sp,
+            online = contact.online,
+        )
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
                 contact.name,
-                fontSize = 13.sp,
+                fontSize = 15.sp,
                 fontWeight = FontWeight.Medium,
                 color = Gomob.colors.fg0,
                 maxLines = 1,
             )
             Text(
                 "${contact.role} · ${contact.employeeId}",
-                fontSize = 10.sp,
+                fontSize = 11.sp,
                 fontFamily = FontFamily.Monospace,
                 color = Gomob.colors.fg3,
                 maxLines = 1,
@@ -536,7 +624,7 @@ private fun ContactRow(
             GomobIcons.ChevronRight,
             contentDescription = null,
             tint = Gomob.colors.fg3,
-            modifier = Modifier.size(13.dp),
+            modifier = Modifier.size(15.dp),
         )
     }
 }
@@ -546,19 +634,9 @@ private fun ContactListDivider() {
     Box(
         Modifier
             .fillMaxWidth()
-            .padding(start = 52.dp, end = 10.dp)
+            .padding(start = 66.dp)
             .height(Gomob.spacing.hairline)
-            .background(Gomob.colors.line1.copy(alpha = 0.03f)),
-    )
-}
-
-@Composable
-private fun ContactAvatar(contact: ContactRowUi) {
-    MessageAvatarImage(
-        seed = "contact-${contact.id}-${contact.name}",
-        size = 32.dp,
-        shape = Gomob.shapes.r1,
-        online = contact.online,
+            .background(Gomob.colors.line1),
     )
 }
 
@@ -702,15 +780,6 @@ internal val contactPinyinMap = mapOf(
 )
 
 @Composable
-private fun WatchTone.toContactTone(): Color = when (this) {
-    WatchTone.Accent -> Gomob.colors.accent
-    WatchTone.Warn -> Gomob.colors.warn
-    WatchTone.Danger -> Gomob.colors.danger
-    WatchTone.Ok -> Gomob.colors.ok
-    WatchTone.Neutral -> Gomob.colors.fg3
-}
-
-@Composable
 private fun SegmentedTabs(
     tab: MsgTab,
     hasMessageUnread: Boolean,
@@ -785,6 +854,9 @@ private fun ListPane(
     helpState: HelpExpertsUiState,
     query: String,
     onOpenConversation: (ConversationRowUi) -> Unit,
+    deleteTargetConversationId: Long?,
+    onToggleDeleteState: (Long) -> Unit,
+    onDeleteConversation: (Long) -> Unit,
     onOpenMessage: (MessageListSearchMessageUi) -> Unit,
     onOpenContactDetail: (ContactRowUi) -> Unit,
     listState: LazyListState,
@@ -847,11 +919,18 @@ private fun ListPane(
                 is MessageListUiState.Content -> {
                     items(state.conversations, key = { item -> item.id }) { item ->
                         MsgRow(
-                            item,
+                            item = item,
+                            deleteState = deleteTargetConversationId == item.id,
                             onClick = {
                                 dismissSearchFocus()
-                                onOpenConversation(item)
+                                if (deleteTargetConversationId == null) {
+                                    onOpenConversation(item)
+                                } else {
+                                    deleteTargetConversationId?.let(onToggleDeleteState)
+                                }
                             },
+                            onLongClick = { onToggleDeleteState(item.id) },
+                            onDelete = { onDeleteConversation(item.id) },
                         )
                     }
                 }
@@ -866,13 +945,16 @@ private fun SearchBar(
     onQueryChange: (String) -> Unit,
     onActiveChange: (Boolean) -> Unit,
     placeholder: String = "搜索消息 / 联系人",
+    focusRequester: FocusRequester? = null,
+    modifier: Modifier = Modifier,
 ) {
     Row(
-        Modifier
+        modifier
             .fillMaxWidth()
-            .height(36.dp)
+            .height(40.dp)
             .clip(Gomob.shapes.r2)
-            .background(Gomob.colors.bg1)
+            .background(Gomob.colors.bg1.copy(alpha = 0.8f))
+            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
             .padding(horizontal = Gomob.spacing.s12),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
@@ -894,9 +976,10 @@ private fun SearchBar(
                 onValueChange = onQueryChange,
                 modifier = Modifier
                     .fillMaxWidth()
+                    .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
                     .onFocusChanged { onActiveChange(it.isFocused) },
                 singleLine = true,
-                textStyle = TextStyle(fontSize = 12.sp, lineHeight = 18.sp, color = Gomob.colors.fg0),
+                textStyle = TextStyle(fontSize = 14.sp, lineHeight = 20.sp, color = Gomob.colors.fg0),
                 cursorBrush = SolidColor(Gomob.colors.accent),
                 decorationBox = { innerTextField ->
                     Box(
@@ -906,8 +989,8 @@ private fun SearchBar(
                         if (query.isEmpty()) {
                             Text(
                                 placeholder,
-                                fontSize = 12.sp,
-                                lineHeight = 18.sp,
+                                fontSize = 14.sp,
+                                lineHeight = 20.sp,
                                 color = Gomob.colors.fg3,
                             )
                         }
@@ -942,7 +1025,7 @@ private fun MessageListSearchPanel(
         Modifier
             .fillMaxWidth()
             .clearInputFocusOnPointerDown(focusManager)
-            .padding(horizontal = Gomob.spacing.s20, vertical = Gomob.spacing.s8),
+            .padding(horizontal = Gomob.spacing.pageGutter, vertical = Gomob.spacing.s8),
         verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
     ) {
         when {
@@ -974,8 +1057,7 @@ private fun SearchHintBlock(text: String) {
     Box(
         Modifier
             .fillMaxWidth()
-            .clip(Gomob.shapes.r3)
-            .background(Gomob.colors.bg1)
+            .glassPanelBg(shape = Gomob.shapes.r3)
             .padding(Gomob.spacing.s16),
         contentAlignment = Alignment.CenterStart,
     ) {
@@ -1011,7 +1093,7 @@ private fun SearchContactRow(contact: ContactRowUi, onClick: () -> Unit) {
         title = contact.name,
         subtitle = "${contact.role} · ${contact.employeeId}",
         meta = if (contact.online) "在线" else "离线",
-        avatarSeed = "contact-${contact.detailId}-${contact.name}",
+        avatarText = contact.initials.ifBlank { contact.name },
         onClick = onClick,
     )
 }
@@ -1023,7 +1105,7 @@ private fun SearchMessageRow(message: MessageListSearchMessageUi, onClick: () ->
         title = message.conversationTitle,
         subtitle = "${message.senderLabel} · ${message.preview}",
         meta = message.time,
-        avatarSeed = "message-${message.conversationId}-${message.localKey}",
+        avatarText = message.conversationTitle,
         onClick = onClick,
     )
 }
@@ -1035,7 +1117,7 @@ private fun SearchConversationRow(conversation: ConversationRowUi, onClick: () -
         title = conversation.title,
         subtitle = conversation.preview.ifBlank { "会话 #${conversation.id}" },
         meta = conversation.time,
-        avatarSeed = "conversation-${conversation.id}-${conversation.title}",
+        avatarText = conversation.initials.ifBlank { conversation.title },
         onClick = onClick,
     )
 }
@@ -1046,24 +1128,24 @@ private fun SearchResultRow(
     title: String,
     subtitle: String,
     meta: String,
-    avatarSeed: String,
+    avatarText: String,
     onClick: () -> Unit,
 ) {
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(Gomob.shapes.r3)
-            .background(Gomob.colors.bg1)
+            .glassPanelBg(shape = Gomob.shapes.r3)
             .clickable(onClick = onClick)
             .padding(horizontal = Gomob.spacing.s12, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Box(Modifier.size(34.dp), contentAlignment = Alignment.Center) {
-            MessageAvatarImage(
-                seed = avatarSeed,
+            InitialAvatarTile(
+                text = avatarText,
                 size = 34.dp,
                 shape = Gomob.shapes.r2,
+                fontSize = 13.sp,
             )
             Icon(
                 imageVector = icon,
@@ -1186,23 +1268,40 @@ private fun String.searchResultIcon(): ImageVector = when (this) {
     else -> GomobIcons.Search
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MsgRow(item: ConversationRowUi, onClick: () -> Unit) {
+private fun MsgRow(
+    item: ConversationRowUi,
+    deleteState: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    onDelete: () -> Unit,
+) {
     // 行不再铺 bg0 实底: 玻璃骨架下露出氛围光晕
     Column(
         Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
+            .background(if (deleteState) Gomob.colors.dangerSoft else Color.Transparent)
+            .semantics {
+                contentDescription = "消息会话 ${item.id} ${item.title}"
+                stateDescription = if (deleteState) "删除状态" else "正常状态"
+            }
+            .combinedClickable(
+                onClickLabel = if (deleteState) "退出删除状态" else "打开会话",
+                onLongClickLabel = "切换删除状态",
+                onClick = onClick,
+                onLongClick = onLongClick,
+            ),
     ) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .height(68.dp)
-                .padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20),
+                .height(Gomob.spacing.rowConversation)
+                .padding(horizontal = Gomob.spacing.pageGutter),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
-            MsgAvatar(seed = "conversation-${item.id}-${item.title}", kind = item.avatarKind)
+            MsgAvatar(item)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -1216,7 +1315,7 @@ private fun MsgRow(item: ConversationRowUi, onClick: () -> Unit) {
                     )
                     Text(
                         item.time,
-                        style = Gomob.type.numInline.copy(fontSize = 10.sp),
+                        style = Gomob.type.numInline.copy(fontSize = 11.sp),
                         color = Gomob.colors.fg3,
                         modifier = Modifier.padding(start = Gomob.spacing.s8),
                     )
@@ -1224,7 +1323,7 @@ private fun MsgRow(item: ConversationRowUi, onClick: () -> Unit) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         item.preview.ifBlank { " " },
-                        fontSize = 12.sp,
+                        fontSize = 13.sp,
                         color = Gomob.colors.fg2,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -1235,23 +1334,59 @@ private fun MsgRow(item: ConversationRowUi, onClick: () -> Unit) {
                     }
                 }
             }
+            AnimatedVisibility(
+                visible = deleteState,
+                enter = fadeIn() + slideInHorizontally(initialOffsetX = { it }),
+                exit = fadeOut() + slideOutHorizontally(targetOffsetX = { it }),
+            ) {
+                Row(
+                    Modifier
+                        .clip(Gomob.shapes.r2)
+                        .background(Gomob.colors.danger)
+                        .semantics {
+                            contentDescription = "删除会话 ${item.id} ${item.title}"
+                        }
+                        .clickable(onClickLabel = "删除会话", onClick = onDelete)
+                        .height(Gomob.spacing.touchMin)
+                        .padding(horizontal = Gomob.spacing.s12),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+                ) {
+                    Icon(
+                        imageVector = GomobIcons.Trash,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(Gomob.spacing.icon16),
+                    )
+                    Text(
+                        text = "删除",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = Color.White,
+                    )
+                }
+            }
         }
         Box(
             Modifier
                 .fillMaxWidth()
-                .padding(start = 76.dp, end = Gomob.spacing.s20)
+                .padding(start = 72.dp, end = Gomob.spacing.pageGutter)
                 .height(Gomob.spacing.hairline)
-                .background(Gomob.colors.line1.copy(alpha = 0.05f)),
+                .background(Gomob.colors.line1),
         )
     }
 }
 
+internal fun nextConversationDeleteTarget(current: Long?, pressed: Long): Long? =
+    if (current == pressed) null else pressed
+
 @Composable
-private fun MsgAvatar(seed: String, kind: AvatarKind) {
-    MessageAvatarImage(
-        seed = "$kind-$seed",
-        size = 44.dp,
-        shape = Gomob.shapes.r2,
+private fun MsgAvatar(item: ConversationRowUi) {
+    // 首字母 tile:会话行暂无联系人 tone 数据 → accentSoft;无在线数据不叠 ok 点
+    InitialAvatarTile(
+        text = item.initials.ifBlank { item.title },
+        size = Gomob.spacing.avatarConversation,
+        tone = WatchTone.Accent,
     )
 }
 
@@ -1353,12 +1488,12 @@ private fun MultiLineRoomRow(
         Row(
             Modifier
                 .fillMaxWidth()
-                .height(68.dp)
-                .padding(start = Gomob.spacing.s20, end = Gomob.spacing.s20),
+                .height(Gomob.spacing.rowConversation)
+                .padding(horizontal = Gomob.spacing.pageGutter),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
-            MultiLineRoomAvatarMosaic(room.avatarSeeds)
+            MultiLineRoomAvatarMosaic(labels = room.avatarLabels, title = room.title)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -1372,7 +1507,7 @@ private fun MultiLineRoomRow(
                     )
                     Text(
                         room.time,
-                        style = Gomob.type.numInline.copy(fontSize = 10.sp),
+                        style = Gomob.type.numInline.copy(fontSize = 11.sp),
                         color = Gomob.colors.fg3,
                         modifier = Modifier.padding(start = Gomob.spacing.s8),
                     )
@@ -1380,7 +1515,7 @@ private fun MultiLineRoomRow(
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         room.preview.ifBlank { room.subtitle },
-                        fontSize = 12.sp,
+                        fontSize = 13.sp,
                         color = Gomob.colors.fg2,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -1391,7 +1526,7 @@ private fun MultiLineRoomRow(
                     } else {
                         Text(
                             room.memberCountLabel,
-                            style = Gomob.type.numInline.copy(fontSize = 10.sp),
+                            style = Gomob.type.numInline.copy(fontSize = 11.sp),
                             color = Gomob.colors.fg3,
                             modifier = Modifier.padding(start = Gomob.spacing.s8),
                         )
@@ -1402,36 +1537,45 @@ private fun MultiLineRoomRow(
         Box(
             Modifier
                 .fillMaxWidth()
-                .padding(start = 76.dp, end = Gomob.spacing.s20)
+                .padding(start = 72.dp, end = Gomob.spacing.pageGutter)
                 .height(Gomob.spacing.hairline)
-                .background(Gomob.colors.line1.copy(alpha = 0.05f)),
+                .background(Gomob.colors.line1),
         )
     }
 }
 
+/**
+ * 群聊头像:有 ≥2 位成员名时拼 2x2 首字母小 tile;否则退化为单个首字母 tile(取群名首字)。
+ */
 @Composable
-private fun MultiLineRoomAvatarMosaic(seeds: List<String>) {
-    val normalizedSeeds = seeds.filter { it.isNotBlank() }.take(4).ifEmpty {
-        listOf("group-default-a", "group-default-b", "group-default-c", "group-default-d")
+private fun MultiLineRoomAvatarMosaic(labels: List<String>, title: String) {
+    val normalized = labels.filter { it.isNotBlank() }.take(4)
+    if (normalized.size < 2) {
+        InitialAvatarTile(
+            text = normalized.firstOrNull() ?: title,
+            size = Gomob.spacing.avatarConversation,
+        )
+        return
     }
     Column(
         Modifier
-            .size(44.dp)
-            .clip(Gomob.shapes.r2)
-            .background(Gomob.colors.bg2)
+            .size(Gomob.spacing.avatarConversation)
+            .clip(Gomob.shapes.r3)
+            .background(Gomob.colors.bg3)
             .padding(2.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        normalizedSeeds.chunked(2).forEach { row ->
+        normalized.chunked(2).forEach { row ->
             Row(
                 Modifier.weight(1f),
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-                row.forEach { seed ->
-                    MessageAvatarImage(
-                        seed = seed,
+                row.forEach { label ->
+                    InitialAvatarTile(
+                        text = label,
                         size = 19.dp,
                         shape = Gomob.shapes.r1,
+                        fontSize = 10.sp,
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -1658,10 +1802,9 @@ private fun StateBlock(
 ) {
     Box(
         Modifier
-            .padding(horizontal = Gomob.spacing.s20, vertical = Gomob.spacing.s12)
+            .padding(horizontal = Gomob.spacing.pageGutter, vertical = Gomob.spacing.s12)
             .fillMaxWidth()
-            .clip(Gomob.shapes.r3)
-            .background(Gomob.colors.bg1)
+            .glassPanelBg(shape = Gomob.shapes.r3)
             .let { if (onClick != null) it.clickable(onClick = onClick) else it }
             .padding(Gomob.spacing.s16),
     ) {

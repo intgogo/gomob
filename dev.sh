@@ -5,7 +5,7 @@
 #   ./dev.sh doctor       自检环境（Java / SDK / NDK / CMake / adb）
 #   ./dev.sh build        编译 debug APK（:app:assembleDebug）
 #   ./dev.sh release      编译 release APK
-#   ./dev.sh install      推到当前已连接设备（:app:installDebug）
+#   ./dev.sh install      编译并通过非流式 adb 静默安装到当前设备
 #   ./dev.sh run          install + 启动 MainActivity
 #   ./dev.sh up           一键启动开发服务栈 + ASR + 后台 devserver + adb reverse
 #   ./dev.sh test         跑全部单元测试（:test）
@@ -19,10 +19,11 @@
 #                         高码率录屏到 .dev/app-recordings/<name>.mp4
 #   ./dev.sh adb-wifi ... 转发到 scripts/adb-wifi.sh
 #   ./dev.sh harness <名> 跑指定 harness（tests/harness/<名>/run.sh）
-#   ./dev.sh emu-start    启动 gomob_test AVD（默认带 GUI 窗口走 DISPLAY=:1, -gpu host;
+#   ./dev.sh emu-start    启动 gomob_test AVD（默认带 GUI 窗口走 DISPLAY=:1,
+#                         -gpu host + SkiaVK/Vulkan;
 #                         同时禁用本机不稳定的 netsim / packet streamer 路径。
 #                         用户通过 VNC 桌面里的 emulator 窗口看 app。
-#                         若需 headless（CI / 截图 only）传 HEADLESS=1）
+#                         可用 EMULATOR_GPU_MODE 覆盖渲染器；headless 传 HEADLESS=1）
 #   ./dev.sh emu-stop     杀 emulator
 #   ./dev.sh avd-create   创建 gomob_test AVD（首次）
 #
@@ -85,6 +86,28 @@ doctor() {
 
 adb_cmd() {
     adb ${ADB_DEVICE:+-s "$ADB_DEVICE"} "$@"
+}
+
+ensure_emulator_hardware_keyboard() {
+    local avd_home="${ANDROID_AVD_HOME:-${ANDROID_USER_HOME:-$HOME/.android}/avd}"
+    local config="$avd_home/gomob_test.avd/config.ini"
+    [[ -f "$config" ]] || {
+        echo "gomob_test AVD 配置不存在: $config；先执行 ./dev.sh avd-create" >&2
+        return 1
+    }
+    if grep -Eq '^[[:space:]]*hw\.keyboard[[:space:]]*=' "$config"; then
+        sed -i -E 's/^[[:space:]]*hw\.keyboard[[:space:]]*=.*/hw.keyboard = yes/' "$config"
+    else
+        printf '\nhw.keyboard = yes\n' >> "$config"
+    fi
+    echo "emulator 宿主键盘已启用: $config"
+}
+
+install_debug_apk() {
+    local apk="$PROJ_DIR/app/build/outputs/apk/debug/app-debug.apk"
+    "$GRADLEW" :app:assembleDebug "$@" 2>&1 | tee "$DEV_DIR/install.log"
+    # HyperOS 对流式安装会转入系统安装器确认页；非流式 push install 可直接更新。
+    adb_cmd install -r -t -g --no-streaming "$apk" 2>&1 | tee -a "$DEV_DIR/install.log"
 }
 
 ensure_dev_reverse() {
@@ -373,11 +396,11 @@ case "$cmd" in
         ;;
     install)
         ensure_dev_reverse
-        "$GRADLEW" :app:installDebug "$@" 2>&1 | tee "$DEV_DIR/install.log"
+        install_debug_apk "$@"
         ;;
     run)
         ensure_dev_reverse
-        "$GRADLEW" :app:installDebug 2>&1 | tee "$DEV_DIR/install.log"
+        install_debug_apk
         adb_cmd shell am start -n io.gomob.scan.debug/io.gomob.scan.MainActivity
         ;;
     reverse)
@@ -493,6 +516,7 @@ case "$cmd" in
                      export GOMOB_REDIS_ADDR="${GOMOB_REDIS_ADDR:-$GOMOB_DEFAULT_REDIS_ADDR}"
                      export GOMOB_NATS_URL="${GOMOB_NATS_URL:-$GOMOB_DEFAULT_NATS_URL}"
                      export GOMOB_MINIO_ENDPOINT="${GOMOB_MINIO_ENDPOINT:-$GOMOB_DEFAULT_MINIO_ENDPOINT}"
+                     export GOMOB_APP_FEEDBACK_DIR="${GOMOB_APP_FEEDBACK_DIR:-$DEV_DIR/app-feedback}"
                      (cd "$PROJ_DIR/server" && ./scripts/migrate.sh up)
                      (cd "$PROJ_DIR/server/cmd/devserver" && \
                         GOMOB_LIVEKIT_URL="${GOMOB_LIVEKIT_URL:-ws://127.0.0.1:7880}" \
@@ -511,10 +535,22 @@ case "$cmd" in
         : "${ANDROID_HOME:?}"
         echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
             -n gomob_test -k "system-images;android-34;default;x86_64" -d pixel_7 --force
+        ensure_emulator_hardware_keyboard
         ;;
     emu-start)
         : "${ANDROID_HOME:?}"
-        # 关键：必须 -gpu host + DISPLAY=:1 走 NVIDIA / VNC 桌面。
+        ensure_emulator_hardware_keyboard
+        # DISPLAY=:1 的 GL 路径会回退 llvmpipe，使 App 与 SystemUI 一起阻塞在
+        # gralloc / BufferQueue。固定 guest SystemUI 走 SkiaVK，并关闭本机不稳定的
+        # Vulkan 原生交换链；host + gfxstream Vulkan 已通过连续交互验证。
+        gpu_mode="${EMULATOR_GPU_MODE:-host}"
+        case "$gpu_mode" in
+            auto|host|software|lavapipe|swiftshader|swangle) ;;
+            *)
+                echo "不支持的 EMULATOR_GPU_MODE=$gpu_mode" >&2
+                exit 2
+                ;;
+        esac
         # 2026-05-08: emulator 36.x 在本机 netsim/packet streamer 路径会触发
         # libandroid-webrtc.so 崩溃，默认关掉 WiFi/Modem 仿真链路。
         # 详见 docs/agent-memory/finding_emulator_setup_2026-05-04.md
@@ -524,6 +560,8 @@ case "$cmd" in
         win_flags=()
         [[ "${HEADLESS:-0}" == "1" ]] && win_flags=(-no-window)
         stable_flags=(
+            -feature Vulkan
+            -feature -VulkanNativeSwapchain
             -feature -VirtioWifi
             -feature -Mac80211hwsimUserspaceManaged
             -feature -ModemSimulator
@@ -531,7 +569,8 @@ case "$cmd" in
         )
         DISPLAY="${DISPLAY:-:1}" setsid "$ANDROID_HOME/emulator/emulator" -avd gomob_test \
             "${win_flags[@]}" -no-audio -no-snapshot -no-boot-anim \
-            -gpu host -accel on -port 5556 "${stable_flags[@]}" \
+            -gpu "$gpu_mode" -systemui-renderer skiavk \
+            -accel on -port 5556 "${stable_flags[@]}" \
             < /dev/null > "$DEV_DIR/emulator.log" 2>&1 & disown
         (
             export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
@@ -546,8 +585,15 @@ case "$cmd" in
                 sleep 2
             done
             adb -s emulator-5556 shell am force-stop com.android.bluetooth >/dev/null 2>&1 || true
+            for _ in {1..30}; do
+                if adb -s emulator-5556 shell settings put secure show_ime_with_hard_keyboard 1 >/dev/null 2>&1; then
+                    echo "宿主键盘直输已启用，屏幕软键盘保留"
+                    break
+                fi
+                sleep 2
+            done
         ) > "$DEV_DIR/emulator-postboot.log" 2>&1 & disown
-        echo "emulator started (log: $DEV_DIR/emulator.log)"
+        echo "emulator started (gpu=$gpu_mode, systemui=skiavk, log: $DEV_DIR/emulator.log)"
         [[ "${#win_flags[@]}" -eq 0 ]] && echo "GUI 模式 — 在 VNC :1 桌面里能看到 emulator 窗口" \
             || echo "headless 模式 (HEADLESS=1)"
         echo "postboot 修正日志: $DEV_DIR/emulator-postboot.log"

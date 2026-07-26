@@ -1,6 +1,10 @@
 package io.gomob.feature.scan3d
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -20,64 +24,121 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.em
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import io.gomob.data.scan.VinResult
+import androidx.core.content.ContextCompat
+import io.gomob.data.scan.VinRecognitionStatus
 import io.gomob.designsystem.component.BackHeader
+import io.gomob.designsystem.component.StatusTone
 import io.gomob.designsystem.glass.GlassHeaderScaffold
 import io.gomob.designsystem.glass.glassChrome
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
+import java.util.Locale
 
 /**
- * VIN 数码拓印（按原设计还原多面板版式）。
+ * VIN 数码拓印：真实 RGBD 双预览、服务端权威正射与 OCR 结果在一屏闭环。
  *
  * 顶部两个横条 = 真实相机帧：彩色图（[VinCaptureViewModel.colorPreview]）+ 深度图（[VinCaptureViewModel.depthPreview]）。
- * 拓印纸面 = 服务端原厂式彩色正射还原图（拍照→上传→还原回显）；单字符比对 / 汇总结论 = 真实 vin_pipeline OCR（点「确认」识别）。
+ * 拓印纸面 = 服务端原厂式彩色正射还原图（拍照→上传→还原回显）；识别结果 = 外部算法真实 OCR。
  */
 @Composable
 fun ScanCaptureRoute(
     onBack: () -> Unit,
+    onOpenDepthCamera: () -> Unit = {},
     vm: VinCaptureViewModel = hiltViewModel(),
 ) {
+    val context = LocalContext.current
+    var hasCameraPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        hasCameraPermission = granted
+    }
+    LaunchedEffect(hasCameraPermission) {
+        vm.setCameraPermissionGranted(hasCameraPermission)
+        if (!hasCameraPermission) permissionLauncher.launch(Manifest.permission.CAMERA)
+    }
+
     val colorBmp by vm.colorPreview.collectAsStateWithLifecycle()
     val depthBmp by vm.depthPreview.collectAsStateWithLifecycle()
+    val previewAlignment by vm.previewAlignment.collectAsStateWithLifecycle()
     val rubbing by vm.rubbing.collectAsStateWithLifecycle()
     val capturing by vm.capturing.collectAsStateWithLifecycle()
     val captureMsg by vm.captureMsg.collectAsStateWithLifecycle()
+    val captureReadiness by vm.captureReadiness.collectAsStateWithLifecycle()
+    val captureQuality by vm.captureQuality.collectAsStateWithLifecycle()
+    val autoCaptureDecision by vm.autoCaptureDecision.collectAsStateWithLifecycle()
+    val depthRoiMetrics by vm.depthRoiMetrics.collectAsStateWithLifecycle()
     val vinState by vm.state.collectAsStateWithLifecycle()
-
+    val restoreState by vm.restoreState.collectAsStateWithLifecycle()
+    val cameraStopped = restoreState is VinRestoreState.Ready
+    val effectiveCaptureQuality = if (captureReadiness.ready) captureQuality else VinCaptureQuality.Waiting
     val listState = rememberLazyListState()
     GlassHeaderScaffold(
         listState = listState,
-        header = { BackHeader(title = "VIN 数码拓印", eyebrow = "三维扫描", onBack = onBack) },
+        header = {
+            BackHeader(
+                title = "VIN 数码拓印",
+                onBack = onBack,
+                trailing = {
+                    VinHeaderCameraButton(
+                        readiness = captureReadiness,
+                        onClick = onOpenDepthCamera,
+                    )
+                },
+            )
+        },
         overlay = { _ ->
             // 吸底拍摄栏 → 玻璃吸底条（规则 4）：内容从底下滚过透出模糊背景，导航栏 inset 吃在玻璃内侧。
             VinCaptureBar(
                 capturing = capturing,
-                recognizing = vinState is VinCaptureState.Recognizing,
-                canConfirm = rubbing != null,
+                captureReadiness = captureReadiness,
+                captureQuality = effectiveCaptureQuality,
+                restoreState = restoreState,
+                vinState = vinState,
                 onShutter = vm::capture,
                 onRetake = vm::retake,
                 onConfirm = vm::recognize,
@@ -93,79 +154,355 @@ fun ScanCaptureRoute(
             state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
-                top = padding.calculateTopPadding(),
+                top = padding.calculateTopPadding() + Gomob.spacing.s12,
                 // 底部预留吸底拍摄栏高度，末尾内容不被压住
                 bottom = padding.calculateBottomPadding() + 98.dp,
             ),
+            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.cardGap),
         ) {
-            item { VinDepthPane(depthBmp = depthBmp) }
-            item { VinColorPane(colorBmp = colorBmp) }
-            item { VinRubbing(rubbing = rubbing, captureMsg = captureMsg, processing = capturing, vinState = vinState) }
+            item {
+                VinPreviewPanel(
+                    depthBmp = depthBmp,
+                    colorBmp = colorBmp,
+                    alignment = previewAlignment,
+                    captureQuality = effectiveCaptureQuality,
+                    cameraStopped = cameraStopped,
+                    onColorRoiChanged = vm::setPreviewRoi,
+                )
+            }
+            if (depthRoiMetrics != null && (captureReadiness.ready || cameraStopped)) {
+                item {
+                    VinDepthMetricsStrip(
+                        metrics = requireNotNull(depthRoiMetrics),
+                        captured = cameraStopped,
+                    )
+                }
+            }
+            if (
+                restoreState is VinRestoreState.Preview &&
+                vinState is VinCaptureState.Preview &&
+                captureReadiness.ready &&
+                effectiveCaptureQuality is VinCaptureQuality.Ready
+            ) {
+                item { VinReadyGuide(autoCaptureDecision) }
+            }
+            vinNotice(
+                captureMsg = captureMsg,
+                captureReadiness = captureReadiness,
+                captureQuality = captureQuality,
+                restoreState = restoreState,
+                vinState = vinState,
+                hasCameraPermission = hasCameraPermission,
+            )?.let { notice ->
+                item {
+                    VinActionNotice(
+                        notice = notice,
+                        onAction = notice.actionLabel?.let {
+                            { permissionLauncher.launch(Manifest.permission.CAMERA) }
+                        },
+                    )
+                }
+            }
+            if (restoreState is VinRestoreState.Ready && rubbing != null) {
+                item {
+                    VinOutcomePanel(
+                        rubbing = requireNotNull(rubbing),
+                        recognition = vinState as? VinCaptureState.Result,
+                    )
+                }
+            }
             item { Spacer(Modifier.height(8.dp)) }
         }
     }
 }
 
-// 面板固定 3.5:1：原帧约 5:1，Crop 按高填满、左右多余视野裁掉（只取中间需要的部分，不留黑边）。
-private const val PANE_ASPECT = 3.5f
-// 服务端还原宽度固定、高度按原厂 metric 比例动态算；占位用接近真实 VIN 横条的瘦长比例。
-private const val RESTORED_RUBBING_ASPECT = 8.0f
+private val VinViewportBg = Color(0xFF0B0E13)
+private val VinViewportText = Color.White.copy(alpha = 0.72f)
+private val VinViewportTagBg = Color.Black.copy(alpha = 0.42f)
+private val VinCreatorRoiRed = Color(0xFFFF0000)
+private val VinCreatorRoiGreen = Color(0xFF22C55E)
 
-// ─── 横条：深度图（真实深度帧 turbo 伪彩）───
 @Composable
-private fun VinDepthPane(depthBmp: Bitmap?) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 12.dp, end = 12.dp, bottom = 8.dp)
-            .aspectRatio(PANE_ASPECT)
-            .clip(Gomob.shapes.r3)
-            .background(Color(0xFF06090E)),
+private fun VinPreviewPanel(
+    depthBmp: Bitmap?,
+    colorBmp: Bitmap?,
+    alignment: VinPreviewAlignmentState,
+    captureQuality: VinCaptureQuality,
+    cameraStopped: Boolean,
+    onColorRoiChanged: (VinPreviewRoi) -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
     ) {
-        if (depthBmp != null) {
-            Image(
-                bitmap = depthBmp.asImageBitmap(),
-                contentDescription = "VIN 深度",
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
-            )
-        } else {
-            PaneWaiting("等待深度帧…")
-        }
-        PaneTag("深度图")
+        VinPreviewPane(
+            bitmap = depthBmp,
+            label = if (cameraStopped) "深度图 · 本次拍摄" else vinDepthPreviewLabel(alignment),
+            waiting = if (cameraStopped) "还原完成，相机已停止" else "等待深度帧…",
+        )
+        Spacer(Modifier.fillMaxWidth().height(Gomob.spacing.hairline).background(Gomob.colors.line2))
+        VinPreviewPane(
+            bitmap = colorBmp,
+            label = if (cameraStopped) "彩色图 · 本次拍摄" else "彩色图",
+            waiting = if (cameraStopped) "重新扫描后启动相机" else "等待彩色帧…",
+            showOcrFrame = !cameraStopped,
+            captureQuality = captureQuality,
+            onRoiChanged = onColorRoiChanged,
+        )
     }
 }
 
-// ─── 横条：彩色图（真实彩色帧 HLSD8 RGB + OCR 取景框）───
+internal fun vinDepthPreviewLabel(alignment: VinPreviewAlignmentState): String = when (alignment) {
+    VinPreviewAlignmentState.WaitingForRig -> "深度图"
+    VinPreviewAlignmentState.Loading -> "深度图（标定加载中）"
+    is VinPreviewAlignmentState.Ready -> "深度图"
+    is VinPreviewAlignmentState.Unavailable -> "深度图（原始）"
+}
+
+internal fun vinDepthMetricsText(metrics: VinDepthRoiMetrics, captured: Boolean): String {
+    val coverage = String.format(Locale.ROOT, "%.1f", metrics.coverageRatio.coerceIn(0.0, 1.0) * 100.0)
+    val prefix = "${if (captured) "本次拍摄" else "实时"} · 深度有效率 $coverage%"
+    val distance = metrics.distanceMedianMm
+        ?.takeIf { vinHasReliableDistance(metrics) }
+        ?: return prefix
+    return "$prefix · 距离约 ${String.format(Locale.ROOT, "%.1f", distance / 10.0)}cm"
+}
+
 @Composable
-private fun VinColorPane(colorBmp: Bitmap?) {
+private fun VinDepthMetricsStrip(metrics: VinDepthRoiMetrics, captured: Boolean) {
+    Text(
+        text = vinDepthMetricsText(metrics, captured),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Gomob.spacing.pageGutter)
+            .clip(Gomob.shapes.r2)
+            .background(Gomob.colors.bg1)
+            .border(BorderStroke(Gomob.spacing.hairline, Gomob.colors.line2), Gomob.shapes.r2)
+            .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
+        style = Gomob.type.micro,
+        color = Gomob.colors.fg2,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
+@Composable
+private fun VinHeaderCameraButton(
+    readiness: VinCaptureReadiness,
+    onClick: () -> Unit,
+) {
+    val isError = readiness.message.contains("异常")
+    val iconTint = when {
+        readiness.ready -> Gomob.colors.accent
+        isError -> Gomob.colors.danger
+        else -> Gomob.colors.fg3
+    }
+    val dotColor = when {
+        readiness.ready -> Gomob.colors.ok
+        isError -> Gomob.colors.danger
+        else -> Gomob.colors.fg3
+    }
+    val cameraDescription = if (readiness.ready) {
+        "VIN RGBD 相机已就绪"
+    } else {
+        "VIN RGBD 相机未就绪：${readiness.message}"
+    }
+    Box(
+        modifier = Modifier
+            .size(Gomob.spacing.touchMin)
+            .clip(CircleShape)
+            .clickable(onClick = onClick)
+            .semantics(mergeDescendants = true) { contentDescription = cameraDescription },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(CircleShape)
+                .background(Gomob.colors.bg1.copy(alpha = 0.9f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = GomobIcons.USB,
+                contentDescription = null,
+                tint = iconTint,
+                modifier = Modifier.size(Gomob.spacing.icon20),
+            )
+        }
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 6.dp, end = 6.dp)
+                .size(Gomob.spacing.dot8)
+                .clip(CircleShape)
+                .background(dotColor)
+                .border(BorderStroke(2.dp, Gomob.colors.bg1), CircleShape),
+        )
+    }
+}
+
+@Composable
+private fun VinReadyGuide(decision: VinAutoCaptureDecision) {
+    val detail = when (decision) {
+        is VinAutoCaptureDecision.Stabilizing ->
+            "取景已达标，稳定确认 ${decision.readyFrames.coerceAtMost(VIN_AUTO_CAPTURE_MIN_READY_FRAMES)}/$VIN_AUTO_CAPTURE_MIN_READY_FRAMES 后自动拍摄识别"
+        VinAutoCaptureDecision.Trigger,
+        VinAutoCaptureDecision.Triggered -> "稳定已确认，正在自动拍摄并识别"
+        VinAutoCaptureDecision.Waiting -> "取景已达标，稳定后将自动拍摄并识别"
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Gomob.spacing.pageGutter)
+            .clip(Gomob.shapes.r2)
+            .background(Gomob.colors.bg1)
+            .border(BorderStroke(Gomob.spacing.hairline, Gomob.colors.line2), Gomob.shapes.r2)
+            .semantics(mergeDescendants = true) {
+                contentDescription = "车架号区域已达标，请稳住不动，将自动拍摄并识别，也可点击快门手动拍摄"
+            }
+            .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(CircleShape)
+                .background(Gomob.colors.okSoft),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = GomobIcons.Check,
+                contentDescription = null,
+                tint = Gomob.colors.ok,
+                modifier = Modifier.size(Gomob.spacing.icon16),
+            )
+        }
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2),
+        ) {
+            Text("请稳住不动", style = Gomob.type.caption, color = Gomob.colors.fg1)
+            Text(
+                detail,
+                style = Gomob.type.micro,
+                color = Gomob.colors.fg3,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/** 仅供 debug Activity 确定性验证红绿框、提示和快门门控；不进入生产导航。 */
+@Composable
+internal fun VinCaptureQualityTestSurface(quality: VinCaptureQuality) {
+    val ready = quality is VinCaptureQuality.Ready
+    val metrics = when (quality) {
+        is VinCaptureQuality.Insufficient -> quality.metrics
+        is VinCaptureQuality.TooFar -> quality.metrics
+        is VinCaptureQuality.Ready -> quality.metrics
+        VinCaptureQuality.Waiting -> null
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Gomob.colors.bg0)
+            .padding(top = 48.dp),
+        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
+    ) {
+        VinPreviewPane(
+            bitmap = null,
+            label = "彩色图",
+            waiting = "质量门测试",
+            showOcrFrame = true,
+            captureQuality = quality,
+            onRoiChanged = {},
+        )
+        metrics?.let { VinDepthMetricsStrip(metrics = it, captured = false) }
+        if (ready) {
+            VinReadyGuide(VinAutoCaptureDecision.Stabilizing(readyFrames = 3, stableDurationUs = 400_000L))
+        } else {
+            VinActionNotice(VinNoticeUi(vinCaptureGuidance(quality), StatusTone.Warn))
+        }
+        VinShutterAction(
+            capturing = false,
+            enabled = ready,
+            waitingForDevice = false,
+            waitingForDistance = quality is VinCaptureQuality.TooFar,
+            waitingForQuality = !ready && quality !is VinCaptureQuality.TooFar,
+            onClick = {},
+            modifier = Modifier.align(Alignment.CenterHorizontally),
+        )
+    }
+}
+
+@Composable
+private fun VinPreviewPane(
+    bitmap: Bitmap?,
+    label: String,
+    waiting: String,
+    showOcrFrame: Boolean = false,
+    captureQuality: VinCaptureQuality = VinCaptureQuality.Waiting,
+    onRoiChanged: ((VinPreviewRoi) -> Unit)? = null,
+) {
+    var viewportSize by remember { mutableStateOf(IntSize.Zero) }
+    val insetPx = with(LocalDensity.current) { 20.dp.toPx() }
+    val roi = remember(viewportSize, insetPx, showOcrFrame) {
+        if (showOcrFrame) {
+            vinPreviewRoi(
+                viewportWidthPx = viewportSize.width.toFloat(),
+                viewportHeightPx = viewportSize.height.toFloat(),
+                imageAspect = VINCREATOR_STREAM_ASPECT,
+                insetPx = insetPx,
+            )
+        } else {
+            null
+        }
+    }
+    val currentOnRoiChanged by rememberUpdatedState(onRoiChanged)
+    LaunchedEffect(roi) {
+        if (roi != null) currentOnRoiChanged?.invoke(roi)
+    }
+    val captureReady = captureQuality is VinCaptureQuality.Ready
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 12.dp, end = 12.dp, bottom = 8.dp)
-            .aspectRatio(PANE_ASPECT)
-            .clip(Gomob.shapes.r3)
-            .background(Color(0xFF080A0E)),
+            .aspectRatio(VINCREATOR_VIEWPORT_ASPECT)
+            .onSizeChanged { viewportSize = it }
+            .semantics(mergeDescendants = true) {
+                contentDescription = if (showOcrFrame) {
+                    "VIN${label}预览框，拍照区域${if (captureReady) "已就绪" else "未就绪"}"
+                } else {
+                    "VIN${label}预览框"
+                }
+            }
+            .background(Gomob.colors.bg2),
     ) {
-        if (colorBmp != null) {
+        if (bitmap != null) {
             Image(
-                bitmap = colorBmp.asImageBitmap(),
-                contentDescription = "VIN 彩色取景",
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = "VIN $label",
                 modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
+                contentScale = ContentScale.Fit,
             )
         } else {
-            PaneWaiting("等待彩色帧…")
+            PaneWaiting(waiting)
         }
-        VinOcrFrame()
-        PaneTag("彩色图")
+        if (showOcrFrame && roi != null) {
+            VinOcrFrame(
+                imageAspect = VINCREATOR_STREAM_ASPECT,
+                roi = roi,
+                ready = captureReady,
+            )
+        }
+        PaneTag(label)
     }
 }
 
 @Composable
 private fun PaneWaiting(text: String) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text(text, style = Gomob.type.numInline.copy(fontSize = 11.sp), color = Gomob.colors.fg3)
+        Text(text, style = Gomob.type.caption, color = Gomob.colors.fg3)
     }
 }
 
@@ -175,348 +512,366 @@ private fun androidx.compose.foundation.layout.BoxScope.PaneTag(label: String) {
         label,
         modifier = Modifier
             .align(Alignment.TopStart)
-            .padding(8.dp)
-            .clip(Gomob.shapes.r1)
-            .background(Color.Black.copy(alpha = 0.45f))
-            .padding(horizontal = 6.dp, vertical = 2.dp),
-        style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.08.em),
-        color = Gomob.colors.fg2,
+            .padding(Gomob.spacing.s8)
+            .background(VinViewportTagBg)
+            .padding(horizontal = Gomob.spacing.s6, vertical = Gomob.spacing.s2),
+        style = Gomob.type.micro.copy(fontSize = 10.sp),
+        color = VinViewportText,
     )
 }
 
+/** VINCreator 彩色取景指示：红框表示不可拍，框内深度达标后整体变绿。 */
 @Composable
-private fun VinOcrFrame() {
-    val acc = Gomob.colors.accent
+private fun VinOcrFrame(imageAspect: Float, roi: VinPreviewRoi, ready: Boolean) {
+    val frameColor = if (ready) VinCreatorRoiGreen else VinCreatorRoiRed
     Canvas(Modifier.fillMaxSize()) {
-        val left = size.width * 0.1375f
-        val top = size.height * 0.47f
-        val right = size.width * 0.8625f
-        val bottom = size.height * 0.61f
-        val len = 7.dp.toPx()
-        listOf(
-            Offset(left, top) to Pair(1f, 1f),
-            Offset(right, top) to Pair(-1f, 1f),
-            Offset(left, bottom) to Pair(1f, -1f),
-            Offset(right, bottom) to Pair(-1f, -1f),
-        ).forEach { (p, dir) ->
-            drawLine(acc, p, Offset(p.x + len * dir.first, p.y), strokeWidth = 0.7.dp.toPx())
-            drawLine(acc, p, Offset(p.x, p.y + len * dir.second), strokeWidth = 0.7.dp.toPx())
-        }
-        drawLine(acc.copy(alpha = 0.5f), Offset(left, (top + bottom) / 2f), Offset(right, (top + bottom) / 2f), strokeWidth = 0.3.dp.toPx())
-    }
-}
-
-// ─── 数码拓印块：拍照 → native 正射 → 还原图显示 + 字符比对/汇总（后两块仍演示数据，待逐项接真）───
-@Composable
-private fun VinRubbing(rubbing: Bitmap?, captureMsg: String?, processing: Boolean, vinState: VinCaptureState) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 20.dp, end = 20.dp, bottom = 12.dp)
-            .clip(Gomob.shapes.r3)
-            .background(Gomob.colors.bg1),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Gomob.colors.bg1)
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("数码拓印", fontSize = 11.sp, fontWeight = FontWeight.Medium, color = Gomob.colors.fg0)
-                Text(
-                    "1:1 还原",
-                    style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.14.em),
-                    color = Gomob.colors.fg3,
-                    modifier = Modifier
-                        .clip(Gomob.shapes.r1)
-                        .border(BorderStroke(1.dp, Gomob.colors.line2), Gomob.shapes.r1)
-                        .padding(horizontal = 4.dp, vertical = 1.dp),
-                )
-            }
-            // 状态：拍照中=accent「正在处理」/ 已出图=ok「已生成」/ 否则 fg3「待拍照」。
-            val (dot, label) = when {
-                processing -> Gomob.colors.accent to "正在处理"
-                rubbing != null -> Gomob.colors.ok to "已生成"
-                else -> Gomob.colors.fg3 to "待拍照"
-            }
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                Box(Modifier.size(5.dp).clip(CircleShape).background(dot))
-                Text(label, style = Gomob.type.numInline.copy(fontSize = 10.sp, letterSpacing = 0.04.em), color = dot)
-            }
-        }
-        // 拓印还原图：native 双相机正射输出（透明处透出纸面纹理）。
-        RubbingPaper(rubbing = rubbing)
-        if (captureMsg != null) {
-            Text(
-                captureMsg,
-                style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.04.em),
-                color = Gomob.colors.fg3,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-            )
-        }
-        // 真实 vin_pipeline OCR：点「确认」后出逐字符相似度 + verdict 汇总（待识别/识别中/结果/错误四态）。
-        val result = (vinState as? VinCaptureState.Result)?.result
-        VinCharCompare(result = result, recognizing = vinState is VinCaptureState.Recognizing)
-        VinSummary(result = result, vinState = vinState)
-    }
-}
-
-@Composable
-private fun RubbingPaper(rubbing: Bitmap?) {
-    val aspect = rubbing
-        ?.takeIf { it.width > 0 && it.height > 0 }
-        ?.let { (it.width.toFloat() / it.height.toFloat()).coerceAtLeast(PANE_ASPECT) }
-        ?: RESTORED_RUBBING_ASPECT
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .aspectRatio(aspect)
-            .background(Color(0xFFE8DFC0)),
-        contentAlignment = Alignment.Center,
-    ) {
-        // 纸面纹理（恒在；还原图透明处透出，营造拓印纸感）。
-        Canvas(Modifier.fillMaxSize()) {
-            repeat(160) { i ->
-                drawCircle(
-                    color = Color(0xFF503C28).copy(alpha = 0.16f),
-                    radius = 0.4.dp.toPx(),
-                    center = Offset(size.width * ((i * 7) % 200) / 200f, size.height * ((i * 11) % 120) / 120f),
-                )
-            }
-        }
-        if (rubbing != null) {
-            Image(
-                bitmap = rubbing.asImageBitmap(),
-                contentDescription = "VIN 拓印还原图",
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Fit,
-            )
-        } else {
-            Text(
-                "点击下方快门，深度正射生成拓印还原图",
-                fontFamily = FontFamily.Monospace,
-                fontSize = 11.sp,
-                color = Color(0xFF6E5A46),
-            )
-        }
-    }
-}
-
-// vin_pipeline 相似度可能是 0..1 或 0..100，归一到 0..100 百分比显示（≤1 视为 0..1）。
-private fun simToPct(v: Double): Float = (if (v <= 1.0) v * 100.0 else v).toFloat()
-
-@Composable
-private fun VinCharCompare(result: VinResult?, recognizing: Boolean) {
-    Column(Modifier.padding(horizontal = 8.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("单字符切割 · 字形比对 · OCR", style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.14.em), color = Gomob.colors.fg3)
-            val (tagColor, tag) = when {
-                recognizing -> Gomob.colors.accent to "识别中…"
-                result != null -> Gomob.colors.ok to "检出 ${result.detections} · 比对 ${result.scored}"
-                else -> Gomob.colors.fg3 to "待识别"
-            }
-            Text(tag, style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.06.em), color = tagColor)
-        }
-        if (result != null && result.characters.isNotEmpty()) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                result.characters.forEach { c ->
-                    VinCharCell(
-                        modifier = Modifier.weight(1f),
-                        ch = c.character,
-                        simPct = simToPct(c.similarity),
-                        index = c.index,
-                    )
-                }
-            }
-        } else {
-            Text(
-                if (recognizing) "正在识别还原图…" else "拍照生成还原图后，点下方「确认」识别",
-                modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
-                textAlign = TextAlign.Center,
-                style = Gomob.type.numInline.copy(fontSize = 10.sp, letterSpacing = 0.04.em),
-                color = Gomob.colors.fg3,
-            )
-        }
-    }
-}
-
-@Composable
-private fun VinCharCell(
-    modifier: Modifier,
-    ch: String,
-    simPct: Float,
-    index: Int,
-) {
-    val tone = when {
-        simPct >= 95f -> Gomob.colors.ok
-        simPct >= 90f -> Gomob.colors.warn
-        else -> Gomob.colors.danger
-    }
-    Column(
-        modifier = modifier
-            .clip(Gomob.shapes.r1)
-            .background(Gomob.colors.bg2)
-            .border(BorderStroke(1.dp, Gomob.colors.line1), Gomob.shapes.r1),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text(
-            (index + 1).toString().padStart(2, '0'),
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Gomob.colors.bg1)
-                .padding(vertical = 2.dp),
-            textAlign = TextAlign.Center,
-            style = Gomob.type.numInline.copy(fontSize = 7.sp),
-            color = Gomob.colors.fg3,
+        if (imageAspect <= 0f || !roi.isValid || size.width <= 0f || size.height <= 0f) return@Canvas
+        val imageRect = vinFitImageRect(size.width, size.height, imageAspect)
+        val stroke = 2.dp.toPx()
+        drawRect(
+            color = frameColor,
+            topLeft = Offset(
+                imageRect.left + roi.left * imageRect.width,
+                imageRect.top + roi.top * imageRect.height,
+            ),
+            size = androidx.compose.ui.geometry.Size(
+                ((roi.right - roi.left) * imageRect.width).coerceAtLeast(0f),
+                ((roi.bottom - roi.top) * imageRect.height).coerceAtLeast(0f),
+            ),
+            style = Stroke(width = stroke),
         )
-        // OCR 识别字符（vin_pipeline 真返字符；缺字符显「·」）。
-        Text(
-            ch.ifEmpty { "·" },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(28.dp)
-                .background(Color(0xFFE2D3A9))
-                .padding(top = 4.dp),
-            textAlign = TextAlign.Center,
-            fontFamily = FontFamily.Monospace,
-            fontWeight = FontWeight.Bold,
-            fontSize = 15.sp,
-            color = Color(0xFF2E2417),
-            maxLines = 1,
-        )
-        Text(
-            String.format(java.util.Locale.US, "%.0f", simPct),
-            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-            textAlign = TextAlign.Center,
-            style = Gomob.type.numInline.copy(fontSize = 8.sp),
-            color = tone,
-            maxLines = 1,
-        )
-        Box(Modifier.fillMaxWidth().height(2.dp).background(Gomob.colors.line1)) {
-            Box(Modifier.fillMaxWidth((simPct / 100f).coerceIn(0f, 1f)).height(2.dp).background(tone))
+        val center = Offset(imageRect.left + imageRect.width / 2f, imageRect.top + imageRect.height / 2f)
+        val outerRadius = 10.dp.toPx()
+        val innerRadius = 8.dp.toPx()
+        val ring = Path().apply {
+            fillType = PathFillType.EvenOdd
+            addOval(Rect(center, outerRadius))
+            addOval(Rect(center, innerRadius))
         }
+        drawPath(ring, frameColor)
+        drawCircle(color = frameColor, radius = 2.dp.toPx(), center = center)
     }
 }
 
+/** StatusTone → 语义前景色。 */
 @Composable
-private fun VinSummary(result: VinResult?, vinState: VinCaptureState) {
-    // verdict 状态点：pass/通过=ok，其余=danger；未识别=fg3。
-    val pass = result != null && (result.verdict.equals("pass", true) || result.verdict == "通过")
-    val (tone, label) = when {
-        result == null -> Gomob.colors.fg3 to "待识别"
-        pass -> Gomob.colors.ok to "通过"
-        else -> Gomob.colors.danger to "未通过"
-    }
-    val sub = when {
-        vinState is VinCaptureState.Error -> vinState.msg
-        vinState is VinCaptureState.Recognizing -> "识别中…"
-        result != null -> "VIN ${result.recognizedVin.ifBlank { "—" }}"
-        else -> "拍照还原后，点确认识别"
-    }
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 12.dp, end = 12.dp, bottom = 10.dp)
-            .clip(Gomob.shapes.r2)
-            .background(Gomob.colors.bg2)
-            .padding(horizontal = 10.dp, vertical = 9.dp),
-        verticalArrangement = Arrangement.spacedBy(7.dp),
-    ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                Text("汇总结论", fontSize = 10.sp, fontWeight = FontWeight.Medium, color = Gomob.colors.fg1)
-                Text(
-                    sub,
-                    style = Gomob.type.numInline.copy(fontSize = 8.sp, letterSpacing = 0.06.em),
-                    color = Gomob.colors.fg3,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                Box(Modifier.size(5.dp).clip(CircleShape).background(tone))
-                Text(label, style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.1.em), color = tone)
-            }
-        }
-        if (result != null) {
-            // 只渲染 vin_pipeline 真返字段（检出/比对/字形相似/verdict），不编造厂商/年份解码。
-            val avgTone = if (simToPct(result.avgSimilarity) >= 95f) Gomob.colors.ok else Gomob.colors.warn
-            val reason = result.reasons.firstOrNull() ?: if (pass) "字形匹配" else "—"
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                SummaryCell(SummaryItem("检出", result.detections.toString(), "字符检出", Gomob.colors.accent), Modifier.weight(1f))
-                SummaryCell(SummaryItem("比对", result.scored.toString(), "已比对", Gomob.colors.accent), Modifier.weight(1f))
-                SummaryCell(SummaryItem("字形", String.format(java.util.Locale.US, "%.1f", simToPct(result.avgSimilarity)), "均值相似", avgTone), Modifier.weight(1f))
-                SummaryCell(SummaryItem("结论", result.verdict, reason, tone), Modifier.weight(1f))
-            }
-        }
-    }
+private fun statusToneFg(tone: StatusTone): Color = when (tone) {
+    StatusTone.Neutral -> Gomob.colors.fg2
+    StatusTone.Accent -> Gomob.colors.accent
+    StatusTone.Warn -> Gomob.colors.warn
+    StatusTone.Danger -> Gomob.colors.danger
+    StatusTone.Ok -> Gomob.colors.ok
 }
 
-private data class SummaryItem(
-    val label: String,
-    val tag: String,
-    val value: String,
-    val tone: Color,
+/** StatusTone → 语义 soft 底色。 */
+@Composable
+private fun statusToneSoftBg(tone: StatusTone): Color = when (tone) {
+    StatusTone.Neutral -> Gomob.colors.bg2
+    StatusTone.Accent -> Gomob.colors.accentSoft
+    StatusTone.Warn -> Gomob.colors.warnSoft
+    StatusTone.Danger -> Gomob.colors.dangerSoft
+    StatusTone.Ok -> Gomob.colors.okSoft
+}
+
+private data class VinNoticeUi(
+    val text: String,
+    val tone: StatusTone,
+    val actionLabel: String? = null,
 )
 
+private fun vinNotice(
+    captureMsg: String?,
+    captureReadiness: VinCaptureReadiness,
+    captureQuality: VinCaptureQuality,
+    restoreState: VinRestoreState,
+    vinState: VinCaptureState,
+    hasCameraPermission: Boolean,
+): VinNoticeUi? = when {
+    vinState is VinCaptureState.Error -> VinNoticeUi(vinState.msg, StatusTone.Danger)
+    vinState is VinCaptureState.Recognizing -> VinNoticeUi("正在识别算法切割图…", StatusTone.Accent)
+    restoreState is VinRestoreState.Rejected -> VinNoticeUi(restoreState.msg, StatusTone.Warn)
+    restoreState is VinRestoreState.Error -> VinNoticeUi(restoreState.msg, StatusTone.Danger)
+    restoreState is VinRestoreState.Processing -> VinNoticeUi(
+        captureMsg ?: "正在生成规范化还原图…",
+        StatusTone.Accent,
+    )
+    restoreState is VinRestoreState.Preview && !hasCameraPermission ->
+        VinNoticeUi(captureMsg ?: "需要相机权限才能使用 VIN RGBD 相机", StatusTone.Warn, "重新授权")
+    restoreState is VinRestoreState.Preview && !captureReadiness.ready ->
+        VinNoticeUi(captureMsg ?: captureReadiness.message, StatusTone.Warn)
+    restoreState is VinRestoreState.Preview && captureQuality !is VinCaptureQuality.Ready ->
+        VinNoticeUi(vinCaptureGuidance(captureQuality), StatusTone.Warn)
+    else -> null
+}
+
 @Composable
-private fun SummaryCell(item: SummaryItem, modifier: Modifier = Modifier) {
-    Column(
-        modifier = modifier
-            .clip(Gomob.shapes.r1)
-            .background(item.tone.copy(alpha = 0.08f))
-            .padding(horizontal = 7.dp, vertical = 5.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
+private fun VinActionNotice(notice: VinNoticeUi, onAction: (() -> Unit)? = null) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Gomob.spacing.pageGutter)
+            .clip(Gomob.shapes.r2)
+            .background(statusToneSoftBg(notice.tone))
+            .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
     ) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            notice.text,
+            modifier = Modifier.weight(1f),
+            style = Gomob.type.caption,
+            color = statusToneFg(notice.tone),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (notice.actionLabel != null && onAction != null) {
             Text(
-                item.label,
-                modifier = Modifier.weight(1f),
-                style = Gomob.type.numInline.copy(fontSize = 8.sp, letterSpacing = 0.02.em),
-                color = Gomob.colors.fg3,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                item.tag,
-                style = Gomob.type.numInline.copy(fontSize = 8.sp, letterSpacing = 0.02.em),
-                color = item.tone,
+                notice.actionLabel,
                 modifier = Modifier
                     .clip(Gomob.shapes.r1)
-                    .background(item.tone.copy(alpha = 0.12f))
-                    .padding(horizontal = 4.dp, vertical = 1.dp),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+                    .clickable(onClick = onAction)
+                    .padding(horizontal = Gomob.spacing.s8, vertical = Gomob.spacing.s4),
+                style = Gomob.type.caption,
+                color = statusToneFg(notice.tone),
+                fontWeight = FontWeight.SemiBold,
             )
         }
+    }
+}
+
+@Composable
+internal fun VinOutcomePanel(
+    rubbing: Bitmap,
+    recognition: VinCaptureState.Result?,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Gomob.spacing.pageGutter)
+            .clip(Gomob.shapes.r2)
+            .background(Gomob.colors.bg1)
+            .border(BorderStroke(Gomob.spacing.hairline, Gomob.colors.line2), Gomob.shapes.r2)
+            .semantics { contentDescription = "VIN 还原与识别结果" }
+            .padding(Gomob.spacing.s8),
+        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+    ) {
+        recognition?.let { state ->
+            VinRecognitionSummary(state)
+            if (state.result.status == VinRecognitionStatus.NeedsReview) {
+                Text(
+                    "VIN 格式或字符数异常，请人工复核",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Gomob.colors.warnSoft)
+                        .padding(horizontal = Gomob.spacing.s8, vertical = Gomob.spacing.s6),
+                    style = Gomob.type.micro,
+                    color = Gomob.colors.warn,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
         Text(
-            item.value,
-            fontSize = 10.sp,
-            fontWeight = FontWeight.Medium,
-            color = Gomob.colors.fg0,
+            "规范化还原 · ${VINCREATOR_RESTORE_W}×$VINCREATOR_RESTORE_H",
+            modifier = Modifier.fillMaxWidth(),
+            style = Gomob.type.micro,
+            color = Gomob.colors.fg3,
+        )
+        VinEvidenceImage(
+            bitmap = rubbing,
+            aspectRatio = VINCREATOR_RESTORE_ASPECT,
+            contentDescription = "VIN规范化还原图",
+        )
+        recognition?.let { state ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = Gomob.spacing.s2),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("单字符证据", style = Gomob.type.micro, color = Gomob.colors.fg2)
+                Text(
+                    "${state.crops.size}/17 · 左右滑动",
+                    style = Gomob.type.micro,
+                    color = Gomob.colors.fg3,
+                )
+            }
+            VinCharacterCropStrip(state.crops)
+        }
+    }
+}
+
+@Composable
+private fun VinRecognitionSummary(state: VinCaptureState.Result) {
+    val result = state.result
+    val weakest = state.crops.minByOrNull { it.confidence }
+    Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+        ) {
+            Text(
+                result.vin,
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { contentDescription = "识别 VIN ${result.vin}" },
+                style = Gomob.type.metricMd.copy(fontSize = 18.sp),
+                color = Gomob.colors.fg0,
+                maxLines = 1,
+                overflow = TextOverflow.Clip,
+            )
+            VinRecognitionStatusBadge(result.status)
+        }
+        Text(
+            buildString {
+                append("%d/17 字符 · 平均 %.1f%%".format(result.characterCount, confidenceToPct(result.confidence)))
+                weakest?.let {
+                    append(
+                        " · 最低 #%02d %s %.1f%%".format(
+                            it.position,
+                            it.character,
+                            confidenceToPct(it.confidence),
+                        ),
+                    )
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            style = Gomob.type.micro,
+            color = Gomob.colors.fg2,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
     }
 }
 
-// ─── 底部拍照栏：重拍 / 快门(→正射拓印) / 确认(→vin_pipeline OCR) ───
+@Composable
+private fun VinRecognitionStatusBadge(status: VinRecognitionStatus) {
+    val completed = status == VinRecognitionStatus.Completed
+    val tone = if (completed) StatusTone.Ok else StatusTone.Warn
+    Row(
+        modifier = Modifier
+            .clip(CircleShape)
+            .background(statusToneSoftBg(tone))
+            .padding(horizontal = Gomob.spacing.s6, vertical = Gomob.spacing.s2),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
+    ) {
+        Box(Modifier.size(Gomob.spacing.dot4).clip(CircleShape).background(statusToneFg(tone)))
+        Text(
+            if (completed) "已完成" else "需复核",
+            style = Gomob.type.micro,
+            color = statusToneFg(tone),
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+internal fun VinCharacterCropStrip(crops: List<VinCharacterCropPreview>) {
+    LazyRow(
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics {
+                contentDescription = "VIN单字符切割图，共${crops.size}张，可左右滑动"
+        },
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+    ) {
+        items(items = crops, key = { it.position }) { crop ->
+            VinCharacterCropCell(crop)
+        }
+    }
+}
+
+@Composable
+private fun VinCharacterCropCell(crop: VinCharacterCropPreview) {
+    val confidencePct = confidenceToPct(crop.confidence)
+    Box(
+        modifier = Modifier
+            .width(42.dp)
+            .aspectRatio(0.5f)
+            .clip(Gomob.shapes.r1)
+            .background(VinViewportBg)
+            .border(BorderStroke(Gomob.spacing.hairline, Gomob.colors.line2), Gomob.shapes.r1)
+            .semantics(mergeDescendants = true) {
+                contentDescription = "第${crop.position}位字符${crop.character}，置信度%.1f%%".format(confidencePct)
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Image(
+            bitmap = crop.bitmap.asImageBitmap(),
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Fit,
+        )
+        Text(
+            "%02d".format(crop.position),
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .background(Color.Black.copy(alpha = 0.52f))
+                .padding(horizontal = Gomob.spacing.s4, vertical = Gomob.spacing.s2),
+            style = Gomob.type.micro.copy(fontSize = 8.sp),
+            color = Color.White.copy(alpha = 0.88f),
+        )
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .background(Color.Black.copy(alpha = 0.58f))
+                .padding(horizontal = Gomob.spacing.s4, vertical = Gomob.spacing.s2),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                crop.character,
+                style = Gomob.type.metricMd.copy(fontSize = 13.sp),
+                color = Color.White,
+                maxLines = 1,
+            )
+            Text(
+                "%.0f%%".format(confidencePct),
+                style = Gomob.type.micro.copy(fontSize = 7.sp),
+                color = Color.White.copy(alpha = 0.78f),
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+@Composable
+private fun VinEvidenceImage(
+    bitmap: Bitmap,
+    aspectRatio: Float,
+    contentDescription: String,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(aspectRatio.coerceIn(2f, 10f))
+            .background(VinViewportBg)
+            .semantics(mergeDescendants = true) { this.contentDescription = contentDescription },
+        contentAlignment = Alignment.Center,
+    ) {
+        Image(
+            bitmap = bitmap.asImageBitmap(),
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Fit,
+        )
+    }
+}
+
+// 新契约严格使用 0..1 OCR 置信度，展示时换算成百分比。
+private fun confidenceToPct(value: Double): Float = (value * 100.0).toFloat()
+
+// ─── 底部拍照栏：重拍 / 快门(→正射拓印) / 识别(→外部 OCR) ───
 @Composable
 private fun VinCaptureBar(
     capturing: Boolean,
-    recognizing: Boolean,
-    canConfirm: Boolean,
+    captureReadiness: VinCaptureReadiness,
+    captureQuality: VinCaptureQuality,
+    restoreState: VinRestoreState,
+    vinState: VinCaptureState,
     onShutter: () -> Unit,
     onRetake: () -> Unit,
     onConfirm: () -> Unit,
@@ -528,21 +883,84 @@ private fun VinCaptureBar(
             .fillMaxWidth()
             .padding(start = 24.dp, top = 10.dp, end = 24.dp, bottom = 12.dp),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            VinRoundButton(icon = GomobIcons.Refresh, label = "重拍", onClick = onRetake)
-            VinShutterButton(capturing = capturing, onClick = onShutter)
-            // 确认 → vm.recognize()：还原图喂 vin_pipeline。无还原图或识别中时禁用。
-            VinRoundButton(
-                icon = GomobIcons.Check,
-                label = if (recognizing) "识别中" else "确认",
-                primary = true,
-                enabled = canConfirm && !recognizing,
-                onClick = onConfirm,
-            )
+        when {
+            restoreState is VinRestoreState.Preview || restoreState is VinRestoreState.Processing -> {
+                val qualityReady = captureQuality is VinCaptureQuality.Ready
+                VinShutterAction(
+                    capturing = capturing,
+                    enabled = restoreState is VinRestoreState.Preview &&
+                        captureReadiness.ready && qualityReady && !capturing,
+                    waitingForDevice = !captureReadiness.ready,
+                    waitingForDistance = captureReadiness.ready && captureQuality is VinCaptureQuality.TooFar,
+                    waitingForQuality = captureReadiness.ready &&
+                        !qualityReady && captureQuality !is VinCaptureQuality.TooFar,
+                    onClick = onShutter,
+                    modifier = Modifier.align(Alignment.Center),
+                )
+            }
+            restoreState is VinRestoreState.Rejected || restoreState is VinRestoreState.Error -> {
+                VinRoundButton(
+                    icon = GomobIcons.Refresh,
+                    label = "调整后重拍",
+                    onClick = onShutter,
+                    primary = true,
+                    enabled = captureReadiness.ready &&
+                        captureQuality is VinCaptureQuality.Ready && !capturing,
+                    modifier = Modifier.align(Alignment.Center),
+                )
+            }
+            vinState is VinCaptureState.Result -> {
+                VinRoundButton(
+                    icon = GomobIcons.Refresh,
+                    label = "重新扫描",
+                    onClick = onRetake,
+                    modifier = Modifier.align(Alignment.Center),
+                )
+            }
+            vinState is VinCaptureState.Error -> {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
+                ) {
+                    VinRoundButton(
+                        icon = GomobIcons.Refresh,
+                        label = "重新扫描",
+                        onClick = onRetake,
+                        modifier = Modifier.weight(1f),
+                    )
+                    VinRoundButton(
+                        icon = GomobIcons.Check,
+                        label = "重试识别",
+                        primary = true,
+                        enabled = !capturing,
+                        onClick = onConfirm,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            else -> {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
+                ) {
+                    VinRoundButton(
+                        icon = GomobIcons.Refresh,
+                        label = "重新扫描",
+                        onClick = onRetake,
+                        modifier = Modifier.weight(1f),
+                    )
+                    VinRoundButton(
+                        icon = GomobIcons.Check,
+                        label = "自动识别中",
+                        primary = true,
+                        enabled = false,
+                        onClick = {},
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
         }
     }
 }
@@ -554,20 +972,33 @@ private fun VinRoundButton(
     onClick: () -> Unit,
     primary: Boolean = false,
     enabled: Boolean = true,
+    modifier: Modifier = Modifier,
 ) {
+    // 三态：主按钮启用 = 实心 accent + 白字；禁用 = line2 边 + 半透明 bg1 + fg3；次按钮 = lineStrong 边 + bg1
+    val solidPrimary = primary && enabled
     val fg = when {
+        solidPrimary -> Color.White
         !enabled -> Gomob.colors.fg3
-        primary -> Gomob.colors.accent
         else -> Gomob.colors.fg1
     }
+    val bg = when {
+        solidPrimary -> Gomob.colors.accent
+        !enabled -> Gomob.colors.bg1.copy(alpha = 0.6f)
+        else -> Gomob.colors.bg1
+    }
+    val borderColor = when {
+        solidPrimary -> Gomob.colors.accent
+        !enabled -> Gomob.colors.line2
+        else -> Gomob.colors.lineStrong
+    }
     Row(
-        modifier = Modifier
+        modifier = modifier
             .height(44.dp)
             .clip(CircleShape)
-            .background(if (primary && enabled) Gomob.colors.accentSoft else Gomob.colors.bg1)
-            .border(BorderStroke(1.dp, if (primary && enabled) Gomob.colors.accent else Gomob.colors.line2), CircleShape)
+            .background(bg)
+            .border(BorderStroke(1.dp, borderColor), CircleShape)
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 14.dp),
+            .padding(horizontal = 18.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -577,37 +1008,58 @@ private fun VinRoundButton(
             tint = fg,
             modifier = Modifier.size(14.dp),
         )
-        Text(label, fontSize = 12.sp, color = fg)
+        Text(label, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = fg)
     }
 }
 
 @Composable
-private fun VinShutterButton(capturing: Boolean, onClick: () -> Unit) {
+private fun VinShutterAction(
+    capturing: Boolean,
+    enabled: Boolean,
+    waitingForDevice: Boolean,
+    waitingForDistance: Boolean,
+    waitingForQuality: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
+    ) {
+        VinShutterButton(capturing = capturing, enabled = enabled, onClick = onClick)
+        Text(
+            when {
+                capturing -> "采集中"
+                waitingForDevice -> "等待设备"
+                waitingForDistance -> "调整距离"
+                waitingForQuality -> "调整取景"
+                else -> "稳住不动"
+            },
+            style = Gomob.type.micro,
+            color = if (enabled) Gomob.colors.fg2 else Gomob.colors.fg3,
+        )
+    }
+}
+
+@Composable
+private fun VinShutterButton(capturing: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    // 外环 72dp accentLine 细环 + 内 58dp 实心 accent 圆（白描边）；拍照中/禁用降透明示意忙
     Box(
         modifier = Modifier
-            .size(68.dp)
+            .size(Gomob.spacing.btnCircle72)
             .clip(CircleShape)
-            .background(Gomob.colors.bg0)
-            .border(BorderStroke(2.dp, Gomob.colors.accent), CircleShape)
-            .clickable(enabled = !capturing, onClick = onClick)
-            .padding(4.dp),
+            .border(BorderStroke(2.dp, Gomob.colors.accentLine), CircleShape)
+            .semantics { contentDescription = "VIN拍照按钮，${if (enabled) "已激活" else "未激活"}" }
+            .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Box(
-            modifier = Modifier
-                .fillMaxSize()
+            Modifier
+                .size(58.dp)
                 .clip(CircleShape)
-                .border(BorderStroke(2.dp, Gomob.colors.accent), CircleShape)
-                .padding(6.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            // 拍照中：中心点降透明示意忙；空闲：实心 accent。
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .clip(CircleShape)
-                    .background(Gomob.colors.accent.copy(alpha = if (capturing) 0.35f else 1f)),
-            )
-        }
+                .background(Gomob.colors.accent.copy(alpha = if (enabled && !capturing) 1f else 0.35f))
+                .border(BorderStroke(3.dp, Color.White.copy(alpha = 0.9f)), CircleShape),
+        )
     }
 }

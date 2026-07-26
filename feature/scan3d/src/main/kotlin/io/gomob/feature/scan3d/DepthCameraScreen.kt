@@ -69,19 +69,16 @@ import io.gomob.nativebridge.camera.CameraSourceState
 const val DEPTH_CAMERA_ROUTE = "scan3d/depth-camera"
 
 /**
- * 深度相机详情子页 v2 — 大画面竖排预览 + 导航列表。
+ * 深度相机只读状态页 — 大画面竖排预览 + 设备信息入口。
  *
  * 设计:
  *  - COLOR / DEPTH 各占满宽度独立成行（横排会让画面太小）
- *  - 详细信息 / 控制 / 标定 都收成 SettingRow → 三级页，避免主页过载
+ *  - 手机端不承担标定、参数管理或厂商调试，只提供使用态监看
  */
 @Composable
 fun DepthCameraRoute(
     onBack: () -> Unit,
     onOpenInfo: () -> Unit = {},
-    onOpenControls: () -> Unit = {},
-    onOpenCalibration: () -> Unit = {},
-    onOpenSonixDebug: () -> Unit = {},
     vm: DepthCameraViewModel = hiltViewModel(),
 ) {
     val ui by vm.uiState.collectAsStateWithLifecycle()
@@ -118,7 +115,7 @@ fun DepthCameraRoute(
         header = {
             BackHeader(
                 title = "深度相机",
-                eyebrow = ui.label.ifBlank { "深度相机" } + " · 详情与控制",
+                eyebrow = ui.label.ifBlank { "深度相机" } + " · 状态监看",
                 onBack = onBack,
             )
         },
@@ -132,22 +129,6 @@ fun DepthCameraRoute(
             ),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
-            // 采集后端 / 流模式选择是 Berxel 专属（eYs3D mode25 无对应概念）—— 仅 Berxel 显示，不放假按钮。
-            if (ui.isBerxel) {
-                item {
-                    BackendSwitcher(
-                        current = ui.backend,
-                        onChange = { vm.setBackendMode(it) },
-                    )
-                }
-                item {
-                    StreamProfileSelector(
-                        current = ui.streamProfile,
-                        backend = ui.backend,
-                        onChange = { vm.setStreamProfile(it) },
-                    )
-                }
-            }
             // HLSD8 真彩 RGB（独立第二颗 USB 相机，正射图高分辨率源）—— 仅插着时显示。
             if (ui.hasRgb) {
                 item {
@@ -178,45 +159,15 @@ fun DepthCameraRoute(
                     },
                     bitmap = depthBmp,
                     placeholder = ui.sourceState.depthPlaceholder(),
-                    // STRICT / IR / DUMP 是 Berxel NATIVE_REWRITE 调试 toggle，eYs3D 下不暴露。
-                    actionLabel = if (ui.isBerxel) (if (strictFrameSize) "切 RAW" else "切 STRICT") else null,
-                    onAction = if (ui.isBerxel) vm::toggleStrictFrameSize else null,
-                    action2Label = if (ui.isBerxel) (if (irRenderMode) "切 TURBO" else "切 IR") else null,
-                    onAction2 = if (ui.isBerxel) vm::toggleIrRenderMode else null,
-                    action3Label = if (ui.isBerxel) "DUMP" else null,
-                    onAction3 = if (ui.isBerxel) vm::triggerFrameDump else null,
                 )
             }
             item { LiveStatusStrip(ui = ui) }
             item { Spacer(Modifier.height(Gomob.spacing.s4)) }
-            // 设备详情 / 成像控制 / 标定 / Sonix 均为 Berxel 专属子页（依赖 Berxel SDK info/controls）。
-            // eYs3D 路径不产这些数据，自动识别下隐藏整张导航卡，本页专注 COLOR / DEPTH 双预览。
+            // 只读设备信息允许手机查看；标定、参数管理和厂商调试统一留给网页管理台。
             if (ui.isBerxel) {
                 item {
                     SectionList {
-                        // 「开始三维外廓扫描」入口已上移到 3D 主页 ActionTile 01；本页只关心设备本身
                         NavRow(title = "设备详情", subtitle = "序列号 / 流模式 / 内参 / 帧统计", onClick = onOpenInfo)
-                        SettingRowDivider()
-                        NavRow(title = "成像控制", subtitle = "Color / Depth 曝光 · 去噪 · 配准", onClick = onOpenControls)
-                        SettingRowDivider()
-                        NavRow(title = "Color ↔ Depth 标定", subtitle = "外参微调 / Charuco 标定向导", onClick = onOpenCalibration)
-                        SettingRowDivider()
-                        NavRow(
-                            title = "Sonix ASIC 调试",
-                            subtitle = "M1.6.5/6 · 直发 XU vendor cmd 读寄存器",
-                            onClick = onOpenSonixDebug,
-                        )
-                    }
-                }
-            } else {
-                // eYs3D：Berxel 专属项不适用，但 HLSD8↔depth 双相机标定是 eYs3D 机型的事，单独给入口。
-                item {
-                    SectionList {
-                        NavRow(
-                            title = "HLSD8 ↔ Depth 标定",
-                            subtitle = "ChArUco 双相机标定采集（关散斑出干净 L'）",
-                            onClick = onOpenCalibration,
-                        )
                     }
                 }
             }

@@ -279,11 +279,8 @@ int runFusion(lidar::CloudXYZ::Ptr A, lidar::CloudXYZ::Ptr B, const std::string&
     std::string used = "none";
     lidar::CloudXYZ::Ptr bAligned;
     if (align == "site" && site_json && lidar::loadSiteExtrinsic(site_json, T)) {
-        // 标记外参作粗对齐 → 稠密点云 ICP 精修最后 ~1°(标记 solvePnP 在 2-5m 定向有 ~1° 噪声，
-        // 稠密 ICP 能压到毫米级)。单调安全：仅在降低残差时采纳精修，否则原样用标记外参。
-        bool improved = false;
-        const auto rr = lidar::refineRegistration(*B, *A, T, improved);
-        if (improved) T = rr.transform;
+        // site 是服务端权威外参，native 只做确定性变换。最终精修由 Go 点到面算法完成；
+        // 双单元常看见物体对立面，点到点 ICP 会产生表面厚度量级偏置，不能留在生产链。
         bAligned = lidar::applyTransform(*B, T);
         used = "site";
     } else if (align == "icp") {

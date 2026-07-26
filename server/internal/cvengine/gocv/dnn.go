@@ -8,13 +8,23 @@ package gocv
 */
 import "C"
 import (
-	// "fmt"
+	"errors"
 	"image"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"unsafe"
+)
+
+type netNativeKind uint8
+
+const (
+	netNativeUnknown netNativeKind = iota
+	netNativeOpenCV
+	netNativeORT
+	netNativeAtlas
+	netNativeLynxi
 )
 
 type YoloOut struct {
@@ -123,13 +133,16 @@ type MattingIn struct {
 // https://docs.opencv.org/master/db/d30/classcv_1_1dnn_1_1Net.html
 type Net struct {
 	p            unsafe.Pointer // C.Net
+	nativeKind   netNativeKind
 	inputChannel int
 	inputSize    C.Size
 	std          C.double
 	imageMean    C.Scalar
 	inChan       chan interface{}
 	done         chan struct{} // 通知 worker goroutine 退出
-	releaseOnce  sync.Once     // 保证 Release 幂等, 仅 close(done) 一次
+	workerDone   chan struct{} // worker 完成辅助资源和 native session 清理后关闭
+	releaseOnce  sync.Once     // 保证完整释放流程幂等
+	releaseErr   error
 	classes      []string
 	maxInputSize image.Point // for dynamic input shape, the max input size is used to limit max image size
 }
@@ -244,16 +257,45 @@ func ParseNetTarget(target string) NetTargetType {
 
 // Release Net
 func (net *Net) Release() error {
-	// 先通知 worker goroutine 退出, 再释放 C 侧 Net, 避免在途推理 UAF;
-	// sync.Once 保证幂等; done 为 nil 表示未起 worker (如 Empty 的 Net), 不 close。
 	net.releaseOnce.Do(func() {
-		if net.done != nil {
-			close(net.done)
+		switch net.nativeKind {
+		case netNativeUnknown:
+			if net.p != nil {
+				net.releaseErr = errors.New("未知推理后端，拒绝猜测 native 析构函数")
+			}
+		case netNativeORT:
+			if net.p == nil {
+				return
+			}
+			if net.inChan == nil || net.workerDone == nil {
+				net.releaseErr = errors.New("ORT worker 生命周期未初始化")
+				return
+			}
+			close(net.inChan)
+			<-net.workerDone
+			net.p = nil
+		case netNativeAtlas, netNativeLynxi:
+			if net.p == nil {
+				return
+			}
+			// 这两个后端当前 C API 没有 Destroy；绝不能把 session 强转成 OpenCV Net 错析构。
+			net.releaseErr = errors.New("当前推理后端缺少安全析构 API")
+		case netNativeOpenCV:
+			if net.done != nil {
+				close(net.done)
+				if net.workerDone != nil {
+					<-net.workerDone
+				}
+			}
+			if net.p != nil {
+				C.Net_Release((C.Net)(net.p))
+				net.p = nil
+			}
+		default:
+			net.releaseErr = errors.New("非法推理后端类型，拒绝 native 析构")
 		}
 	})
-	C.Net_Release((C.Net)(net.p))
-	net.p = nil
-	return nil
+	return net.releaseErr
 }
 
 // Empty returns true if there are no layers in the network.
@@ -333,7 +375,7 @@ func ReadNet(model string, config string) Net {
 
 	cConfig := C.CString(config)
 	defer C.free(unsafe.Pointer(cConfig))
-	return Net{p: unsafe.Pointer(C.Net_ReadNet(cModel, cConfig))}
+	return Net{p: unsafe.Pointer(C.Net_ReadNet(cModel, cConfig)), nativeKind: netNativeOpenCV}
 }
 
 // ReadNetBytes reads a deep learning network represented in one of the supported formats.
@@ -346,7 +388,7 @@ func ReadNetBytes(framework string, model []byte, config []byte) (Net, error) {
 	bModel := toByteVector(model)
 	bConfig := toByteVector(config)
 
-	return Net{p: unsafe.Pointer(C.Net_ReadNetBytes(cFramework, *bModel, *bConfig))}, nil
+	return Net{p: unsafe.Pointer(C.Net_ReadNetBytes(cFramework, *bModel, *bConfig)), nativeKind: netNativeOpenCV}, nil
 }
 
 // ReadNetFromCaffe reads a network model stored in Caffe framework's format.
@@ -359,7 +401,7 @@ func ReadNetFromCaffe(prototxt string, caffeModel string) Net {
 
 	cmodel := C.CString(caffeModel)
 	defer C.free(unsafe.Pointer(cmodel))
-	return Net{p: unsafe.Pointer(C.Net_ReadNetFromCaffe(cprototxt, cmodel))}
+	return Net{p: unsafe.Pointer(C.Net_ReadNetFromCaffe(cprototxt, cmodel)), nativeKind: netNativeOpenCV}
 }
 
 // ReadNetFromCaffeBytes reads a network model stored in Caffe model in memory.
@@ -369,7 +411,7 @@ func ReadNetFromCaffe(prototxt string, caffeModel string) Net {
 func ReadNetFromCaffeBytes(prototxt []byte, caffeModel []byte) (Net, error) {
 	bPrototxt := toByteVector(prototxt)
 	bCaffeModel := toByteVector(caffeModel)
-	return Net{p: unsafe.Pointer(C.Net_ReadNetFromCaffeBytes(*bPrototxt, *bCaffeModel))}, nil
+	return Net{p: unsafe.Pointer(C.Net_ReadNetFromCaffeBytes(*bPrototxt, *bCaffeModel)), nativeKind: netNativeOpenCV}, nil
 }
 
 // ReadNetFromTensorflow reads a network model stored in Tensorflow framework's format.
@@ -379,7 +421,7 @@ func ReadNetFromCaffeBytes(prototxt []byte, caffeModel []byte) (Net, error) {
 func ReadNetFromTensorflow(model string) Net {
 	cmodel := C.CString(model)
 	defer C.free(unsafe.Pointer(cmodel))
-	return Net{p: unsafe.Pointer(C.Net_ReadNetFromTensorflow(cmodel))}
+	return Net{p: unsafe.Pointer(C.Net_ReadNetFromTensorflow(cmodel)), nativeKind: netNativeOpenCV}
 }
 
 // ReadNetFromTensorflowBytes reads a network model stored in Tensorflow framework's format.
@@ -388,7 +430,7 @@ func ReadNetFromTensorflow(model string) Net {
 // https://docs.opencv.org/master/d6/d0f/group__dnn.html#gacdba30a7c20db2788efbf5bb16a7884d
 func ReadNetFromTensorflowBytes(model []byte) (Net, error) {
 	bModel := toByteVector(model)
-	return Net{p: unsafe.Pointer(C.Net_ReadNetFromTensorflowBytes(*bModel))}, nil
+	return Net{p: unsafe.Pointer(C.Net_ReadNetFromTensorflowBytes(*bModel)), nativeKind: netNativeOpenCV}, nil
 }
 
 // BlobFromImage creates 4-dimensional blob from image. Optionally resizes and crops
@@ -715,6 +757,13 @@ func CreateYolo(gpuId int, classes []string, cfgs, weights []byte) *Net {
 
 	go func() {
 		runtime.LockOSThread()
+		var workerDone chan struct{}
+		defer func() {
+			runtime.UnlockOSThread()
+			if workerDone != nil {
+				close(workerDone)
+			}
+		}()
 
 		backend := NetBackendDefault
 		target := NetTargetCPU
@@ -743,6 +792,8 @@ func CreateYolo(gpuId int, classes []string, cfgs, weights []byte) *Net {
 		net.SetParams(image.Point{X: inputWidth, Y: inputHeight}, inputChannel, 1.0/255.0, NewScalar(0, 0, 0, 0))
 		net.inChan = make(chan interface{})
 		net.done = make(chan struct{})
+		net.workerDone = make(chan struct{})
+		workerDone = net.workerDone
 		net.classes = classes
 
 		outputLayerNames := C.CStrings{}
@@ -920,6 +971,13 @@ func CreateClassify(gpuId int, framework string, cfgs, weights []byte, classes [
 
 	go func() {
 		runtime.LockOSThread()
+		var workerDone chan struct{}
+		defer func() {
+			runtime.UnlockOSThread()
+			if workerDone != nil {
+				close(workerDone)
+			}
+		}()
 
 		backend := NetBackendDefault
 		target := NetTargetCPU
@@ -956,6 +1014,8 @@ func CreateClassify(gpuId int, framework string, cfgs, weights []byte, classes [
 		net.SetParams(image.Point{X: inputWidth, Y: inputHeight}, inputChannel, std, mean)
 		net.inChan = make(chan interface{})
 		net.done = make(chan struct{})
+		net.workerDone = make(chan struct{})
+		workerDone = net.workerDone
 		net.classes = classes
 
 		outputLayerNames := C.CStrings{}
@@ -1022,6 +1082,13 @@ func CreateMetric(gpuId int, weights []byte, clusters int, iSize image.Point, iC
 
 	go func() {
 		runtime.LockOSThread()
+		var workerDone chan struct{}
+		defer func() {
+			runtime.UnlockOSThread()
+			if workerDone != nil {
+				close(workerDone)
+			}
+		}()
 
 		backend := NetBackendDefault
 		target := NetTargetCPU
@@ -1049,6 +1116,8 @@ func CreateMetric(gpuId int, weights []byte, clusters int, iSize image.Point, iC
 		net.SetParams(iSize, iChan, std, mean)
 		net.inChan = make(chan interface{})
 		net.done = make(chan struct{})
+		net.workerDone = make(chan struct{})
+		workerDone = net.workerDone
 
 		outputLayerNames := C.CStrings{}
 		C.Net_GetOutputLayerNames(C.Net(net.p), &outputLayerNames)
@@ -1105,6 +1174,13 @@ func CreateNetCom(framework string, gpuId int, cfgs, weights []byte, iSize image
 
 	go func() {
 		runtime.LockOSThread()
+		var workerDone chan struct{}
+		defer func() {
+			runtime.UnlockOSThread()
+			if workerDone != nil {
+				close(workerDone)
+			}
+		}()
 
 		backend := NetBackendDefault
 		target := NetTargetCPU
@@ -1132,6 +1208,8 @@ func CreateNetCom(framework string, gpuId int, cfgs, weights []byte, iSize image
 		net.SetParams(iSize, iChan, std, mean)
 		net.inChan = make(chan interface{})
 		net.done = make(chan struct{})
+		net.workerDone = make(chan struct{})
+		workerDone = net.workerDone
 
 		outputLayerNames := C.CStrings{}
 		C.Net_GetOutputLayerNames(C.Net(net.p), &outputLayerNames)

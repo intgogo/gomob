@@ -125,12 +125,17 @@ CREATE TABLE conversation_member_states (
     last_read_seq   BIGINT NOT NULL DEFAULT 0,
     muted           BOOLEAN NOT NULL DEFAULT false,
     pinned          BOOLEAN NOT NULL DEFAULT false,
+    hidden_through_seq BIGINT, -- 当前用户已隐藏到的含式 server_seq；NULL 表示从未删除
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY(conversation_id, user_id)
 );
 ```
 
 `unread_count` 默认从 `last_read_seq` 之后的他人/系统消息推导；自己发出的消息不制造未读，高并发后再加 Redis 缓存，不先把缓存当真理源。
+
+会话列表的“删除”不是物理删除共享消息，也不是退出群聊。服务端只为当前用户记录
+`hidden_through_seq=next_seq-1`，列表过滤尚无更大序号的会话，历史只返回更大序号的消息。
+删除与消息写入共用 `conversations` 行锁；后续新消息自然取得更大的 `server_seq`，会话自动恢复。
 
 ### 5.2 媒体房间
 
@@ -212,6 +217,7 @@ CREATE TABLE live_recordings (
 | `GET` | `/v1/conversations/{id}/messages?since_seq=&limit=&latest=` | 历史消息，升序返回；`latest=true` 返回最新窗口 |
 | `POST` | `/v1/conversations/{id}/messages` | HTTP 发送消息，和 WebSocket `msg.send` 共用幂等逻辑 |
 | `POST` | `/v1/conversations/{id}/read` | 更新 `last_read_seq` |
+| `DELETE` | `/v1/conversations/{id}` | 仅隐藏当前用户的会话与既有历史；新消息自动恢复 |
 | `POST` | `/v1/conversations/{id}/leave` | 当前用户退出群聊，移除成员关系和本地状态 |
 | `POST` | `/v1/media/rooms` | 创建 call / first_person_live room |
 | `POST` | `/v1/media/rooms/{id}/token` | 为当前用户签发 LiveKit token |

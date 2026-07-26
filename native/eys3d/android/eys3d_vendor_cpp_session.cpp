@@ -11,12 +11,25 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <new>
 
 #define VLOG(...) __android_log_print(ANDROID_LOG_INFO, "eys3d_vcpp", __VA_ARGS__)
 #define VLOGE(...) __android_log_print(ANDROID_LOG_ERROR, "eys3d_vcpp", __VA_ARGS__)
 
 namespace gomob::eys3d::android {
+
+struct FrameCallbackContext {
+  explicit FrameCallbackContext(Eys3dVendorCppSession* owner_in) : owner(owner_in) {}
+
+  std::mutex mutex;
+  Eys3dVendorCppSession* owner;
+};
+
 namespace {
+
+constexpr auto kFrameGrabberStartTimeout = std::chrono::milliseconds(2000);
+constexpr auto kFrameGrabberPollInterval = std::chrono::milliseconds(1);
 
 int64_t NowNs() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -70,8 +83,11 @@ ANativeWindow* MakeOffscreenWindow(AImageReader** out_reader, int w, int h) {
 void FrameTrampoline(void* depth_vec, int dW, int dH, void* color_vec, int cW, int cH, int serial,
                      void* ctx) {
   if (!ctx) return;
-  reinterpret_cast<Eys3dVendorCppSession*>(ctx)->OnVendorFrame(depth_vec, dW, dH, color_vec, cW, cH,
-                                                               serial);
+  auto* callback_ctx = reinterpret_cast<FrameCallbackContext*>(ctx);
+  std::lock_guard<std::mutex> lock(callback_ctx->mutex);
+  if (callback_ctx->owner) {
+    callback_ctx->owner->OnVendorFrame(depth_vec, dW, dH, color_vec, cW, cH, serial);
+  }
 }
 
 }  // namespace
@@ -140,6 +156,8 @@ void Eys3dVendorCppSession::OnVendorFrame(void* depth_vec, int dW, int dH, void*
                                           int cH, int serial) {
   const int64_t n = ++cb_frames_;
   const int64_t host_ns = NowNs();
+  bool color_ready = false;
+  bool depth_ready = false;
 
   // ---- color：字节透传（MJPEG 压缩帧，size 即压缩字节数，不能按 w*h*bpp 算）----
   //   core_.OnColorFrame 内部按 cfg_.color.width/height 给帧打标签;故须用回调真实 cW/cH 做一致性门控,
@@ -149,35 +167,42 @@ void Eys3dVendorCppSession::OnVendorFrame(void* depth_vec, int dW, int dH, void*
   if (color && color_sz > 0) {
     if (cW == cfg_.color.width && cH == cfg_.color.height) {
       core_.OnColorFrame(color, color_sz, host_ns);
+      color_ready = true;
     } else if (n <= 5 || n % 30 == 0) {
       VLOGE("ourCb #%lld color 几何不符 回调 %dx%d 期望 %dx%d sz=%zu → 丢弃", (long long)n, cW, cH,
             cfg_.color.width, cfg_.color.height, color_sz);
     }
   }
 
-  // ---- depth：FrameGrabber 路径已是 metric mm（vendor do_preview 内 DepthFilter + 自载 ZD 表转好），直接喂，勿再套 LUT ----
+  // ---- depth：实机值域与原厂 restoreImageFlow 证明这里是 mode25 原始 disparity×8，不是 metric mm。----
+  // 当前会话 core 的历史函数名仍为 OnDepthMmFrame，但这里必须原样保留视差给 VIN 原厂标定还原，禁止套第二次 LUT。
   const uint8_t* draw = VecData(depth_vec);
   const size_t dsz = VecSize(depth_vec);
   const size_t px = static_cast<size_t>(dW) * static_cast<size_t>(dH);
   if (draw && dsz >= px * 2 && px > 0) {
-    const auto* mm16 = reinterpret_cast<const uint16_t*>(draw);
-    core_.OnDepthMmFrame(mm16, static_cast<uint16_t>(dW), static_cast<uint16_t>(dH), host_ns);
+    const auto* disparity_x8 = reinterpret_cast<const uint16_t*>(draw);
+    core_.OnDepthMmFrame(disparity_x8, static_cast<uint16_t>(dW), static_cast<uint16_t>(dH), host_ns);
+    depth_ready = true;
     if (n <= 5 || n % 30 == 0) {
       size_t nz = 0;
       uint16_t mx = 0;
       uint64_t sum = 0;
       for (size_t i = 0; i < px; ++i) {
-        const uint16_t v = mm16[i];
+        const uint16_t v = disparity_x8[i];
         if (v) { ++nz; sum += v; if (v > mx) mx = v; }
       }
       const size_t c = (static_cast<size_t>(dH) / 2) * dW + dW / 2;
-      VLOG("ourCb #%lld depth %dx%d color %dx%d serial=%d centerMm=%u valid=%.1f%% max=%u meanNZ=%llu",
-           (long long)n, dW, dH, cW, cH, serial, mm16[c], 100.0 * nz / px, mx,
+      VLOG("ourCb #%lld depth %dx%d color %dx%d serial=%d centerDispX8=%u valid=%.1f%% max=%u meanNZ=%llu",
+           (long long)n, dW, dH, cW, cH, serial, disparity_x8[c], 100.0 * nz / px, mx,
            nz ? (unsigned long long)(sum / nz) : 0ull);
     }
   } else if (n <= 5) {
     VLOG("ourCb #%lld depth 尺寸异常 dW=%d dH=%d dsz=%zu (期望>=%zu)", (long long)n, dW, dH, dsz,
          px * 2);
+  }
+  if (color_ready && depth_ready && !first_frame_ready_.exchange(true)) {
+    core_.MarkStreaming();
+    VLOG("首组有效 RGBD 帧到达，session 进入 streaming");
   }
 }
 
@@ -220,31 +245,80 @@ void Eys3dVendorCppSession::Run() {
   // 3) connect(fd)：厂商内部 uvc_get_device_with_fd + uvc_open + 建 2 个 UVCPreview(共享 fg)
   int rc = abi_.cam_connect(cam_, 0x3438, 0x0206, fd_, bus, dev, kUsbfsRoot);  // (vid,pid,fd,bus,dev,usbfs)
   VLOG("UVCCamera::connect rc=%d", rc);
+  if (rc != 0) {
+    core_.MarkError("UVCCamera::connect 失败 rc=" + std::to_string(rc));
+    Teardown();
+    return;
+  }
+  cam_connected_ = true;
 
   // 4) arming：mode25 + 关交织（IR/AE 待彩色起流后设，对齐 Java）
-  if (abi_.cam_set_video_mode) VLOG("setVideoMode(36) rc=%d", abi_.cam_set_video_mode(cam_, kVideoModeMode25));
+  if (abi_.cam_set_video_mode) {
+    rc = abi_.cam_set_video_mode(cam_, kVideoModeMode25);
+    VLOG("setVideoMode(36) rc=%d", rc);
+    if (rc != 0) {
+      core_.MarkError("setVideoMode(36) 失败 rc=" + std::to_string(rc));
+      Teardown();
+      return;
+    }
+  }
   if (abi_.cam_set_interleave_mode) abi_.cam_set_interleave_mode(cam_, false);
-  // ZD LUT 已删:FrameGrabber 路径深度 do_preview 内自载 ZD 表转好 metric mm(见 OnVendorFrame),
-  //   我方不再消费视差→mm LUT;原 BuildZdLut 仅做无人读的 GetZDTable USB 往返,纯浪费控制传输,移除。
+  // ZD LUT 已删：VIN 原厂链需要 FrameGrabber 回调中的原始 disparity×8；在端侧转 mm 会丢掉原厂几何输入。
+  // 原 BuildZdLut 只做无人读的 GetZDTable USB 往返，已移除。
 
   // 5) repoint FrameGrabber 回调 → 我们的 trampoline（在 Open 前，worker 未起，安全）
   old_fg_cb_ = cur_cb;
   old_fg_ctx_ = *reinterpret_cast<void**>(reinterpret_cast<char*>(fg_) + kFrameGrabberCtxOffset);
+  fg_callback_ctx_ = new (std::nothrow) FrameCallbackContext(this);
+  if (!fg_callback_ctx_) {
+    core_.MarkError("FrameGrabber 回调上下文分配失败");
+    Teardown();
+    return;
+  }
   *reinterpret_cast<void**>(reinterpret_cast<char*>(fg_) + kFrameGrabberCbOffset) =
       reinterpret_cast<void*>(&FrameTrampoline);
-  *reinterpret_cast<void**>(reinterpret_cast<char*>(fg_) + kFrameGrabberCtxOffset) = this;
+  *reinterpret_cast<void**>(reinterpret_cast<char*>(fg_) + kFrameGrabberCtxOffset) = fg_callback_ctx_;
   if (abi_.fg_set_frame_format) {
     abi_.fg_set_frame_format(fg_, kCameraColor, 2, kColorW, kColorH);
     abi_.fg_set_frame_format(fg_, kCameraDepth, 2, kDepthW, kDepthH);
   }
-  if (abi_.fg_open) abi_.fg_open(fg_);  // 置 isStarted → do_preview 才喂 FrameGrabber
+  abi_.fg_open(fg_);
+  fg_lifecycle_.MarkOpenCalled();
+  if (!WaitForFrameGrabberStarted()) {
+    core_.MarkError("FrameGrabber worker 启动超时，会话已隔离，需重启 App");
+    Teardown();
+    return;
+  }
 
   // 6) 彩色流（先建离屏窗口满足 startPreview 门控，MJPEG passthrough）
   color_win_ = MakeOffscreenWindow(reinterpret_cast<AImageReader**>(&color_reader_), kColorW, kColorH);
-  abi_.cam_set_preview_size(cam_, kColorW, kColorH, 1, kFps, kColorPreviewMode, 1.0f, kCameraColor);
-  if (abi_.cam_set_preview_display)
-    abi_.cam_set_preview_display(cam_, color_win_, kCameraColor);
-  VLOG("color startPreview rc=%d (win=%p)", abi_.cam_start_preview(cam_, kCameraColor), color_win_);
+  if (!color_win_) {
+    core_.MarkError("彩色离屏窗口创建失败");
+    Teardown();
+    return;
+  }
+  rc = abi_.cam_set_preview_size(
+      cam_, kColorW, kColorH, 1, kFps, kColorPreviewMode, 1.0f, kCameraColor);
+  VLOG("color setPreviewSize rc=%d", rc);
+  if (rc != 0) {
+    core_.MarkError("彩色 setPreviewSize 失败 rc=" + std::to_string(rc));
+    Teardown();
+    return;
+  }
+  rc = abi_.cam_set_preview_display(cam_, color_win_, kCameraColor);
+  VLOG("color setPreviewDisplay rc=%d win=%p", rc, color_win_);
+  if (rc != 0) {
+    core_.MarkError("彩色 setPreviewDisplay 失败 rc=" + std::to_string(rc));
+    Teardown();
+    return;
+  }
+  rc = abi_.cam_start_preview(cam_, kCameraColor);
+  VLOG("color startPreview rc=%d (win=%p)", rc, color_win_);
+  if (rc != 0) {
+    core_.MarkError("彩色 startPreview 失败 rc=" + std::to_string(rc));
+    Teardown();
+    return;
+  }
 
   // 7) IR 补光 + AE（彩色起流后，序列见 finding_eys3d_zero_vendor_independence「mode25 Java 起流序列」）
   if (abi_.cam_set_exposure_mode) abi_.cam_set_exposure_mode(cam_, kAeModeAuto);
@@ -259,15 +333,39 @@ void Eys3dVendorCppSession::Run() {
   // 9) 深度流（mode25 11bit 视差 → ASIC 直出）
   if (!core_.stop_requested()) {
     depth_win_ = MakeOffscreenWindow(reinterpret_cast<AImageReader**>(&depth_reader_), kDepthW, kDepthH);
-    abi_.cam_set_preview_size(cam_, kDepthW, kDepthH, 1, kFps, kDepthPreviewMode, 1.0f, kCameraDepth);
-    if (abi_.cam_set_preview_display)
-      abi_.cam_set_preview_display(cam_, depth_win_, kCameraDepth);
-    VLOG("depth startPreview rc=%d (win=%p)", abi_.cam_start_preview(cam_, kCameraDepth), depth_win_);
+    if (!depth_win_) {
+      core_.MarkError("深度离屏窗口创建失败");
+      Teardown();
+      return;
+    }
+    rc = abi_.cam_set_preview_size(
+        cam_, kDepthW, kDepthH, 1, kFps, kDepthPreviewMode, 1.0f, kCameraDepth);
+    VLOG("depth setPreviewSize rc=%d", rc);
+    if (rc != 0) {
+      core_.MarkError("深度 setPreviewSize 失败 rc=" + std::to_string(rc));
+      Teardown();
+      return;
+    }
+    rc = abi_.cam_set_preview_display(cam_, depth_win_, kCameraDepth);
+    VLOG("depth setPreviewDisplay rc=%d win=%p", rc, depth_win_);
+    if (rc != 0) {
+      core_.MarkError("深度 setPreviewDisplay 失败 rc=" + std::to_string(rc));
+      Teardown();
+      return;
+    }
+    rc = abi_.cam_start_preview(cam_, kCameraDepth);
+    VLOG("depth startPreview rc=%d (win=%p)", rc, depth_win_);
+    if (rc != 0) {
+      core_.MarkError("深度 startPreview 失败 rc=" + std::to_string(rc));
+      Teardown();
+      return;
+    }
+  } else {
+    Teardown();
+    return;
   }
 
-  core_.MarkStreaming();
-
-  // 10) 保活：厂商预览线程 + FrameGrabber worker 在跑，帧经 trampoline 进 core。
+  // 10) 保活：首组有效 RGBD 到达后才由 OnVendorFrame 标记 streaming。
   int tick = 0;
   while (!core_.stop_requested()) {
     usleep(200000);
@@ -279,20 +377,42 @@ void Eys3dVendorCppSession::Run() {
 
 void Eys3dVendorCppSession::Teardown() {
   if (cam_) {
-    if (abi_.cam_stop_preview) {
+    if (cam_connected_) {
       abi_.cam_stop_preview(cam_, kCameraDepth);
       abi_.cam_stop_preview(cam_, kCameraColor);
     }
-    if (fg_ && abi_.fg_close) abi_.fg_close(fg_);
+    VendorWorkerCloseResult close_result = VendorWorkerCloseResult::kNotOpened;
+    if (fg_) {
+      close_result = fg_lifecycle_.CloseAfterStarted(
+          [this] { return abi_.fg_is_started(fg_); }, [this] { abi_.fg_close(fg_); },
+          kFrameGrabberStartTimeout, kFrameGrabberPollInterval);
+    }
+    if (close_result == VendorWorkerCloseResult::kStartTimeout) {
+      QuarantineVendorObjects("worker 未进入，Close 不会 join");
+      return;
+    }
+    if (close_result == VendorWorkerCloseResult::kStillStarted || !fg_lifecycle_.safe_to_destroy()) {
+      QuarantineVendorObjects("Close 返回后 worker 仍在运行");
+      return;
+    }
     // 还原 FrameGrabber 回调，避免厂商析构期间误入我方 trampoline。
     if (fg_ && old_fg_cb_) {
       *reinterpret_cast<void**>(reinterpret_cast<char*>(fg_) + kFrameGrabberCbOffset) = old_fg_cb_;
       *reinterpret_cast<void**>(reinterpret_cast<char*>(fg_) + kFrameGrabberCtxOffset) = old_fg_ctx_;
     }
-    if (abi_.cam_dtor) abi_.cam_dtor(cam_);  // D1：析构成员（含 shared_ptr→厂商销毁 fg），不释放 this
+    if (fg_callback_ctx_) {
+      {
+        std::lock_guard<std::mutex> lock(fg_callback_ctx_->mutex);
+        fg_callback_ctx_->owner = nullptr;
+      }
+      delete fg_callback_ctx_;
+      fg_callback_ctx_ = nullptr;
+    }
+    abi_.cam_dtor(cam_);  // D1：析构成员（含 shared_ptr→厂商销毁 fg），不释放 this
     std::free(cam_);
     cam_ = nullptr;
     fg_ = nullptr;
+    cam_connected_ = false;
   }
   if (color_reader_) {
     AImageReader_delete(reinterpret_cast<AImageReader*>(color_reader_));
@@ -307,13 +427,49 @@ void Eys3dVendorCppSession::Teardown() {
   VLOG("Teardown 完成 cbFrames=%lld", (long long)cb_frames_.load());
 }
 
+bool Eys3dVendorCppSession::WaitForFrameGrabberStarted() {
+  const auto begin = std::chrono::steady_clock::now();
+  const bool started = fg_lifecycle_.WaitUntilStarted(
+      [this] { return abi_.fg_is_started(fg_); }, kFrameGrabberStartTimeout,
+      kFrameGrabberPollInterval);
+  const auto waited_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - begin)
+                             .count();
+  VLOG("FrameGrabber worker 启动屏障 started=%d waited=%lldms", started,
+       static_cast<long long>(waited_ms));
+  return started;
+}
+
+void Eys3dVendorCppSession::QuarantineVendorObjects(const char* reason) {
+  if (fg_callback_ctx_) {
+    std::lock_guard<std::mutex> lock(fg_callback_ctx_->mutex);
+    fg_callback_ctx_->owner = nullptr;
+  }
+  VLOGE("致命：FrameGrabber 无法安全 join，隔离厂商对象且禁止析构：%s cam=%p fg=%p", reason,
+        cam_, fg_);
+  cam_ = nullptr;
+  fg_ = nullptr;
+  fg_callback_ctx_ = nullptr;
+  color_reader_ = nullptr;
+  depth_reader_ = nullptr;
+  color_win_ = nullptr;
+  depth_win_ = nullptr;
+  cam_connected_ = false;
+}
+
 int Eys3dVendorCppSession::poll(gomob::camera::CameraFrame* out, uint32_t timeout_ms) {
   return core_.Poll(out, timeout_ms);
 }
 
 bool Eys3dVendorCppSession::set_controls(const gomob::camera::DepthControls& c) {
-  (void)c;
-  return false;  // TODO(M6.5)：IR/AE/denoise 语义控制 → UVCCamera::setFWRegister/setExposureMode
+  // 目前接 IR 投射器电流（标定关散斑用）：写 FW 0xE0。0=关投射器→L' 出干净灰度(无散斑,标定可检 ChArUco)；
+  // 3=默认(主动立体测深需要)；6=max。其它语义控制(AE/denoise/conf)待 M6.5 锁定。
+  if (cam_ && abi_.cam_set_fw_register && c.ir_current >= 0) {
+    abi_.cam_set_fw_register(cam_, kIrCurReg, (unsigned char)c.ir_current, kFwFlag1Byte);
+    VLOG("set_controls IR current=%d (0=关散斑→L' 干净)", c.ir_current);
+    return true;
+  }
+  return false;  // 其它控制 TODO(M6.5)
 }
 
 void Eys3dVendorCppSession::stop() {

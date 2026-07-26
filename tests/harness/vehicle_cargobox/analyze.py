@@ -38,6 +38,25 @@ def make_box_truck(cab_len, gap, box_len, outer_w, inner_w, bed, box_top, cab_ro
     return np.array(pts, np.float32)
 
 
+def make_thin_residual_case(step=20.0):
+    """合成低矮车体 + 细长高残留；残留不能被当成货箱。"""
+    pts = []
+    L, W, H = 1800.0, 550.0, 520.0
+    for y in np.arange(0, L, step):
+        for x in np.arange(-W / 2, W / 2, step):
+            pts.append((x, y, 0)); pts.append((x, y, H))
+        for z in np.arange(0, H, step):
+            pts.append((-W / 2, y, z)); pts.append((W / 2, y, z))
+    for x in np.arange(-W / 2, W / 2, step):
+        for z in np.arange(0, H, step):
+            pts.append((x, 0, z)); pts.append((x, L, z))
+    for y in np.arange(1200, 1281, 10.0):
+        for x in np.arange(-25, 26, 10.0):
+            for z in np.arange(300, 2301, 20.0):
+                pts.append((x, y, z))
+    return np.array(pts, np.float32)
+
+
 def check(name, val, truth, tol_pct, warn, err):
     if np.isnan(val):
         err.append(f"{name} 未测出"); return
@@ -67,7 +86,16 @@ def main():
         check("合成箱深", r["boxH"], T["box_top"] - T["bed"], 12, warn, err)
         # 内宽=壁中距：直方图分辨率下厚壁内外面合并，薄壁时≈内宽。参考值，不硬断言。
 
-    # ② 原厂 100742 分割 sanity（无货箱数值真值，验证分割+外尺寸与 rim 一致）
+    # ② 细长高残留反例：不能把背景柱/残留竖片画成货箱。
+    R = make_thin_residual_case()
+    rr = detect_cargobox(R)
+    print("== 细长高残留反例 ==")
+    if rr.get("has_box"):
+        err.append(f"细长残留误检为货箱: 外长={rr.get('outerL',0):.0f} 外宽={rr.get('outerW',0):.0f} 箱高={rr.get('boxH',0):.0f}")
+    else:
+        print("  未检出货箱（正常）")
+
+    # ③ 原厂 100742 分割 sanity（无货箱数值真值，验证分割+外尺寸与 rim 一致）
     p1, p2 = os.path.join(SESS, "1.pcd"), os.path.join(SESS, "2.pcd")
     if os.path.exists(p1) and os.path.exists(p2):
         Q = np.vstack([load_pcd(p1), load_pcd(p2)])

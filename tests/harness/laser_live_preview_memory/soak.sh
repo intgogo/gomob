@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export LASER_LIVE_PREVIEW_DURATION_SEC="${LASER_LIVE_PREVIEW_DURATION_SEC:-360}"
+export LASER_LIVE_PREVIEW_REQUIRE_COMPLETED=1
+export LASER_LIVE_PREVIEW_REQUIRE_FUSED="${LASER_LIVE_PREVIEW_REQUIRE_FUSED:-1}"
+exec "$HERE/run.sh" "$@"

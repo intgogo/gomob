@@ -3,6 +3,8 @@ package laser
 import (
 	"math"
 	"testing"
+
+	"io.gomob/server/pkg/repo"
 )
 
 // 合成"房间"：四面墙 + 地面（法向各异，点到面可全约束 6DoF），A 系直出；
@@ -98,5 +100,68 @@ func TestRefineBToATooSparse(t *testing.T) {
 	got, st := RefineBToA(tiny, tiny, init, DefaultRefineBToAParams())
 	if st.Applied || got != init {
 		t.Fatalf("过稀点云应拒绝并回初值, stats=%+v", st)
+	}
+}
+
+func TestProductionRefineAcceptance(t *testing.T) {
+	accepted := RefineBToAStats{
+		Applied: true, Pairs: DefaultRefineBToAParams().MinPairs,
+		RMSMM: 10, DeltaTransMM: 20, DeltaRotDeg: 0.5,
+	}
+	if ok, reason := productionRefineAcceptance(accepted); !ok || reason != "accepted" {
+		t.Fatalf("合格精修被拒绝: ok=%v reason=%s", ok, reason)
+	}
+	if ok, _ := productionRefineAcceptance(RefineBToAStats{Reason: "重叠面对应不足"}); ok {
+		t.Fatal("未应用精修不得进入生产测量")
+	}
+	tooFar := accepted
+	tooFar.DeltaTransMM = maxProductionRefineDeltaTransMM + 0.1
+	if ok, reason := productionRefineAcceptance(tooFar); ok || reason != "translation_delta_too_large" {
+		t.Fatalf("大平移精修必须被拒绝: ok=%v reason=%s", ok, reason)
+	}
+	tooRotated := accepted
+	tooRotated.DeltaRotDeg = maxProductionRefineDeltaRotDeg + 0.1
+	if ok, reason := productionRefineAcceptance(tooRotated); ok || reason != "rotation_delta_too_large" {
+		t.Fatalf("大旋转精修必须被拒绝: ok=%v reason=%s", ok, reason)
+	}
+	tooNoisy := accepted
+	tooNoisy.RMSMM = maxProductionRefineRMSMM + 0.1
+	if ok, reason := productionRefineAcceptance(tooNoisy); ok || reason != "rms_too_large" {
+		t.Fatalf("高残差精修必须被拒绝: ok=%v reason=%s", ok, reason)
+	}
+}
+
+func TestProductionRefineAcceptanceUsesVerifiedLegacyAlgorithmGuard(t *testing.T) {
+	job197 := RefineBToAStats{
+		Applied: true, Pairs: 1028, RMSMM: 11.305,
+		DeltaTransMM: 61.943, DeltaRotDeg: 1.124,
+	}
+	if ok, _ := productionRefineAcceptance(job197); ok {
+		t.Fatal("新 A/B 背景不得继承 legacy 的旧算法规则")
+	}
+	if ok, reason := productionRefineAcceptanceForBackground(job197, repo.LaserBackgroundSchemaLegacyVerifiedFused); !ok || reason != "accepted" {
+		t.Fatalf("真实准确 job197 应通过已验证 legacy 规则: ok=%v reason=%s", ok, reason)
+	}
+	// job214 被旧 65mm/1.2°门误杀；同一融合云按修改前网页算法真实重放为
+	// 1771.675×529.667×764.958mm，因此完整 legacy binding 下应进入旧算法测量。
+	job214 := RefineBToAStats{
+		Applied: true, Pairs: 1125, RMSMM: 10.900274,
+		DeltaTransMM: 96.98354, DeltaRotDeg: 2.1186337,
+	}
+	if ok, reason := productionRefineAcceptance(job214); ok || reason != "translation_delta_too_large" {
+		t.Fatalf("新 A/B schema 仍应拒绝 job214 大修正: ok=%v reason=%s", ok, reason)
+	}
+	if ok, reason := productionRefineAcceptanceForBackground(job214, repo.LaserBackgroundSchemaLegacyVerifiedFused); !ok || reason != "accepted" {
+		t.Fatalf("真实准确 job214 应恢复旧网页算法: ok=%v reason=%s", ok, reason)
+	}
+	tooFar := job214
+	tooFar.DeltaTransMM = DefaultRefineBToAParams().MaxDeltaTrans + 0.1
+	if ok, reason := productionRefineAcceptanceForBackground(tooFar, repo.LaserBackgroundSchemaLegacyVerifiedFused); ok || reason != "translation_delta_too_large" {
+		t.Fatalf("超出精修算法发散守卫必须拒绝: ok=%v reason=%s", ok, reason)
+	}
+	tooNoisy := job214
+	tooNoisy.RMSMM = maxProductionRefineRMSMM + 0.1
+	if ok, reason := productionRefineAcceptanceForBackground(tooNoisy, repo.LaserBackgroundSchemaLegacyVerifiedFused); ok || reason != "rms_too_large" {
+		t.Fatalf("legacy 旧算法仍必须拒绝高残差精修: ok=%v reason=%s", ok, reason)
 	}
 }

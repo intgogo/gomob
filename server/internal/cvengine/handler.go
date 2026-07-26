@@ -26,11 +26,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"runtime"
@@ -53,16 +55,23 @@ import (
 )
 
 type Handler struct {
-	startedAt   time.Time
-	log         *slog.Logger
-	requireAuth bool
-	vinRef      *vinrefclient.Client
-	shapeRef    *shaperefclient.Client
-	models      *core.Registry
+	startedAt              time.Time
+	log                    *slog.Logger
+	requireAuth            bool
+	vinRef                 *vinrefclient.Client
+	shapeRef               *shaperefclient.Client
+	models                 *core.Registry
+	vinRecognize           http.Handler
+	vinCalibrations        restore.VinCalibrationResolver
+	vinCalibrationRequired bool
+	vinModelsRequired      bool
 
 	// VIN 还原用 yolo-obb 模型：懒加载一次复用（onnxruntime session 建一次即可）。
 	obbOnce sync.Once
 	obbErr  error
+	// VIN 还原用逐字符 YOLO：为 17 字符格架提供中心、基线和节距。
+	charOnce sync.Once
+	charErr  error
 
 	// 推理并发闸：限制同时在跑的 RunMask / RunCom 推理数，防过载 OOM。
 	// 容量取自 GOMOB_CVENGINE_INFER_CONCURRENCY（默认 4）；获取不到额度时等待 inferTimeout。
@@ -70,7 +79,18 @@ type Handler struct {
 	inferTimeout time.Duration
 }
 
+// HandlerOptions 注入不依赖本地 cgo 模型的外部算法处理器。
+type HandlerOptions struct {
+	VINRecognizeHandler    http.Handler
+	VINCalibrationResolver restore.VinCalibrationResolver
+}
+
 func NewHandler() *Handler {
+	return NewHandlerWithOptions(HandlerOptions{})
+}
+
+// NewHandlerWithOptions 创建 cv-engine HTTP handler。
+func NewHandlerWithOptions(options HandlerOptions) *Handler {
 	conc := parseIntOr(os.Getenv("GOMOB_CVENGINE_INFER_CONCURRENCY"), 4)
 	if conc < 1 {
 		conc = 1
@@ -79,13 +99,27 @@ func NewHandler() *Handler {
 	if timeoutSec < 1 {
 		timeoutSec = 1
 	}
+	calibrationResolver := options.VINCalibrationResolver
+	if calibrationResolver == nil {
+		calibrationResolver = restore.NewFactoryVinCalibrationResolverFromEnv()
+	}
 	return &Handler{
-		startedAt:    time.Now(),
-		log:          logger.New("cvengine.handler"),
-		requireAuth:  os.Getenv("GOMOB_CVENGINE_REQUIRE_AUTH") == "true",
-		vinRef:       vinrefclient.NewClient(os.Getenv("GOMOB_VINREF_TARGET")),
-		shapeRef:     shaperefclient.NewClient(os.Getenv("GOMOB_SHAPEREF_TARGET")),
-		models:       core.New(),
+		startedAt:       time.Now(),
+		log:             logger.New("cvengine.handler"),
+		requireAuth:     os.Getenv("GOMOB_CVENGINE_REQUIRE_AUTH") == "true",
+		vinRef:          vinrefclient.NewClient(os.Getenv("GOMOB_VINREF_TARGET")),
+		shapeRef:        shaperefclient.NewClient(os.Getenv("GOMOB_SHAPEREF_TARGET")),
+		models:          core.New(),
+		vinRecognize:    options.VINRecognizeHandler,
+		vinCalibrations: calibrationResolver,
+		vinCalibrationRequired: strings.EqualFold(
+			strings.TrimSpace(os.Getenv("GOMOB_VIN_FACTORY_CALIBRATION_REQUIRED")),
+			"true",
+		),
+		vinModelsRequired: strings.EqualFold(
+			strings.TrimSpace(os.Getenv("GOMOB_VIN_RESTORE_MODELS_REQUIRED")),
+			"true",
+		),
 		inferSem:     make(chan struct{}, conc),
 		inferTimeout: time.Duration(timeoutSec) * time.Second,
 	}
@@ -103,6 +137,19 @@ func parseIntOr(s string, def int) int {
 	return v
 }
 
+func (h *Handler) acquireInferPermit(ctx context.Context) (func(), error) {
+	admitCtx, cancel := context.WithTimeout(ctx, h.inferTimeout)
+	select {
+	case h.inferSem <- struct{}{}:
+		cancel()
+		return func() { <-h.inferSem }, nil
+	case <-admitCtx.Done():
+		err := admitCtx.Err()
+		cancel()
+		return nil, err
+	}
+}
+
 // runMaskGuarded 给 RunMask 套上并发闸 + 准入超时 + panic→error 防护。
 //
 //  1. 信号量限并发：满额时阻塞到拿到额度，或 ctx（含 GOMOB_CVENGINE_INFER_TIMEOUT_SEC 准入截止）取消 →
@@ -118,15 +165,11 @@ func (h *Handler) runMaskGuarded(ctx context.Context, tag string, img gocv.Mat,
 	conf, maskTh, nmsTh, rudeScale float32) (
 	contours [][]image.Point, rrects []gocv.RotatedRect, classes []string, scores []float32, err error) {
 
-	// 1. 准入信号量（带准入超时：拿不到额度等到 inferTimeout 就放弃 → 503）
-	admitCtx, cancel := context.WithTimeout(ctx, h.inferTimeout)
-	defer cancel()
-	select {
-	case h.inferSem <- struct{}{}:
-		defer func() { <-h.inferSem }()
-	case <-admitCtx.Done():
-		return nil, nil, nil, nil, admitCtx.Err()
+	release, err := h.acquireInferPermit(ctx)
+	if err != nil {
+		return nil, nil, nil, nil, err
 	}
+	defer release()
 
 	// 2. recover 兜 cgo panic（命名返回值在 defer 里改写 err）
 	defer func() {
@@ -158,8 +201,64 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 		h.required(http.HandlerFunc(h.VinPipeline)))
 	mux.Handle("POST /cv/ocr/v1/vin_restore",
 		h.required(http.HandlerFunc(h.VinRestore)))
+	mux.Handle("GET /cv/ocr/v1/vin_preview_calibration",
+		h.required(http.HandlerFunc(h.VinPreviewCalibration)))
+	vinRecognize := h.vinRecognize
+	if vinRecognize == nil {
+		vinRecognize = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			httpx.WriteError(w, httpx.NewError(50603, http.StatusServiceUnavailable,
+				"外部 VIN 识别服务未配置"))
+		})
+	}
+	mux.Handle("POST /cv/ocr/v1/vin_recognize", h.required(vinRecognize))
 	mux.Handle("POST /cv/v1/shape_compare",
 		h.required(http.HandlerFunc(h.ShapeCompare)))
+}
+
+// VinPreviewCalibration 返回手机实时预览所需的服务端权威原厂投影参数。
+// 查询必须给出完整 rig/profile，禁止按单颗相机或默认分辨率猜测外参。
+func (h *Handler) VinPreviewCalibration(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	depthSerial := strings.TrimSpace(query.Get("depth_serial"))
+	colorSerial := strings.TrimSpace(query.Get("color_serial"))
+	depthWidth, depthWidthErr := strconv.Atoi(query.Get("depth_width"))
+	depthHeight, depthHeightErr := strconv.Atoi(query.Get("depth_height"))
+	colorWidth, colorWidthErr := strconv.Atoi(query.Get("color_width"))
+	colorHeight, colorHeightErr := strconv.Atoi(query.Get("color_height"))
+	if depthSerial == "" || colorSerial == "" ||
+		depthWidthErr != nil || depthHeightErr != nil || colorWidthErr != nil || colorHeightErr != nil ||
+		depthWidth <= 0 || depthHeight <= 0 || colorWidth <= 0 || colorHeight <= 0 {
+		httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest,
+			"depth/color serial 与 width/height 必须完整且合法"))
+		return
+	}
+
+	calibration, err := h.vinCalibrations.ResolveVinCalibration(restore.VinCalibrationKey{
+		DepthDeviceSerial: depthSerial,
+		ColorDeviceSerial: colorSerial,
+		DepthWidth:        depthWidth,
+		DepthHeight:       depthHeight,
+		ColorWidth:        colorWidth,
+		ColorHeight:       colorHeight,
+	})
+	if err != nil {
+		if errors.Is(err, restore.ErrVinCalibrationAssetInvalid) {
+			httpx.WriteError(w, httpx.NewError(50302, http.StatusServiceUnavailable,
+				"VIN 已发布原厂标定资产未就绪: "+err.Error()))
+			return
+		}
+		httpx.WriteError(w, httpx.NewError(40301, http.StatusNotFound,
+			"当前 VIN rig/profile 尚未发布预览标定"))
+		return
+	}
+
+	projection, err := calibration.PreviewProjection()
+	if err != nil {
+		httpx.WriteError(w, httpx.NewError(50001, http.StatusInternalServerError,
+			"VIN 预览标定快照生成失败: "+err.Error()))
+		return
+	}
+	httpx.OK(w, projection)
 }
 
 // ListModels 暴露当前注册的模型 + 加载状态。
@@ -1022,15 +1121,17 @@ func (h *Handler) VinPipeline(w http.ResponseWriter, r *http.Request) {
 }
 
 // ============================================================================
-// vin_restore —— VIN 数码拓印还原（深度去透视 + OBB 正射 + 去阴影二值化 → OCR 级签名 PNG）
+// vin_restore —— VIN 数码拓印还原（深度去透视 + OBB 正射 → 原厂式彩色正射 PNG）
 // ============================================================================
 
 // dev 旁路默认 yolo-obb 路径（env VIN_OBB_MODEL 覆盖）。无 model-registry/MinIO 的纯本地开发/harness 用。
 const defaultVinObbModelPath = "/root/lilw/gomob/.dev/vin_models/yolo-obb.onnx"
+const defaultVinCharModelPath = "/root/lilw/gomob/.dev/vin_models/vins0.onnx"
 
 // vinObbTag —— yolo-obb 模型在 model-registry / cv-engine 里的 tag（与 model name 同一字符串）。
 // 生产部署：把它加进 GOMOB_CVENGINE_MODEL_NAMES，启动期 loader 从 registry→MinIO 拉（metadata.kind="com"）。
 const vinObbTag = "VINOBB"
+const vinCharTag = "VINCHAR"
 
 // ensureVinObbModel 确保 yolo-obb（KindCom）已注册，懒执行一次。
 //
@@ -1038,8 +1139,11 @@ const vinObbTag = "VINOBB"
 // 仅当未注册（纯本地开发，无 registry/MinIO）时才从 VIN_OBB_MODEL / 默认 .dev 路径懒加载兜底。
 func (h *Handler) ensureVinObbModel() error {
 	h.obbOnce.Do(func() {
-		if _, err := h.models.Get(vinObbTag); err == nil {
+		if err := h.models.CheckKind(vinObbTag, core.KindCom); err == nil {
 			return // 已由 loader 注册，直接复用
+		} else if !errors.Is(err, core.ErrNotFound) {
+			h.obbErr = fmt.Errorf("%s 模型类型错误: %w", vinObbTag, err)
+			return
 		}
 		path := os.Getenv("VIN_OBB_MODEL")
 		if path == "" {
@@ -1054,41 +1158,80 @@ func (h *Handler) ensureVinObbModel() error {
 	return h.obbErr
 }
 
-type vinRestoreResp struct {
-	OK           bool    `json:"ok"`
-	ResultPNGB64 string  `json:"result_png_base64,omitempty"`
-	Width        int     `json:"width"`
-	Height       int     `json:"height"`
-	TiltDeg      float64 `json:"tilt_deg"`
-	WidthMM      float64 `json:"width_mm"`
-	HeightMM     float64 `json:"height_mm"`
-	ThetaDeg     float64 `json:"theta_deg"`
-	InlierRate   float64 `json:"inlier_rate"`
-	RMS          float64 `json:"rms"`
-	MedZ         float64 `json:"med_z"`
-	NumDet       int     `json:"num_det"`
-	InkRatio     float64 `json:"ink_ratio"`
-	RejectReason string  `json:"reject_reason,omitempty"` // ok=false 时判废原因：tilt_too_large / low_quality
-	DeviceID     string  `json:"device_id,omitempty"`
-	LogID        string  `json:"log_id"`
+// ensureVinCharModel 确保逐字符 YOLO 用正确的多输出检测解码加载，不能误注册成 mask。
+func (h *Handler) ensureVinCharModel() error {
+	h.charOnce.Do(func() {
+		if err := h.models.CheckKind(vinCharTag, core.KindYolo); err == nil {
+			return
+		} else if !errors.Is(err, core.ErrNotFound) {
+			h.charErr = fmt.Errorf("%s 模型类型错误: %w", vinCharTag, err)
+			return
+		}
+		path := os.Getenv("VIN_CHAR_MODEL")
+		if path == "" {
+			path = defaultVinCharModelPath
+		}
+		h.charErr = h.models.RegisterYoloONNX(
+			vinCharTag,
+			path,
+			core.DefaultYoloOptions(restore.VinCharacterClasses()...),
+		)
+		if h.charErr != nil {
+			h.log.Error("VIN 逐字符模型加载失败（dev 旁路）", "err", h.charErr, "path", path)
+		}
+	})
+	return h.charErr
 }
 
-// VinRestore —— 收彩色 rgb1300 + depth.yuv + 深度内参，出 OCR 级二值签名 PNG。
+type vinRestoreResp struct {
+	OK                   bool    `json:"ok"`
+	ResultPNGB64         string  `json:"result_png_base64,omitempty"`
+	Width                int     `json:"width"`
+	Height               int     `json:"height"`
+	TiltDeg              float64 `json:"tilt_deg"`
+	WidthMM              float64 `json:"width_mm"`
+	HeightMM             float64 `json:"height_mm"`
+	ThetaDeg             float64 `json:"theta_deg"`
+	InlierRate           float64 `json:"inlier_rate"`
+	RMS                  float64 `json:"rms"`
+	MedZ                 float64 `json:"med_z"`
+	NumDet               int     `json:"num_det"`
+	AnchorCount          int     `json:"anchor_count"`
+	AnchorCandidateCount int     `json:"anchor_candidate_count"`
+	AnchorPitch          float64 `json:"anchor_pitch_px"`
+	AnchorRMS            float64 `json:"anchor_rms_px"`
+	AnchorScore          float64 `json:"anchor_mean_score"`
+	AnchorHeight         float64 `json:"anchor_height_px"`
+	AnchorRotation       float64 `json:"anchor_rotation_deg"`
+	AnchorScale          float64 `json:"anchor_scale"`
+	CalibrationSHA256    string  `json:"calibration_sha256,omitempty"`
+	CalibrationVersion   uint32  `json:"calibration_version,omitempty"`
+	SyncDeltaUs          int64   `json:"sync_delta_us"`
+	RejectReason         string  `json:"reject_reason,omitempty"` // ok=false：tilt_too_large / vin_not_detected / rgbd_out_of_sync / text_anchor_unreliable / calibration_unavailable
+	DeviceID             string  `json:"device_id,omitempty"`
+	ColorDeviceID        string  `json:"color_device_id,omitempty"`
+	LogID                string  `json:"log_id"`
+}
+
+// VinRestore —— 收彩色 rgb1300 + depth.yuv + 深度内参，出彩色正射 PNG。
 //
 // 入参（multipart / form / base64）：
 //
 //	image_binary_rgb1300   彩色 JPEG（必填）
-//	image_binary_depth     深度原始字节（小端 u16 mm，dw×dh）（必填）
+//	image_binary_depth     RS-D550 mode25 原始 1/8px 视差（小端 u16，dw×dh）（必填）
 //	depth_w / depth_h      深度宽高（必填，照端侧 meta.json depth.w / depth.h）
-//	fx / fy / cx / cy      深度内参（必填，各向异性 fx,fy）
-//	device_id / log_id     可选
+//	fx / fy / cx / cy      客户端诊断元数据（必填但不参与还原；服务端只用原厂 bin）
+//	device_id / color_device_id  深度相机 / HLSD8 物理序列号
+//	color_w / color_h      HLSD8 实际编码档位
+//	log_id                 可选日志 ID
+//	color_timestamp_us / depth_timestamp_us  native 收帧 host 单调时钟（必填）
 //
 // 出参 JSON：result_png_base64 / width / height / tilt_deg / ok / log_id ...
 //
 // 失败：
 //
 //	10001  参数缺失 / 解析错
-//	40701  yolo-obb 模型未就绪（路径不存在 / onnxruntime 加载失败）
+//	40701  VIN OBB / 逐字符模型未就绪（路径不存在 / onnxruntime 加载失败）
 //	42201  tilt>70（承印面过斜，原厂硬门）→ ok=false
 //	50001  还原内部错（深度点不足 / 无 OBB / 平面奇异等）
 func (h *Handler) VinRestore(w http.ResponseWriter, r *http.Request) {
@@ -1118,16 +1261,76 @@ func (h *Handler) VinRestore(w http.ResponseWriter, r *http.Request) {
 	fy, fye := strconv.ParseFloat(r.FormValue("fy"), 64)
 	cx, cxe := strconv.ParseFloat(r.FormValue("cx"), 64)
 	cy, cye := strconv.ParseFloat(r.FormValue("cy"), 64)
-	if fxe != nil || fye != nil || cxe != nil || cye != nil || fx <= 0 || fy <= 0 {
+	if fxe != nil || fye != nil || cxe != nil || cye != nil || fx <= 0 || fy <= 0 ||
+		math.IsNaN(fx) || math.IsInf(fx, 0) || math.IsNaN(fy) || math.IsInf(fy, 0) ||
+		math.IsNaN(cx) || math.IsInf(cx, 0) || math.IsNaN(cy) || math.IsInf(cy, 0) {
 		httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest, "fx/fy/cx/cy 非法（fx,fy 必须>0）"))
 		return
 	}
 
 	deviceID := r.FormValue("device_id")
+	colorDeviceID := r.FormValue("color_device_id")
+	colorW, colorWErr := strconv.Atoi(r.FormValue("color_w"))
+	colorH, colorHErr := strconv.Atoi(r.FormValue("color_h"))
+	if colorWErr != nil || colorHErr != nil || colorW <= 0 || colorH <= 0 {
+		httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest, "color_w / color_h 非法"))
+		return
+	}
+	colorTimestampUs, colorTSErr := strconv.ParseInt(r.FormValue("color_timestamp_us"), 10, 64)
+	depthTimestampUs, depthTSErr := strconv.ParseInt(r.FormValue("depth_timestamp_us"), 10, 64)
+	if colorTSErr != nil || depthTSErr != nil || colorTimestampUs <= 0 || depthTimestampUs <= 0 {
+		httpx.WriteError(w, httpx.NewError(10001, http.StatusBadRequest,
+			"color_timestamp_us / depth_timestamp_us 非法（必须为 native host 单调时钟）"))
+		return
+	}
+	syncDeltaUs := colorTimestampUs - depthTimestampUs
+	if syncDeltaUs < 0 {
+		syncDeltaUs = -syncDeltaUs
+	}
 	logID := r.FormValue("log_id")
 	if logID == "" {
 		logID = "vin_restore_" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	}
+	if syncDeltaUs > vinRestoreMaxSyncDeltaUs {
+		httpx.OK(w, vinRestoreResp{
+			OK:            false,
+			SyncDeltaUs:   syncDeltaUs,
+			RejectReason:  "rgbd_out_of_sync",
+			DeviceID:      deviceID,
+			ColorDeviceID: colorDeviceID,
+			LogID:         logID,
+		})
+		return
+	}
+	calibrationKey := restore.VinCalibrationKey{
+		DepthDeviceSerial: deviceID,
+		ColorDeviceSerial: colorDeviceID,
+		DepthWidth:        dw,
+		DepthHeight:       dh,
+		ColorWidth:        colorW,
+		ColorHeight:       colorH,
+	}
+	calibration, calibrationErr := h.vinCalibrations.ResolveVinCalibration(calibrationKey)
+	if calibrationErr != nil {
+		h.log.Warn("VIN 原厂标定不可用", "err", calibrationErr, "depth_serial", deviceID,
+			"color_serial", colorDeviceID, "depth_profile", fmt.Sprintf("%dx%d", dw, dh),
+			"color_profile", fmt.Sprintf("%dx%d", colorW, colorH))
+		if errors.Is(calibrationErr, restore.ErrVinCalibrationAssetInvalid) {
+			httpx.WriteError(w, httpx.NewError(50302, http.StatusServiceUnavailable,
+				"VIN 已发布原厂标定资产未就绪: "+calibrationErr.Error()))
+			return
+		}
+		httpx.OK(w, vinRestoreResp{
+			OK:            false,
+			SyncDeltaUs:   syncDeltaUs,
+			RejectReason:  "calibration_unavailable",
+			DeviceID:      deviceID,
+			ColorDeviceID: colorDeviceID,
+			LogID:         logID,
+		})
+		return
+	}
+	calibrationSHA256, calibrationVersion := calibration.AuditIdentity()
 
 	// 懒加载模型
 	if err := h.ensureVinObbModel(); err != nil {
@@ -1135,24 +1338,72 @@ func (h *Handler) VinRestore(w http.ResponseWriter, r *http.Request) {
 			"yolo-obb 模型未就绪: "+err.Error()))
 		return
 	}
+	if err := h.ensureVinCharModel(); err != nil {
+		httpx.WriteError(w, httpx.NewError(40701, http.StatusNotFound,
+			"VIN 逐字符模型未就绪: "+err.Error()))
+		return
+	}
+	releaseInfer, err := h.acquireInferPermit(r.Context())
+	if err != nil {
+		httpx.WriteError(w, httpx.NewError(50301, http.StatusServiceUnavailable,
+			"推理超时或服务过载: "+err.Error()))
+		return
+	}
+	defer releaseInfer()
 
-	png, meta, rerr := restore.Restore(h.models, vinObbTag, rgb, depth, dw, dh, fx, fy, cx, cy)
+	png, meta, rerr := restore.Restore(h.models, vinObbTag, vinCharTag, calibration, rgb, depth, dw, dh)
 	if rerr != nil {
-		// tilt 过斜 / 噪声坏采集 → 判废（HTTP 200 + ok=false + 原因），端侧提示重拍，不算系统错。
-		if rerr == restore.ErrTiltTooLarge || rerr == restore.ErrLowQuality {
-			reason := "tilt_too_large"
-			if rerr == restore.ErrLowQuality {
-				reason = "low_quality"
-			}
+		// tilt 过斜 → 判废（HTTP 200 + ok=false + 原因），端侧提示重拍，不算系统错。
+		if rerr == restore.ErrTiltTooLarge {
 			httpx.OK(w, vinRestoreResp{
-				OK:           false,
-				TiltDeg:      meta.TiltDeg,
-				NumDet:       meta.NumDet,
-				InlierRate:   meta.InlierRate,
-				InkRatio:     meta.InkRatio,
-				RejectReason: reason,
-				DeviceID:     deviceID,
-				LogID:        logID,
+				OK:                 false,
+				TiltDeg:            meta.TiltDeg,
+				NumDet:             meta.NumDet,
+				InlierRate:         meta.InlierRate,
+				CalibrationSHA256:  calibrationSHA256,
+				CalibrationVersion: calibrationVersion,
+				SyncDeltaUs:        syncDeltaUs,
+				RejectReason:       "tilt_too_large",
+				DeviceID:           deviceID,
+				ColorDeviceID:      colorDeviceID,
+				LogID:              logID,
+			})
+			return
+		}
+		if errors.Is(rerr, restore.ErrVinNotDetected) {
+			httpx.OK(w, vinRestoreResp{
+				OK:                 false,
+				NumDet:             meta.NumDet,
+				CalibrationSHA256:  calibrationSHA256,
+				CalibrationVersion: calibrationVersion,
+				SyncDeltaUs:        syncDeltaUs,
+				RejectReason:       "vin_not_detected",
+				DeviceID:           deviceID,
+				ColorDeviceID:      colorDeviceID,
+				LogID:              logID,
+			})
+			return
+		}
+		if errors.Is(rerr, restore.ErrTextAnchorUnreliable) {
+			httpx.OK(w, vinRestoreResp{
+				OK:                   false,
+				TiltDeg:              meta.TiltDeg,
+				NumDet:               meta.NumDet,
+				AnchorCount:          meta.AnchorCount,
+				AnchorCandidateCount: meta.AnchorCandidateCount,
+				AnchorPitch:          meta.AnchorPitchPx,
+				AnchorRMS:            meta.AnchorRMSPx,
+				AnchorScore:          meta.AnchorMeanScore,
+				AnchorHeight:         meta.AnchorHeightPx,
+				AnchorRotation:       meta.AnchorRotationDeg,
+				AnchorScale:          meta.AnchorScale,
+				CalibrationSHA256:    calibrationSHA256,
+				CalibrationVersion:   calibrationVersion,
+				SyncDeltaUs:          syncDeltaUs,
+				RejectReason:         "text_anchor_unreliable",
+				DeviceID:             deviceID,
+				ColorDeviceID:        colorDeviceID,
+				LogID:                logID,
 			})
 			return
 		}
@@ -1161,24 +1412,52 @@ func (h *Handler) VinRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.log.Info(
+		"VIN 还原完成",
+		"log_id", logID,
+		"total_ms", meta.Timings.TotalMS,
+		"decode_ms", meta.Timings.DecodeMS,
+		"obb_ms", meta.Timings.OBBMS,
+		"frame_ms", meta.Timings.FrameMS,
+		"probe_render_ms", meta.Timings.ProbeRenderMS,
+		"anchor_ms", meta.Timings.AnchorMS,
+		"final_render_ms", meta.Timings.FinalRenderMS,
+		"png_encode_ms", meta.Timings.PNGEncodeMS,
+		"png_bytes", len(png),
+	)
 	httpx.OK(w, vinRestoreResp{
-		OK:           true,
-		ResultPNGB64: base64.StdEncoding.EncodeToString(png),
-		Width:        meta.OutW,
-		Height:       meta.OutH,
-		TiltDeg:      meta.TiltDeg,
-		WidthMM:      meta.WidthMM,
-		HeightMM:     meta.HeightMM,
-		ThetaDeg:     meta.ThetaDeg,
-		InlierRate:   meta.InlierRate,
-		RMS:          meta.RMS,
-		MedZ:         meta.MedZ,
-		NumDet:       meta.NumDet,
-		InkRatio:     meta.InkRatio,
-		DeviceID:     deviceID,
-		LogID:        logID,
+		OK:                   true,
+		ResultPNGB64:         base64.StdEncoding.EncodeToString(png),
+		Width:                meta.OutW,
+		Height:               meta.OutH,
+		TiltDeg:              meta.TiltDeg,
+		WidthMM:              meta.WidthMM,
+		HeightMM:             meta.HeightMM,
+		ThetaDeg:             meta.ThetaDeg,
+		InlierRate:           meta.InlierRate,
+		RMS:                  meta.RMS,
+		MedZ:                 meta.MedZ,
+		NumDet:               meta.NumDet,
+		AnchorCount:          meta.AnchorCount,
+		AnchorCandidateCount: meta.AnchorCandidateCount,
+		AnchorPitch:          meta.AnchorPitchPx,
+		AnchorRMS:            meta.AnchorRMSPx,
+		AnchorScore:          meta.AnchorMeanScore,
+		AnchorHeight:         meta.AnchorHeightPx,
+		AnchorRotation:       meta.AnchorRotationDeg,
+		AnchorScale:          meta.AnchorScale,
+		CalibrationSHA256:    meta.CalibrationSHA256,
+		CalibrationVersion:   meta.CalibrationVersion,
+		SyncDeltaUs:          syncDeltaUs,
+		DeviceID:             deviceID,
+		ColorDeviceID:        colorDeviceID,
+		LogID:                logID,
 	})
 }
+
+// HLSD8 与 RS-D550 均为无硬触发 5fps 流；native 回调最近邻在任意启动相位下的理论上界为半帧周期。
+// 该值只表示回调完成时间差，不等同传感器曝光级同步；高精度标定数据仍需 PTS/SCR 或同步光学事件校正。
+const vinRestoreMaxSyncDeltaUs = 100_000
 
 // contourToAlphaPNG 把 yolo 检测的 contour（原图坐标）抠成本字符的 alpha PNG 字节。
 //
@@ -1514,9 +1793,8 @@ func (h *Handler) Healthz(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// Readyz 强制走 cgo —— 调 gocv.OpenCVVersion()，能拿到非空字符串说明 libopencv_world / libccv 真实加载。
-//
-// 这是 spike 报告之外，第一个在 cv-engine 二进制内可观测的"真实 cv 调用"。
+// Readyz 同时验证 cgo/OpenCV、VIN 原厂标定与还原模型。生产缺任一依赖都必须返回 503，
+// 不能让编排器把“进程活着但 VIN 拍照必然失败”判成可接流量。
 func (h *Handler) Readyz(w http.ResponseWriter, _ *http.Request) {
 	ocvVer := gocv.OpenCVVersion()
 	gocvVer := gocv.Version()
@@ -1524,11 +1802,53 @@ func (h *Handler) Readyz(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "OpenCV not linked", http.StatusServiceUnavailable)
 		return
 	}
+	calibrationErr := restore.ValidateRequiredFactoryVinCalibrations(h.vinCalibrations)
+	calibrationReady := calibrationErr == nil
+	if h.vinCalibrationRequired && !calibrationReady {
+		http.Error(w, "VIN 原厂标定未就绪: "+calibrationErr.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	modelsErr := h.validateVinRestoreModels()
+	modelsReady := modelsErr == nil
+	if h.vinModelsRequired && !modelsReady {
+		http.Error(w, "VIN 还原模型未就绪: "+modelsErr.Error(), http.StatusServiceUnavailable)
+		return
+	}
 	httpx.OK(w, map[string]any{
-		"ready":          true,
-		"opencv_version": ocvVer,
-		"gocv_version":   gocvVer,
+		"ready":                            true,
+		"opencv_version":                   ocvVer,
+		"gocv_version":                     gocvVer,
+		"vin_factory_calibration_required": h.vinCalibrationRequired,
+		"vin_factory_calibration_ready":    calibrationReady,
+		"vin_restore_models_required":      h.vinModelsRequired,
+		"vin_restore_models_ready":         modelsReady,
 	})
+}
+
+func (h *Handler) validateVinRestoreModels() error {
+	if err := h.models.CheckKind(vinObbTag, core.KindCom); err != nil {
+		return fmt.Errorf("%s: %w", vinObbTag, err)
+	}
+	if err := h.models.CheckKind(vinCharTag, core.KindYolo); err != nil {
+		return fmt.Errorf("%s: %w", vinCharTag, err)
+	}
+	return nil
+}
+
+// ValidateRequiredDependencies 在 HTTP 监听前执行生产依赖硬门；Docker unhealthy 不是流量隔离机制，
+// 因此已声明 required 的标定或模型缺失时进程必须直接启动失败。
+func (h *Handler) ValidateRequiredDependencies() error {
+	if h.vinCalibrationRequired {
+		if err := restore.ValidateRequiredFactoryVinCalibrations(h.vinCalibrations); err != nil {
+			return fmt.Errorf("VIN 原厂标定未就绪: %w", err)
+		}
+	}
+	if h.vinModelsRequired {
+		if err := h.validateVinRestoreModels(); err != nil {
+			return fmt.Errorf("VIN 还原模型未就绪: %w", err)
+		}
+	}
+	return nil
 }
 
 // Version 暴露版本信息（与 readyz 同样强制 cgo）。

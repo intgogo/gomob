@@ -7,6 +7,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.ContentCopy
@@ -35,10 +37,11 @@ import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -71,6 +74,7 @@ import io.gomob.designsystem.component.StatusTone
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.model.message.MessageStatus
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -81,6 +85,8 @@ import java.util.LinkedHashMap
 internal fun ChatMessageRow(
     bubble: MessageBubbleUi,
     onRetry: () -> Unit,
+    /** 对方头像首字的兜底文本(会话标题);群聊有 senderLabel 时优先用 senderLabel */
+    peerName: String = "",
     onRetryTranscript: () -> Unit = {},
     onOpenInspection: (String) -> Unit = {},
     onOpenUserDetail: (String) -> Unit = {},
@@ -107,6 +113,11 @@ internal fun ChatMessageRow(
     val showRetryIcon = bubble.status == MessageStatus.Failed && bubble.clientMsgId != null
     var actionPanelOpen by remember(bubble.localKey) { mutableStateOf(false) }
 
+    if (bubble.isRecalled) {
+        RecalledMessageRow(bubble = bubble)
+        return
+    }
+
     BoxWithConstraints(
         Modifier
             .fillMaxWidth()
@@ -131,8 +142,7 @@ internal fun ChatMessageRow(
             }
             if (!bubble.mine) {
                 ChatAvatar(
-                    seed = bubble.avatarKey,
-                    mine = false,
+                    text = bubble.senderLabel?.takeIf { it.isNotBlank() } ?: peerName,
                     onClick = bubble.senderUserId?.let { id -> { onOpenUserDetail("user-$id") } },
                     modifier = Modifier.padding(top = avatarTopPadding),
                 )
@@ -223,8 +233,7 @@ internal fun ChatMessageRow(
             if (bubble.mine) {
                 Spacer(Modifier.width(avatarGap))
                 ChatAvatar(
-                    seed = bubble.avatarKey,
-                    mine = true,
+                    text = "我",
                     onClick = bubble.senderUserId?.let { id -> { onOpenUserDetail("user-$id") } },
                 )
             } else {
@@ -235,21 +244,17 @@ internal fun ChatMessageRow(
 }
 
 @Composable
-private fun RecalledMessageBubble(
-    bubble: MessageBubbleUi,
-    maxWidth: Dp,
-) {
+private fun RecalledMessageRow(bubble: MessageBubbleUi) {
     val label = if (bubble.mine) "你撤回了一条消息" else "对方撤回了一条消息"
     Box(
         Modifier
-            .widthIn(max = maxWidth)
-            .clip(Gomob.shapes.r2)
-            .background(Gomob.colors.bg1.copy(alpha = 0.6f))
-            .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
+            .fillMaxWidth()
+            .padding(vertical = Gomob.spacing.s4),
+        contentAlignment = Alignment.Center,
     ) {
         Text(
             label,
-            style = Gomob.type.numInline,
+            style = Gomob.type.micro,
             color = Gomob.colors.fg3,
         )
     }
@@ -262,13 +267,8 @@ private fun ChatBubble(
     onOpenInspection: (String) -> Unit,
     onAcceptCall: (CallInviteUi) -> Unit,
 ) {
-    val bubbleBg = if (bubble.mine) WechatMineBubble else Gomob.colors.bg1
-    val textColor = if (bubble.mine) Color(0xF5000000) else Gomob.colors.fg0
-
-    if (bubble.isRecalled) {
-        RecalledMessageBubble(bubble = bubble, maxWidth = maxWidth)
-        return
-    }
+    val bubbleBg = if (bubble.mine) Gomob.colors.accentSoft else Gomob.colors.bg1
+    val textColor = Gomob.colors.fg0
 
     val card = bubble.inspectionCard
     val call = bubble.callInvite
@@ -292,8 +292,8 @@ private fun ChatBubble(
             card = card,
             mine = bubble.mine,
             maxWidth = maxWidth,
-            bubbleBg = bubbleBg,
-            textColor = textColor,
+            bubbleBg = Gomob.colors.bg1,
+            textColor = Gomob.colors.fg0,
             onOpenInspection = onOpenInspection,
         )
     } else if (call != null) {
@@ -450,7 +450,7 @@ private fun QuoteReferenceBlock(
     Row(
         Modifier
             .clip(Gomob.shapes.r1)
-            .background(Color.Black.copy(alpha = if (mine) 0.08f else 0.045f))
+            .background(textColor.copy(alpha = if (mine) 0.08f else 0.045f))
             .padding(horizontal = Gomob.spacing.s8, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
@@ -505,47 +505,62 @@ internal fun rememberMessageImage(
     val cached = remember(normalized) {
         normalized.takeIf { it.isNotBlank() }?.let(MessageImageBitmapCache::get)
     }
-    return produceState<MessageImageLoadState>(
-        initialValue = when {
+    val latestRefresh by rememberUpdatedState(onRefreshUrl)
+    val state = remember(normalized) {
+        mutableStateOf<MessageImageLoadState>(when {
             normalized.isBlank() -> MessageImageLoadState.Empty
             cached != null -> MessageImageLoadState.Ready(cached)
             else -> MessageImageLoadState.Loading
-        },
-        normalized,
-    ) {
+        })
+    }
+    LaunchedEffect(normalized) {
+        val currentCached = normalized.takeIf { it.isNotBlank() }?.let(MessageImageBitmapCache::get)
+        state.value = when {
+            normalized.isBlank() -> MessageImageLoadState.Empty
+            currentCached != null -> MessageImageLoadState.Ready(currentCached)
+            else -> MessageImageLoadState.Loading
+        }
         if (normalized.isBlank()) {
-            value = MessageImageLoadState.Empty
-            return@produceState
+            return@LaunchedEffect
         }
-        MessageImageBitmapCache.get(normalized)?.let { bitmap ->
-            value = MessageImageLoadState.Ready(bitmap)
-            return@produceState
-        }
-        if (value !is MessageImageLoadState.Ready) {
-            value = MessageImageLoadState.Loading
-        }
-        var bitmap = withContext(Dispatchers.IO) {
-            runCatching { loadMessageImageBitmap(context, normalized) }.getOrNull()
+        if (currentCached != null) return@LaunchedEffect
+        var bitmap = try {
+            withContext(Dispatchers.IO) { loadMessageImageBitmap(context, normalized) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            null
         }
         // pre-signed URL 5min 过期时，allow 一次重签重试（仅当 caller 提供了 refresher）
-        if (bitmap == null && onRefreshUrl != null) {
-            val fresh = runCatching { onRefreshUrl() }.getOrNull()?.takeIf { it.isNotBlank() }
+        if (bitmap == null && latestRefresh != null) {
+            val fresh = try {
+                latestRefresh?.invoke()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                null
+            }?.takeIf { it.isNotBlank() }
             if (fresh != null && fresh != normalized) {
-                bitmap = withContext(Dispatchers.IO) {
-                    runCatching { loadMessageImageBitmap(context, fresh) }.getOrNull()
+                bitmap = try {
+                    withContext(Dispatchers.IO) { loadMessageImageBitmap(context, fresh) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Throwable) {
+                    null
                 }
                 if (bitmap != null) {
                     MessageImageBitmapCache.put(fresh, bitmap)
                 }
             }
         }
-        value = if (bitmap != null) {
+        state.value = if (bitmap != null) {
             MessageImageBitmapCache.put(normalized, bitmap)
             MessageImageLoadState.Ready(bitmap)
         } else {
             MessageImageLoadState.Failed
         }
     }
+    return state
 }
 
 internal sealed interface MessageImageLoadState {
@@ -801,56 +816,29 @@ private fun MessageBubbleShell(
     mine: Boolean,
     maxWidth: Dp,
     bubbleBg: Color,
+    borderColor: Color? = null,
     content: @Composable () -> Unit,
 ) {
-    val contentMaxWidth = (maxWidth - MessageBubbleTailWidth).coerceAtLeast(96.dp)
-    Row(verticalAlignment = Alignment.Top) {
-        if (!mine) {
-            MessageBubbleTail(
-                mine = false,
-                color = bubbleBg,
-                modifier = Modifier.padding(top = MessageBubbleTailTop),
-            )
-        }
-        Box(
-            Modifier
-                .widthIn(max = contentMaxWidth)
-                .clip(Gomob.shapes.r2)
-                .background(bubbleBg)
-                .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
-        ) {
+    // 非对称圆角替代三角尾:己方 topEnd=2 / 对方 topStart=2,其余 r3(8dp)
+    val shape = RoundedCornerShape(
+        topStart = if (mine) 8.dp else 2.dp,
+        topEnd = if (mine) 2.dp else 8.dp,
+        bottomStart = 8.dp,
+        bottomEnd = 8.dp,
+    )
+    Box(
+        Modifier
+            .widthIn(max = maxWidth)
+            .clip(shape)
+            .background(bubbleBg)
+            .then(
+                borderColor?.let { Modifier.border(Gomob.spacing.hairline, it, shape) }
+                    ?: Modifier,
+            ),
+    ) {
+        Box(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
             content()
         }
-        if (mine) {
-            MessageBubbleTail(
-                mine = true,
-                color = bubbleBg,
-                modifier = Modifier.padding(top = MessageBubbleTailTop),
-            )
-        }
-    }
-}
-
-@Composable
-private fun MessageBubbleTail(
-    mine: Boolean,
-    color: Color,
-    modifier: Modifier = Modifier,
-) {
-    Canvas(modifier.size(width = MessageBubbleTailWidth, height = MessageBubbleTailHeight)) {
-        val path = Path().apply {
-            if (mine) {
-                moveTo(0f, size.height * 0.08f)
-                lineTo(0f, size.height * 0.92f)
-                lineTo(size.width, size.height * 0.50f)
-            } else {
-                moveTo(size.width, size.height * 0.08f)
-                lineTo(size.width, size.height * 0.92f)
-                lineTo(0f, size.height * 0.50f)
-            }
-            close()
-        }
-        drawPath(path = path, color = color)
     }
 }
 
@@ -901,10 +889,6 @@ private fun VoiceMessageBubble(
     }
 }
 
-private val MessageBubbleTailWidth = 5.dp
-private val MessageBubbleTailHeight = 11.dp
-private val MessageBubbleTailTop = 8.dp
-
 internal fun VoiceTranscriptUi?.voiceTranscriptDisplayText(messageId: Long?): String = when (this?.status) {
     "done" -> text.orEmpty().ifBlank { "未识别到文字" }
     "failed" -> if (error.isUnrecognizedVoiceError()) "未识别到文字" else "转写失败：$error"
@@ -948,7 +932,7 @@ private fun CallResultCard(
                         imageVector = if (call.kind == "audio_call") GomobIcons.VoiceCircle else Icons.Filled.Videocam,
                         contentDescription = null,
                         tint = if (call.succeeded) {
-                            if (mine) Color(0xD9000000) else Gomob.colors.accent
+                            if (mine) textColor else Gomob.colors.accent
                         } else {
                             Gomob.colors.danger
                         },
@@ -1017,7 +1001,7 @@ private fun VideoCallInviteCard(
                     Icon(
                         Icons.Filled.Videocam,
                         contentDescription = null,
-                        tint = if (mine) Color(0xD9000000) else Gomob.colors.accent,
+                        tint = if (mine) textColor else Gomob.colors.accent,
                         modifier = Modifier.size(23.dp),
                     )
                 }
@@ -1104,6 +1088,8 @@ private fun InspectionMessageCard(
         mine = mine,
         maxWidth = maxWidth,
         bubbleBg = bubbleBg,
+        // 己方业务流水卡整框 accentLine 描边
+        borderColor = if (mine) Gomob.colors.accentLine else Gomob.colors.line1,
     ) {
         Column(
             Modifier.clickable { onOpenInspection(card.inspectionId) },
@@ -1121,10 +1107,15 @@ private fun InspectionMessageCard(
                     Icon(
                         GomobIcons.LinkShare,
                         contentDescription = null,
-                        tint = if (mine) Color(0xD9000000) else Gomob.colors.accent,
+                        tint = Gomob.colors.accent,
                         modifier = Modifier.size(15.dp),
                     )
-                    Text("业务流水", style = Gomob.type.eyebrow, color = textColor.copy(alpha = 0.64f))
+                    Text(
+                        "业务流水",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = Gomob.colors.accent,
+                    )
                 }
                 StatusTag(
                     text = card.status.toInspectionStatusText(),
@@ -1134,8 +1125,12 @@ private fun InspectionMessageCard(
             }
             Text(
                 card.vin,
-                style = Gomob.type.numInline.copy(fontSize = 14.sp),
-                color = textColor,
+                style = Gomob.type.numInline.copy(
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                    letterSpacing = 0.5.sp,
+                ),
+                color = Gomob.colors.fg0,
                 maxLines = 1,
             )
             Text(
@@ -1147,14 +1142,7 @@ private fun InspectionMessageCard(
             if (card.tags.isNotEmpty()) {
                 Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                     card.tags.take(2).forEach { tag ->
-                        Box(
-                            Modifier
-                                .clip(Gomob.shapes.r1)
-                                .background(textColor.copy(alpha = 0.10f))
-                                .padding(horizontal = Gomob.spacing.s6, vertical = 2.dp),
-                        ) {
-                            Text(tag, fontSize = 10.sp, color = textColor.copy(alpha = 0.72f), maxLines = 1)
-                        }
+                        InspectionTagChip(tag)
                     }
                 }
             }
@@ -1179,31 +1167,52 @@ private fun InspectionMessageCard(
     }
 }
 
+/** 业务流水标签 chip:按标签语义着色 — 异常/危险→danger、预警→warn、默认中性。 */
+@Composable
+private fun InspectionTagChip(tag: String) {
+    val colors = Gomob.colors
+    val (bg, fg) = when {
+        listOf("异常", "危险", "危化", "故障", "不合格").any { tag.contains(it) } ->
+            colors.dangerSoft to colors.danger
+        listOf("预警", "警告", "待复核").any { tag.contains(it) } ->
+            colors.warnSoft to colors.warn
+        else -> colors.bg2 to colors.fg2
+    }
+    Box(
+        Modifier
+            .clip(Gomob.shapes.r1)
+            .background(bg)
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+    ) {
+        Text(tag, fontSize = 11.sp, color = fg, maxLines = 1)
+    }
+}
+
 private fun String.toInspectionStatusText(): String = when (this) {
     "ok", "pass", "normal" -> "正常"
     "danger", "fail", "abnormal" -> "异常"
-    else -> "预警"
+    "warn", "warning" -> "预警"
+    else -> "状态未知"
 }
 
 private fun String.toInspectionStatusTone(): StatusTone = when (this) {
     "ok", "pass", "normal" -> StatusTone.Ok
     "danger", "fail", "abnormal" -> StatusTone.Danger
-    else -> StatusTone.Warn
+    "warn", "warning" -> StatusTone.Warn
+    else -> StatusTone.Neutral
 }
-
-private val WechatMineBubble = Color(0xFF95EC69)
 
 @Composable
 private fun ChatAvatar(
-    seed: String,
-    mine: Boolean,
+    text: String,
     onClick: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
-    MessageAvatarImage(
-        seed = if (mine) "current-user-$seed" else seed,
+    InitialAvatarTile(
+        text = text,
         size = 36.dp,
         shape = Gomob.shapes.r2,
+        fontSize = 14.sp,
         modifier = modifier.let { if (onClick != null) it.clickable(onClick = onClick) else it },
     )
 }

@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "device_id": "2510DRK44C",
+  "calibration_id": "factory-bf301208-1a87dc030c50",
+  "groups": [
+    {
+      "physical_object_id": "plate_a_factory_bf301208",
+      "expected_vin": "LA99FRP32G0LTH013",
+      "ground_truth_status": "confirmed",
+      "factory_oracle_required": true,
+      "captures": [
+        {
+          "path": ".dev/vin_factory_bf301208/vin_captures/cap_001_1784015012764",
+          "oracle_path": ".dev/vincreator-oracle/results-front/cap_001_1784015012764_restored.jpg",
+          "session_id": "factory_bf301208_current_rig",
+          "sync_status": "host_callback_measured"
+        },
+        {
+          "path": ".dev/vin_factory_bf301208/vin_captures/cap_002_1784015017155",
+          "oracle_path": ".dev/vincreator-oracle/results-front/cap_002_1784015017155_restored.jpg",
+          "session_id": "factory_bf301208_current_rig",
+          "sync_status": "host_callback_measured"
+        },
+        {
+          "path": ".dev/vin_factory_bf301208/vin_captures/cap_003_1784015027775",
+          "oracle_path": ".dev/vincreator-oracle/results-front/cap_003_1784015027775_restored.jpg",
+          "session_id": "factory_bf301208_current_rig",
+          "sync_status": "host_callback_measured"
+        },
+        {
+          "path": ".dev/vin_factory_bf301208/vin_captures/cap_004_1784015030154",
+          "oracle_path": ".dev/vincreator-oracle/results-front/cap_004_1784015030154_restored.jpg",
+          "session_id": "factory_bf301208_current_rig",
+          "sync_status": "host_callback_measured"
+        }
+      ]
+    }
+  ]
+}

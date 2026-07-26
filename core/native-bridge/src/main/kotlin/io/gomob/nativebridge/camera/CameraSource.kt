@@ -51,6 +51,9 @@ interface CameraSource {
     /** UI 显示用型号标签（如 "eYs3D RS-D550"）。 */
     val deviceLabel: String
 
+    /** 当前物理相机序列号；标定与还原必须用它选参，不能用手机型号代替。 */
+    val deviceSerial: String? get() = null
+
     /** 中性状态流。 */
     val sourceState: StateFlow<CameraSourceState>
 
@@ -65,4 +68,10 @@ interface CameraSource {
 
     /** 退场引用计数 -1（归 0 且宽限期满无人 acquire 才真停，释放 USB / 省电）。 */
     fun release()
+
+    /**
+     * 设 IR 投射器（散斑）开关——仅 eYs3D 主动立体相机有意义，默认 no-op。
+     * on=true 点亮散斑（主动立体测深需要）；false 关闭 → L' 出干净灰度（标定时 ChArUco 标记会被散斑盖住，需关）。
+     */
+    fun setIrProjector(on: Boolean) {}
 }

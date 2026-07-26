@@ -148,7 +148,10 @@ int main() {
     core.Configure(MakeCfg(2, 2));
     core.MarkError("test error");
     CameraFrame f;
+    uint16_t dst[4] = {0};
+    int64_t meta[4] = {0};
     Check("错误态 Poll=-1", core.Poll(&f, 0) == -1);
+    Check("错误态 depth 快照=-1", core.SnapshotLatestDepthMm(dst, 4, meta) == -1);
     Check("last_error 记录", core.last_error() == "test error" && core.state() == SessionState::kError);
   }
 

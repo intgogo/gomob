@@ -1,6 +1,6 @@
 # 07 — 设计系统：科技风（Tech Style）
 
-> 主题：**深空 + 霓虹蓝青 + 玻璃拟态**。
+> 主题：**浅色科技 + 克制主题色 + 玻璃拟态**。
 > 目标：在工位 / 户外 / 弱光环境中清晰可读，体现"专业检测设备"质感，
 > 区别于"通用聊天 / 社交"App 的扁平 Material You 视觉。
 
@@ -132,10 +132,10 @@
 - 背景：纯黑 `#000000`
 - 控件浮于画面：`surface_overlay` + blur 16dp（如果设备支持）+ `border_subtle`
 
-## 5. 暗色 / 浅色
+## 5. 浅色主题
 
-**默认深色，不做浅色版本**（场景多为工位 + 户外，深色更耐眼且科技感更强；
-后续如果用户反馈强光下读不清屏，再追加浅色变体）。
+应用固定使用浅色，不再暴露“跟随系统 / 浅色 / 深色”外观模式。用户只选择色彩主题，
+所有预览与运行态均使用对应色板的 light 变体；首装和恢复默认均为 Mint。
 
 ## 6. 动画原则
 
@@ -149,8 +149,8 @@
 
 `core:designsystem` 暴露：
 ```kotlin
-GomobTheme(useDynamicColor = false) {
-    // 强制使用本科技风主题，不被系统 Material You 覆盖
+GomobTheme(colorScheme = ColorScheme.Mint) {
+    // 固定浅色，只切换五套色彩主题
 }
 ```
 
@@ -171,7 +171,7 @@ GomobTheme(useDynamicColor = false) {
 ## 8. 毛玻璃体系（2026-07 落地, 代码真理源）
 
 > 本节对应 `core/designsystem/glass/` 实际实现; 上文 1-7 节为早期设计稿,
-> 色板/组件命名以 `theme/Color.kt`(5 套 GomobColors × 明暗)与 `component/` 现码为准。
+> 色板/组件命名以 `theme/Color.kt`（5 套浅色 GomobColors）与 `component/` 现码为准。
 
 ### 8.1 分层原则 — 按"玻璃下有没有高频内容穿过"选实现
 
@@ -188,11 +188,14 @@ AmbientGlow 光晕(模糊结果 ≈ 原样), 真模糊纯浪费。滚动内容�
 - `GlassHeaderScaffold(header, overlay, content)` — 屏骨架: bg0 + AmbientGlow 氛围光晕
   + 内容层(haze 采样源, 全屏) + 玻璃 header(自动吃状态栏, 滚动后渐显分隔线) + overlay 槽
   (吸底输入条/侧滑面板, 可取 LocalHazeState 做真模糊)。content 经 PaddingValues 拿避让区。
-- `LocalContentBottomInset` — Shell 在 root tab 屏下发 TabBar 总高(56dp+导航栏, ime 时动画归 0)。
+- 页面弹性拖动只允许移动内容平面；`GlassHeaderScaffold` 的完整 header 玻璃和 overlay、Shell 的
+  完整底部玻璃统一挂 `fixedDuringPageDrag`。禁止只在标题文字、Tab 图标或输入控件内层抵消，
+  否则会造成玻璃表面随内容移动、控件留在原位的错层。
+- `LocalContentBottomInset` — Shell 在 root tab 屏下发 TabBar 总高(54dp+导航栏, ime 时动画归 0)。
 - 真 edge-to-edge: MainActivity 不再全局吃 systemBars, 每屏经 scaffold/TabBar 自理 inset;
   `systemBarsPaddingRequired` 仅余"视频沉浸页"语义(驱动状态栏图标配色)。
 - 玻璃样式全部从语义 token 派生(`glassChromeStyle(colors)`), 不引入新原色;
-  浅色 tint 0.72 / 深色 0.64, 保证 fg0 在花内容上可读。
+  固定使用 0.72 tint，保证 fg0 在花内容上可读。
 
 ### 8.2b ★ HazeState 拓扑铁律 — 全 App 单 state, 采样源绝不嵌套
 
@@ -213,3 +216,52 @@ AmbientGlow 光晕(模糊结果 ≈ 原样), 真模糊纯浪费。滚动内容�
 - TabBar: 选中图标弹性放大 1.08 + 按压回缩 0.88(spring), 颜色 200ms tween, 无方块 ripple。
 - SegmentedTabs: accentSoft 滑动指示块 220ms 滑移。
 - 可点卡片: `Modifier.pressScale()` 按压 0.985 弹性回缩。
+
+### 8.4 M14 版式优化回迁（2026-07-10）
+
+设计真理源分两层：`gomob 交互原型.dc.html` 决定页面结构与状态，
+`毛玻璃版式优化.dc.html` 决定 token、密度和表面规范；交付包里的 `code/` 是旧快照，禁止覆盖现仓业务代码。
+
+- 全局版式：页面边距 `pageGutter=16dp`、卡间距 `cardGap=12dp`、分组间距
+  `sectionGap=20dp`；图标列表行 64dp、会话行 68dp、会话输入栏默认 64dp。
+- 字阶：根页 hero、二级页标题、分组标题分别使用 `heroTitle`、`screenTitle`、
+  `sectionTitle`；时间、计数、VIN、尺寸一律使用 mono 数字样式。
+- 根页：Header 固定 52dp；标签页使用文字下划线 `HeaderTabs`；首页输入条与 TabBar
+  共用单块 `glassChrome`，IME 弹起时只隐藏 TabBar，输入条继续避让键盘。
+- 会话：Header 副标题只显示会话模型可证明的员工号/会话类型，不伪造角色或在线状态；
+  撤回消息是居中系统文字；己方气泡使用 `accentSoft`；业务流水卡使用 `bg1 + accentLine + StatusTag`；
+  基础输入行 64dp，业务流水、图库、视频等附加动作收进“+”展开区。
+- VIN：真实深度/彩色帧合并为一张暗色双面板；端侧估算正射必须标“估算预览”，
+  只有服务端权威还原成功才开放外部 OCR；逐字符分数使用中性 accent，缺分数显示“—”，
+  不用人为阈值染成通过/警告。仅合法 17 位显示“识别完成”，其他显示“需复核”；禁止展示
+  外部算法没有提供的“通过/未通过/厂家字形比对”结论。还原提示使用
+  `warnSoft/okSoft/dangerSoft`，不画纸纹假拓印。
+- 3D 根页：最近区只查询默认工位 `GET /v1/scans/laser/latest` 的单条 `done`；加载、
+  无数据、失败重试分态。仅展示真实 `scan_id`、`points` 与空工位背景标记，不伪造 VIN、
+  缩略图、时间、耗时、“查看全部”或可跳转能力。
+- 外廓工位：扫描态仅投影真实 A/B 点云，完成态只渲染真实融合点云；通道只保留融合/A/B。
+  测量浮层只消费真实 L/W/H、`compliant`、`violations`，不制造 C/D、RGB 缩略、耗时、
+  轴距/货箱、尺寸几何投影或归档动作。
+- 暗色媒体视口：点云/相机面板固定深色表面，内部文字使用白色透明度层级；不能直接使用
+  浅色主题的 `fg2/fg3` 压在黑底上。面板外的状态和操作仍全部走主题语义 token。
+
+### 8.5 登录后内部 QA 截图反馈
+
+- 隐藏入口统一挂在 `ScreenHeader`、`BackHeader` 及会话/通话/第一视角自定义标题栏：
+  同一页面大标题相邻点击间隔不超过 700ms，连续 5 次后触发；标题切换、超时或时钟回退重置。
+- `AppFeedbackHost` 只包登录后的业务壳。该能力是受鉴权的内部 QA 通道，不覆盖登录/注册页，
+  也不替代面向生产用户的工单、对象存储和集中检索系统。
+- 普通 Compose/TextureView 页面直接用 Window PixelCopy。遇 Filament `SurfaceView` 时，渲染器必须
+  实现 `FeedbackCaptureSurface`：停止 Choreographer、`Engine.flushAndWait` 等待 GPU 稳定帧；随后
+  `View.draw()` 取得带透明 Surface 孔洞的 UI 层，Surface 单独 PixelCopy，再用 `DST_OVER` 铺到
+  UI 后面。未知 Surface 明确失败，不用颜色阈值猜测或跨帧拼接。
+- 编辑器在截图坐标系内保存 0..1 归一化自由路径，单路径最多 512 点；过短/过小/纯直线手势
+  不生成标注。每条路径自动编号并要求填写非空说明，支持修改、删除、撤销；提交中和提交成功后
+  进入只读态，保证界面内容与已上传报告一致。
+- `POST /v1/feedback` 记录认证用户 ID、原图、带编号标注图、路径/包围框及说明。开发环境经
+  `dev.sh` 固定落仓库根 `.dev/app-feedback/<fb_id>/`；目录/文件权限为 0700/0600，四个文件先写
+  同根临时目录并同步，再原子重命名发布。PNG 做完整解码、像素上限和双图尺寸一致性校验，内部
+  存储错误只写服务端日志，不向端侧泄露路径。
+
+验证必须同时覆盖 Compose 布局与真实业务状态：会话撤回/附件、VIN 估算与权威还原切换、
+激光 A/B 实时点流、融合完成及合规/超限/不可判定三态。编译通过不能替代设备链路验证。

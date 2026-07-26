@@ -27,17 +27,30 @@ USE_INDEPENDENT_NATIVE=true + bindEys3dVendorJni(setVM) + startPollLoop(depth+co
 3. **setExternalStoragePublicDirectory 必设**：connect 内部对它 strdup(NULL) 崩。
 4. **startPreview 硬要非空 ANativeWindow**([UVCPreview+0x8] 门控)：用 AImageReader 离屏窗口（mediandk,纯 native）；FrameGrabber.isStarted 后 do_preview 旁路绘制,窗口不真渲染。
 5. startPreview 起的 **capture_thread_func 调 getVM()→空崩**：必先 vendor `setVM(JavaVM)`（经 bindEys3dVendorJni→JNI_OnLoad，JNI_OnLoad 只做 setVM+RegisterNatives,不碰 libusb）。
-6. **深度单位 = FrameGrabber 已是 metric mm**（do_preview 内 DepthFilter + vendor 自载 ZD 表转好），直接喂勿再套 ZD LUT（套了把 1746mm 砸成 147mm）。mode25 SCALE_DOWN_11_BITS = mm 截 0-2047（近距 0-2m）。valid **50-78%**（远胜旧 Java setFrameCallback 路 7-23%,DepthFilter 补洞）。
+6. **2026-07-14 单位订正：FrameGrabber 回调是 raw disparity×8，不是 metric mm**。原厂 BIN 的 `depth_data_type=1` 与 native 固定向量证明 `z=f·B/(raw·0.125)`；旧“1746mm”其实是视差值。端侧用 `DepthSampleFormat.DISPARITY_X8_U16` 明示，VIN 上传保留原始值，服务端原厂标定恢复毫米坐标。
 
 **ABI 纪律**：dlopen(RTLD_LOCAL) 隔离 vendor libusb100(不遮蔽 gomob libusb-1.0)；不在 gomob(__1) 侧构造 __ndk1 shared_ptr/vector（让 vendor 自建自销）；回调里 vendor `vector<uchar>&` 当 3 指针 POD 只读。
 
-**收口（2026-06-17，build 绿）**：① 真内参已注入 —— `Eys3dCameraService.rsd550Intrinsics(w,h)` 按帧分辨率从出厂矫正标定（基准全幅 1280×960：fx=fy=1229.205/cx=648/cy=482.865）各向异性缩放替 zeroIntrinsics（depth+color）；残留 device-gated = 垂直纯缩放 vs 裁剪（影响 fy ~3.75×），待平面靶 harness 量测核实（见 docs/architecture/13-eys3d-driver.md §内参）。② spike 清理 —— poll 诊断日志降级（首帧 INFO + 周期 DEBUG）；external-storage 改经 `configJson→options_json` 下发 app 专属目录（`getExternalFilesDir`），不再硬编码 `/storage/emulated/0/eys3d`；kUseVendorCpp 注释正名为生产路径。③ Java ApcCamera 退役 —— 删 `Eys3dApcCamera.kt` + 去 `USE_INDEPENDENT_NATIVE` toggle/分支，加 proguard `-keep com.esp.android.usb.camera.core.**`（bindEys3dVendorJni 的 FindClass/RegisterNatives/setVM 仍需 vendor shim 类）。④ harness `tests/harness/eys3d_vendor_cpp/`（device-gated 采 logcat 判起流链+fps+valid+零JNI）。
+**收口订正**：mode25 是 1280×960 全幅的竖向中心裁带 1280×256，再统一缩放到 640×128；当前 `fx=fy=614.60498,cx=324,cy=65.4325`，旧各向异性 `fy≈163.9` 已撤销。其余 native 直驱、日志、external-storage、Java shim 退役与 harness 结论不变。
 
 **尾巴收口（2026-06-17 续）**：
 - **v7a 缺口 → 已闭环（不再是 TODO）**：厂商 C++（libUVCCamera/libESPDI）只 arm64-v8a；我方 ABI offset（0x2430/+8/+0x10）是 64 位布局，32 位指针宽不同必失配。VINCreator 的 v7a 二进制是**另一代 SDK**（缺 depthfilter/DepthMSR/SwPostProc 后处理链 + 带 libUVCCamera1/libuvc1 后缀变体），不可移植。结论：补 v7a = 取匹配版本 vendor 二进制 + 重做 32 位 struct RE，**无现役 32 位扫描设备，低优先级**。现态：`Eys3dCameraService` 加 `Build.SUPPORTED_64_BIT_ABIS.isEmpty()` 前置守门 → 32 位机即时报「需 64 位手机」，arm64 不受影响；即便绕过，native `LoadVendorUvcAbi` dlopen 失败也 MarkError 不崩。
-- **fy 缩放-vs-裁剪 → device-gated，给定验收法**：SDK 源（obfuscated 副本）不暴露 per-mode 内参缩放代码；flash rectlog 只存全幅 NewCamMat（per-mode 由 SDK 缩放派生 = 正是未知点）。纯逻辑/纯数据定不死（fronto-parallel 平面拟合对 fy 全局缩放不敏感）。**唯一验收 = 已知尺寸量测**：对准已知真实高 H_real 的物体（已知距离），读重建点云竖直跨度 H_recon。`|H_recon/H_real−1|≤~5%` → 当前 SCALE 模型对；若 `H_recon≈3.75×H_real` → 实为 CROP，fy 应改各向同性 `fx·(W/baseW)`。等价：重建的竖/横比应等真实比。**将被 M6.5 per-device flash 内参取代，届时此 Kotlin 兜底常量整体退役**。
+- **fy 缩放-vs-裁剪已闭环**：原厂 BIN 同时给出全幅 `cy=482.865` 与 mode25 `cy=130.865`，差值352正好是 960→256 的中心裁带；640×128 再统一缩放0.5，故 `fx=fy=614.60498`。
 - **per-device ZD/rectify flash 内参经 JNI 下发**：M6.5 里程碑（非尾巴），终态单一标定真理源。
-- **vendor C++ 路多轮稳定性回归**：退役 Java 后无回退，需真机多轮跑确认无 intermittent。
+- **vendor C++ 路多轮稳定性回归已闭环**：2026-07-16 真机 3 轮启动/双路首帧/退出 teardown 对称完成，连续 7 次 VIN 采集无崩溃，PSS 无单调增长。
+
+## 2026-07-16 FrameGrabber 启动与销毁竞态
+
+### Why
+
+`FrameGrabber::Open()` 只负责创建 worker 并立即返回，worker 稍后才设置 started。旧代码在返回后立刻检查一次 `isStarted()`，会在正常调度窗口把启动误判为失败并开始 teardown；厂商线程随后继续运行，触碰已析构 mutex，造成 native abort。这不是手机资源不足，也不是 RGBD 带宽耗尽，而是跨线程生命周期没有建立 happens-before。
+
+### How to apply
+
+- `Open()` 后必须经过 worker 启动屏障，只在 started、明确 failed 或超时后裁决。
+- `Close()` 完成门与 join 必须先于 callback context、FrameGrabber、窗口和 UVCCamera 对象释放；极端 join 失败时隔离对象，禁止带活线程析构。
+- callback context 生命周期必须覆盖全部厂商回调；Kotlin 用 typed native session state 区分 `Starting` 与终态，启动期单次空 poll 不判死，首帧 deadline 为 10 秒。
+- 任何生命周期改动都跑 `eys3d_vendor_worker_lifecycle_test`、三组 CameraStack/Eys3d Kotlin 测试和真机 `eys3d_vendor_cpp` harness；日志必须同时出现启动屏障、首帧和成对 teardown，且无 SIGSEGV/destroyed-mutex/FATAL。
 
 ---
 

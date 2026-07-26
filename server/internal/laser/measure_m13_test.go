@@ -53,9 +53,16 @@ func TestSpanTrimPctRejectsSpikes(t *testing.T) {
 	}
 
 	p.SpanTrimPct = 0.5
-	d2 := Measure(box, p)
+	d2, _, _, overlay := MeasureFullWithOverlay(box, p, DefaultAxleParams())
 	if math.Abs(float64(d2.LengthMM-1800)) > 20 {
 		t.Fatalf("鲁棒跨度应剔毛边回 ~1800, got %.1f", d2.LengthMM)
+	}
+	boxLength, boxWidth, boxHeight := boxEdges(overlay.VehicleBox)
+	if math.Abs(boxLength-float64(d2.LengthMM)) > 1 ||
+		math.Abs(boxWidth-float64(d2.WidthMM)) > 1 ||
+		math.Abs(boxHeight-float64(d2.HeightMM)) > 1 {
+		t.Fatalf("canonical overlay 必须与鲁棒 LWH 完全同源: dims=%.1f×%.1f×%.1f overlay=%.1f×%.1f×%.1f",
+			d2.LengthMM, d2.WidthMM, d2.HeightMM, boxLength, boxWidth, boxHeight)
 	}
 }
 
@@ -113,8 +120,12 @@ func TestSupportRelativeHeight(t *testing.T) {
 
 	// 有支撑背景：车高 = 车顶 − 台面 ≈ carH
 	p.SupportBG = bg
-	d2 := Measure(car, p)
+	d2, _, _, overlay := MeasureFullWithOverlay(car, p, DefaultAxleParams())
 	if math.Abs(float64(d2.HeightMM-carH)) > 10 {
 		t.Fatalf("支撑面车高应 ≈%d, got %.1f", carH, d2.HeightMM)
+	}
+	_, _, overlayHeight := boxEdges(overlay.VehicleBox)
+	if math.Abs(overlayHeight-float64(d2.HeightMM)) > 1 {
+		t.Fatalf("支撑面车高与 overlay 高度分叉: dim=%.1f overlay=%.1f", d2.HeightMM, overlayHeight)
 	}
 }

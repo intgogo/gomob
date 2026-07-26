@@ -5,6 +5,9 @@ plugins {
 
 android {
     namespace = "io.gomob.feature.scan3d"
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {

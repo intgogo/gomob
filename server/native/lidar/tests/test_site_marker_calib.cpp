@@ -172,6 +172,7 @@ int main() {
     double te = (rn.b_to_a - BToA).cwiseAbs().maxCoeff();
     std::printf("      噪声下 max|ΔB->A| = %.3em, rms = %.3em\n", te, rn.rms_m);
     CHECK(rn.ok, "噪声下仍达标(rms<2cm)");
+    CHECK(rn.rms_m <= SiteMarkerConfig{}.max_rms_m, "σ=2mm 多帧标定满足生产 RMS≤5mm 门");
     CHECK(te < 0.01, "噪声下 B->A 误差 <1cm");
   }
 

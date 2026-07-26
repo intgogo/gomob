@@ -150,7 +150,7 @@ public final class USBMonitor {
 
     public USBMonitor(Context context, OnDeviceConnectListener onDeviceConnectListener) {
         this.mWeakContext = new WeakReference<>(context);
-        this.mUsbManager = (UsbManager) context.getSystemService("usb");
+        this.mUsbManager = (UsbManager) context.getSystemService(Context.USB_SERVICE);
         this.mOnDeviceConnectListener = onDeviceConnectListener;
     }
 
@@ -195,15 +195,16 @@ public final class USBMonitor {
                 Intent intent = new Intent(context, (Class<?>) UsbPermissionReceiver.class);
                 intent.setAction(this.ACTION_USB_PERMISSION);
                 intent.setPackage(context.getPackageName());
-                int i = (Build.VERSION.SDK_INT >= 31 ? 67108864 : 0) | 134217728;
+                int i = PendingIntent.FLAG_UPDATE_CURRENT |
+                        (Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0);
                 sPermissionMonitors.put(this.ACTION_USB_PERMISSION, new WeakReference<>(this));
                 try {
                     this.mPermissionIntent = PendingIntent.getBroadcast(context, 0, intent, i);
                     IntentFilter intentFilter = new IntentFilter(this.ACTION_USB_PERMISSION);
                     intentFilter.addAction(ACTION_USB_DEVICE_ATTACHED_RGB1300);
-                    intentFilter.addAction("android.hardware.usb.action.USB_DEVICE_DETACHED");
+                    intentFilter.addAction(UsbManager.ACTION_USB_DEVICE_DETACHED);
                     if (Build.VERSION.SDK_INT >= 33) {
-                        context.registerReceiver(this.mUsbReceiver, intentFilter, 2);
+                        context.registerReceiver(this.mUsbReceiver, intentFilter, Context.RECEIVER_EXPORTED);
                     } else {
                         context.registerReceiver(this.mUsbReceiver, intentFilter);
                     }

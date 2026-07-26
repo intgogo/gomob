@@ -1,9 +1,11 @@
 package io.gomob.feature.scan3d
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import io.gomob.model.ColorFrame
 import io.gomob.model.DepthFrame
-import io.gomob.nativebridge.VinOrthoNative
+import io.gomob.model.DepthSampleFormat
+import io.gomob.nativebridge.camera.hlsd8PreviewSampleSize
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.max
@@ -17,12 +19,30 @@ import kotlin.math.min
  */
 internal object FrameRenderer {
 
+    /** 把已投到彩色视场的 ARGB 像素复制成预览 Bitmap。 */
+    fun projectedDepthToBitmap(projected: VinProjectedDepth): Bitmap = Bitmap.createBitmap(
+        projected.pixels,
+        projected.width,
+        projected.height,
+        Bitmap.Config.ARGB_8888,
+    )
+
     /**
-     * 把 iHawk Color 帧 RGB24 字节流（来自 SDK [ColorFrame.data]）转成 ARGB_8888 Bitmap。
+     * 把 ColorFrame 转成预览 Bitmap。HLSD8 原始 MJPEG 直接按内存预算降采样解码；其它相机读 RGB24。
      *
      * RGB24 像素布局：每 3 字节一像素 [R, G, B]（SDK 已解了 YUYV）。
      */
-    fun colorRgb24ToBitmap(frame: ColorFrame): Bitmap? {
+    fun colorToBitmap(frame: ColorFrame): Bitmap? {
+        frame.encodedJpeg?.let { jpeg ->
+            val options = BitmapFactory.Options().apply {
+                inSampleSize = hlsd8PreviewSampleSize(frame.encodedWidth, ENCODED_PREVIEW_MAX_W)
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+                inScaled = false
+            }
+            return runCatching {
+                BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, options)
+            }.getOrNull()
+        }
         val w = frame.width
         val h = frame.height
         val src = frame.data.duplicate().order(ByteOrder.nativeOrder())
@@ -41,10 +61,10 @@ internal object FrameRenderer {
     }
 
     /**
-     * 把 iHawk Depth 帧 16bit mm 字节流转成伪彩 ARGB_8888 Bitmap（turbo colormap）。
+     * 把 16bit 深度/视差帧转成伪彩 ARGB_8888 Bitmap（turbo colormap）。
      *
-     * 契约：[DepthFrame.data] 已由 [io.gomob.nativebridge.berxel.BerxelService] 一次性
-     * 把 SDK 的 12.4 / 13.3 定点格式右移转成纯毫米整数 — 本函数直接当 mm 读，不再右移。
+     * Berxel 的 [DepthSampleFormat.MILLIMETERS_U16] 直接按毫米显示；RS-D550 VIN mode25 的
+     * [DepthSampleFormat.DISPARITY_X8_U16] 保留原始视差并反转色标方向，使近/远颜色语义与毫米帧一致。
      *
      * 颜色映射：[minMm, maxMm] 区间线性映射到 turbo 256-stop colormap；0/无效像素出黑。
      *
@@ -88,7 +108,12 @@ internal object FrameRenderer {
             pixels[i] = if (masked || mm == 0 || mm < lo || mm > hi) {
                 0xFF000000.toInt()
             } else {
-                val t = ((mm - lo).toFloat() / span).coerceIn(0f, 1f)
+                val normalized = ((mm - lo).toFloat() / span).coerceIn(0f, 1f)
+                val t = if (frame.sampleFormat == DepthSampleFormat.DISPARITY_X8_U16) {
+                    1f - normalized
+                } else {
+                    normalized
+                }
                 turboColor(t)
             }
         }
@@ -111,35 +136,6 @@ internal object FrameRenderer {
         for (i in 0 until total) {
             val g = src.get().toInt() and 0xff
             pixels[i] = (0xff shl 24) or (g shl 16) or (g shl 8) or g
-        }
-        return Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
-    }
-
-    /**
-     * 把 native 双相机正射结果 [VinOrthoNative]（裸 RGB888 + mask）转成 ARGB_8888 Bitmap（拓印还原图）。
-     *
-     * mask==0（平面外/投影越界）的像素出全透明，让拓印纸面背景透出；mask==255 出真彩。
-     * 仅拍照时调一次，纯 Kotlin 足够（无需 JNI 编码 PNG）。
-     */
-    fun orthoToBitmap(result: VinOrthoNative): Bitmap? {
-        val w = result.width
-        val h = result.height
-        val total = w * h
-        if (total <= 0 || result.rgb.size < total * 3 || result.mask.size < total) return null
-        val rgb = result.rgb
-        val mask = result.mask
-        val pixels = IntArray(total)
-        var p = 0
-        for (i in 0 until total) {
-            if (mask[i].toInt() == 0) {
-                pixels[i] = 0  // 透明：未采样
-                p += 3
-            } else {
-                val r = rgb[p++].toInt() and 0xFF
-                val g = rgb[p++].toInt() and 0xFF
-                val b = rgb[p++].toInt() and 0xFF
-                pixels[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
-            }
         }
         return Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
     }
@@ -222,6 +218,7 @@ internal object FrameRenderer {
 
     private const val PREVIEW_MIN_MM = 150
     private const val PREVIEW_MAX_MM = 8_000
+    private const val ENCODED_PREVIEW_MAX_W = 1280
     private const val DEFAULT_MIN_MM = 200
     private const val DEFAULT_MAX_MM = 2_500
     private const val PREVIEW_MIN_SPAN_MM = 350

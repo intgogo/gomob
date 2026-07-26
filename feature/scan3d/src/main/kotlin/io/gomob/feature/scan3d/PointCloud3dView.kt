@@ -1,12 +1,15 @@
 package io.gomob.feature.scan3d
 
 import android.content.Context
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Looper
+import android.os.Process
 import android.view.Choreographer
 import android.view.MotionEvent
 import android.view.SurfaceView
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -16,6 +19,7 @@ import com.google.android.filament.Camera
 import com.google.android.filament.Colors
 import com.google.android.filament.Engine
 import com.google.android.filament.EntityManager
+import com.google.android.filament.Fence
 import com.google.android.filament.IndexBuffer
 import com.google.android.filament.LightManager
 import com.google.android.filament.Material
@@ -30,9 +34,13 @@ import com.google.android.filament.View
 import com.google.android.filament.Viewport
 import com.google.android.filament.android.UiHelper
 import com.google.android.filament.utils.Utils
+import io.gomob.ui.feedback.FeedbackCaptureSurface
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.util.ArrayDeque
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -57,11 +65,28 @@ import kotlin.math.sin
  *
  * 生命周期：
  *   - [PointCloud3dView] @Composable 内 remember 一个 [PointCloudSurfaceView]
- *   - DisposableEffect onDispose 调 [PointCloudSurfaceView.destroy]，释放 Engine 与 GL 资源
- *   - SurfaceView attach/detach 自动启停 Choreographer 渲染回调
+ *   - AndroidView onRelease 调 [PointCloudSurfaceView.destroy]，释放 Engine 与 GL 资源
+ *   - SurfaceView attach/detach 自动调度/取消按需 Choreographer 渲染
  */
 /** 视角预设：自由(全向轨道)/顶视/侧视/斜视。相对检测到的地面法向("上")定向。 */
 enum class LaserViewPreset { FREE, TOP, SIDE, OBLIQUE }
+
+private const val DEFAULT_POINT_CLOUD_BUDGET = 50_000
+
+/**
+ * Filament Engine 不是线程安全对象，且销毁必须回到创建线程。所有点云视图共用一个
+ * owner Looper 串行提交命令，避免驱动初始化、点云打包和 Engine shutdown 阻塞主线程。
+ */
+private object PointCloudRenderDispatcher {
+    private val thread = HandlerThread(
+        "PointCloudFilamentOwner",
+        Process.THREAD_PRIORITY_DISPLAY,
+    ).apply { start() }
+
+    val handler = Handler(thread.looper)
+
+    fun isOwnerThread(): Boolean = Looper.myLooper() === thread.looper
+}
 
 @Composable
 fun PointCloud3dView(
@@ -88,9 +113,17 @@ fun PointCloud3dView(
     // autoFit 重拟合键：值变化时请求下一帧重拟合取景。仅在「切换显示的云」等需要重新入镜时变（如
     // 激光页传当前选中的云 FUSED/A/B）；同一云增量生长时不变 → 不重拟合，保住用户手动视角。
     autoFitKey: Any? = null,
+    // GPU/DirectBuffer 的硬预算；普通 RGBD 预览默认 5 万，激光融合页显式传 262144。
+    pointBudget: Int = DEFAULT_POINT_CLOUD_BUDGET,
+    // 当前 Filament 相机的真实 view-projection 快照。用于少量世界系工程标注投影，不参与点云计算。
+    onProjectionChanged: ((CameraProjectionSnapshot) -> Unit)? = null,
+    // false 时保留 Engine/Surface，只停止渲染与交互。激光分镜/融合切换用它避免反复建销 Engine。
+    renderingEnabled: Boolean = true,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val view = remember { PointCloudSurfaceView(context, gridCenterZmm, autoFit) }
+    val view = remember(gridCenterZmm, autoFit, pointBudget) {
+        PointCloudSurfaceView(context, gridCenterZmm, autoFit, pointBudget)
+    }
 
     LaunchedEffect(upAxis.contentHashCode(), groundD, showGround) {
         view.setGround(upAxis, groundD, showGround)
@@ -115,11 +148,25 @@ fun PointCloud3dView(
         if (resetSignal > 0) view.resetView()
     }
 
-    DisposableEffect(view) {
-        onDispose { view.destroy() }
+    LaunchedEffect(view, onProjectionChanged) {
+        view.setProjectionListener(onProjectionChanged)
     }
-
-    AndroidView(factory = { view }, modifier = modifier.fillMaxSize())
+    LaunchedEffect(view, renderingEnabled) {
+        view.setRenderingEnabled(renderingEnabled)
+    }
+    AndroidView(
+        factory = { view },
+        update = {
+            it.alpha = if (renderingEnabled) 1f else 0f
+            it.isEnabled = renderingEnabled
+            it.setRenderingEnabled(renderingEnabled)
+        },
+        onRelease = {
+            it.setProjectionListener(null)
+            it.destroy()
+        },
+        modifier = modifier.fillMaxSize(),
+    )
 }
 
 /**
@@ -149,7 +196,7 @@ data class ScanMeshData(
  *   - Filament Engine 与 Renderer 与本 View 同生命周期；不与 Application 共享
  *     （扫描页用完即释放，避免长时间持有 GPU 资源）
  *   - **SurfaceView (不是 TextureView)** + UiHelper 把 Surface 生命周期同步给 Engine
- *   - Choreographer 驱动每帧 render — 60fps 时 ~16ms 一帧，5K 点 GPU 完全跑得动
+ *   - Choreographer 合并数据/相机/Surface 变化后按需 render；只有漫游连续输入时逐帧 render
  *   - 相机：手动 yaw/pitch/distance 计算 lookAt（自己掌控比 Manipulator 更省事）
  *
  * 为什么是 SurfaceView 而不是 TextureView：
@@ -167,81 +214,182 @@ internal class PointCloudSurfaceView(
     context: Context,
     private val gridCenterZmm: Float,
     private val autoFit: Boolean = false,
-) : SurfaceView(context) {
+    pointBudget: Int = DEFAULT_POINT_CLOUD_BUDGET,
+) : SurfaceView(context), FeedbackCaptureSurface {
 
     companion object {
-        init {
-            // 加载 libfilament-jni.so（filament-android），filament-utils-android Utils.init() 也调用
-            Utils.init()
-        }
         private const val TAG = "PointCloud3dView"
     }
 
-    private val engine = Engine.create()
-    private val renderer: Renderer = engine.createRenderer().apply {
-        clearOptions = Renderer.ClearOptions().apply {
-            clear = true
-            discard = true
-            clearColor = floatArrayOf(0f, 0f, 0f, 1f)
-        }
-    }
-    private val scene: Scene = engine.createScene()
-    private val view: View = engine.createView().apply {
-        scene = this@PointCloudSurfaceView.scene
-        // 抗锯齿默认 FXAA，点云不需要 — 关掉减开销
-        antiAliasing = View.AntiAliasing.NONE
-        // OPAQUE blendMode：Renderer.ClearOptions 强制黑底清屏 + 像素全 alpha=1 提交，让 SurfaceFlinger 走 OPAQUE
-        // 合成快路径。默认 TRANSLUCENT 会逐像素 alpha 混合，与 Compose 父 Box 的 background
-        // 在每次重组时叠出不稳定结果 → 体感"立即闪烁"。
-        blendMode = View.BlendMode.OPAQUE
-        // 关后处理（bloom/TAA/SSAO/dithering）：点云预览不需要，且后处理对每帧时间敏感，
-        // GPU 时间抖动会与 Choreographer vsync 错位 → 偶发掉帧/闪烁。
-        isPostProcessingEnabled = false
-    }
-    private val cameraEntity: Int = EntityManager.get().create()
-    private val camera: Camera = engine.createCamera(cameraEntity).apply {
-        // grid 范围 800mm 立方，z[0,800]；相机默认放在 grid 前方 +z 看向中心
-        setProjection(45.0, 1.0, 50.0, 6000.0, Camera.Fov.VERTICAL)
-    }
+    private val ownerHandler = PointCloudRenderDispatcher.handler
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val destroyRequested = AtomicBoolean(false)
+    private val surfaceGeneration = AtomicInteger(0)
+    private val surfaceLifecycleLock = Any()
+    @Volatile private var surfaceActiveOrCreating = false
+    @Volatile private var initialized = false
+    @Volatile private var attachedToWindow = false
+    private var destroyed = false
+
+    private lateinit var engine: Engine
+    private lateinit var renderer: Renderer
+    private lateinit var scene: Scene
+    private lateinit var view: View
+    private var cameraEntity: Int = 0
+    private lateinit var camera: Camera
 
     private var swapChain: SwapChain? = null
     private val uiHelper = UiHelper(UiHelper.ContextErrorPolicy.DONT_CHECK).apply {
         renderCallback = object : UiHelper.RendererCallback {
             override fun onNativeWindowChanged(surface: android.view.Surface) {
-                swapChain?.let { engine.destroySwapChain(it) }
-                swapChain = engine.createSwapChain(surface)
+                if (destroyRequested.get()) return
+                val generation = surfaceGeneration.incrementAndGet()
+                drainSurfaceSynchronously()
+                ownerHandler.post {
+                    attachSurfaceInternal(surface, generation)
+                }
             }
             override fun onDetachedFromSurface() {
-                swapChain?.let { engine.destroySwapChain(it); swapChain = null }
+                surfaceGeneration.incrementAndGet()
+                drainSurfaceSynchronously()
+                ownerHandler.post {
+                    if (!initialized || destroyed) return@post
+                    renderRequested = false
+                    cancelRender()
+                }
             }
             override fun onResized(width: Int, height: Int) {
-                view.viewport = Viewport(0, 0, width, height)
-                viewHeightPx = height.coerceAtLeast(1)
-                lastAspect = width.toDouble() / height.coerceAtLeast(1)
-                if (roamMode) camera.setProjection(roamFovDeg, lastAspect, 50.0, roamFar, Camera.Fov.VERTICAL)
-                else camera.setProjection(45.0, lastAspect, 50.0, currentFar(), Camera.Fov.VERTICAL)
-                    }
+                ownerHandler.post {
+                    if (!initialized || destroyed || destroyRequested.get()) return@post
+                    view.viewport = Viewport(0, 0, width, height)
+                    viewWidthPx = width.coerceAtLeast(1)
+                    viewHeightPx = height.coerceAtLeast(1)
+                    lastAspect = width.toDouble() / height.coerceAtLeast(1)
+                    if (roamMode) camera.setProjection(roamFovDeg, lastAspect, 50.0, roamFar, Camera.Fov.VERTICAL)
+                    else camera.setProjection(45.0, lastAspect, 50.0, currentFar(), Camera.Fov.VERTICAL)
+                    markProjectionDirty()
+                }
+            }
         }
-        attachTo(this@PointCloudSurfaceView)
     }
 
-    private val material: Material
-    private val materialInstance: MaterialInstance
-    private val colorMaterial: Material
-    private val colorMaterialInstance: MaterialInstance
-    private val meshMaterial: Material
-    private val meshMaterialInstance: MaterialInstance
-    private val gridMaterialInstance: MaterialInstance // 地面网格用 unlit 同材质另开实例（暗灰）
+    init {
+        // 初始化命令先入队；Surface/数据回调随后只会排在它后面，避免访问半初始化资源。
+        ownerHandler.post { initializeFilament(context.applicationContext) }
+        uiHelper.attachTo(this@PointCloudSurfaceView)
+    }
 
-    // 点云预分配上限：与 Scan3dRecordingViewModel.MAX_PREVIEW_VERTICES 对齐
+    private fun assertOwnerThread() {
+        check(PointCloudRenderDispatcher.isOwnerThread()) {
+            "Filament API 必须运行在 PointCloudFilamentOwner"
+        }
+    }
+
+    private fun runOwnerBlocking(block: () -> Unit) {
+        if (PointCloudRenderDispatcher.isOwnerThread()) {
+            block()
+            return
+        }
+        val latch = CountDownLatch(1)
+        var failure: Throwable? = null
+        ownerHandler.postAtFrontOfQueue {
+            try {
+                block()
+            } catch (t: Throwable) {
+                failure = t
+            } finally {
+                latch.countDown()
+            }
+        }
+        latch.await()
+        failure?.let { throw it }
+    }
+
+    private fun attachSurfaceInternal(surface: android.view.Surface, generation: Int) {
+        assertOwnerThread()
+        if (
+            !initialized || destroyed || destroyRequested.get() ||
+            generation != surfaceGeneration.get() || !surface.isValid
+        ) return
+        synchronized(surfaceLifecycleLock) {
+            if (generation != surfaceGeneration.get() || destroyRequested.get()) return
+            surfaceActiveOrCreating = true
+        }
+        try {
+            destroySwapChainAndWait()
+            if (
+                !destroyed && !destroyRequested.get() &&
+                generation == surfaceGeneration.get() && surface.isValid
+            ) {
+                swapChain = engine.createSwapChain(surface)
+                // Surface 重建即使尺寸未变也必须发布新 generation 的投影，不能沿用旧快照。
+                markProjectionDirty()
+            }
+        } finally {
+            synchronized(surfaceLifecycleLock) {
+                surfaceActiveOrCreating = swapChain != null
+            }
+        }
+    }
+
+    /** Surface 回收前只在确有 SwapChain/创建中的时候等待 owner drain；冷初始化退出不阻塞主线程。 */
+    private fun drainSurfaceSynchronously() {
+        val mustWait = synchronized(surfaceLifecycleLock) { surfaceActiveOrCreating }
+        if (!mustWait) return
+        val latch = CountDownLatch(1)
+        ownerHandler.postAtFrontOfQueue {
+            try {
+                if (initialized && !destroyed) {
+                    renderRequested = false
+                    cancelRender()
+                    destroySwapChainAndWait()
+                }
+            } finally {
+                synchronized(surfaceLifecycleLock) {
+                    surfaceActiveOrCreating = false
+                }
+                latch.countDown()
+            }
+        }
+        latch.await()
+    }
+
+    /**
+     * Android 会在 surfaceDestroyed 返回后立即回收原生 Surface；Filament 官方合同要求先销毁
+     * SwapChain 并完整 drain，否则 driver 可能继续 swap 到 abandoned BufferQueue。
+     */
+    private fun destroySwapChainAndWait() {
+        assertOwnerThread()
+        val sc = swapChain ?: return
+        swapChain = null
+        engine.destroySwapChain(sc)
+        engine.flushAndWait()
+        inFlightFence?.let { fence ->
+            engine.destroyFence(fence)
+            inFlightFence = null
+            inFlightProjection = null
+            engine.flush()
+        }
+    }
+
+    private lateinit var material: Material
+    private lateinit var materialInstance: MaterialInstance
+    private lateinit var colorMaterial: Material
+    private lateinit var colorMaterialInstance: MaterialInstance
+    private lateinit var meshMaterial: Material
+    private lateinit var meshMaterialInstance: MaterialInstance
+    private lateinit var gridMaterialInstance: MaterialInstance // 地面网格用 unlit 同材质另开实例（暗灰）
+
+    // 点云预分配上限由调用方契约决定；默认与 Scan3dRecordingViewModel 的 5 万点一致。
     // 不每帧 destroy/recreate VB/IB —— 那会累积 stale handle 让 FEngine::loop 在 ~20s
     // 后撞到 "corrupted heap Handle" SIGABRT。改为一次性 alloc，setBufferAt 复用 + 用
     // RenderableManager.setGeometryAt 调整 index count。
-    // 激光全扫后融合云约 280~300 万点。这里必须全量上传，否则按 PCD 原始线束顺序 stride 抽样会在
-    // 顶视/漫游里看成稀疏几条线。上限按当前真机全量云留余量；超过才进入兜底抽样。
-    private val maxVertices = 3_500_000
+    private val maxVertices = pointBudget.also {
+        require(it in 1..1_000_000) { "pointBudget 须为 1..1000000，得 $it" }
+    }
 
-    // 点云上传：每次 setPoints 分配新 DirectByteBuffer，**不能立刻丢引用**。
+    // 点云上传用两个固定 DirectByteBuffer 槽。Filament 完成回调前槽不可复用；两槽都忙时只保留
+    // 最新请求，等任一槽释放后重试，既不丢最终帧也不继续排队分配。上传内存因此严格固定。
     //
     // Filament `vertexBuffer.setBufferAt(engine, slot, buffer)` 是异步上传：JNI 调用返回时
     // driver thread 可能还没读完 Java DirectByteBuffer 的 native 内存。局部变量出作用域后，
@@ -251,13 +399,16 @@ internal class PointCloudSurfaceView(
     // 镜头不变时点云稳定，每次写入字节几乎相同，race 看不出；镜头大变时 cloud 内容差异大，
     // race 立刻暴露。所以"镜头变化大才花屏"完全对应这个并发 bug。
     //
-    // 修法：每次上传用新 buffer，并在 [pointUploadBuffers] 中至少保活若干轮；mesh 的三类
-    // buffer 则字段持有到下一次 setMesh / destroy。这样既不复用正在被 driver 读取的内存，
-    // 也不让局部 DirectByteBuffer 过早释放。
-    private val pointUploadBuffers = ArrayDeque<ByteBuffer>()
-    private var pointUploadBufferBytes = 0L
-    private val pointUploadBufferCountLimit = 4
-    private val pointUploadBufferByteLimit = 96L * 1024L * 1024L
+    private class PointUploadSlot(maxVertices: Int) {
+        val positions: ByteBuffer = ByteBuffer.allocateDirect(maxVertices * 12).order(ByteOrder.nativeOrder())
+        var colors: ByteBuffer? = null
+        var inFlightParts: Int = 0
+    }
+
+    private val pointUploadLock = Any()
+    private val pointUploadCallbackHandler = ownerHandler
+    private lateinit var pointUploadSlots: Array<PointUploadSlot>
+    private var nextPointUploadSlot = 0
     private lateinit var pointIndexUploadBuffer: ByteBuffer
     private var meshPositionUploadBuffer: ByteBuffer? = null
     private var meshTangentUploadBuffer: ByteBuffer? = null
@@ -268,74 +419,40 @@ internal class PointCloudSurfaceView(
     // 手机端可接受。超过上限时 setMesh 会截断 + 打 warn log。
     private val maxMeshVertices = 256_000
 
-    private val vertexBuffer: VertexBuffer = VertexBuffer.Builder()
-        .vertexCount(maxVertices)
-        .bufferCount(2)
-        .attribute(
-            VertexBuffer.VertexAttribute.POSITION, 0,
-            VertexBuffer.AttributeType.FLOAT3, 0, 12,
-        )
-        .attribute(
-            VertexBuffer.VertexAttribute.COLOR, 1,
-            VertexBuffer.AttributeType.UBYTE4, 0, 4,
-        )
-        .normalized(VertexBuffer.VertexAttribute.COLOR)
-        .build(engine)
-    private val indexBuffer: IndexBuffer
-    private val pointEntity: Int = EntityManager.get().create()
+    private lateinit var vertexBuffer: VertexBuffer
+    private lateinit var indexBuffer: IndexBuffer
+    private var pointEntity: Int = 0
 
     // mesh 用 POSITION (float3) + TANGENTS (float4 quaternion) 双 attribute；TANGENTS 由
     // SurfaceOrientation.getQuatsAsFloat 把 normal 编码进去（lit shading model 从 quaternion
     // 解出 N 做光照）。两个 attribute 走两个 buffer slot，setBufferAt(0/1) 分别更新。
-    private val meshVertexBuffer: VertexBuffer = VertexBuffer.Builder()
-        .vertexCount(maxMeshVertices)
-        .bufferCount(2)
-        .attribute(VertexBuffer.VertexAttribute.POSITION, 0,
-                   VertexBuffer.AttributeType.FLOAT3, 0, 12)
-        .attribute(VertexBuffer.VertexAttribute.TANGENTS, 1,
-                   VertexBuffer.AttributeType.FLOAT4, 0, 16)
-        .build(engine)
-    private val meshIndexBuffer: IndexBuffer = IndexBuffer.Builder()
-        .indexCount(maxMeshVertices)
-        .bufferType(IndexBuffer.Builder.IndexType.UINT)
-        .build(engine)
-    private val meshEntity: Int = EntityManager.get().create()
+    private lateinit var meshVertexBuffer: VertexBuffer
+    private lateinit var meshIndexBuffer: IndexBuffer
+    private var meshEntity: Int = 0
 
     // directional light — lit material 没 IBL 时唯一光源；从右上前方照下来给 mesh 立体感
-    private val lightEntity: Int = EntityManager.get().create()
+    private var lightEntity: Int = 0
 
     // 地面参考网格（LINES primitive，unlit）。预分配上限 maxGridVerts；setGround 时按地面基重建。
     private val maxGridVerts = 1024
-    private val gridVertexBuffer: VertexBuffer = VertexBuffer.Builder()
-        .vertexCount(maxGridVerts).bufferCount(1)
-        .attribute(VertexBuffer.VertexAttribute.POSITION, 0, VertexBuffer.AttributeType.FLOAT3, 0, 12)
-        .build(engine)
-    private val gridIndexBuffer: IndexBuffer = IndexBuffer.Builder()
-        .indexCount(maxGridVerts).bufferType(IndexBuffer.Builder.IndexType.UINT).build(engine)
-    private val gridEntity: Int = EntityManager.get().create()
+    private lateinit var gridVertexBuffer: VertexBuffer
+    private lateinit var gridIndexBuffer: IndexBuffer
+    private var gridEntity: Int = 0
     private var gridVertCount = 0
     private var gridUploadBuffer: ByteBuffer? = null // 保活异步上传 buffer
 
     // 地面实体（TRIANGLES 大方块，暗色，沉 grid 下 8mm）。给漫游清晰落脚参照，缓解迷失方向。
-    private val groundVertexBuffer: VertexBuffer = VertexBuffer.Builder()
-        .vertexCount(4).bufferCount(1)
-        .attribute(VertexBuffer.VertexAttribute.POSITION, 0, VertexBuffer.AttributeType.FLOAT3, 0, 12)
-        .build(engine)
-    private val groundIndexBuffer: IndexBuffer = IndexBuffer.Builder()
-        .indexCount(6).bufferType(IndexBuffer.Builder.IndexType.UINT).build(engine)
-    private val groundEntity: Int = EntityManager.get().create()
+    private lateinit var groundVertexBuffer: VertexBuffer
+    private lateinit var groundIndexBuffer: IndexBuffer
+    private var groundEntity: Int = 0
     private var groundUploadBuffer: ByteBuffer? = null
     private lateinit var groundMaterialInstance: MaterialInstance
 
     // 标注路径（LINES，amber，铺地面上方 20mm 防 z-fight）。仿 grid 实体管理；pathMaterialInstance 在 init 赋值。
     private val maxPathVerts = 4096
-    private val pathVertexBuffer: VertexBuffer = VertexBuffer.Builder()
-        .vertexCount(maxPathVerts).bufferCount(1)
-        .attribute(VertexBuffer.VertexAttribute.POSITION, 0, VertexBuffer.AttributeType.FLOAT3, 0, 12)
-        .build(engine)
-    private val pathIndexBuffer: IndexBuffer = IndexBuffer.Builder()
-        .indexCount(maxPathVerts).bufferType(IndexBuffer.Builder.IndexType.UINT).build(engine)
-    private val pathEntity: Int = EntityManager.get().create()
+    private lateinit var pathVertexBuffer: VertexBuffer
+    private lateinit var pathIndexBuffer: IndexBuffer
+    private var pathEntity: Int = 0
     private var pathVertCount = 0
     private var pathUploadBuffer: ByteBuffer? = null
     private lateinit var pathMaterialInstance: MaterialInstance
@@ -351,7 +468,14 @@ internal class PointCloudSurfaceView(
     private var panX = 0f; private var panY = 0f; private var panZ = 0f
     // 当前预设：决定单指拖动是全向轨道(FREE)还是仅转台旋转(顶/侧/斜锁俯仰)。
     private var preset: LaserViewPreset = LaserViewPreset.FREE
+    private var viewWidthPx = 1                // 投影回调使用，与 Filament viewport 同步
     private var viewHeightPx = 1               // 视口高（px），双指平移把屏幕位移换算成世界位移用
+
+    @Volatile private var projectionListener: ((CameraProjectionSnapshot) -> Unit)? = null
+    private var projectionDirty = true
+    private var projectionRevision = 0L
+    private val projectionMatrix = DoubleArray(16)
+    private val viewMatrix = DoubleArray(16)
 
     // 地面正交基：up=地面法向，right/fwd 张成地面。默认世界 +Y（兼容 RGBD）。
     private var upX = 0f; private var upY = 1f; private var upZ = 0f
@@ -376,7 +500,7 @@ internal class PointCloudSurfaceView(
     @Volatile private var pointCloudInteractionEnabled = true
 
     // ───── 第一视角漫游（标注用）。orbit 字段不动；roamMode=false 时本段全不参与渲染/输入。 ─────
-    private var roamMode = false
+    @Volatile private var roamMode = false
     private var roamEyeH = 1600f             // 漫游眼点的绝对 h 坐标（floorH + 人眼离地高度）
     private var roamRadius = 1500f           // 鲁棒包围半径（定远裁剪 + 走动范围；抗离群坏数据）
     private var roamYaw = 0f                  // 头朝向（绕 up；0=朝 +fwd0/取景中心）
@@ -393,15 +517,124 @@ internal class PointCloudSurfaceView(
     private val roamFovDeg = 50.0
     private var roamFar = 8000.0
     private var lastFrameNanos = 0L           // 帧 dt 源；0=首帧（dt=0 不跳）
-    private var pitchInvert = false
+    @Volatile private var pitchInvert = false
     // 取景中心(质心)在地面基的 (u,v)，世界原点系——与 projectTopView/worldBox 同源。
     private var originU = 0f; private var originV = 0f
     // 标注路径（世界原点系基坐标 [u0,v0,...]，与 projectTopView 同源，直接喂 worldBox）。
     private var annotating = false
     private val pathUV = ArrayList<Float>()
+    @Volatile private var pathSnapshot = FloatArray(0)
     private var lastSampleU = 0f; private var lastSampleV = 0f; private var hasSample = false
 
-    init {
+    private fun initializeFilament(context: Context) {
+        assertOwnerThread()
+        if (destroyRequested.get()) {
+            destroyed = true
+            return
+        }
+
+        try {
+            // native 库加载、驱动 barrier 和全部 GPU 资源初始化只允许发生在 owner 线程。
+            Utils.init()
+            engine = Engine.create()
+            renderer = engine.createRenderer().apply {
+                clearOptions = Renderer.ClearOptions().apply {
+                    clear = true
+                    discard = true
+                    clearColor = floatArrayOf(0f, 0f, 0f, 1f)
+                }
+            }
+            scene = engine.createScene()
+            view = engine.createView().apply {
+                scene = this@PointCloudSurfaceView.scene
+                antiAliasing = View.AntiAliasing.NONE
+                blendMode = View.BlendMode.OPAQUE
+                isPostProcessingEnabled = false
+            }
+            cameraEntity = EntityManager.get().create()
+            camera = engine.createCamera(cameraEntity).apply {
+                setProjection(45.0, 1.0, 50.0, 6000.0, Camera.Fov.VERTICAL)
+            }
+
+            pointUploadSlots = Array(2) { PointUploadSlot(maxVertices) }
+            vertexBuffer = VertexBuffer.Builder()
+                .vertexCount(maxVertices)
+                .bufferCount(2)
+                .attribute(
+                    VertexBuffer.VertexAttribute.POSITION, 0,
+                    VertexBuffer.AttributeType.FLOAT3, 0, 12,
+                )
+                .attribute(
+                    VertexBuffer.VertexAttribute.COLOR, 1,
+                    VertexBuffer.AttributeType.UBYTE4, 0, 4,
+                )
+                .normalized(VertexBuffer.VertexAttribute.COLOR)
+                .build(engine)
+            meshVertexBuffer = VertexBuffer.Builder()
+                .vertexCount(maxMeshVertices)
+                .bufferCount(2)
+                .attribute(
+                    VertexBuffer.VertexAttribute.POSITION, 0,
+                    VertexBuffer.AttributeType.FLOAT3, 0, 12,
+                )
+                .attribute(
+                    VertexBuffer.VertexAttribute.TANGENTS, 1,
+                    VertexBuffer.AttributeType.FLOAT4, 0, 16,
+                )
+                .build(engine)
+            meshIndexBuffer = IndexBuffer.Builder()
+                .indexCount(maxMeshVertices)
+                .bufferType(IndexBuffer.Builder.IndexType.UINT)
+                .build(engine)
+            gridVertexBuffer = VertexBuffer.Builder()
+                .vertexCount(maxGridVerts)
+                .bufferCount(1)
+                .attribute(
+                    VertexBuffer.VertexAttribute.POSITION, 0,
+                    VertexBuffer.AttributeType.FLOAT3, 0, 12,
+                )
+                .build(engine)
+            gridIndexBuffer = IndexBuffer.Builder()
+                .indexCount(maxGridVerts)
+                .bufferType(IndexBuffer.Builder.IndexType.UINT)
+                .build(engine)
+            groundVertexBuffer = VertexBuffer.Builder()
+                .vertexCount(4)
+                .bufferCount(1)
+                .attribute(
+                    VertexBuffer.VertexAttribute.POSITION, 0,
+                    VertexBuffer.AttributeType.FLOAT3, 0, 12,
+                )
+                .build(engine)
+            groundIndexBuffer = IndexBuffer.Builder()
+                .indexCount(6)
+                .bufferType(IndexBuffer.Builder.IndexType.UINT)
+                .build(engine)
+            pathVertexBuffer = VertexBuffer.Builder()
+                .vertexCount(maxPathVerts)
+                .bufferCount(1)
+                .attribute(
+                    VertexBuffer.VertexAttribute.POSITION, 0,
+                    VertexBuffer.AttributeType.FLOAT3, 0, 12,
+                )
+                .build(engine)
+            pathIndexBuffer = IndexBuffer.Builder()
+                .indexCount(maxPathVerts)
+                .bufferType(IndexBuffer.Builder.IndexType.UINT)
+                .build(engine)
+
+            pointEntity = EntityManager.get().create()
+            meshEntity = EntityManager.get().create()
+            lightEntity = EntityManager.get().create()
+            gridEntity = EntityManager.get().create()
+            groundEntity = EntityManager.get().create()
+            pathEntity = EntityManager.get().create()
+            choreographer = Choreographer.getInstance()
+
+            android.util.Log.i(
+                TAG,
+                "Engine 创建 budget=$maxVertices owner=${Thread.currentThread().name} main=${Looper.myLooper() == Looper.getMainLooper()}",
+            )
         view.camera = camera
 
         // 加载点云 unlit material（扫描时编出的 .filamat，详见 src/main/materials/point_cloud.mat）
@@ -528,7 +761,16 @@ internal class PointCloudSurfaceView(
             .build(engine, lightEntity)
         scene.addEntity(lightEntity)
 
-        applyCamera()
+            initialized = true
+            applyCamera()
+            if (destroyRequested.get()) destroyInternal()
+        } catch (t: Throwable) {
+            android.util.Log.e(TAG, "Filament 初始化失败 budget=$maxVertices", t)
+            destroyed = true
+            if (this::engine.isInitialized && engine.isValid) {
+                engine.destroy()
+            }
+        }
     }
 
     private fun loadMaterial(context: Context, assetPath: String): Material {
@@ -538,17 +780,80 @@ internal class PointCloudSurfaceView(
         return Material.Builder().payload(buf, buf.remaining()).build(engine)
     }
 
+    private data class PendingPointCloud(
+        val cloud: FloatArray,
+        val colors: IntArray?,
+    )
+
+    private val pendingPointLock = Any()
+    private var pendingPointCloud: PendingPointCloud? = null
+    private var pointCommandScheduled = false
+    private val pointCommand: Runnable = Runnable {
+        val request = synchronized(pendingPointLock) {
+            pendingPointCloud
+        }
+        var consumed = request == null
+        try {
+            if (request != null && initialized && !destroyed && !destroyRequested.get()) {
+                consumed = setPointsInternal(request.cloud, request.colors)
+            } else {
+                consumed = true
+            }
+        } catch (t: Throwable) {
+            // 单次上传失败不能杀死全局 owner Looper，否则后续 Surface drain 将无法执行。
+            android.util.Log.e(TAG, "setPoints 后台命令失败", t)
+            consumed = true
+        } finally {
+            val reschedule = synchronized(pendingPointLock) {
+                if (consumed && pendingPointCloud === request) {
+                    pendingPointCloud = null
+                }
+                pointCommandScheduled = false
+                if (consumed && pendingPointCloud != null && !destroyRequested.get()) {
+                    pointCommandScheduled = true
+                    true
+                } else {
+                    false
+                }
+            }
+            if (reschedule) ownerHandler.post(pointCommand)
+        }
+    }
+
     /**
      * 推入新一批点云。**复用** vertex/index buffer + RenderableManager entity，只改 vertex 数据
      * + index count，避免每 500ms destroy/recreate 累积 stale GPU handle（实测 1.57 在 ~20s 后撞
      * "corrupted heap Handle" SIGABRT）。
      *
      * 关键稳定性约束：
-     *   - 每次上传新 DirectByteBuffer，并保活最近几轮，避免 Filament 异步上传读到已释放内存
+     *   - 两个固定 DirectByteBuffer 槽只在 Filament 完成回调后复用
      *   - 只写 + 只上传前 n × 12 字节；indexCount=n 时 GPU 只读前 n 个 vertex，多余 slot
      *     不被采样，不需要 anchor 填充
      */
     fun setPoints(cloud: FloatArray, colors: IntArray? = null) {
+        if (destroyRequested.get()) return
+        synchronized(pendingPointLock) {
+            pendingPointCloud = PendingPointCloud(cloud, colors)
+        }
+        schedulePointCommandIfPending()
+    }
+
+    private fun schedulePointCommandIfPending() {
+        val schedule = synchronized(pendingPointLock) {
+            if (
+                pendingPointCloud != null && !pointCommandScheduled &&
+                !destroyRequested.get()
+            ) {
+                pointCommandScheduled = true
+                true
+            } else false
+        }
+        if (schedule) ownerHandler.post(pointCommand)
+    }
+
+    /** 返回 false 表示上传槽仍忙，请求留在 latest-wins 槽中等待完成回调重试。 */
+    private fun setPointsInternal(cloud: FloatArray, colors: IntArray? = null): Boolean {
+        assertOwnerThread()
         val total = cloud.size / 3
         val rm = engine.renderableManager
         // 切到点云模式：隐藏 mesh entity（indexCount=0）
@@ -559,50 +864,86 @@ internal class PointCloudSurfaceView(
         }
         val instance = rm.getInstance(pointEntity)
         if (total == 0) {
+            renderedVertexCount = 0
             if (instance != 0) {
                 rm.setGeometryAt(instance, 0, RenderableManager.PrimitiveType.POINTS,
                                  vertexBuffer, indexBuffer, 0, 0)
             }
             userInteracted = false // 清空（新扫描复位/切到空云）→ 下批非空点云恢复自动取景
-            return
+            requestRender()
+            return true
         }
 
-        // 超上限：按 stride 均匀抽样（每 stride 个取 1），保全空间覆盖；绝不前 N 截断（融合云
-        // = A 全部 + B 全部拼接，截尾会整段丢 B）。stride=1 时全量上传。
-        val stride = if (total > maxVertices) (total + maxVertices - 1) / maxVertices else 1
-        val n = if (stride == 1) total else ((total + stride - 1) / stride).coerceAtMost(maxVertices)
-
-        val byteCount = n * 12
-        val vBuf = ByteBuffer.allocateDirect(byteCount).order(ByteOrder.nativeOrder())
-        val fb = vBuf.asFloatBuffer()
+        val n = total.coerceAtMost(maxVertices)
+        renderedVertexCount = n
         val rgb = colors
         val hasColors = rgb != null && rgb.size >= total
-        val colorBuf = if (hasColors) ByteBuffer.allocateDirect(n * 4).order(ByteOrder.nativeOrder()) else null
-        if (stride == 1) {
+        val uploadSlot = acquirePointUploadSlot(hasColors)
+        if (uploadSlot == null) {
+            android.util.Log.d(TAG, "setPoints 等待：两个 GPU 上传槽仍在途 total=$total")
+            return false
+        }
+
+        val byteCount = n * 12
+        val vBuf = uploadSlot.positions
+        vBuf.clear()
+        val fb = vBuf.asFloatBuffer()
+        fb.clear()
+        val colorBuf = if (hasColors) {
+            uploadSlot.colors ?: ByteBuffer.allocateDirect(maxVertices * 4)
+                .order(ByteOrder.nativeOrder())
+                .also { uploadSlot.colors = it }
+        } else {
+            null
+        }
+        colorBuf?.clear()
+        val colorInts = colorBuf?.asIntBuffer()?.apply { clear() }
+        if (n == total) {
+            // 完成态 API 已按预算返回精确点数；bulk copy 避免主/owner 线程逐 float JNI 写入。
             fb.put(cloud, 0, n * 3)
-            if (colorBuf != null) {
+            if (colorInts != null) {
                 var i = 0
                 while (i < n) {
-                    putRgb(colorBuf, rgb!![i])
+                    colorInts.put(packRgbaNative(rgb!![i]))
                     i++
                 }
             }
         } else {
-            var src = 0; var cnt = 0
-            while (cnt < n) {
+            var out = 0
+            while (out < n) {
+                val src = stratifiedPointIndex(out, n, total)
                 val base = src * 3
-                fb.put(cloud[base]); fb.put(cloud[base + 1]); fb.put(cloud[base + 2])
-                if (colorBuf != null) putRgb(colorBuf, rgb!![src])
-                src += stride; cnt++
+                fb.put(cloud[base])
+                fb.put(cloud[base + 1])
+                fb.put(cloud[base + 2])
+                colorInts?.put(packRgbaNative(rgb!![src]))
+                out++
             }
         }
-        vBuf.rewind()
-        retainPointUploadBuffer(vBuf)
-        vertexBuffer.setBufferAt(engine, 0, vBuf, 0, byteCount)
-        if (colorBuf != null) {
-            colorBuf.rewind()
-            retainPointUploadBuffer(colorBuf)
-            vertexBuffer.setBufferAt(engine, 1, colorBuf, 0, n * 4)
+        vBuf.position(0)
+        vBuf.limit(byteCount)
+        colorBuf?.run {
+            position(0)
+            limit(n * 4)
+        }
+        val expectedParts = if (colorBuf != null) 2 else 1
+        var submittedParts = 0
+        try {
+            vertexBuffer.setBufferAt(
+                engine, 0, vBuf, 0, byteCount, pointUploadCallbackHandler,
+                Runnable { releasePointUploadPart(uploadSlot) },
+            )
+            submittedParts++
+            if (colorBuf != null) {
+                vertexBuffer.setBufferAt(
+                    engine, 1, colorBuf, 0, n * 4, pointUploadCallbackHandler,
+                    Runnable { releasePointUploadPart(uploadSlot) },
+                )
+                submittedParts++
+            }
+        } catch (e: Throwable) {
+            repeat(expectedParts - submittedParts) { releasePointUploadPart(uploadSlot) }
+            throw e
         }
 
         if (instance != 0) {
@@ -610,23 +951,62 @@ internal class PointCloudSurfaceView(
             rm.setGeometryAt(instance, 0, RenderableManager.PrimitiveType.POINTS,
                              vertexBuffer, indexBuffer, 0, n)
         }
-        android.util.Log.i(TAG, "setPoints total=$total uploaded=$n stride=$stride color=${colorBuf != null}")
+        android.util.Log.i(TAG, "setPoints total=$total uploaded=$n color=${colorBuf != null}")
 
         // autoFit：用户未上手时每帧按整云包围球跟随取景（采集时跟着云生长）；一旦用户手动操作过
         // (userInteracted) 即冻结，不再重拟合，保住手动视角（实测：每帧拟合会把位置/缩放/平移冲掉）。
-        if (autoFit && !userInteracted) fitTo(cloud, total)
+        if (autoFit && !userInteracted) fitTo(cloud, total) else requestRender()
+        return true
     }
 
-    private fun putRgb(buf: ByteBuffer, rgb: Int) {
-        buf.put(((rgb ushr 16) and 0xff).toByte())
-        buf.put(((rgb ushr 8) and 0xff).toByte())
-        buf.put((rgb and 0xff).toByte())
-        buf.put(0xff.toByte())
+    /** 把 0xRRGGBB 编成内存字节 RR GG BB FF，供 UBYTE4 颜色 attribute 直接读取。 */
+    private fun packRgbaNative(rgb: Int): Int = if (ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN) {
+        -0x1000000 or ((rgb and 0xff) shl 16) or (rgb and 0xff00) or ((rgb ushr 16) and 0xff)
+    } else {
+        (rgb shl 8) or 0xff
+    }
+
+    private fun acquirePointUploadSlot(hasColors: Boolean): PointUploadSlot? = synchronized(pointUploadLock) {
+        repeat(pointUploadSlots.size) { offset ->
+            val index = (nextPointUploadSlot + offset) % pointUploadSlots.size
+            val slot = pointUploadSlots[index]
+            if (slot.inFlightParts == 0) {
+                slot.inFlightParts = if (hasColors) 2 else 1
+                nextPointUploadSlot = (index + 1) % pointUploadSlots.size
+                return@synchronized slot
+            }
+        }
+        null
+    }
+
+    private fun releasePointUploadPart(slot: PointUploadSlot) {
+        val becameFree = synchronized(pointUploadLock) {
+            if (slot.inFlightParts > 0) slot.inFlightParts--
+            slot.inFlightParts == 0
+        }
+        if (becameFree) schedulePointCommandIfPending()
+    }
+
+    private fun stratifiedPointIndex(outputIndex: Int, outputCount: Int, sourceCount: Int): Int {
+        if (outputCount == sourceCount) return outputIndex
+        val start = (outputIndex.toLong() * sourceCount / outputCount).toInt()
+        val end = ((outputIndex + 1L) * sourceCount / outputCount).toInt()
+        val width = end - start
+        if (width <= 1) return start
+        var seed = (outputIndex + 1L) xor (sourceCount.toLong() shl 32) xor outputCount.toLong()
+        seed += -7046029254386353131L
+        seed = (seed xor (seed ushr 30)) * -4658895280553007687L
+        seed = (seed xor (seed ushr 27)) * -7723592293110705685L
+        seed = seed xor (seed ushr 31)
+        return start + java.lang.Long.remainderUnsigned(seed, width.toLong()).toInt()
     }
 
     /** 切换显示的云时调：清"用户已交互"，让新云恢复自动取景跟随。 */
     fun requestRefit() {
-        userInteracted = false
+        if (destroyRequested.get()) return
+        ownerHandler.post {
+            if (initialized && !destroyed) userInteracted = false
+        }
     }
 
     /** 远裁剪面：取景按主体半径，far 仍按全量有效点半径，避免远处点被直接裁掉。 */
@@ -645,23 +1025,25 @@ internal class PointCloudSurfaceView(
         val maxSamples = 12_000
         val stride = if (n > maxSamples) (n + maxSamples - 1) / maxSamples else 1
         val sampleCapacity = if (n < maxSamples) n else maxSamples
-        val us = ArrayList<Float>(sampleCapacity)
-        val vs = ArrayList<Float>(sampleCapacity)
-        val hs = ArrayList<Float>(sampleCapacity)
+        val us = FloatArray(sampleCapacity)
+        val vs = FloatArray(sampleCapacity)
+        val hs = FloatArray(sampleCapacity)
+        var sampleCount = 0
         var i = 0
         val lim = n * 3
         while (i < lim) {
             val x = cloud[i]; val y = cloud[i + 1]; val z = cloud[i + 2]
-            if (isSane(x) && isSane(y) && isSane(z)) {
-                us.add(x * rgX + y * rgY + z * rgZ)
-                vs.add(x * fwX + y * fwY + z * fwZ)
-                hs.add(x * upX + y * upY + z * upZ)
+            if (isSane(x) && isSane(y) && isSane(z) && sampleCount < sampleCapacity) {
+                us[sampleCount] = x * rgX + y * rgY + z * rgZ
+                vs[sampleCount] = x * fwX + y * fwY + z * fwZ
+                hs[sampleCount] = x * upX + y * upY + z * upZ
+                sampleCount++
             }
             i += 3 * stride
         }
-        if (us.isEmpty()) return
-        fun band(values: ArrayList<Float>): Pair<Float, Float> {
-            val a = values.toFloatArray()
+        if (sampleCount == 0) return
+        fun band(values: FloatArray): Pair<Float, Float> {
+            val a = values.copyOf(sampleCount)
             a.sort()
             val last = a.lastIndex
             fun q(p: Float) = a[(last * p).toInt().coerceIn(0, last)]
@@ -713,6 +1095,16 @@ internal class PointCloudSurfaceView(
      *   - 顶点超 maxMeshVertices → 截断到上限并 log warn
      */
     fun setMesh(vertices: FloatArray, normals: FloatArray, indices: IntArray) {
+        if (destroyRequested.get()) return
+        ownerHandler.post {
+            if (initialized && !destroyed && !destroyRequested.get()) {
+                setMeshInternal(vertices, normals, indices)
+            }
+        }
+    }
+
+    private fun setMeshInternal(vertices: FloatArray, normals: FloatArray, indices: IntArray) {
+        assertOwnerThread()
         val rm = engine.renderableManager
         // 切到 mesh 模式：隐藏点云 entity
         val pointInst = rm.getInstance(pointEntity)
@@ -728,9 +1120,11 @@ internal class PointCloudSurfaceView(
             android.util.Log.w(TAG, "setMesh 跳过：v=${vertices.size} n=${normals.size} i=${indices.size}")
             rm.setGeometryAt(meshInst, 0, RenderableManager.PrimitiveType.TRIANGLES,
                              meshVertexBuffer, meshIndexBuffer, 0, 0)
+            requestRender()
             return
         }
         val n = rawN.coerceAtMost(maxMeshVertices)
+        renderedVertexCount = n
         if (n < rawN) {
             android.util.Log.w(TAG, "mesh 顶点超上限 $rawN > $maxMeshVertices，截断到 $maxMeshVertices")
         }
@@ -795,18 +1189,7 @@ internal class PointCloudSurfaceView(
         rm.setGeometryAt(meshInst, 0, RenderableManager.PrimitiveType.TRIANGLES,
                          meshVertexBuffer, meshIndexBuffer, 0, idxValid)
         android.util.Log.i(TAG, "setMesh v=$n indices=$idxValid (raw v=$rawN i=${indices.size})")
-    }
-
-    private fun retainPointUploadBuffer(buffer: ByteBuffer) {
-        pointUploadBuffers.addLast(buffer)
-        pointUploadBufferBytes += buffer.capacity().toLong()
-        while (
-            pointUploadBuffers.size > pointUploadBufferCountLimit ||
-            pointUploadBufferBytes > pointUploadBufferByteLimit
-        ) {
-            val removed = pointUploadBuffers.removeFirst()
-            pointUploadBufferBytes -= removed.capacity().toLong()
-        }
+        requestRender()
     }
 
     private fun applyCamera() {
@@ -825,6 +1208,7 @@ internal class PointCloudSurfaceView(
         val ey = ty + oR * rgY + oU * upY + oF * fwY
         val ez = tz + oR * rgZ + oU * upZ + oF * fwZ
         camera.lookAt(ex, ey, ez, tx, ty, tz, upX.toDouble(), upY.toDouble(), upZ.toDouble())
+        markProjectionDirty()
     }
 
     /** 第一视角相机：眼=起点(u,v)+走动位移+hEye·up；朝向由 yaw(绕 up)+pitch 决定。 */
@@ -846,6 +1230,60 @@ internal class PointCloudSurfaceView(
             (ex + fx * 1000f).toDouble(), (ey + fy * 1000f).toDouble(), (ez + fz * 1000f).toDouble(),
             upX.toDouble(), upY.toDouble(), upZ.toDouble(),
         )
+        markProjectionDirty()
+    }
+
+    fun setProjectionListener(listener: ((CameraProjectionSnapshot) -> Unit)?) {
+        projectionListener = listener
+        if (listener != null && !destroyRequested.get()) {
+            ownerHandler.post {
+                if (initialized && !destroyed) markProjectionDirty()
+            }
+        }
+    }
+
+    private fun markProjectionDirty() {
+        projectionDirty = true
+        requestRender()
+    }
+
+    private data class SubmittedProjection(
+        val snapshot: CameraProjectionSnapshot,
+        val surfaceGeneration: Int,
+    )
+
+    private fun takeSubmittedProjectionSnapshot(): SubmittedProjection? {
+        if (!projectionDirty) return null
+        projectionDirty = false
+        if (projectionListener == null) return null
+        camera.getProjectionMatrix(projectionMatrix)
+        camera.getViewMatrix(viewMatrix)
+        projectionRevision++
+        return SubmittedProjection(
+            snapshot = CameraProjectionSnapshot(
+                viewProjection = multiplyColumnMajor4x4(projectionMatrix, viewMatrix),
+                viewportWidthPx = viewWidthPx,
+                viewportHeightPx = viewHeightPx,
+                revision = projectionRevision,
+            ),
+            surfaceGeneration = surfaceGeneration.get(),
+        )
+    }
+
+    private fun publishSubmittedProjection(submitted: SubmittedProjection?) {
+        if (
+            submitted == null || destroyed ||
+            submitted.surfaceGeneration != surfaceGeneration.get()
+        ) return
+        val listener = projectionListener ?: return
+        mainHandler.post {
+            if (
+                !destroyRequested.get() && projectionListener === listener &&
+                submitted.surfaceGeneration == surfaceGeneration.get()
+            ) {
+                listener(submitted.snapshot)
+            }
+        }
     }
 
     // ───── 第一视角漫游对外接口 ─────
@@ -858,25 +1296,34 @@ internal class PointCloudSurfaceView(
      * radius=鲁棒包围半径，定远裁剪 + 走动范围。须在 setGround + setPoints 后调。
      */
     fun enterRoamMode(centerU: Float, centerV: Float, eyeHeight: Float, radius: Float) {
-        roamMode = true
-        setPointCloudInteractionEnabled(false)
-        lastFrameNanos = 0L
-        originU = centerU
-        originV = centerV
-        roamEyeH = -groundOffsetD + eyeHeight.coerceIn(900f, 2200f)
-        roamRadius = radius.coerceAtLeast(500f)
-        walkU = 0f
-        walkV = 0f                     // 起点已在主体外侧，走动位移从 0 开始积分
-        roamYaw = 0f; roamPitch = 0f   // 水平起视，转头由漫游 HUD 接管
-        roamFar = (2f * roamRadius + 3000f).toDouble().coerceAtLeast(6000.0)
-        camera.setProjection(roamFovDeg, lastAspect, 50.0, roamFar, Camera.Fov.VERTICAL)
-        applyCamera()
+        if (destroyRequested.get()) return
+        ownerHandler.post {
+            if (!initialized || destroyed) return@post
+            roamMode = true
+            pointCloudInteractionEnabled = false
+            lastFrameNanos = 0L
+            originU = centerU
+            originV = centerV
+            roamEyeH = -groundOffsetD + eyeHeight.coerceIn(900f, 2200f)
+            roamRadius = radius.coerceAtLeast(500f)
+            walkU = 0f
+            walkV = 0f
+            roamYaw = 0f
+            roamPitch = 0f
+            roamFar = (2f * roamRadius + 3000f).toDouble().coerceAtLeast(6000.0)
+            camera.setProjection(roamFovDeg, lastAspect, 50.0, roamFar, Camera.Fov.VERTICAL)
+            applyCamera()
+        }
     }
 
     fun exitRoamMode() {
-        roamMode = false
-        lastFrameNanos = 0L
-        setPointCloudInteractionEnabled(true)
+        if (destroyRequested.get()) return
+        ownerHandler.post {
+            if (!initialized || destroyed) return@post
+            roamMode = false
+            lastFrameNanos = 0L
+            pointCloudInteractionEnabled = true
+        }
     }
 
     /** 开关普通点云查看手势（orbit / pinch / pan）。漫游期点云只展示，移动由 HUD 控件接管。 */
@@ -891,46 +1338,72 @@ internal class PointCloudSurfaceView(
     /** 摇杆输入：strafe 右(+)、forward 前(+)、magnitude 0..1（部分推=慢走）。主线程写、渲染回调读。 */
     fun setMoveInput(strafe: Float, forward: Float, magnitude: Float) {
         moveStrafe = strafe; moveForward = forward; moveMag = magnitude
+        if (!destroyRequested.get()) ownerHandler.post {
+            if (initialized && !destroyed) requestRender()
+        }
     }
 
     /** 右摇杆转身/抬头低头输入：yawRate 横轴(+右转)、pitchRate 纵轴(+上)，−1..1。主线程写、渲染回调读。 */
     fun setLookInput(yawRate: Float, pitchRate: Float) {
         lookYawRate = yawRate; lookPitchRate = pitchRate
+        if (!destroyRequested.get()) ownerHandler.post {
+            if (initialized && !destroyed) requestRender()
+        }
     }
 
     /** 转头/抬头的增量入口。pitch clamp ±1.4 避开近竖直退化。 */
     fun applyLook(dYaw: Float, dPitch: Float) {
-        roamYaw += dYaw
-        val p = if (pitchInvert) -dPitch else dPitch
-        roamPitch = (roamPitch + p).coerceIn(-1.40f, 1.40f)
-        if (roamMode) applyCamera()
+        if (destroyRequested.get()) return
+        ownerHandler.post {
+            if (!initialized || destroyed) return@post
+            roamYaw += dYaw
+            val p = if (pitchInvert) -dPitch else dPitch
+            roamPitch = (roamPitch + p).coerceIn(-1.40f, 1.40f)
+            if (roamMode) applyCamera()
+        }
     }
 
     fun setPitchInvert(on: Boolean) { pitchInvert = on }
 
     /** 开/关标注。起标时把当前脚下点作为路径首点。 */
     fun setAnnotating(on: Boolean) {
-        annotating = on
-        if (on && !hasSample) {
-            lastSampleU = originU + walkU; lastSampleV = originV + walkV
-            pathUV.add(lastSampleU); pathUV.add(lastSampleV); hasSample = true
-            rebuildPath()
+        if (destroyRequested.get()) return
+        ownerHandler.post {
+            if (!initialized || destroyed) return@post
+            annotating = on
+            if (on && !hasSample) {
+                lastSampleU = originU + walkU
+                lastSampleV = originV + walkV
+                pathUV.add(lastSampleU)
+                pathUV.add(lastSampleV)
+                pathSnapshot = pathUV.toFloatArray()
+                hasSample = true
+                rebuildPath()
+            }
         }
     }
 
     /** 清空标注路径。 */
     fun resetPath() {
-        pathUV.clear(); hasSample = false; pathVertCount = 0
-        val inst = engine.renderableManager.getInstance(pathEntity)
-        if (inst != 0) {
-            engine.renderableManager.setGeometryAt(inst, 0, RenderableManager.PrimitiveType.LINES,
-                pathVertexBuffer, pathIndexBuffer, 0, 0)
+        if (destroyRequested.get()) return
+        ownerHandler.post {
+            if (!initialized || destroyed) return@post
+            pathUV.clear()
+            pathSnapshot = FloatArray(0)
+            hasSample = false
+            pathVertCount = 0
+            val inst = engine.renderableManager.getInstance(pathEntity)
+            if (inst != 0) {
+                engine.renderableManager.setGeometryAt(inst, 0, RenderableManager.PrimitiveType.LINES,
+                    pathVertexBuffer, pathIndexBuffer, 0, 0)
+            }
+            requestRender()
         }
     }
 
     /** 标注路径采样快照（世界原点系基坐标 [u0,v0,...]，与 projectTopView/worldBox 同源）。 */
-    fun pathSamplesUV(): FloatArray = pathUV.toFloatArray()
-    fun pathSampleCount(): Int = pathUV.size / 2
+    fun pathSamplesUV(): FloatArray = pathSnapshot.copyOf()
+    fun pathSampleCount(): Int = pathSnapshot.size / 2
 
     /** 每帧积分走动（doFrame 调）。dt 来自 frameTimeNanos，clamp 50ms 防后台恢复时瞬移。 */
     private fun integrateRoam(frameTimeNanos: Long) {
@@ -973,6 +1446,7 @@ internal class PointCloudSurfaceView(
         if (hasSample && moved < 150.0) return
         if (pathUV.size / 2 >= maxPathVerts / 2) return // 满了停采（车位足迹不会到这）
         pathUV.add(curU); pathUV.add(curV)
+        pathSnapshot = pathUV.toFloatArray()
         lastSampleU = curU; lastSampleV = curV; hasSample = true
         rebuildPath()
     }
@@ -1005,10 +1479,22 @@ internal class PointCloudSurfaceView(
         pathVertCount = nv
         engine.renderableManager.setGeometryAt(inst, 0, RenderableManager.PrimitiveType.LINES,
             pathVertexBuffer, pathIndexBuffer, 0, nv)
+        requestRender()
     }
 
     /** 设置地面平面：法向(=up)、offset、是否显示网格。重算正交基并按需重建网格。 */
     fun setGround(upAxis: FloatArray, d: Float, show: Boolean) {
+        if (destroyRequested.get()) return
+        val axis = upAxis.copyOf()
+        ownerHandler.post {
+            if (initialized && !destroyed && !destroyRequested.get()) {
+                setGroundInternal(axis, d, show)
+            }
+        }
+    }
+
+    private fun setGroundInternal(upAxis: FloatArray, d: Float, show: Boolean) {
+        assertOwnerThread()
         if (upAxis.size >= 3) {
             val len = kotlin.math.sqrt(upAxis[0] * upAxis[0] + upAxis[1] * upAxis[1] + upAxis[2] * upAxis[2])
             if (len > 1e-4f) {
@@ -1036,6 +1522,14 @@ internal class PointCloudSurfaceView(
      * 之后单指拖动：FREE=全向轨道；顶/侧/斜=锁俯仰仅转台旋转(yaw)。
      */
     fun applyPreset(p: LaserViewPreset) {
+        if (destroyRequested.get()) return
+        ownerHandler.post {
+            if (initialized && !destroyed && !destroyRequested.get()) applyPresetInternal(p)
+        }
+    }
+
+    private fun applyPresetInternal(p: LaserViewPreset) {
+        assertOwnerThread()
         preset = p
         panX = 0f; panY = 0f; panZ = 0f
         when (p) {
@@ -1049,12 +1543,20 @@ internal class PointCloudSurfaceView(
 
     /** 视角重置：回到当前预设家位（角度），清双指平移，并按包围球重设距离/远裁剪。 */
     fun resetView() {
+        if (destroyRequested.get()) return
+        ownerHandler.post {
+            if (initialized && !destroyed && !destroyRequested.get()) resetViewInternal()
+        }
+    }
+
+    private fun resetViewInternal() {
+        assertOwnerThread()
         userInteracted = false // 重置 → 恢复自动取景跟随（再有增量点会重新拟合）
         if (autoFit && hasFit) {
             distance = (fitRadius / 0.3827f * 0.95f).coerceIn(300f, 60_000f)
             camera.setProjection(45.0, lastAspect, 50.0, currentFar(), Camera.Fov.VERTICAL)
         }
-        applyPreset(preset) // 重置角度 + 清平移 + applyCamera
+        applyPresetInternal(preset) // 重置角度 + 清平移 + applyCamera
     }
 
     /** 在地面平面上铺参考网格（{right,fwd} 基，过质心投影点，按半径定范围，~0.5m 间距）。 */
@@ -1131,44 +1633,175 @@ internal class PointCloudSurfaceView(
         }
     }
 
-    // ───── Choreographer 渲染循环（每帧 render） ─────
+    // ───── Choreographer 按需渲染 ─────
     //
-    // 必须每个 vsync 都强制 renderer.render，不能用 dirty flag 偷懒。
-    //
-    // 之前 dirty flag 实现造成画面花屏的真因：Compose 的 hardware-accelerated layer 跟
-    // TextureView 的 SurfaceTexture 共享 GL context；LiveStreamRow 每秒 6 次创建新 RGB
-    // Bitmap → Compose 上传新 GL texture，**复用了我们 SurfaceTexture 的 buffer 池**。
-    // dirty=false 时 Filament 不 render，SurfaceTexture buffer 长时间不被 Filament 覆盖
-    // → 镜头变化触发 markDirty 再 render 时，buffer 内容已被 Compose 写成 RGB 摄像头帧的
-    // 字节 → GPU 把 RGB 字节当 RGBA 像素采样 → PointCloudPreview 显示成 RGB 摄像头画面
-    // 被错位拉伸成的横条纹（详见 finding_pointcloud3d_corruption_2026-05-07.md）。
-    //
-    // 修法：每个 vsync 都 render 一次，让 Filament 持续主导 SurfaceTexture buffer，Compose
-    // 不能复用。代价是 60fps 的 GL command 流量，但实测在 Adreno 619 上稳定运行（GL state
-    // 累积错乱不是真问题，跟 dirty flag 引入的 buffer 污染搞混了）。
-    private val choreographer = Choreographer.getInstance()
+    // 旧实现为规避 TextureView 与 Compose 共享 SurfaceTexture buffer 的历史花屏，每个 vsync
+    // 都提交一次 Filament。当前已经使用独立 SurfaceView，Compose 不会改写其 buffer；静态点云
+    // 继续 60Hz 重画只会占满模拟器/低端机图形队列，并反向阻塞主窗口 HWUI 绘制导致输入 ANR。
+    // 数据、相机或 Surface 变化时只提交一帧；连续漫游输入才逐帧续约。多个变化合并为同一 vsync。
+    private lateinit var choreographer: Choreographer
+    // 真机上限 30fps；本仓模拟器的 ranchu/llvmpipe 对 262K 点单帧约 100ms，融合视图限 5fps。
+    // 主视图会在融合云与 A 云之间复用，所以按当前可见点数而非预分配预算选帧间隔。
+    private fun renderIntervalNanos(): Long = when {
+        android.os.Build.HARDWARE == "ranchu" && renderedVertexCount >= 200_000 ->
+            TimeUnit.MILLISECONDS.toNanos(200)
+        android.os.Build.HARDWARE == "ranchu" ->
+            TimeUnit.MILLISECONDS.toNanos(100)
+        else -> TimeUnit.MILLISECONDS.toNanos(33)
+    }
+    private var renderedVertexCount = 0
+    private var frameCallbackScheduled = false
+    private var renderRequested = false
+    private var lastRenderAttemptNanos = 0L
+    private var inFlightFence: Fence? = null
+    private var inFlightProjection: SubmittedProjection? = null
+    @Volatile private var renderingEnabledRequested = true
+    private var renderingEnabled = true
+    private var feedbackCapturePaused = false
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
+            assertOwnerThread()
+            frameCallbackScheduled = false
+            if (destroyed || !attachedToWindow) return
+
+            // endFrame 只是异步提交。Fence 真正完成后才移动 Compose 尺寸层，并与下一次 Filament
+            // 提交错开一个 UI 帧，避免 llvmpipe OpenGL 与 HWUI Vulkan 同时争抢宿主图形队列。
+            val projectionPublished = pollSubmittedFrame()
+            if (inFlightFence != null) {
+                scheduleFrameCallback()
+                return
+            }
+            if (projectionPublished) {
+                if (renderRequested || needsContinuousRender()) scheduleFrameCallback()
+                return
+            }
+            if (feedbackCapturePaused || !renderingEnabled) return
+            if (!renderRequested && !needsContinuousRender()) return
+            renderRequested = false
             if (roamMode) integrateRoam(frameTimeNanos)
             val sc = swapChain
-            if (sc != null && uiHelper.isReadyToRender) {
+            var rendered = false
+            if (sc != null) {
+                lastRenderAttemptNanos = frameTimeNanos
                 if (renderer.beginFrame(sc, frameTimeNanos)) {
                     renderer.render(view)
                     renderer.endFrame()
+                    rendered = true
+                    inFlightProjection = takeSubmittedProjectionSnapshot()
+                    inFlightFence = engine.createFence()
+                    engine.flush()
                 }
             }
-            choreographer.postFrameCallback(this)
+            // beginFrame 被拒时按当前点数帧间隔退避，不能退化成每个 vsync 探测。
+            if (sc != null && !rendered) renderRequested = true
+            if (needsContinuousRender()) renderRequested = true
+            if (inFlightFence != null || renderRequested) scheduleFrameCallback()
+        }
+    }
+
+    /** 非阻塞轮询上一 Filament 帧；返回 true 表示本回合发布过投影，下一帧须错开。 */
+    private fun pollSubmittedFrame(): Boolean {
+        val fence = inFlightFence ?: return false
+        val status = fence.wait(Fence.Mode.DONT_FLUSH, 0L)
+        if (status == Fence.FenceStatus.TIMEOUT_EXPIRED) return false
+        if (status == Fence.FenceStatus.ERROR) {
+            android.util.Log.w(TAG, "Filament 帧 Fence 返回 ERROR")
+        }
+        engine.destroyFence(fence)
+        inFlightFence = null
+        val snapshot = inFlightProjection
+        inFlightProjection = null
+        publishSubmittedProjection(snapshot)
+        return snapshot != null
+    }
+
+    private fun needsContinuousRender(): Boolean = roamMode && (
+        (moveMag > 0f && (moveStrafe != 0f || moveForward != 0f)) ||
+            lookYawRate != 0f || lookPitchRate != 0f
+        )
+
+    private fun requestRender() {
+        assertOwnerThread()
+        if (destroyed) return
+        renderRequested = true
+        scheduleFrameCallback()
+    }
+
+    private fun scheduleFrameCallback() {
+        assertOwnerThread()
+        if (frameCallbackScheduled || destroyed || !attachedToWindow) return
+        if ((feedbackCapturePaused || !renderingEnabled) && inFlightFence == null) return
+        frameCallbackScheduled = true
+        val now = System.nanoTime()
+        val delayNanos = if (lastRenderAttemptNanos == 0L) {
+            0L
+        } else {
+            (lastRenderAttemptNanos + renderIntervalNanos() - now).coerceAtLeast(0L)
+        }
+        if (delayNanos == 0L) {
+            choreographer.postFrameCallback(frameCallback)
+        } else {
+            val delayMillis = (delayNanos + 999_999L) / 1_000_000L
+            choreographer.postFrameCallbackDelayed(frameCallback, delayMillis)
+        }
+    }
+
+    private fun cancelRender() {
+        assertOwnerThread()
+        frameCallbackScheduled = false
+        choreographer.removeFrameCallback(frameCallback)
+    }
+
+    fun setRenderingEnabled(enabled: Boolean) {
+        if (destroyRequested.get() || renderingEnabledRequested == enabled) return
+        renderingEnabledRequested = enabled
+        ownerHandler.post {
+            if (!initialized || destroyed) return@post
+            renderingEnabled = enabled
+            if (enabled) {
+                requestRender()
+            } else {
+                renderRequested = false
+                if (inFlightFence != null) scheduleFrameCallback() else cancelRender()
+            }
         }
     }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        choreographer.postFrameCallback(frameCallback)
+        attachedToWindow = true
+        if (!destroyRequested.get()) ownerHandler.post {
+            if (initialized && !destroyed) requestRender()
+        }
     }
 
     override fun onDetachedFromWindow() {
+        attachedToWindow = false
         super.onDetachedFromWindow()
-        choreographer.removeFrameCallback(frameCallback)
+        ownerHandler.post {
+            if (initialized && !destroyed) cancelRender()
+        }
+    }
+
+    override fun pauseForFeedbackCapture() {
+        if (destroyRequested.get()) return
+        runOwnerBlocking {
+            if (!initialized || destroyed) return@runOwnerBlocking
+            feedbackCapturePaused = true
+            cancelRender()
+            if (!engine.flushAndWait(TimeUnit.SECONDS.toNanos(5))) {
+                throw IllegalStateException("点云渲染帧同步超时")
+            }
+        }
+    }
+
+    override fun resumeAfterFeedbackCapture() {
+        if (destroyRequested.get()) return
+        ownerHandler.post {
+            if (!initialized || destroyed) return@post
+            feedbackCapturePaused = false
+            requestRender()
+        }
     }
 
     // ───── 手势 ─────
@@ -1177,7 +1810,85 @@ internal class PointCloudSurfaceView(
     private var lastMidX = 0f; private var lastMidY = 0f
     @Volatile private var pinching = false
 
+    private val gestureLock = Any()
+    private var pendingOrbitDx = 0f
+    private var pendingOrbitDy = 0f
+    private var pendingScale = 1f
+    private var pendingPanX = 0f
+    private var pendingPanY = 0f
+    private var gestureCommandScheduled = false
+    private val gestureCommand: Runnable = Runnable {
+        val values = synchronized(gestureLock) {
+            val snapshot = floatArrayOf(
+                pendingOrbitDx,
+                pendingOrbitDy,
+                pendingScale,
+                pendingPanX,
+                pendingPanY,
+            )
+            pendingOrbitDx = 0f
+            pendingOrbitDy = 0f
+            pendingScale = 1f
+            pendingPanX = 0f
+            pendingPanY = 0f
+            snapshot
+        }
+        try {
+            if (initialized && !destroyed && !destroyRequested.get()) {
+                userInteracted = true
+                val scale = values[2]
+                if (scale != 1f) {
+                    val maxD = if (hasFit) (fitRadius * 8f).coerceAtLeast(5000f) else 5000f
+                    distance = (distance * scale).coerceIn(300f, maxD)
+                    if (hasFit) camera.setProjection(45.0, lastAspect, 50.0, currentFar(), Camera.Fov.VERTICAL)
+                }
+                if (values[3] != 0f || values[4] != 0f) panByScreen(values[3], values[4])
+                if (values[0] != 0f || values[1] != 0f) {
+                    yaw -= values[0] * 0.006f
+                    if (preset == LaserViewPreset.FREE) {
+                        pitch = (pitch + values[1] * 0.006f).coerceIn(-1.4f, 1.4f)
+                    }
+                }
+                applyCamera()
+            }
+        } finally {
+            val reschedule = synchronized(gestureLock) {
+                val hasPending = pendingOrbitDx != 0f || pendingOrbitDy != 0f ||
+                    pendingScale != 1f || pendingPanX != 0f || pendingPanY != 0f
+                if (!hasPending) gestureCommandScheduled = false
+                hasPending
+            }
+            if (reschedule) ownerHandler.post(gestureCommand)
+        }
+    }
+
+    private fun enqueueOrbit(dx: Float, dy: Float) {
+        val schedule = synchronized(gestureLock) {
+            pendingOrbitDx += dx
+            pendingOrbitDy += dy
+            if (gestureCommandScheduled) false else {
+                gestureCommandScheduled = true
+                true
+            }
+        }
+        if (schedule) ownerHandler.post(gestureCommand)
+    }
+
+    private fun enqueuePinch(scale: Float, panX: Float, panY: Float) {
+        val schedule = synchronized(gestureLock) {
+            pendingScale *= scale
+            pendingPanX += panX
+            pendingPanY += panY
+            if (gestureCommandScheduled) false else {
+                gestureCommandScheduled = true
+                true
+            }
+        }
+        if (schedule) ownerHandler.post(gestureCommand)
+    }
+
     override fun onTouchEvent(ev: MotionEvent): Boolean {
+        if (!renderingEnabledRequested || destroyRequested.get()) return false
         if (roamMode || !pointCloudInteractionEnabled) {
             pinching = false
             parent?.requestDisallowInterceptTouchEvent(false)
@@ -1201,31 +1912,18 @@ internal class PointCloudSurfaceView(
                 }
             }
             MotionEvent.ACTION_MOVE -> {
-                userInteracted = true // 用户上手 → 冻结 autoFit，后续增量点不再重拟合冲掉手动视角
                 if (pinching && ev.pointerCount >= 2) {
                     // 双指：捏合缩放(span) + 双指拖动平移(midpoint 位移)。
                     val span = pointerSpan(ev)
                     val midX = (ev.getX(0) + ev.getX(1)) * 0.5f
                     val midY = (ev.getY(0) + ev.getY(1)) * 0.5f
-                    if (lastSpan > 0f) {
-                        val ratio = lastSpan / span
-                        val maxD = if (hasFit) (fitRadius * 8f).coerceAtLeast(5000f) else 5000f
-                        distance = (distance * ratio).coerceIn(300f, maxD)
-                        if (hasFit) camera.setProjection(45.0, lastAspect, 50.0, currentFar(), Camera.Fov.VERTICAL)
-                    }
-                    panByScreen(midX - lastMidX, midY - lastMidY)
+                    val ratio = if (lastSpan > 0f && span > 1e-4f) lastSpan / span else 1f
+                    enqueuePinch(ratio, midX - lastMidX, midY - lastMidY)
                     lastSpan = span; lastMidX = midX; lastMidY = midY
-                    applyCamera()
                 } else {
                     val dx = ev.x - lastX; val dy = ev.y - lastY
-                    yaw -= dx * 0.006f
-                    // FREE=全向轨道(可俯仰)；顶/侧/斜=锁俯仰，只绕地面"上"轴转台旋转。
-                    if (preset == LaserViewPreset.FREE) {
-                        pitch += dy * 0.006f
-                        pitch = pitch.coerceIn(-1.4f, 1.4f)
-                    }
                     lastX = ev.x; lastY = ev.y
-                    applyCamera()
+                    enqueueOrbit(dx, dy)
                 }
             }
             MotionEvent.ACTION_POINTER_UP -> {
@@ -1280,7 +1978,41 @@ internal class PointCloudSurfaceView(
     }
 
     fun destroy() {
-        choreographer.removeFrameCallback(frameCallback)
+        if (!destroyRequested.compareAndSet(false, true)) return
+        renderingEnabledRequested = false
+        attachedToWindow = false
+        projectionListener = null
+        surfaceGeneration.incrementAndGet()
+        synchronized(pendingPointLock) {
+            pendingPointCloud = null
+        }
+        synchronized(gestureLock) {
+            pendingOrbitDx = 0f
+            pendingOrbitDy = 0f
+            pendingScale = 1f
+            pendingPanX = 0f
+            pendingPanY = 0f
+        }
+
+        // detach 的 Surface 回调只在确有 SwapChain 时同步 drain；其余 GPU 资源异步回 owner 销毁。
+        uiHelper.detach()
+        drainSurfaceSynchronously()
+        ownerHandler.post {
+            if (initialized && !destroyed) destroyInternal()
+        }
+    }
+
+    private fun destroyInternal() {
+        assertOwnerThread()
+        if (destroyed) return
+        destroyed = true
+        renderingEnabled = false
+        renderRequested = false
+        cancelRender()
+        destroySwapChainAndWait()
+        synchronized(surfaceLifecycleLock) {
+            surfaceActiveOrCreating = false
+        }
 
         scene.removeEntity(pointEntity)
         scene.removeEntity(meshEntity)
@@ -1313,8 +2045,6 @@ internal class PointCloudSurfaceView(
         engine.destroyMaterial(colorMaterial)
         engine.destroyMaterialInstance(meshMaterialInstance)
         engine.destroyMaterial(meshMaterial)
-        pointUploadBuffers.clear()
-        pointUploadBufferBytes = 0L
         gridUploadBuffer = null
         groundUploadBuffer = null
         pathUploadBuffer = null
@@ -1327,9 +2057,15 @@ internal class PointCloudSurfaceView(
         engine.destroyView(view)
         engine.destroyScene(scene)
         engine.destroyRenderer(renderer)
+        engine.flush()
 
-        uiHelper.detach()
-        swapChain?.let { engine.destroySwapChain(it); swapChain = null }
+        // Filament 1.57.1 在 Android 上要求 shutdown 回到创建 Engine 的线程；异线程会触发
+        // "Engine::shutdown() called from the wrong thread"。前面的 Surface drain 已消除慢 join 根因。
         engine.destroy()
+        initialized = false
+        android.util.Log.i(
+            TAG,
+            "Engine 销毁完成 budget=$maxVertices owner=${Thread.currentThread().name} main=${Looper.myLooper() == Looper.getMainLooper()}",
+        )
     }
 }

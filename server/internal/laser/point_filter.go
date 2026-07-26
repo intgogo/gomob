@@ -40,6 +40,9 @@ func (f PointRegionFilter) Normalized() (PointRegionFilter, error) {
 	if math.Abs(float64(polygonArea2(points))) < 1e-3 {
 		return PointRegionFilter{}, fmt.Errorf("区域标定点不能共线")
 	}
+	if polygonSelfIntersects(points) {
+		return PointRegionFilter{}, fmt.Errorf("区域墙不能自相交")
+	}
 	var bToA []float32
 	if len(f.BToA) > 0 {
 		if len(f.BToA) != 16 {
@@ -184,6 +187,46 @@ func polygonArea2(points [][3]float32) float32 {
 		sum += points[i][0]*points[j][1] - points[j][0]*points[i][1]
 	}
 	return sum
+}
+
+func polygonSelfIntersects(points [][3]float32) bool {
+	n := len(points)
+	for i := 0; i < n; i++ {
+		a1, a2 := points[i], points[(i+1)%n]
+		for j := i + 1; j < n; j++ {
+			// 相邻边共享合法端点；首尾边也相邻。
+			if j == i || j == (i+1)%n || i == (j+1)%n {
+				continue
+			}
+			b1, b2 := points[j], points[(j+1)%n]
+			if segmentsIntersectXY(a1, a2, b1, b2) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func segmentsIntersectXY(a, b, c, d [3]float32) bool {
+	orient := func(p, q, r [3]float32) float64 {
+		return float64(q[0]-p[0])*float64(r[1]-p[1]) - float64(q[1]-p[1])*float64(r[0]-p[0])
+	}
+	const eps = 1e-6
+	o1, o2, o3, o4 := orient(a, b, c), orient(a, b, d), orient(c, d, a), orient(c, d, b)
+	if ((o1 > eps && o2 < -eps) || (o1 < -eps && o2 > eps)) &&
+		((o3 > eps && o4 < -eps) || (o3 < -eps && o4 > eps)) {
+		return true
+	}
+	on := func(p, q, r [3]float32) bool {
+		return float64(q[0]) >= math.Min(float64(p[0]), float64(r[0]))-eps &&
+			float64(q[0]) <= math.Max(float64(p[0]), float64(r[0]))+eps &&
+			float64(q[1]) >= math.Min(float64(p[1]), float64(r[1]))-eps &&
+			float64(q[1]) <= math.Max(float64(p[1]), float64(r[1]))+eps
+	}
+	return (math.Abs(o1) <= eps && on(a, c, b)) ||
+		(math.Abs(o2) <= eps && on(a, d, b)) ||
+		(math.Abs(o3) <= eps && on(c, a, d)) ||
+		(math.Abs(o4) <= eps && on(c, b, d))
 }
 
 func transformXYZ(x, y, z float32, m [16]float32) (float32, float32, float32) {

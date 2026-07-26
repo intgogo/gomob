@@ -15,8 +15,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -149,6 +149,7 @@ func main() {
 	mux.Handle("/v1/messages/", protectedHandler)
 	mux.Handle("/v1/assets/", protectedHandler)
 	mux.Handle("/v1/scans/", protectedHandler)
+	mux.Handle("/v1/feedback", protectedHandler)
 	// 激光车辆外廓扫描（M8'）：必须在 top-level mux 单独拦截 /v1/scans/laser[/*]，先于 /v1/scans/ 子树。
 	// 不能放进 protected mux —— 其 asset 路由 GET /v1/scans/{session_key}/result 会与 /v1/scans/laser/
 	// 在同一 mux 于 "/v1/scans/laser/result" 处歧义 panic。这里自包 auth.Required（注入 X-Gomob-User-Id
@@ -300,6 +301,13 @@ func withCORS(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Gomob-Client, X-Gomob-Trace-Id")
+		w.Header().Set("Access-Control-Expose-Headers", strings.Join([]string{
+			"X-Gomob-Source-Points",
+			"X-Gomob-Render-Points",
+			"X-Gomob-Coordinate-Schema",
+			"X-Gomob-XYZ-SHA256",
+			"X-Gomob-Final-B-To-A-SHA256",
+		}, ", "))
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

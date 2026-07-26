@@ -4,6 +4,7 @@ import android.app.Application
 import android.view.ViewGroup
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -59,6 +60,7 @@ import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -70,8 +72,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.gomob.data.message.MediaSessionRepository
-import io.gomob.designsystem.component.LocalFeedbackTitleLongPress
-import io.gomob.designsystem.component.feedbackTitleLongPress
+import io.gomob.designsystem.component.LocalFeedbackTitleTrigger
+import io.gomob.designsystem.component.feedbackTitleFiveTap
 import io.gomob.designsystem.theme.Gomob
 import io.livekit.android.ConnectOptions
 import io.livekit.android.LiveKit
@@ -202,7 +204,7 @@ fun FirstPersonViewerRoute(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .windowInsetsPadding(WindowInsets.navigationBars)
-                .padding(end = 12.dp, bottom = 96.dp),
+                .padding(end = 16.dp, bottom = 120.dp),
         )
 
         // ---- 底部：评论输入栏 + 麦克风（抖音风） ----
@@ -223,7 +225,7 @@ fun FirstPersonViewerRoute(
                 .fillMaxWidth()
                 .windowInsetsPadding(WindowInsets.navigationBars)
                 .imePadding()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+                .padding(horizontal = 16.dp, vertical = 10.dp),
         )
     }
 
@@ -252,7 +254,7 @@ private fun TopBar(
     onBack: () -> Unit,
     onShowWatchers: () -> Unit,
 ) {
-    val feedbackTrigger = LocalFeedbackTitleLongPress.current
+    val feedbackTrigger = LocalFeedbackTitleTrigger.current
     Row(
         Modifier
             .fillMaxWidth()
@@ -260,18 +262,18 @@ private fun TopBar(
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // 裸 chevron，无底色（触摸区保留 36dp）
         Box(
             Modifier
                 .size(36.dp)
                 .clip(CircleShape)
-                .background(Color.Black.copy(alpha = 0.36f))
                 .clickable(onClick = onBack),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 Icons.Filled.ArrowBackIosNew,
                 contentDescription = "返回",
-                tint = Color.White,
+                tint = Color.White.copy(alpha = 0.9f),
                 modifier = Modifier.size(18.dp),
             )
         }
@@ -281,7 +283,7 @@ private fun TopBar(
                 .weight(1f)
                 .then(
                     if (feedbackTrigger != null) {
-                        Modifier.feedbackTitleLongPress(inspector, feedbackTrigger)
+                        Modifier.feedbackTitleFiveTap(inspector, feedbackTrigger)
                     } else {
                         Modifier
                     },
@@ -291,14 +293,15 @@ private fun TopBar(
             Text(
                 inspector,
                 color = Color.White,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.SemiBold,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Medium,
                 style = TextStyle(shadow = textShadow()),
             )
             Text(
                 "查验员 · $employeeId",
-                color = Color.White.copy(alpha = 0.88f),
-                fontSize = 13.sp,
+                color = Color.White.copy(alpha = 0.5f),
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
                 style = TextStyle(shadow = textShadow()),
             )
         }
@@ -310,14 +313,14 @@ private fun TopBar(
 private fun WatchersPill(count: Int, onClick: () -> Unit) {
     Row(
         Modifier
-            .clip(RoundedCornerShape(14.dp))
-            .background(Color.Black.copy(alpha = 0.56f))
+            .clip(RoundedCornerShape(999.dp))
+            .background(Color.White.copy(alpha = 0.1f))
             .clickable(onClick = onClick)
             .padding(start = 11.dp, end = 7.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Text("观看 $count", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        Text("观看 $count", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Normal)
         Icon(
             Icons.Filled.KeyboardArrowDown,
             contentDescription = "查看观众",
@@ -339,21 +342,21 @@ private fun SideActions(
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(18.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Box(
             Modifier
-                .size(48.dp)
+                .size(46.dp)
                 .clip(CircleShape)
-                .background(Color(0xFF2DD4BF))
+                .background(Gomob.colors.accent)
                 .clickable(onClick = onOpenInspector),
             contentAlignment = Alignment.Center,
         ) {
             Text(
                 inspectorInitial,
-                color = Color.Black,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
+                color = Color.White,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Medium,
             )
         }
         SideActionButton(icon = Icons.Filled.Mic, label = "语音")
@@ -371,8 +374,8 @@ private fun SideActionButton(
     tone: SideTone = SideTone.Default,
 ) {
     val bg = when (tone) {
-        SideTone.Default -> Color.Black.copy(alpha = 0.52f)
-        SideTone.Accent -> Color(0xFF2DD4BF).copy(alpha = 0.92f)
+        SideTone.Default -> Color.White.copy(alpha = 0.1f)
+        SideTone.Accent -> Gomob.colors.accent.copy(alpha = 0.92f)
     }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -396,8 +399,8 @@ private fun SideActionButton(
         Text(
             label,
             color = Color.White,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Medium,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Normal,
             style = TextStyle(shadow = textShadow()),
         )
     }
@@ -418,15 +421,16 @@ private fun CommentBar(
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         // 输入 pill
         Row(
             Modifier
                 .weight(1f)
-                .height(40.dp)
-                .clip(RoundedCornerShape(20.dp))
-                .background(Color.Black.copy(alpha = if (enabled) 0.62f else 0.40f))
+                .height(44.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(Color.White.copy(alpha = 0.08f))
+                .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(999.dp))
                 // R3: 后端未就绪时禁用真实输入,点击直接提示未实现,不静默吞输入
                 .then(
                     if (enabled) Modifier
@@ -445,7 +449,7 @@ private fun CommentBar(
                             color = Color.White,
                             fontSize = 14.sp,
                         ),
-                        cursorBrush = SolidColor(Color(0xFF2DD4BF)),
+                        cursorBrush = SolidColor(Gomob.colors.accent),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                         keyboardActions = KeyboardActions(
                             onSend = { if (value.isNotBlank()) onSend() },
@@ -455,15 +459,15 @@ private fun CommentBar(
                     if (value.isEmpty()) {
                         Text(
                             "说点什么...",
-                            color = Color.White.copy(alpha = 0.68f),
-                            fontSize = 14.sp,
+                            color = Color.White.copy(alpha = 0.4f),
+                            fontSize = 13.sp,
                         )
                     }
                 } else {
                     Text(
                         "评论功能暂未开放",
-                        color = Color.White.copy(alpha = 0.50f),
-                        fontSize = 14.sp,
+                        color = Color.White.copy(alpha = 0.4f),
+                        fontSize = 13.sp,
                     )
                 }
             }
@@ -473,7 +477,7 @@ private fun CommentBar(
                     Modifier
                         .size(28.dp)
                         .clip(CircleShape)
-                        .background(Color(0xFF2DD4BF))
+                        .background(Gomob.colors.accent)
                         .clickable(onClick = onSend),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -489,9 +493,9 @@ private fun CommentBar(
         // 语音按钮（按住录音 / 点击切换）
         Box(
             Modifier
-                .size(40.dp)
+                .size(44.dp)
                 .clip(CircleShape)
-                .background(Color.Black.copy(alpha = if (enabled) 0.62f else 0.40f))
+                .background(Color.White.copy(alpha = 0.08f))
                 .clickable(onClick = onRecordVoice),
             contentAlignment = Alignment.Center,
         ) {
@@ -576,7 +580,7 @@ private fun EmptyVideoStage(state: ViewerLiveState, fallbackTaskId: String) {
     Box(
         Modifier
             .fillMaxSize()
-            .background(Color(0xFF050810)),
+            .background(Color(0xFF08090C)),
         contentAlignment = Alignment.Center,
     ) {
         Column(
@@ -594,8 +598,8 @@ private fun EmptyVideoStage(state: ViewerLiveState, fallbackTaskId: String) {
                 is ViewerLiveState.Error -> state.message
                 else -> fallbackTaskId
             }
-            Text(main, color = Color.White.copy(alpha = 0.9f), fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-            Text(sub, color = Color.White.copy(alpha = 0.68f), fontSize = 13.sp)
+            Text(main, color = Color.White.copy(alpha = 0.9f), fontSize = 16.sp, fontWeight = FontWeight.Medium)
+            Text(sub, color = Color.White.copy(alpha = 0.3f), fontSize = 11.sp, fontFamily = FontFamily.Monospace)
         }
     }
 }

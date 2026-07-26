@@ -6,11 +6,11 @@
 
 用户在这台 CentOS 9 工作机上通过 **TigerVNC** 在 `DISPLAY=:1`（rfb 端口 5901）远程操作。任何启动到其它 display（Xvfb :2 / :3、headless）的 GUI 用户都看不到。
 
-参见 `finding_emulator_setup_2026-05-04.md` 关于 `-gpu host` + NVIDIA 的详细配置。本文件强调的是"为什么必须走 :1" — 因为这是用户的眼睛。
+参见 `finding_emulator_setup_2026-05-04.md` 关于 host gfxstream + SkiaVK/Vulkan 的详细配置。本文件强调的是"为什么必须走 :1" — 因为这是用户的眼睛。
 
 ## 强约束
 
-- Android emulator 启动用 `DISPLAY=:1` + `-gpu host` + `-accel on`（`./dev.sh emu-start` 已正确实现）。**不要**加 `-no-window`，**不要**临时起 Xvfb 把 emulator 推到那边。
+- Android emulator 启动用 `DISPLAY=:1` + `-gpu host` + `-systemui-renderer skiavk` + Vulkan feature 参数（`./dev.sh emu-start` 已正确实现）。这条路径仍可能使用宿主 llvmpipe，稳定性来自 guest UI 避开 Skia GL/EGL 阻塞链，不应描述成 NVIDIA 硬件加速。**不要**加 `-no-window`，**不要**临时起 Xvfb 把 emulator 推到那边。
 - 如果发现 `pgrep -fa Xvfb` 有 `:2` / `:3` 在跑，那是其它任务（screen recording / batch render 等）的副产物，**不要**给它装 app、**不要**把 emulator 切到那个 display。
 - `adb install` / `./dev.sh install` 走 adb，与 DISPLAY 无关；只要 emulator 已在 :1 跑，apk 就在用户视野内。同时跑多个 emulator 时用 `ADB_DEVICE` env 锁定 `:1` 的那个。
 - UI 工作完成后告诉用户"app 已在 VNC 桌面 emulator 里启动"；只有用户主动要求截图时，才用 `./dev.sh shot <name>` 生成 `.dev/screenshots/` 佐证。

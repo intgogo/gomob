@@ -150,31 +150,6 @@ object NativeBridge {
     /** finalize 完成后拉 mesh 三角形索引（每 3 个 = 一个三角形 CCW），见 [scanSessionMeshVertices]。 */
     external fun scanSessionMeshIndices(handle: Long): IntArray
 
-    // ===== vin/* — VIN 数码拓印 =====
-    //
-    // 详见 docs/architecture/08-vin-rectify-design.md。
-
-    /**
-     * 双相机深度正射拓印：depth 反投影拟合主平面 → 把 RGB 按平面几何重采样成 1:1 正射图。
-     *
-     * depth 与 RGB 是**两颗物理独立相机**（depth=RS-D550，rgb=HLSD8），靠 [rtRgbFromDepth] 把平面点
-     * 从 depth 系变到 RGB 系再投影采样。单相机/未标定时传 R=I,t=0（如用 eYs3D 自带彩色，与 depth 同坐标系）。
-     *
-     * @param depth16Mm Depth 帧 16bit mm（depth 相机系；DirectByteBuffer 零拷贝，容量需 ≥ w*h*2）
-     * @param depthIntr [fx,fy,cx,cy]（depth 内参，depthWidth×depthHeight 下）
-     * @param rgb888    RGB 帧 RGB888（DirectByteBuffer 零拷贝，容量需 ≥ w*h*3）
-     * @param rgbIntr   [fx,fy,cx,cy]（RGB 内参，rgbWidth×rgbHeight 下）
-     * @param rtRgbFromDepth [r00..r22, tx, ty, tz]，P_rgb = R*P_depth + t（R 行优先 9 + t 3，mm）
-     * @param config    [pixel_size_mm, out_w, out_h, plane_dist_thresh_mm, ransac_iter, min_inlier_ratio]
-     * @return [VinOrthoNative] 裸 RGB888 + mask + 平面元数据（不含 PNG；显示用 Kotlin 组 Bitmap）
-     */
-    external fun vinOrthoRectify(
-        depth16Mm: ByteBuffer, depthWidth: Int, depthHeight: Int, depthIntr: DoubleArray,
-        rgb888: ByteBuffer, rgbWidth: Int, rgbHeight: Int, rgbIntr: DoubleArray,
-        rtRgbFromDepth: FloatArray,
-        config: FloatArray,
-    ): VinOrthoNative
-
     // ===== calibration/* — iHawk Color/Depth 标定 =====
     //
     // 详见 docs/architecture/05-calibration-pipeline.md。
@@ -415,6 +390,9 @@ object NativeBridge {
     /** 取最新 color 帧字节（consume-once，无新帧 null）。eYs3D=YUYV/Berxel=MJPEG，按 capabilities 解码。 */
     external fun cameraPollColor(handle: Long): ByteArray?
 
+    /** 取最新 color 帧并返回 outInfo=[width,height,serial,hostNs]，供跨 USB 相机最近邻同步。 */
+    external fun cameraPollColorWithInfo(handle: Long, outInfo: LongArray): ByteArray?
+
     /** 会话统计 [colorFrames, depthFrames, dropped, errors, state]。 */
     external fun cameraStats(handle: Long): LongArray
 
@@ -449,36 +427,6 @@ object NativeBridge {
     external fun cameraCapabilitiesJson(vid: Int, pid: Int): String
 }
 
-/**
- * VIN 双相机正射拓印 native 返回结果（裸 RGB + mask，不含 PNG）。
- *
- * 字段顺序与 jni_bridge.cpp `vinOrthoRectify` 构造调用严格对齐（[B[BII[F[FI）：
- * - [rgb] width*height*3 RGB888，未采样处=0
- * - [mask] width*height，255=已采样 / 0=平面外或投影越界
- * - [width]/[height] 正射图尺寸
- * - [planeNormalAndD] [nx, ny, nz, d]（depth 相机系，n·P + d = 0）
- * - [planeStats] [rms_residual_mm, inlier_ratio]
- * - [covered] mask==255 的像素数
- */
-data class VinOrthoNative(
-    val rgb: ByteArray,
-    val mask: ByteArray,
-    val width: Int,
-    val height: Int,
-    val planeNormalAndD: FloatArray,
-    val planeStats: FloatArray,
-    val covered: Int,
-) {
-    override fun equals(other: Any?): Boolean = other is VinOrthoNative &&
-        rgb.contentEquals(other.rgb) && mask.contentEquals(other.mask) &&
-        width == other.width && height == other.height &&
-        planeNormalAndD.contentEquals(other.planeNormalAndD) &&
-        planeStats.contentEquals(other.planeStats) && covered == other.covered
-    override fun hashCode(): Int = rgb.contentHashCode() * 31 +
-        mask.contentHashCode() * 31 + width * 31 + height * 31 +
-        planeNormalAndD.contentHashCode() * 31 + planeStats.contentHashCode() * 31 + covered
-}
-
 class NativeException(val errorCode: Int, message: String) : RuntimeException(message)
 
 /** native 错误码常量（与 jni_bridge.cpp 对齐）。 */
@@ -487,7 +435,6 @@ object NativeError {
     const val INVALID_ARG = 2
     const val ALLOC_FAIL = 3
     const val SDK_ERROR = 4
-    const val PLANE_FIT_FAIL = 100
     const val ICP_NOT_CONVERGED = 101
     const val SESSION_HANDLE_INVALID = 102
     const val CHARUCO_NOT_DETECTED = 200

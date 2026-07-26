@@ -348,14 +348,17 @@ func (r *Router) handleMsgFetch(ctx context.Context, c *Conn, env Envelope) {
 		r.sendError(c, 10001, "msg.fetch conversation_id 缺失", env)
 		return
 	}
-	ok, err := r.convRepo.IsMember(ctx, req.ConversationID, c.UserID)
+	historyFloor, err := r.convRepo.HistoryFloor(ctx, req.ConversationID, c.UserID)
 	if err != nil {
-		r.sendError(c, 50001, "服务端内部错误", env)
+		if errors.Is(err, repo.ErrNotFound) {
+			r.sendError(c, 40103, "无权访问该会话", env)
+		} else {
+			r.sendError(c, 50001, "服务端内部错误", env)
+		}
 		return
 	}
-	if !ok {
-		r.sendError(c, 40103, "无权访问该会话", env)
-		return
+	if req.SinceSeq < historyFloor {
+		req.SinceSeq = historyFloor
 	}
 	items, err := r.msgRepo.ListSince(ctx, req.ConversationID, req.SinceSeq, req.Limit)
 	if err != nil {

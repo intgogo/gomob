@@ -57,6 +57,11 @@ type messageDTO struct {
 	DeletedAt      string          `json:"deleted_at,omitempty"`
 }
 
+type deleteConversationDTO struct {
+	ConversationID   string `json:"conversation_id"`
+	DeletedBeforeSeq int64  `json:"deleted_before_seq"`
+}
+
 func (h *Handler) ListConversations(w http.ResponseWriter, r *http.Request) {
 	uid := callerUserID(r)
 	if uid == 0 {
@@ -93,13 +98,13 @@ func (h *Handler) ListConversationMessages(w http.ResponseWriter, r *http.Reques
 		httpx.WriteError(w, httpx.ErrBadParam)
 		return
 	}
-	ok, err := h.conversations.IsMember(r.Context(), id, uid)
+	historyFloor, err := h.conversations.HistoryFloor(r.Context(), id, uid)
 	if err != nil {
-		httpx.WriteError(w, httpx.ErrInternal)
-		return
-	}
-	if !ok {
-		httpx.WriteError(w, httpx.ErrPermDenied)
+		if errors.Is(err, repo.ErrNotFound) {
+			httpx.WriteError(w, httpx.ErrPermDenied)
+		} else {
+			httpx.WriteError(w, httpx.ErrInternal)
+		}
 		return
 	}
 	q := r.URL.Query()
@@ -108,8 +113,11 @@ func (h *Handler) ListConversationMessages(w http.ResponseWriter, r *http.Reques
 	latest := q.Get("latest") == "1" || strings.EqualFold(q.Get("latest"), "true")
 	var items []repo.Message
 	if latest {
-		items, err = h.messages.ListLatest(r.Context(), id, limit)
+		items, err = h.messages.ListLatestAfter(r.Context(), id, historyFloor, limit)
 	} else {
+		if since < historyFloor {
+			since = historyFloor
+		}
 		items, err = h.messages.ListSince(r.Context(), id, since, limit)
 	}
 	if err != nil {
@@ -118,6 +126,9 @@ func (h *Handler) ListConversationMessages(w http.ResponseWriter, r *http.Reques
 	}
 	out := make([]messageDTO, 0, len(items))
 	nextSince := since
+	if nextSince < historyFloor {
+		nextSince = historyFloor
+	}
 	for i := range items {
 		out = append(out, toMessageDTO(&items[i]))
 		if items[i].ServerSeq > nextSince {
@@ -443,6 +454,40 @@ func (h *Handler) MarkConversationRead(w http.ResponseWriter, r *http.Request) {
 		"conversation_id": strconv.FormatInt(id, 10),
 		"last_read_seq":   req.LastReadSeq,
 		"unread_count":    unread,
+	})
+}
+
+// DeleteConversation 只删除当前用户视角下的会话和既有历史，不影响其他成员。
+func (h *Handler) DeleteConversation(w http.ResponseWriter, r *http.Request) {
+	uid := callerUserID(r)
+	if uid == 0 {
+		httpx.WriteError(w, httpx.ErrTokenInvalid)
+		return
+	}
+	id, err := parsePathID(r, "id")
+	if err != nil {
+		httpx.WriteError(w, httpx.ErrBadParam)
+		return
+	}
+	hiddenThroughSeq, err := h.conversations.HideForUser(r.Context(), id, uid)
+	if err != nil {
+		switch {
+		case errors.Is(err, repo.ErrNotFound):
+			httpx.WriteError(w, httpx.ErrPermDenied)
+		case strings.Contains(err.Error(), "参数"):
+			httpx.WriteError(w, httpx.ErrBadParam)
+		default:
+			httpx.WriteError(w, httpx.ErrInternal)
+		}
+		return
+	}
+	deletedBeforeSeq := hiddenThroughSeq + 1
+	h.recordAudit(r, "message.conversation.delete", "conversation:"+strconv.FormatInt(id, 10), nil, map[string]any{
+		"deleted_before_seq": deletedBeforeSeq,
+	})
+	httpx.OK(w, deleteConversationDTO{
+		ConversationID:   strconv.FormatInt(id, 10),
+		DeletedBeforeSeq: deletedBeforeSeq,
 	})
 }
 

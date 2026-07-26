@@ -263,11 +263,11 @@ Stage 6 写一份 JSON（被上色器读）+ 一份同数据 YAML。JSON：
 | 单元**相机↔雷达**完整标定（490 标记场 + 平面墙，6 阶段） | ❌ **本仓没有端到端流水线**——靠厂商 Windows 工具 + 标定间。本仓只消费结果（`device calib` 拉 `calib_10x.json` 上色） |
 | 完整标定工具 | 厂商 **Windows** `LIDAR_PTZ.exe` / `lts-tool.exe`（`/root/WindowsR/LIDAR_PTZ/`）+ 设备 `doAutoCalibration` |
 | 标定结果存哪 | **设备内**（`device info` 显示 `calib=1`）；经 `/api/update_calib_parameters` 写回；我们 `device calib` 拉下来 |
-| 站间融合外参 site（A↔B）—— ICP | ✅ `lidar_cli site-extrinsic`/`register`，不需打印靶，但要点云重叠+特征 |
+| 站间融合外参 site（A↔B）—— 离线 ICP 诊断 | ✅ `lidar_cli site-extrinsic`/`register`；仅供离线诊断/初值，不进入每扫生产融合 |
 | 站间融合外参 site（A↔B）—— **现场共享标记场（自标定）** | ✅ **2026-06-15 新增**：`lidar_cli calib-site-markers`，贴 ArUco 即可，见 §9.5 |
 
 > **区分两件事**：① **单元相机↔雷达**的完整标定（内参+外参，490 标记场）是装站时"标定间"作业，本仓不重跑；
-> ② **多单元 A↔B 拼接**（site 外参）是每个工位都要做的，本仓现在能做——ICP 或现场共享标记场（新）。
+> ② **多单元 A↔B 拼接**（site 外参）是每个工位都要做的，生产真理源是现场共享标记场；ICP 只保留离线诊断。
 
 ---
 
@@ -279,13 +279,14 @@ Stage 6 写一份 JSON（被上色器读）+ 一份同数据 YAML。JSON：
   ~30% 证明**相机指向/FOV 套合正确**（没有粗错），**但不证明亚厘米外参精度**。
 - **怎么判断准不准 → 看颜色边缘对齐**：车漆颜色有没有溢到背景、纹理整体有没有平移/错位。
   没溢色就别动它；明显错位才考虑重标（厂商工具 + 标记场，或在 Linux 端补一套轻量标定）。
-- **A↔B 拼不齐** 是另一回事（site 外参），ICP 重算 `site_extrinsic.json` 即可，与相机靶无关。
+- **A↔B 拼不齐** 是另一回事（site 外参），应重跑共享标记场并检查 RMS/公共标记；不要让逐扫描点到点 ICP 静默覆盖正式外参。
 
 ---
 
 ## 9.5 现场共享标记场：多单元 A↔B 自标定（2026-06-15 新增）
 
-把**两个单元拼进同一个世界系**有两条路：ICP（靠点云重叠，§8）和**共享标记场**（本节，靠相机看公共标记）。
+把**两个单元拼进同一个世界系**有两类工具：ICP（靠点云重叠，仅诊断/初值，§8）和**共享标记场**
+（本节，靠相机看公共标记，正式 site 来源）。
 标记场的好处：不依赖点云重叠/特征、带绝对尺度、对称车型也稳。本仓实现的是**自标定**版——
 现场贴 ArUco 即可，**无需测量靶坐标、无需特制板**。
 
@@ -319,11 +320,11 @@ Stage 6 写一份 JSON（被上色器读）+ 一份同数据 YAML。JSON：
 |---|---|
 | 核心 + 前端 | `src/calib/site_marker_calib.{h,cpp}`：CORE(`aggregateMarkerCorners`/`solveSiteExtrinsic`，纯 Eigen，按 4 角点) + FRONT-END(`detectUnitCenters`，OpenCV aruco+solvePnP，出角点相机系坐标) |
 | CLI | `lidar_cli calib-site-markers <imgA> <cfgA> <calibA> <imgB> <cfgB> <calibB> <out_site.json> [len_m] [min_common]` |
-| 输出 | `saveSiteExtrinsic` 写 B→A 4×4（米）→ **现有 `align=site` 融合直接吃** |
-| harness | `tests/test_site_marker_calib.cpp`：合成场复原已知 B→A（精确 + σ=2mm 噪声）。实测：精确解机器精度；**噪声下 B→A 误差 0.9mm / RMS 1.6mm**（多帧多标记均值平滑） |
+| 输出 | `saveSiteExtrinsic` 写 B→A 4×4（米）+ common/RMS；正式结果保存到 `laser_site_calibration`，扫描只读该服务端版本 |
+| harness | `tests/test_site_marker_calib.cpp`：精确+噪声合成场恢复 B→A，记录误差 0.9mm/RMS 1.6mm；尚未覆盖离群、退化与 holdout，不能代替生产鲁棒性门 |
 
-> 依赖：OpenCV **4.6**（带 `aruco` contrib）。注意环境里 `/usr/local` 有个 4.5.5（**无 aruco**）会被
-> CMake 默认选中——构建脚本已 `-DOpenCV_DIR=/usr/lib64/cmake/OpenCV` 锁 4.6。
+> 生产入口 `server/scripts/laser-cgo-setup.sh` 固定 `/usr/lib64/cmake/OpenCV` 4.6+aruco，已构建并运行
+> `test_site_marker_calib`。裸 CMake 可误选 `/usr/local` 4.5.5（无 aruco），其结果不得作为生产证据。
 
 ### 现场操作流程
 
@@ -332,16 +333,18 @@ Stage 6 写一份 JSON（被上色器读）+ 一份同数据 YAML。JSON：
 2. **采图**：每单元 pan 一圈采图像流（`ipX:4003`），导出按航向命名 `*_h<度>.jpg`
    （`lidar_cli device capture <ip> 4003 <秒> a.bin` → `lidar_cli replay img a.bin imgA/`）。
 3. **解算**：`lidar_cli calib-site-markers imgA cfgA calibA imgB cfgB calibB site_extrinsic.json 0.15 4`
-   → 打印 `ok/common/rms`，达标则写 `site_extrinsic.json`。
-4. **用它**：融合走 `align=site` + 该 `site_extrinsic.json`（`scan_vehicle.cpp` 优先级 `site > icp > none`）。
+   → 打印 `ok/common/rms`。核心求解器最低可用 2 个标记，但生产保存要求公共标记≥4、RMS≤5mm。
+4. **保存并使用**：经 `PUT /v1/scans/laser/site-calibration` 保存矩阵和质量证据。融合 `align=site`
+   只读服务端权威版本；客户端本地 JSON 和单次扫描 refine 都不能覆盖。
 
 ### 边界 / 待办
 
 - **前端坐标系约定**（solvePnP 的相机光心系 ↔ `CameraModel` 光心系，z 前/y 下）harness 未覆盖，
   **需真机图像验证一次**；core 几何/umeyama 已 harness 证明。
-- 当前 v1 = 均值 + Umeyama（闭式、稳）。可选 **Ceres 联合 BA**（所有重投影一起优化 marker 位置 + B 位姿）
-  进一步提精度——留 TODO。
-- 无离群剔除；某标记误检会拉偏 Umeyama。看 `rms` 把关，必要时加 RANSAC。
+- 当前 v1 = 简单跨帧均值 + Umeyama；缺离群剔除、独立 holdout、空间/航向覆盖和退化检查，拟合内 RMS
+  不能单独证明外推正确。
+- `marker_len` 仍可由请求传入，未绑定字典、marker ID/边长、打印版式和 revision 组成的权威标靶资产。
+- solvePnP/IPPE 尚缺双解消歧、正深度、corner refinement 和重投影门；这些是 M13.16 上线前置。
 - **一键现场标定**已落地两形态（均经 laserworker exec 独立 `lidar_cli`，解算器不进 cgo 精简库）：
   ① **离线一键**`POST /v1/scans/laser/site-calib`（两单元 sweep→存图→`calib-site-markers`→落 `site_extrinsic`）；
   ② **实时取景**`POST /v1/scans/laser/site-framing`（边扫边推 RGB 帧+检测，看着对标记，见 §9.6）。
@@ -353,6 +356,16 @@ Stage 6 写一份 JSON（被上色器读）+ 一份同数据 YAML。JSON：
 §9.5 的离线/一键流程**看不到相机拍到了什么**——点云里标记又小又稀，对不准。本节是 §9.5 的**实时取景**
 版：一次可控扫掠，相机逐帧把 RGB + 检测框推到网页，操作员**直接看着相机图**确认标记被拍到、被认出，
 扫完同一趟自动解算 A↔B。解决"点云看不清标记"的根本痛点。
+
+**交互边界（2026-06-26 订正）**：工位 site 外参的自动/手动入口都必须在本实时取景页内完成，输入统一来自
+两路 **RGB 相机图**：
+
+- 自动：OpenCV ArUco / AprilTag 检测角点 + solvePnP，已有 `framing-stream` 链路。
+- 手动：自动检测不足时，操作员在 A/B 两路 RGB 帧上点同名物理点；每个观测必须保存 `unit/frame/heading/u/v`，
+  后端按相机内参、相机↔转轴外参、帧航向求解 `B→A`。
+- 禁止把点云窗口里的手动粗点当正式 site 外参。点云点对可保留为诊断，但不再作为扫描融合的生产输入。
+- 单帧任意 2D 点对只有射线对应，尺度欠约束；手动求解必须使用**已知尺度靶点 / 标记角点**，或同一物理点在
+  多航向多帧中被观测以完成三角化。达不到约束时必须拒绝，不得前端硬算矩阵。
 
 ### 硬件约束（实测，决定形态）
 
@@ -380,9 +393,9 @@ LTS-T1 相机 = IMX415 **3840×2160 高清静止相机**，`device_info` 报 **f
 |---|---|
 | C++ 取景流 | `src/calib/framing_stream.{h,cpp}`：被动双流 + 逐帧检测 + 二进制帧协议 + 扫完 umeyama；`lidar_cli framing-stream <ipA> <cfgA> <calibA> <ipB> <cfgB> <calibB> <out.json> [len_m] [min_common] [prevW]` |
 | stdout 协议 | `[4B BE N][1B type][N payload]`；`'s'` 事件 JSON、`'m'` 帧 `[4B metaLen][meta][preview jpeg]`、`'r'` 结果 JSON。检测在**全分辨率**做，角点像素缩放回预览系供前端叠加 |
-| Go 端点 | `server/internal/laser/siteframing.go`：`SiteFraming` + `readFramingRecords`/`decodeFrameRecord` + `applyFramingControl`(读改写设角/速度) + `newFramingGate`(纯 SCAN_START/STOP) |
+| Go 端点 | `server/internal/laser/siteframing.go`：`SiteFraming` + `readFramingRecords`/`decodeFrameRecord` + `applyFramingControl`(读改写设角/速度) + `newFramingGate`(纯 SCAN_START/STOP)；`sitemanual.go`：`SiteFramingManual` 已接手动 RGB 点对 HTTP 入口，当前对单帧 2D 点对返回欠约束错误，真实求解归 M8'-F3 |
 | NATS 桥 | `signaling/laser_bridge.go` 加 `laser.frame` 主题 → 复用按 owner 路由的 `/v1/ws` |
-| 网页 | `web/laser-station/` 全屏「实时取景标定」页：云台角/速度控件 + 两镜头画布 + 检测框 + 胶片 + 一键解算 |
+| 网页 | `web/laser-station/` 全屏「实时取景标定」页：云台角/速度控件 + 两镜头画布（缩放 / 旋转 / 平移）+ 检测框 + 胶片 + 自动解算 + 手动 RGB 点对采集 |
 | harness | `siteframing_test.go`：合成帧协议字节往返（类型序列 / 帧 meta+jpeg / 越界拒绝）。解算正确性沿用 `test_site_marker_calib` |
 
 ### 真机实测 + 踩坑（2026-06-15 已跑通）
@@ -414,6 +427,50 @@ LTS-T1 相机 = IMX415 **3840×2160 高清静止相机**，`device_info` 报 **f
 
 ---
 
+## 9.7 site revision 与生产测量门（2026-07-12）
+
+标定“算出一个 4×4”不等于可用于生产量测。车辆最窄已验证样本约 531mm，1% 预算只有约 5.3mm，因此本仓把 site、背景和单次精修组成一条可追溯门链：
+
+1. **site 保存门**：`b_to_a` 必须是齐次刚体（最后一行 `[0,0,0,1]`、旋转正交单位、det=+1，禁止缩放/镜像）；`rms_error_mm≤5`、`common_markers≥4`。缺质量证据的旧 site 不能继续生产起扫。
+2. **revision**：服务端对 canonical B→A 计算 SHA-256，任务保存 `site_revision`；区域另有 `region_revision`。0022 禁止从 `laser_scan_jobs.b_to_a` 回填 site，0027 删除早期不可信 `legacy_scan_backfill/scan_job_backfill`。
+3. **背景绑定**：新 A/B 空工位背景 revision 保存采集时 site/region hash，site/region 改变后必须重采。历史 fused 不补写不存在的采集元数据；只有对象点数/checksum、当前 site/region、设备身份和扫描配置全部绑定，且真实历史扫描回放精确通过时，才生成独立 `legacy_verified_region_fused_v1` revision 继续旧融合云相减。
+4. **场景精修标量门**：site 是物理初值，单次 `RefineBToA` 只允许修正本次场景。新 A/B 背景默认要求 pairs≥1000、RMS≤15mm、Δt≤50mm、ΔR≤1°。`legacy_verified_region_fused_v1` 恢复修改前网页算法：完整 compatibility binding 命中后要求精修 applied、pairs≥1000、RMS≤15mm，并只保留算法自身 150mm/5°发散守卫；不再用相对旧 site 的修正量阻断外廓。真实 job213/214 虽需 92.279–96.984mm、1.564–2.119°修正，但旧 fused 背景重放稳定得到 1771.988×529.466×763.573mm、1771.675×529.667×764.958mm。该规则不放宽其他 schema；对应物理正确性仍须 M13.18 的 fitness、覆盖率、条件数和 holdout。
+5. **地面漂移门**：地面优先从当前 background revision 在当前 region/最终 B→A 下重建。当前 live 与基准地面漂移 >1.5° 或 >50mm 时同样禁止车辆测量，提示检查设备是否移动、背景是否失效。
+6. **物理安装门（未完成）**：site hash 只能识别“保存了新外参”，地面门可能漏掉 A/B 整体水平移动。终态须有不可变 `installation_epoch/station_geometry_revision`，并以固定标靶或静态场重合度做起扫前健康检查；背景必须绑定该 revision。
+
+这组阈值是“是否允许出 canonical measurement”的生产门，不是标定优化器的搜索边界。`RefineBToA` 内部仍可有更宽的数值守卫，但通过算法不代表通过生产验收。
+
+### 临时联调豁免（非生产）
+
+为核对 App/Web 是否消费同一服务端结果，可由运维给当前 laserworker 进程设置精确的
+`GOMOB_LASER_UNVERIFIED_SITE_REVISION`。豁免必须同时满足：仅缺 `rms_error_mm/common_markers`、配置值与
+canonical site SHA-256 完全一致；真实 RMS 超限、公共标记不足、矩阵损坏或 revision 不匹配仍拒绝。不得把门限值
+`5mm/4个` 回填成测量证据。
+
+豁免任务必须保存 `site_quality_verified=false`、`site_quality_override=true`、
+`site_quality_override_reason=legacy_missing_evidence`、`production_eligible=false`。尺寸只供客户端同源联调，
+合规必须保持未判定；每次起扫写审计。配置只注入当前进程，服务重启自动恢复严格门。真实重标完成后删除该路径，
+不得把豁免任务计入准确度、重复性或生产验收。
+
+### 当前现场状态
+
+已实现的是 site 结构/RMS/common 保存与起扫门，不是 ArUco 求解器的完整生产质量门。升级前保存且缺 RMS/common 证据的 site 会被拒绝；新 site 还必须先满足 §9.8/M13.16，扫描时 refine 还必须满足 M13.18 对应质量门。最终验收要等用户确认工位为空后：生产级重标 → 重采区域 A/B 背景 → 同车/同 inspection 连续扫描 ≥3 次。详见 `TODO.md` M13.12。
+
+## 9.8 ArUco 求解器的生产鲁棒性终态
+
+RMS≤5mm、公共标记≥4是必要门，但不充分。当前简单均值+Umeyama 可在拟合内给出小 RMS，仍可能因错误 marker 尺度、IPPE 镜像解、单区域聚集或少量误检得到错误的 B→A。生产链必须同时满足：
+
+1. **权威标靶资产**：字典、允许的 marker ID、物理边长、打印版式/尺度复核与 revision 由服务端绑定；HTTP 请求不能用任意 `marker_len` 改变尺度。
+2. **观测级正确性**：检测后做 corner refinement；IPPE 枚举双解，用全角点重投影、正深度和跨帧一致性消歧；错字典、负深度和高重投影观测立即剔除。
+3. **鲁棒跨帧估计**：在 marker/frame 层用 RANSAC/M-estimator 估计 B→A，输出 inlier/outlier 数与每标记残差；不对所有观测盲目求均值。
+4. **可观性与退化门**：校验图像空间覆盖、pan/深度覆盖、公共标记几何张成和求解条件数；单帧、单角落或近退化布局 fail-closed。
+5. **独立 holdout 与不确定度**：拟合观测与 holdout 观测分离，保存 p50/p95/max 重投影、平移/旋转不确定度、覆盖与条件数。任一证据缺失或超门都不得保存 site。
+6. **可执行依赖门**：native test 只在实际链接带 `aruco` 的 OpenCV 时才能计入通过。生产 setup 已固定 OpenCV 4.6+aruco 并通过测试；裸 CMake 误选 4.5.5 只是非生产构建风险，不是当前现场标定的依赖阻断。
+
+验收底线见 `TODO.md` M13.16：合成真值注入 1px 角点噪声和 20% 离群时，B→A 误差仍须≤5mm/0.2°；错尺度、镜像/负深度、退化覆盖和单个错标必须被拒绝。
+
+---
+
 ## 10. 已知不确定项（来自逆向 spec，标定时需留意）
 
 逆向自二进制，下列项**尚未 100% 确证**，自建标定/复现时要小心（详见 `re/spec_calibration.md §8`）：
@@ -439,7 +496,7 @@ LTS-T1 相机 = IMX415 **3840×2160 高清静止相机**，`device_info` 报 **f
 - **fixed_transform**：名义机械安装（config 常量，标定不动）。
 - **corr_quat/offset**：真机精修 delta（标定优化对象），与 fixed_transform 合成 = rot_quat。
 - **轴 (axis)**：云台转轴；各传感器外参都相对它定义，成像再叠加每帧航向角。
-- **site 外参**：两单元 A/B 之间的相对位姿，用于融合，ICP 求，与相机靶无关。
+- **site 外参**：两单元 A/B 之间的相对位姿，用于融合；生产由共享标记场求，离线 ICP 仅作诊断。
 
 ---
 

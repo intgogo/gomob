@@ -26,6 +26,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.gomob.designsystem.theme.Gomob
@@ -52,11 +55,13 @@ fun SegmentedTabs(
     selectedIndex: Int,
     onSelect: (Int) -> Unit,
     modifier: Modifier = Modifier,
+    height: Dp = Gomob.spacing.touchMin,
+    labelSize: TextUnit = 12.sp,
 ) {
     BoxWithConstraints(
         modifier
             .fillMaxWidth()
-            .height(36.dp)
+            .height(height)
             .clip(Gomob.shapes.r2)
             .background(Gomob.colors.bg1),
     ) {
@@ -72,7 +77,7 @@ fun SegmentedTabs(
                 .offset(x = thumbOffset)
                 .width(segmentWidth)
                 .fillMaxHeight()
-                .padding(3.dp)
+                .padding(horizontal = 3.dp, vertical = 4.dp)
                 .clip(Gomob.shapes.r1)
                 .background(Gomob.colors.accentSoft),
         )
@@ -96,7 +101,12 @@ fun SegmentedTabs(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center,
                 ) {
-                    Text(item.label, fontSize = 12.sp, color = fg)
+                    Text(
+                        item.label,
+                        fontSize = labelSize,
+                        fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
+                        color = fg,
+                    )
                     if (item.badge != null) {
                         Spacer(Modifier.width(Gomob.spacing.s6))
                         Text(

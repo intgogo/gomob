@@ -8,20 +8,23 @@
 > 类比：用复写纸描钢印的"拓印"工艺，但端侧靠深度图自动 +
 > 不需要物理接触车架。
 
+> §1–8 是早期端侧 native 方案的设计脉络；当前运行时权威以 §10 原厂逆向 + 服务端还原为准。
+
 ## 1. 输入 / 输出契约
 
 ### 1.1 输入
 
-- **单帧**iHawk Color + Depth（来自同一物理设备，同时间戳）
-  - Color：YUYV → BGR 转换后用作"花纹来源"
-  - Depth：16bit mm，钢架平面深度变化 ≤ 5mm（VIN 钢印是浅压痕）
-- 内参 / 外参（同 §01-depth-camera-integration §4 标定结果）
-- 拍摄距离要求（用户操作侧）：iHawk 距 VIN 板 30-60cm（产品手册定）
+- HLSD8 `4160×832` 原始 MJPEG + RS-D550 mode25 `640×128` 原始 u16 LE 视差（数值=真实视差×8）。
+- 两颗独立 5fps USB 相机无共同硬触发；快门事务跳过3张彩色、至少收齐3+3帧并选整批最小回调差。
+- 原厂 `/root/WindowsR/VIN_BF301208.bin`：高分 RGB 内参/私有畸变/Euler+T 外参 + mode25 深度 K/基线/数据类型。
+- 完整标定键：深度序列号、HLSD8 序列号、深度档位、彩色档位。
 
 ### 1.2 输出
 
 - `VinRectifyResult`：
-  - 正射图 PNG（1024×512，可调）：1:1 比例 + 法向投影 + 透视已消
+  - 用户可见/OCR 彩色规范图固定 `4425×600`；第 9 字符居中、基线水平。原始 RGBD 只采样一次，线性部分只允许旋转与等比尺度。
+  - VINCreator 原生链是 `RecMode=2 → 双轴统一25px/mm → 5000×678工作图 → scale=1.0 → 中心裁切(288,39) → 4425×600`，字符尺度不随 Print 画布变化。
+  - `Meta.WidthMM/HeightMM` 保留真实物理范围；绝对字号由原厂标定恢复的字符物理节距乘 `25px/mm` 得到，不再使用“120mm→177.78px”人为换算。
   - 元数据：拟合平面参数（n, d）+ resample 距离 mm + 残差统计
 - 落 `getFilesDir()/vin_captures/<id>/{rect.png, depth.raw, color.png, meta.json}`
 
@@ -49,7 +52,7 @@
         - 反投影到 3D（在拟合平面上）
         - 投影到 Color 像素 (u_c, v_c)
         - 双线性采样 Color BGR → 写入正射图 (u, v)
-        ↓ 1024×512 BGR
+        ↓ 5000×678 工作图 → 原像素中心裁切为 4425×600 用户/OCR BGR
 [6] 后处理：去噪（中值滤波 3×3）+ 增强（CLAHE）+ 写 PNG
 ```
 
@@ -82,8 +85,8 @@ struct OrthoCam {
     Vec3 axis_z;       // = -n（朝钢印面）
     Vec3 axis_y;       // = (world_y projected onto plane).normalized()
     Vec3 axis_x;       // = axis_y × axis_z
-    float pixel_size_mm; // 默认 0.2 → 1024 px = 204.8 mm 实际宽度
-    int width, height; // 1024×512
+    float pixel_size_mm; // 默认 0.2 → 1200 px = 240 mm 实际宽度
+    int width, height; // 用户输出固定 4425×600；5000×678 仅为原厂内部工作图
 };
 ```
 
@@ -106,8 +109,8 @@ data class VinRectifyRequest(
     val roiNormalized: RectF,        // ROI 在 Color 图上的归一化坐标（0..1）
     val orthoDistanceMm: Float = 300f,
     val pixelSizeMm: Float = 0.2f,
-    val outputWidth: Int = 1024,
-    val outputHeight: Int = 512,
+    val outputWidth: Int = 1200,
+    val outputHeight: Int = 260,
 )
 
 data class VinRectifyResult(
@@ -159,14 +162,14 @@ object NativeBridge {
 ## 5. UI 流程（`feature:scan3d`「VIN 数码拓印」入口）
 
 ```
-[VIN 入口卡] → 摄像头预览（iHawk Color，叠 ROI 选框）
+[VIN 入口卡] → HLSD8 彩色 + RS-D550 深度双预览（叠原厂 ROI）
               ↓ 用户调好取景
               [拍] 按钮
-              ↓ BerxelService 抓单帧 RGBD（color+depth 同时间戳，TODO §6 SDK API）
-              ↓ NativeBridge.vinRectify
+              ↓ 点击后 3+3 多帧快门事务，整批选最小回调差
+              ↓ 原始 RGBD 上传服务端原厂标定还原
               ↓
-[结果页]      左：原 Color + 平面拟合可视化
-              右：拓印图（1024×512）
+[结果页]      上：深度/彩色取景预览
+              下：拓印图（服务端 4425×600，界面按比例 Fit）
               ↓ 用户操作：保存（写本地 + 推服务端 OCR）/ 重拍
 ```
 
@@ -174,12 +177,32 @@ ROI 选框默认：屏幕中心 70% × 30% 的横条（VIN 钢架是横向 17 �
 
 ## 6. 与服务端 OCR 的对接
 
-服务端已有 cv-engine `vin_pipeline`（M-S10.2a）+ `vin_character_compare_with_ref`：
-端侧拓印图 → 服务端 vin_pipeline → 17 字符识别 → 厂家库逐字符比对 → verdict
-（pass / warning / fail）。
+2026-07-10 起，车架号检测识别先使用现场外部算法服务：
 
-端侧只负责"出标准化拓印图"，服务端管识别比对。这条线已经跑通（详见 `TODO.md` M-S10
-段）。
+```text
+Android 权威正射 PNG
+  → JWT POST /cv/ocr/v1/vin_recognize
+  → Gomob cvengine 服务端代理
+  → nanos + RSA-SHA1 sign
+  → POST http://192.168.9.166:35000/cv/ocr/v1/vin_detect
+```
+
+- Android 不直连算法机，也不持有旧式 RSA 私钥；cv-engine 只从
+  `GOMOB_VIN_ALGO_PRIVATE_KEY_FILE` 指向的只读部署密钥挂载加载，源码、镜像和 APK
+  均不得包含私钥。现有 JWT + Gateway HMAC 与外部 `nanos/sign` 是两层独立鉴权。
+- 外部请求不发送 `skip_image`。真正的单字符切割素材只取所选 VIN item 的
+  `more[].origin_image_data`；`result.image[].vin_detect_image` 是整行检测图，不进入 App 契约。
+  Gomob 服务端解析厂家 `more` 后归一化为
+  `character_crops[{position,character,image{mime_type,data_base64,width,height}}]`，只下发
+  `64×128` 彩色单字符 WebP；原始 `more`、`alpha_image_data` 和整行图均不透传 Android。
+- 成功必须同时满足 HTTP 2xx、`error_code==0`、`error_msg=="success"`、VIN 非空。
+  `error_code=0` 但错误消息非 success 的旧分支仍按失败处理。
+- 总体 OCR 置信度取 `scores` 的算术均值；顶层 `score` 可能是字符分数总和，不能当作
+  0..1 置信度。`scores`、`more` 数量、`more[].character` 顺序必须与 VIN 完全一致；任一不一致、
+  base64/WebP 损坏或尺寸不是 `64×128` 都按上游失败，禁止回退整行图或补造字符素材。
+- 该接口没有厂家字形库 verdict。界面仅在文本和服务端计数均为合法 17 位 VIN 时显示
+  “识别完成”，其他情况显示“需复核”；不显示“通过/未通过/字形校验”。识别结果区横向展示
+  每位真实单字符切图、位置、字符和对应分数，不把整行还原图重复当成切割证据。
 
 ## 7. Harness
 
@@ -188,7 +211,8 @@ ROI 选框默认：屏幕中心 70% × 30% 的横条（VIN 钢架是横向 17 �
 - 录制 N 个真实 VIN 钢架 RGBD pair（不同角度、不同光照、不同距离）
 - 跑 `vinRectify` → 拿到拓印图
 - 比对：相同 VIN 多角度拍摄的拓印图，结构相似性（SSIM）≥ 0.9
-- 比对：拓印图喂服务端 vin_pipeline，OCR 准确率 ≥ 95%
+- 比对：同一批真值样本经 `/vin_recognize` 调外部算法，记录完整串准确率、字符准确率和
+  非 17 位复核率；外部服务失败必须得出可判定异常，不能回退旧本地 verdict 伪装成功。
 
 ## 8. 待办
 
@@ -315,8 +339,9 @@ JNI/契约/采集/UI 已接通，第一光用 eYs3D 自带 L' 彩色 + `R|t=单�
     原地 clone 替换。**无任何滤波/形态学**。→ 写 `result_temp.jpg` → `IsCheckImage`/`IsCheckImageForOrigin`(码 62)。
 
 `CCameraModel`（标定 bin + 畸变）：
-- `LoadBinStereoParas`：bin **硬校验 camCount==3**；字段偏移 cx@0 cy@8 fx@0x10 fy@0x18，畸变条 5 double/40B，外参条 3 double/24B，
-  两 256B 保留块 + 256B map1/map2；末段 11 个 int 立体头。**我们自标定输出须按此布局**（或绕开，见 §10.3）。
+- `LoadBinStereoParas`：固定 2420B little-endian；前两段 256B 元数据被原厂忽略，payload `0x200` 是唯一显式校验的 version=3，不存在 `camCount` 字段。
+- `0x20c` 起为 f64 高分 RGB 相机模型 A，含行/列主点与焦距、私有畸变、Euler 和 mm 平移；`0x294` 模型 B 同构。当前服务端额外要求 A/B 一致作为部署加固。
+- `0x340..0x360` 为 mode25 深度块：`cx/cy/f/B/depth_data_type`；type=1 表示 raw disparity×8，原厂用 `z=f·B/(raw·0.125)`。文件无 CRC，部署侧必须外部 SHA-256 白名单。
 - 畸变模型 = **任意阶纯偶次径向 `Σk_i·r^{2i}` + Brown 切向(p1,p2) + 前置 FOV/atan 角度映射**（`xn'=fx·xn·atan(r/fx)/r`），
   `UndistortionPointByLM` 用 MINPACK lmdif 迭代求逆（非 OpenCV 标准 5 参，不能用 `undistortPoints`）。
 - `setCharRegionsFromYolo`：JNI 自适应解 stride(8/9)；每字符 size=avgW·avgH(>1 才纳入)；全有效角拼 `minAreaRect` 求 VIN 整体框，
@@ -324,26 +349,23 @@ JNI/契约/采集/UI 已接通，第一光用 eYs3D 自带 L' 彩色 + `R|t=单�
 
 ### 10.2 端侧采集契约（已落地，2026-06-18）
 
-`VinCaptureViewModel.capture()` 改为**先无条件落盘原始采集**（端侧近似正射降为 best-effort 预览）：
-- 落 `externalFiles/vin_captures/cap_<seq>_<ts>/`：`rgb1300.jpg`(HLSD8 JPEG q95) + `depth.yuv`(u16 LE metric mm) +
-  `meta.json`(deviceId + 彩色/深度尺寸 + **深度真内参**[反投影必需] + colorPixelType + ts + seq)。
+`VinCaptureViewModel.capture()` 改为**先无条件落盘原始采集**，手机不运行近似正射：
+- 落 `externalFiles/vin_captures/cap_<seq>_<ts>/`：`rgb1300.jpg`(HLSD8 原始 MJPEG) + `depth.yuv`(mode25 u16 LE raw disparity×8) +
+  `meta.json`(两相机序列号 + 两路档位 + `DepthSampleFormat` + 同一 host 单调时钟 + burst 诊断)。
 - 每拍独立目录、序号续号，`adb pull` 取走脱机自测。
 
 **首批真机数据（2510DRK44C，落 `.dev/vin_captures/`，11 张/2 块板）**：
 - 板1 cap_001-006 = `☆LA99FRP32G0LTH013☆`（清晰/基本正对）；板2 cap_007-011 = 另一串（偏暗+反光+带角度）。
-- 彩色 **1280×256**（pixelType=HLSD8_RGB24，**非 13MP 全分辨率**；待查 HLSD8 是否能出更高模式，影响 OCR 上限）；
-  深度 640×128、内参 fx=614.6025/fy=163.894/cx=324/cy=64.382（各向异性）、有效 79~81%、板距 ~1850mm。
-- ⚠ **彩色=深度精确 2×**（同 5:1 aspect）：离线实测证 **registered（同光路、无视差、零标定可行）**——按「color 内参=2×depth、外参单位阵」
-  反向正射，VIN **零重影**、几何正确。HLSD8 高清标定路（M6.9.5b）非重合必需，仅为提清晰度。
-- ⚠ **深度尺度疑似过标定 ~3×**：实测板距中位 ~1850mm，但**原厂深度有效门是 50mm<z<1000mm**（设计要求距板 30-60cm）。
-  我们读 1850 → 要么 eYs3D 深度过标定 ~3×、要么真拍远了。**对重合不致命**（按 OBB 宽归一化已规避；原厂走 metric px/mm 则需真尺度）。
-  待核：用已知尺寸物量测 eYs3D depth 真尺度（关联 M6.5 flash 内参）。
+- 彩色 **1280×256**（旧预览转储，非当前 4160×832 原始档）；深度 640×128。历史 meta 把 raw disparity×8 误写成 mm，并错误使用 `fy=163.894`，所以“板距约1850mm/尺度过大”结论无效。
+- 原厂 BIN 给出 1280×256 mode25 `f=1229.20996,cx=648,cy=130.865`；640×128 统一缩放0.5后 `fx=fy=614.60498,cx=324,cy=65.4325`。当前生产由服务端原厂标定恢复毫米坐标。
+- **已推翻的历史误判**：彩色与深度恰好同为 5:1、分辨率恰好 2×，不代表 registered 或同光路。HLSD8 与 RS-D550 是两颗独立相机，存在约 24mm 基线和旋转差；单位外参只能用于早期离线观察，生产必须按完整 rig + 流档位加载双相机标定。
+- 当前原厂四角度数据恢复的承印面中位深度约 264–378mm，落在原厂 50–1000mm 有效门内；旧“过标定约3×”由单位误读产生，已撤销。
 
 ### 10.3 落地计划
 
 1. **离线还原 harness ✅ 成型且达标**（`tests/harness/vin_restore/`：`run.sh`+`restore_obb.py`+`obb.py`+`analyze.py`，Python cv2+onnxruntime）：
    深度 RANSAC 平面 z=ax+by+d → 倾角>70°门 → 摆正 → `yolo-obb.onnx` VIN OBB(number 框,排星) 四角单应正射(逐像素 remap)
-   → **原厂 GetSignature3G 去阴影二值化(`adaptiveThreshold` GAUSSIAN/BINARY/blockSize=131/C=15 + erode(CROSS3)/dilate(RECT5)/去小斑/CLOSE+OPEN)**。
+   → 彩色正射还原图；内部再生成签名图用于质量闸、水平校正和 OCR 辅助。
    `analyze.py` 用 EUCLIDEAN ECC 测同 VIN 几何残余(主指标)。**实测结论=正常：同 VIN 各张几何重合，中位残余 0.44~0.48%(4~5px/1000)、旋转<0.6°，
    六张叠加成锐利可读 `☆LA99FRP32G0LTH013☆`**；板2 强反光被超大窗自适应阈值根除→清晰可读。
 2. ⚠️→✅ **去阴影二值化真机订正 + 鲁棒重写（2026-06-21，真机 21 组实测）**：原 `GetSignature3G` 的 `adaptiveThreshold(131,15)`
@@ -353,31 +375,119 @@ JNI/契约/采集/UI 已接通，第一光用 eYs3D 自带 L' 彩色 + `R|t=单�
    `norm=clip(d÷(GaussianBlur σ21 +1)×180)` 拉平光照不均 → 全局 **Otsu** → **极性归一**（真实墨水稀疏 ~8-12%，前景过半即反相）
    → 去小斑 → OPEN/CLOSE。**质量闸**：归一后墨水占比 > `SigInkMax=0.25` 判废（`ErrLowQuality`→`ok:false`+`reject_reason=low_quality`），
    端侧提示重拍而非显垃圾。实测 21 组：14 组好采集出干净可读签名（墨水 8-12%，含原 91% 垃圾的 6 组 live 转 8-9%），7 组坏采集（框偏/糊/低对比/板2 反光）正确判废。
-   `picshadow`=黑像素投影内容裁剪(留作 Go 端口 `picshadow_crop` 参照；harness 主锚定用 OBB 单应框已排星，故未叠用)。
+   `picshadow`=黑像素投影内容裁剪；当前 Go 端把同一旋转/裁切应用回彩色正射图，黑白签名不作为用户可见返回图。
 3. ✅ **Go cvengine 端口已落地**（`server/internal/cvengine/restore/` + `POST /cv/ocr/v1/vin_restore`）：纯 Go 无新 cgo——
    OBB 走 `gocv.CreateORTCom` 取原始 [1,6,8400] 张量 Go 侧解码（新增 `gocv.RunCom` 桥 + core `KindCom`）；平面 `z=ax+by+d` 用 `gocv.Solve`
    (SVD-free)；四角单应 8×8 `Solve`（`GetPerspectiveTransform` 仅整型）；去阴影 `adaptiveThreshold(131,15)`。`go build` 绿；
    11 张真机自验 Go vs Python **7/11 逐像素一致、最大差 0.106%**(RNG 种子差,内容同)，Go 出图跑同一 analyze=正常(中位残余 0.48%)。
    运行期 `LD_LIBRARY_PATH` 须含 `/usr/local/lib64`(opencv_world.so.405)。
-4. **标定**：实测 registered（彩色=深度2× 零视差）→ 重合零标定即成；HLSD8 高清标定(M6.9.5b)仅提清晰度，非必需。
-   metric 真尺度（原厂 px/mm 路）需 eYs3D depth 真标定（关联 M6.5/depth 50-1000mm 门）。
+4. **标定历史订正**：早期把 `1280×256` L' 当成 HLSD8 后得出“彩色=深度2×、零标定”的结论；两颗独立 USB 相机与全分辨率数据已推翻该判断。HLSD8↔RS-D550 外参是生产必需项，且必须绑定完整 rig 与两路流档位；metric 真尺度还依赖逐设备深度标定。
 5. ✅ **App 上传 → 服务端还原 → 回显已拉通**（端侧三模块 `compileDebugKotlin` 含 KSP 绿）：
-   `CVEngineApi.vinRestore`（multipart `image_binary_rgb1300`+`image_binary_depth`+`depth_w/h`+`fx/fy/cx/cy`+`device_id`，
+   `CVEngineApi.vinRestore`（multipart `image_binary_rgb1300`+`image_binary_depth`+`depth_w/h`+`fx/fy/cx/cy`+
+   `device_id`+`color_device_id`+`color_w/h`+两路 native 单调时钟时间戳，
    经 devserver `/cv/` 前缀反代，App 只带 JWT、HMAC 由 devserver 加）→ `VinRepository.restore()`（`Envelope<VinRestoreResponse>` 解包 +
-   base64→PNG 字节）→ `VinCaptureViewModel.capture()`（深度 u16/彩色 JPEG 压一次复用 → 落盘 → 端侧 `OrthoRectify` 即时占位预览 →
-   **上传服务端权威签名图覆盖 `_rubbing`** + 倾角/内点/检出提示）。tilt 判废走 HTTP 200/`ok:false` 友好提示；上传失败走「已存可重试」不丢盘。
-   服务端 HTTP 契约 `TestVinRestoreHTTPContract` 用真机 11 张数据直打 `h.VinRestore`：11/11 返合法 PNG（1200×260，tilt 1.9–7.0°）。
-6. ✅ **OCR 接 `vin_pipeline`（还原签名 → 识别）**：`VinCaptureViewModel.recognize()` 改喂**服务端还原签名 PNG**（`restoredSignaturePng`，
-   去阴影 OCR 级二值图，比原始 color 更利识别；还原未成功则提示先拍照，不退化喂 color）；`ScanCaptureScreen`「确认」按钮接 `recognize()`，
-   观察 `vm.state` 四态，`VinCharCompare`/`VinSummary` 去掉硬编码演示 VIN + 假厂商/年份解码，改渲染真 `VinResult`（逐字符 character+similarity
-   归一 0..100、verdict/检出/比对/字形均值）。`vin_pipeline` 按 magic 字节 IMDecode，PNG 通吃。`:feature:scan3d` 编译绿。
+   base64→PNG 字节）→ `VinCaptureViewModel.capture()`（深度 u16/彩色原始 JPEG 复用 → 落盘 → 上传 →
+   **服务端权威 `4425×600` 彩色规范图覆盖 `_rubbing`** + 倾角/内点/字符锚定提示）。手机不再运行近似正射；倾角、同步、字符格架或标定不可用均走 HTTP 200/`ok:false` 结构化判废，上传失败仍保留原始采集。
+   历史 `1200` 宽动态高度与 `low_quality` 墨水占比闸已由 §11 当前契约取代。
+6. ✅ **OCR 改接外部算法（还原图 → 识别，2026-07-10）**：新增纯 Go
+   `server/internal/vinalgo/`，由 cvengine 暴露 `POST /cv/ocr/v1/vin_recognize` 并转调
+   `192.168.9.166:35000/cv/ocr/v1/vin_detect`。客户端每请求生成新 `nanos/sign`、拒绝重定向、
+   不发送 `skip_image`，严格检查 HTTP/业务码/消息/VIN，并从同一 VIN item 的 `more[]` 提取、
+   完整解码校验与 VIN 等长的 `64×128` 单字符彩色 WebP；整行 `vin_detect_image` 不再下发。Go 1.26 会拒绝现场旧 512-bit RSA，
+   因此服务端按 RFC 8017 手工完成 PKCS#1 v1.5 编码与模幂，并有兼容公钥验签测试。
+   Android 删除默认 `vehicleModelId=10001` 和 `vin_pipeline` 的 verdict/reasons/similarity，
+   只上传权威正射 PNG；界面横向展示真实单字符切图、位置、字符和对应置信度，主视图保留字符数、
+   平均置信度、来源和耗时。禁止拆整行图或由文本拼装假字符卡。合法 17 位为“已完成”，否则“需复核”，
+   不再冒充厂家字形结论；全部单字符 Bitmap 与文本结果经同一 generation 原子发布。
 7. ✅ **模型部署走 model-registry（代码就绪）**：yolo-obb 改与 VMASK 同机制由 registry 提供，不再特殊 lazy 加载。
    - `loader.go` 加 `metadata.kind="com"` 分支 → `core.RegisterComONNX`（std 取 `metadata.std`，缺省 1/255）；dev 旁路 `GOMOB_CVENGINE_MODELS="VINOBB:com=/path"` 已支持。
    - `handler.go ensureVinObbModel` 优先复用启动期 loader 注册的 `VINOBB`（`h.models.Get`），仅纯本地无 registry 时才从 `VIN_OBB_MODEL`/默认 `.dev` 兜底。
-   - `go build ./...` 绿、loader/restore `go vet` 净、HTTP 契约 httptest 仍 11/11（兜底未坏）。
+   - `go build ./...` 绿、loader/restore `go vet` 净；当前 HTTP 契约验收见下方真机 21 组。
    - **ops 播种**（infra-gated，需 MinIO+registry 在跑）：`scripts/seed-vinobb-model.sh`（mc 上传 onnx → `POST /admin/v1/models` kind=com → activate），再把 `VINOBB` 加进生产 `GOMOB_CVENGINE_MODEL_NAMES` 重启。
-8. ✅ **真机 live 回线 + 正交还原订正（2026-06-22，真机 21 组）**：真机 2510DRK44C 拍→上传→还原→回显跑通（devserver 多次 200）。用户两条纠正已修（详 finding_vin_ortho_color_upright_2026-06-22）：
-   - **输出彩色正射图**（非二值签名）：`Restore` 返回 `render` 的彩色 BGR PNG；二值仅算墨水占比给质量闸。
+8. ✅ **真机 live 回线 + 正交还原订正（2026-06-22/23，真机 21 组）**：真机 2510DRK44C 拍→上传→还原→回显跑通（devserver 多次 200）。用户纠正已修（详 finding_vin_ortho_color_upright_2026-06-22）：
+   - **输出彩色正射图**：`Restore` 返回 `render()` 后经内部签名图水平化/裁切/尺度归一的彩色 PNG；`signatureBinarize` 只作质量闸、校正和 OCR 辅助。
+   - **历史输出比例订正**：该阶段从固定 `1200×260` 改为 1200 宽动态高度；当前已由 §11 的 `5000×678 工作图 + 4425×600 用户图 + 25px/mm` 取代。
    - **字符端正**：原图 VIN 字本正、还原后左右渐斜=残余透视。根因① 彩色内参 `fyc` 错——深度竖直 binning anamorphic(`fy164/fx614`)，彩色近方形 `fyc=fxc`≠`2·fyd`；根因② 平面拟合取中心 ROI 纳入背景。改 **`fyc=fxc` + 只在 OBB 区拟合平面**（inlier 0.44-0.82→0.99-1.0、rms 8.4→4.4）→ 21 组竖笔倾角全≤2°。
-   - 验收：cap_021 live 实测 ok/ink8.4%/tilt16.6°/彩色 260×1200×3 端正；harness 重合 0.51-1.01%；真机重拍截图确认彩色端正可读。
+   - 验收：应以彩色正射图为准，确认同 VIN 多视角字符大小、水平、位置一致；黑白签名仅作重合分析和 OCR 辅助信号。
    **待**：⑥ OCR 段 VMASK 真机验（dev 栈 0 模型/0 字形库，缺 VMASK 阻断）。
+
+## 11. 固定字符格架与手机端职责收敛（2026-07-11，当前权威）
+
+> 本节取代 §9.1 的端侧即时正射、§10.3 中“动态高度/二次内容校正/端侧估算预览”等旧运行时描述。历史逆向结论保留，但生产行为以本节和 [摘要](08-vin-rectify-design-summary.md) 为准。
+
+### 11.1 为什么整行二次 OBB 不能作为最终校正
+
+输出域重新检测整行 OBB 不具相似变换等变性。同一图经过相似变换后，检测框中心、宽高仍会因背景、星号、腐蚀和阈值变化而漂移；把它再次用于旋转/裁切/缩放会放大误差。历史 plate_a 的中心偏差由 `25.65px` 恶化到 `47.23px`，plate_b 9/9 样本均变差，因此该路径已删除。
+
+### 11.2 17 字符刚性格架
+
+`vins0.onnx` 是 YOLOv5 三输出逐字符模型。对候选字符中心做鲁棒拟合：
+
+```text
+cᵢ = o + (i - 8) · p · u,  i=0..16
+```
+
+- `o` 是第 9 字符中心；探针落 `(600,130)`，最终用户图落 `4425×600` 的几何中心。
+- `u` 是字符基线方向，最终旋到水平。
+- `p` 在探针中约 `64px`，只用于检测格架；最终像素节距由同一承印平面上的真实字符节距乘原厂 `25px/mm` 得到，当前原厂 oracle 约 `170.28–170.35px`。
+- 最多从 24 个候选中选最规则的 17 个；IRLS/Huber 抑制离群框。
+- 平均置信度、格架 RMS、尺度修正或角度不可靠时返回 `text_anchor_unreliable`。
+
+粗规范图只用于逐字符检测。17 个字符中心再通过 HLSD8 像素射线回到三维，但只允许在深度拟合出的承印平面两个正交基内求一条等步长基线；禁止让单张 RGB 内容把基线掀离深度平面。最终中心、水平轴和垂直轴都留在该平面内，双轴正交且共用 `25px/mm`，再从原始彩色图一次 Remap 到 `5000×678` 工作图，最后原像素中心裁切为 `4425×600`。规范自由度严格是平移、旋转和统一尺度，不含 shear、非等比拉伸或自由仿射。原厂 `FlipAndCropImage` 的生产 scale 为 `1.0`，禁止按画布宽度二次拉伸内容。
+
+### 11.3 VINCreator 预览与手机显示契约
+
+- HLSD8 彩色采集 `4160×832`，mode25 深度 `640×128`，原始比例均为 `5:1`。
+- 双预览槽全宽等高并直接使用流的原始 `5:1` 比例；画面 `ContentScale.Fit` 完整显示，不制造上下黑边，也不加外层黑框或圆角。框内空间质量不足时提示对准车架号，可靠中位距离 `>400mm` 时显示实际距离并提示“距离太远，请靠近至 40cm 以内”，两种状态都保持红框与禁用快门；达标后绿框并提示“请稳住不动”，稳定后自动拍摄识别。实时指标始终显示框内有效率，但只有覆盖率和原始点支撑同时达标时才附中位距离；低有效率下少量残留深度没有空间代表性，禁止显示不准距离。结果区直接把 VIN、完成/复核状态、字符数、平均置信度和最低置信字符前置；推理耗时只留日志。`4425×600` 尺寸放图外，还原图无角标遮挡和圆角裁切；17 张切图把序号、字符和置信度叠入图内横滑，避免重复标题占用手机纵向空间。
+- 预览显示使用 `VinRgbdPairer.snapshot()` 的同一个最近邻回调帧对。彩色保持 HLSD8 视场；深度逐像素按原厂 BIN 执行 `raw disparity×8 → 世界坐标 → R·P+t → 私有 FOV → 私有像素畸变`，缩放到实际彩色预览 Bitmap 尺寸后用 `3×3` forward splat 和 `abs(cameraZ)` z-buffer。该变换只产生显示副本，不改 `DepthFrame`、快门 burst、原始落盘或上传内容。
+- cv-engine 的 `GET /cv/ocr/v1/vin_preview_calibration` 只按完整 rig/profile 返回不可变值快照；App 每页每键只请求一次并校验契约、SHA/version、数组长度、有限数和旋转矩阵。深度 Z 公式必须使用原厂全幅 `1229.2099609375`，当前档位 `614.60498046875` 只用于 XY；两者混用会把距离缩半。用户主标签统一为“深度图”，接口加载中或失败时只在副状态标明“标定加载中/原始”，禁止静默伪装已配准。
+- RS-D550 + HLSD8 的连接状态和只读设备详情只属于 VIN 使用流程，入口固定在页面顶栏右上角并直接消费 VIN 的真实采集就绪状态；预览画面不悬浮设备按钮，三维扫描根页也不展示该按钮，禁止以 iHawk 状态代指 VIN RGBD 设备。
+- 彩色 ROI 使用 `2dp` 方框、四边内缩 `20dp`，中心是 `24dp` 环形准星；不可拍为 `#FFFF0000`，质量门通过后整体变为绿色。Compose 根据实际 viewport 把同一框换算成图像域归一化 ROI，Canvas 与投影质量统计禁止各算一套近似区域。
+- ROI 质量门按因果顺序统计：`3×3` splat 后框内有效覆盖 `≥95%`；连续投影中心数/ROI 像素数 `≥15%`，防止少量点被 splat 虚增。连续投影点的 P10、中位距离和 `≥300mm` 比例继续记录，但只用于操作提示、日志和结果说明，不能参与红绿框或快门裁决。预览达标只负责激活按钮，快门每轮 burst 的最终深度帧还要重跑同一门；瞬时判废会继续下一轮，最多 6 轮，全部失败才回到取景且绝不落盘。相机掉线、权限撤销或任一路退出 Streaming 时必须立即清质量态，禁止残留绿框。
+- `4425×600` PNG 完整字节保留给 OCR；手机按上限降采样解码显示副本，避免完整 ARGB Bitmap 常驻。
+- HLSD8 连续流只保留同一回调的原始 MJPEG，界面真正需要绘制时才降采样解码；不再逐帧走 MJPEG→RGB DirectBuffer→Bitmap 双转换。VIN 配对器为快门 burst 最多保留 12 张大 JPEG 和 12 张深度，采集中暂停预览解码，避免拖慢候选帧收集。
+
+`tests/harness/vin_preview_alignment/` 用原厂 BIN、真机 `cap_036` 和生产 Kotlin 投影器做跨端固定向量与覆盖/性能判定：有效深度点 `61,416`，落彩色视场 `67.9%`，`3×3` 覆盖 `95.4%`，Kotlin P95 小于 `30ms`；固定中位深度近似在 `1040×208` 预览域的 P95 误差 `13.12px`，因此固定平移、裁切或单应都不属于可接受实现。Java 探针直接调用生产 `vinPreviewRoi()`，Python 只消费其导出的 360/411/432dp ROI；cap_023–036 的覆盖、点数、距离分位与 Ready 结论逐项跨端一致。10 个还原成功样本在三种宽度下全部 Ready；cap_023/031/034 距离足但覆盖或点支撑不足，继续保持红框；cap_030 只用于验证 95% 覆盖边界。cap_036 中位距离约 `28.9cm`、`≥300mm` 约 `20%`，仍正确放行；高覆盖约 `44.7cm` 合成帧必须 TooFar。固定序列同时裁决稳定门恰好触发一次、手动/自动快门只认领一次、还原成功只取得一次识别许可。
+
+Android 16 真机已完成当前实现回归：确定性 debug 真渲染中，`40.0%` 低覆盖只显示“实时 · 深度有效率 40.0%”，不出现距离；`98.0% / 45.0cm` 显示“距离太远，请靠近至 40cm 以内”、红框与禁用快门；`98.0% / 33.5cm` 显示“请稳住不动”和稳定进度。真实自动流程连续 4 次由用户点击“重新扫描”开启新会话，每次都在稳定门后只认领一次自动 capture、首轮收齐 `3+5` 候选、回调差 `53.758–54.412ms`，服务端返回严格 `4425×600` 后 exactly-once 启动 OCR，均得到 17 位与 17 张单字符图。最新 `cap_036` 倾角 `40.77°`、中位深度 `245.18mm`、平面 RMS `0.446mm`；两服务各 release 一次并在 600ms 后 stop，无崩溃或 ANR。
+
+### 11.4 手机端只采集、上传和使用
+
+Android 已删除 `NativeBridge.vinOrthoRectify`、`VinOrthoNative`、`FrameRenderer.orthoToBitmap` 和对应 JNI export；`native/vin/ortho_rectify.*` 只保留为 host 几何参考，由 `scripts/native-host-test.sh` 验证，不进入手机 `.so`。
+
+VIN 拍照页的唯一流程是：ROI 覆盖 `≥95%`、原始点支撑 `≥15%`、可靠中位距离 `≤400mm` → 界面提示“请稳住不动” → ViewModel 只对两路时间戳都前进的唯一帧对计数，满足 5 帧、`≥800ms`、相邻间隔 `≤450ms`、中位距离极差 `≤5mm` 后自动认领快门；用户仍可提前点快门，但与自动触发共用同一认领入口 → 记录单调时钟水位 → 严格只收水位后的新帧 → 跳过前 3 张 HLSD8 → 至少收齐 3 张彩色和 3 张深度 → 在整批候选中取回调时间差全局最小的一对 → 对该轮最终深度帧重跑同一空间/距离门 → 超窗、缺帧或质量不足则以新水位继续下一轮，最多 6 轮同步重采 → 原始帧落盘 → 上传服务端 → 等待权威 PNG → 成功后从实际上传 JPEG 解码彩色预览、保留同一帧投影深度与 ROI 指标 → 失效预览、清 pairer/readiness 并释放双相机 → 发布结果态 → 同一 ViewModel 状态机 exactly-once 自动 OCR。burst 最终质量瞬时失败会重新等待稳定；服务端判废、保存或上传错误锁住自动重拍，只允许用户明确操作；OCR 失败保留 PNG 并只允许手动重试。禁止在所选 JPEG 解码失败时拿拍照前实时 Bitmap 冒充“本次拍摄”，也禁止用 Compose `LaunchedEffect` 触发自动拍摄或识别。“重新扫描”先清旧帧和所有锁存并记录新水位，再按 HLSD8 首帧、80ms 沉降、RS-D550 的顺序重新 acquire。两相机用独立轻量 lease 状态锁管理引用计数与 600ms 停流代际，主线程不等待慢速 native stop；旧宽限任务即使越过 delay，也不能关闭后续扫描会话。UI 文案使用“规范化还原”，不再显示“1:1 还原”或“端侧估算”。快门水位由配对器内部 `System.nanoTime()` 提供，与 native `steady_clock` 同属 `CLOCK_MONOTONIC`；禁止用包含设备休眠时长的 `elapsedRealtimeNanos()` 与帧时间比较，也禁止立即复用点击前缓存。
+
+HLSD8 与 RS-D550 实际均为无共同硬触发的 `5fps`。原厂 APK 与 native 逆向确认，快门链没有 UVC still、GPIO 或模组同步调用：它同样采用“跳 3 帧、至少 3+3、`±100ms` 软件筛选、失败最多 6 轮”，而且时间戳来自保存协程的 `System.currentTimeMillis()`；原厂日志一次成功配对为 `41ms`。Gomob 使用更稳定的 host 单调回调时间，并把原厂“首个可配 RGB + 窗内最后一个 depth”改为整批全局最小差。真机连续 12 分钟观测到两路 native 回调固定错相约 `54–59ms`；把启动间隔从 `80ms` 调为 `24ms` 后相位仍约 `59ms`，证明不能靠启动延时可靠满足旧 `25ms` 门。生产回调门仍为半帧周期理论上界 `≤100ms`，但 UI、日志和元数据只称“回调差”。该时间戳不是传感器曝光时刻；`100ms` 不能用来宣称硬同步。
+
+原始采集不是“写到哪算哪”：深度 buffer 必须精确为 `w×h×2`，彩色、深度与经 JSON writer 生成的元数据先写 `.cap_*.tmp`，全部成功后再原子改名为 `cap_*`；进程中断或磁盘不足只会留下可清理的临时目录。服务端响应必须回显两颗物理设备、请求帧对的准确回调差和非空 log ID；除同步门与未发布 rig 外，所有已经选用原厂标定的裁决都必须带 SHA/version。成功 PNG 先校验完整 chunk/CRC 并实际解码，再落 `restored.png + restore.json`，避免损坏图形成 `ok=true` 假审计。
+
+手机端可见的标定、成像控制、backend/profile、DUMP 和 Sonix 调试路由已经从生产导航移除，深度相机页只保留预览和只读设备信息。`StereoCalibViewModel` 的同步三路采集内核暂留，供后续网页远程采集代理复用，但手机用户已不能直接进入。
+
+职责迁移仍缺网页闭环：网页端尚无 VIN 标定会话、远程采集代理、交叉验证和版本发布能力。因此可以确认手机只剩使用界面，但不能宣称网页标定管理已经完成。现有网页激光工位外参是 LiDAR A/B 工位坐标，不是 HLSD8↔RS-D550 的 VIN 双相机外参。
+
+### 11.5 固定坐标 harness 与当前结论
+
+`tests/harness/vin_restore_consistency/` 批量运行生产 Go Restore，并对最终 PNG 再跑 VINCHAR。最终画布先严格检查 `4425×600`；随后对所有样本施加同一套固定 `0.36` 相似变换，居中映射到 `1200×260` 检测探针，再计算固定 ROI Edge-F1/Chamfer/NCC。该换算参数不读取样本内容；禁止 ECC、仿射、单应或逐图配准。
+
+当前权威报告 `.dev/vin_restore_consistency-factory-bf301208-v3/report.json` 使用 BF301208 当前 rig 的四张全分辨率真 RGBD：
+
+- 4/4 生成严格 `4425×600` PNG，最终 VINCHAR 均识别为真值 `LA99FRP32G0LTH013`。
+- 倾角 `10.03°–47.64°`，字符中心最大误差 X `0.91px` / Y `1.92px`，水平角最大 `0.237°`。
+- 字符节距 `170.02–170.77px`、均值 `170.33px`、CV `0.174%`；原厂 oracle 约 `170.28–170.35px`。
+- 字高 `236.1–244.4px`、CV `1.42%`、单张最大相对偏差 `2.92%`；物理宽度 CV `0.63%`。
+- 固定坐标 Edge-F1 median `0.793`、Chamfer median `2.72px`；同批 VINCreator oracle 为 `0.532/4.53px`。
+- HTTP 真数据契约测试中 4/21 张确有 VIN 的样本成功，其余 17 张没有 VIN，正确返回 `vin_not_detected`。
+
+这证明原厂标定、平面内刚性格架、双轴统一尺度和最终裁切已经闭环。旧 38 组低分辨率历史报告只保留为问题演进证据，不再代表当前生产结果；非等比拉伸仍会伪造字形，继续禁止。
+
+### 11.6 剩余物理阻塞与完成门
+
+生产标定键固定为 `depth serial + HLSD8 serial + depth profile + color profile`。当前键 `BF301208 + 202303111518 + 640×128 + 4160×832` 已由 SHA-256 白名单加载原厂文件；客户端同时检查响应 `width/height`、完整 PNG chunk/CRC 与实际解码结果必须为 `4425×600`。
+
+容器不烘焙标定文件，部署侧把精确 SHA 的 `VIN_BF301208.bin` 只读挂载到 `/var/lib/gomob/vin_calibration/`，并让 model-registry 启动期加载 `VINOBB,VINCHAR`。`ValidateRequiredDependencies` 在 HTTP 监听前 fail-fast；`/readyz` 同时暴露 calibration/models 的 required 与 ready 状态。已发布文件缺失或损坏属于 503 基础设施故障，只有请求的完整 rig/profile 尚未发布才返回 HTTP 200 `calibration_unavailable` 业务判废。
+
+两颗 5fps 相机仍无共同硬触发。当前快门事务只证明 host 回调差：日常生产按原厂半帧边界为 `≤100ms`；当前固定 rig 实测 `53–55ms`，一致性 harness 用 `≤70ms` 捕获相位或处理管线退化。完成门仍要求取得 PTS/SCR，或用同步光学事件标定两条管线的时延，证明曝光等效同步差 `≤25ms`；软件回调时间不能替代曝光时间。
+
+4425px PNG 暂仍通过 base64 envelope 返回，网络拦截器只 peek 前 `64KiB`，不复制完整成功响应。2026-07-16 真机 cap_023–029 连拍 7 次均首轮收齐，6 次成功还原并形成 17 字符锚点、1 次正确 `vin_not_detected`；回调差 `52.517–54.802ms`，原始 RGBD、`restore.json` 与成功 PNG 目录形态均符合契约。随后同一 PID 连续 3 轮进入、双路首帧、退出和 teardown，TOTAL PSS 约 `247→293→268MiB`，无 native fatal 或内存单调增长；真机稳定性门已完成，模拟器不作为替代证据。
+
+手机端只使用，不承担标定或管理。网页端还须补齐 VIN 远程采集代理、姿态与角点质量、交叉验证、审核和按完整 rig/profile 发布版本，服务端 Restore 再按发布版本加载。

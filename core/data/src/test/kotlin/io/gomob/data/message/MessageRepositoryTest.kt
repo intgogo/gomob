@@ -18,6 +18,7 @@ import io.gomob.network.dto.ConversationListResponse
 import io.gomob.network.dto.CallInviteResponse
 import io.gomob.network.dto.CreateCallInviteRequest
 import io.gomob.network.dto.CreateMessageRequest
+import io.gomob.network.dto.DeleteConversationResponse
 import io.gomob.network.dto.HelpExpertCaseDto
 import io.gomob.network.dto.HelpExpertCaseListResponse
 import io.gomob.network.dto.HelpExpertDto
@@ -351,6 +352,45 @@ class MessageRepositoryTest {
         assertThat(messageDao.items).hasSize(1)
         assertThat(messageDao.items.single().preview).isEqualTo("上线同步：请复核第 3 工位 VIN 拓印")
         assertThat(messageDao.items.single().payloadJson).isEqualTo("{}")
+    }
+
+    @Test
+    fun deleteConversationCallsServerAndRemovesLocalConversationAndMessages() = runTest {
+        val api = FakeMessageApi()
+        val message = MessageEntity(
+            localKey = "s:101",
+            serverId = 101,
+            conversationId = 9,
+            serverSeq = 5,
+            senderId = 31,
+            kind = "text",
+            payloadJson = "{}",
+            preview = "待删除",
+            clientMsgId = null,
+            status = MessageStatus.Sent.name,
+            createdAt = "2026-05-08T12:00:00Z",
+            editedAt = null,
+        )
+        val conversationDao = FakeConversationDao(
+            initialConversations = listOf(
+                ConversationWithLastMessage(conversationEntity(9), message),
+            ),
+        )
+        val messageDao = FakeMessageDao()
+        messageDao.upsertMessage(message)
+        val repository = MessageRepository(
+            api = api,
+            mediaAssetUploader = FakeMediaAssetUploader(),
+            conversationDao = conversationDao,
+            messageDao = messageDao,
+            json = Json { ignoreUnknownKeys = true },
+        )
+
+        repository.deleteConversation(9)
+
+        assertThat(api.deleteConversationRequests).containsExactly("9")
+        assertThat(conversationDao.findById(9)).isNull()
+        assertThat(messageDao.items).isEmpty()
     }
 
     @Test
@@ -1321,6 +1361,7 @@ private class FakeMessageApi(
     val transcriptRetryRequests = mutableListOf<String>()
     val draftTranscribeRequests = mutableListOf<TranscribeDraftVoiceRequest>()
     val leaveConversationRequests = mutableListOf<String>()
+    val deleteConversationRequests = mutableListOf<String>()
 
     override suspend fun conversations(cursor: String?, limit: Int): Envelope<ConversationListResponse> =
         Envelope(code = 0, data = ConversationListResponse(items = conversations))
@@ -1517,6 +1558,17 @@ private class FakeMessageApi(
             data = LeaveConversationResponse(
                 conversationId = conversationId,
                 left = true,
+            ),
+        )
+    }
+
+    override suspend fun deleteConversation(conversationId: String): Envelope<DeleteConversationResponse> {
+        deleteConversationRequests += conversationId
+        return Envelope(
+            code = 0,
+            data = DeleteConversationResponse(
+                conversationId = conversationId,
+                deletedBeforeSeq = 6,
             ),
         )
     }

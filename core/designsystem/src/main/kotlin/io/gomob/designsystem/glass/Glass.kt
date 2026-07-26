@@ -14,7 +14,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
-import dev.chrisbanes.haze.HazeDefaults
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.HazeStyle
 import dev.chrisbanes.haze.HazeTint
@@ -41,13 +40,11 @@ val LocalHazeState = staticCompositionLocalOf<HazeState?> { null }
 
 /** chrome 玻璃样式 — 从语义色板派生，不引入新原色。 */
 fun glassChromeStyle(colors: GomobColors): HazeStyle {
-    // 浅色主题 tint 更实（0.72）保证 fg0 文字在花内容上仍可读；深色 0.64 留更多穿透感
-    val tintAlpha = if (colors.isLight) 0.72f else 0.64f
     return HazeStyle(
         backgroundColor = colors.bg0,
-        tints = listOf(HazeTint(colors.bg0.copy(alpha = tintAlpha))),
+        tints = listOf(HazeTint(colors.bg0.copy(alpha = 0.72f))),
         blurRadius = 20.dp,
-        noiseFactor = if (colors.isLight) 0.02f else HazeDefaults.noiseFactor * 0.4f,
+        noiseFactor = 0.02f,
         // API < 31 降级：不模糊，只上高不透明度遮罩，保证可读
         fallbackTint = HazeTint(colors.bg0.copy(alpha = 0.94f)),
     )
@@ -100,18 +97,20 @@ fun Modifier.glassChrome(
  * 用于卡片 / Dialog / BottomSheet — 不做真模糊（见文件头说明）。
  *
  * @param shape 圆角（与卡片一致默认 r3）
- * @param alpha 底色不透明度；卡片场景默认深色 0.80 / 浅色 0.88，可读性优先
+ * @param alpha 底色不透明度；卡片场景默认 0.88，可读性优先
  */
 @Composable
 fun Modifier.glassPanelBg(
     shape: RoundedCornerShape = Gomob.shapes.r3,
-    alpha: Float = if (Gomob.colors.isLight) 0.88f else 0.80f,
+    alpha: Float = 0.88f,
+    borderColor: Color? = null,
 ): Modifier {
     val colors = Gomob.colors
+    val resolvedBorderColor = borderColor ?: colors.line1
     return this
         .clip(shape)
         .background(colors.bg1.copy(alpha = alpha))
-        .border(Gomob.spacing.hairline, colors.line1, shape)
+        .border(Gomob.spacing.hairline, resolvedBorderColor, shape)
         .drawWithContent {
             drawContent()
             // 顶缘 1dp 渐变高光：中间亮两端淡，模拟玻璃上棱受光
@@ -135,7 +134,7 @@ fun Modifier.glassPanelBg(
 fun GlassPanel(
     modifier: Modifier = Modifier,
     shape: RoundedCornerShape = Gomob.shapes.r3,
-    alpha: Float = if (Gomob.colors.isLight) 0.94f else 0.90f,
+    alpha: Float = 0.94f,
     content: @Composable () -> Unit,
 ) {
     Box(modifier.glassPanelBg(shape = shape, alpha = alpha)) {
@@ -151,22 +150,20 @@ fun GlassPanel(
 @Composable
 fun AmbientGlow(modifier: Modifier = Modifier) {
     val colors = Gomob.colors
-    val topAlpha = if (colors.isLight) 0.10f else 0.12f
-    val bottomAlpha = if (colors.isLight) 0.05f else 0.07f
     Box(
         modifier.drawWithContent {
             val w = size.width
             val h = size.height
             drawRect(
                 brush = Brush.radialGradient(
-                    colors = listOf(colors.accent.copy(alpha = topAlpha), Color.Transparent),
+                    colors = listOf(colors.accent.copy(alpha = 0.10f), Color.Transparent),
                     center = Offset(w * 0.12f, h * -0.02f),
                     radius = w * 0.95f,
                 ),
             )
             drawRect(
                 brush = Brush.radialGradient(
-                    colors = listOf(colors.accentStrong.copy(alpha = bottomAlpha), Color.Transparent),
+                    colors = listOf(colors.accentStrong.copy(alpha = 0.05f), Color.Transparent),
                     center = Offset(w * 0.96f, h * 0.92f),
                     radius = w * 0.75f,
                 ),

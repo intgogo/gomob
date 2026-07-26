@@ -46,6 +46,7 @@ import io.gomob.feature.auth.AuthGateViewModel
 import io.gomob.feature.auth.LoginRoute
 import io.gomob.feature.auth.RegisterRoute
 import io.gomob.scan.R
+import io.gomob.scan.feedback.AppFeedbackHost
 import io.gomob.scan.navigation.GomobNavHost
 
 /**
@@ -107,11 +108,13 @@ fun AppRoot(
                 warmup.prepareForShell()
             }
             if (readyForShell) {
-                GomobNavHost(
-                    debugRouteRequest = debugRouteRequest,
-                    onDebugRouteConsumed = onDebugRouteConsumed,
-                    onSystemBarsPaddingRequiredChanged = onSystemBarsPaddingRequiredChanged,
-                )
+                AppFeedbackHost {
+                    GomobNavHost(
+                        debugRouteRequest = debugRouteRequest,
+                        onDebugRouteConsumed = onDebugRouteConsumed,
+                        onSystemBarsPaddingRequiredChanged = onSystemBarsPaddingRequiredChanged,
+                    )
+                }
             } else {
                 SplashLoading()
             }

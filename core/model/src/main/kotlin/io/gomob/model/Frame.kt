@@ -7,9 +7,9 @@ import kotlin.math.abs
  * iHawk 单设备的彩色帧。
  *
  * 字段单位：
- * - timestampUs: SDK 内部时基（μs）；与同设备 [DepthFrame] 同一帧序的 timestamp 必须相同
- * - data: DirectByteBuffer，零拷贝直读 native；像素格式由 [pixelType] 描述
- *   （iHawk 出 YUYV，端侧用 NativeBridge 转 BGR888 再喂给重建/拓印 / Compose 渲染）
+ * - timestampUs: native 收帧回调的 host 单调时钟（μs）；独立 USB 相机只有在同一 host 时钟域才能比较
+ * - data: 解码像素的 DirectByteBuffer；若 [encodedJpeg] 非空，允许为空，由消费者直接解码同一回调的 JPEG，
+ *   避免高分辨率预览先转 RGB 再转 Bitmap 的重复全帧拷贝
  */
 data class ColorFrame(
     val timestampUs: Long,
@@ -17,18 +17,29 @@ data class ColorFrame(
     val width: Int,
     val height: Int,
     val data: ByteBuffer,
-    /** SDK PixelType 枚举名（如 BERXEL_HAWK_PIXEL_TYPE_RGB_24BIT） */
+    /** 像素/编码格式名（如 BERXEL_HAWK_PIXEL_TYPE_RGB_24BIT、HLSD8_MJPEG） */
     val pixelType: String,
     val intrinsics: CameraIntrinsics,
+    /** 与本帧同一 native 回调的原始 JPEG/MJPEG；无压缩源为 null。 */
+    val encodedJpeg: ByteArray? = null,
+    /** [encodedJpeg] 对应的原始编码尺寸；预览降采样时可能大于 [width]/[height]。 */
+    val encodedWidth: Int = width,
+    val encodedHeight: Int = height,
 )
 
+enum class DepthSampleFormat {
+    /** u16 LE 纯整数毫米，0=无效。 */
+    MILLIMETERS_U16,
+
+    /** RS-D550 mode25 原始 u16 LE 视差，数值=真实视差×8，0=无效。 */
+    DISPARITY_X8_U16,
+}
+
 /**
- * iHawk 单设备的深度帧。
+ * 单设备深度帧。
  *
- * 字段单位：
- * - data: DirectByteBuffer，**16bit unsigned mm 深度（小端、纯整数毫米）**；0 = 无效（厂家约定）。
- *   SDK 原始格式可能是 12.4 / 13.3 定点，BerxelService 抽帧时已统一右移转成纯 mm，
- *   下游所有 consumer（重建 / VIN 拓印 / colormap 渲染）直接当 mm 读，不要再 shift。
+ * [data] 的物理语义由 [sampleFormat] 明确给出，禁止仅凭 u16 值域猜单位。Berxel 路径统一为毫米；
+ * RS-D550 VIN mode25 为保留原厂几何输入而传递原始 disparity×8。
  * - depth 是否已 register 到 color 像素坐标取决于 SDK setRegistrationEnable —— 用
  *   [registeredToColor] 显式标记
  */
@@ -46,6 +57,7 @@ data class DepthFrame(
      *  **0=无效或飞点**。null = 未提供（旧链路/未启用时域降噪）。量测/点云/重建应优先按此取点：
      *  conf>0 才用、飞点(conf==0)天然跳过；保持 [data] 为 raw 测量真值不被改写。 */
     val confidence: ByteBuffer? = null,
+    val sampleFormat: DepthSampleFormat = DepthSampleFormat.MILLIMETERS_U16,
 )
 
 /**
@@ -199,7 +211,7 @@ data class PlaneFit(
 
 /** VIN 拓印结果（单帧 RGBD → 1:1 正射图）。 */
 data class VinRectifyResult(
-    /** PNG 编码的拓印图（默认 1024×512，0.2 mm/px） */
+    /** PNG 编码的拓印图（尺寸以 outputWidth/outputHeight 为准，服务端宽度固定、高度动态） */
     val rectifiedPng: ByteArray,
     val plane: PlaneFit,
     /** 虚拟正射相机的法向距离 mm（默认 300） */

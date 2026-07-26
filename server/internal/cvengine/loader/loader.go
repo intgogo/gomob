@@ -6,7 +6,8 @@
 //	                              → MinIO 直拉（已签名走 PresignedGetObject 不行 — 内部服务直连）
 //	                              → 缓存到 GOMOB_CVENGINE_MODEL_CACHE 目录
 //	                              → SHA256 校验
-//	                              → core.RegisterMaskONNX / RegisterComONNX / RegisterONNX（按 metadata.kind: mask|com|general）
+//	                              → core.RegisterMaskONNX / RegisterYoloONNX / RegisterComONNX / RegisterONNX
+//	                                （按 metadata.kind: mask|yolo|com|general）
 //
 // M-S10.5 加 NATS 订阅 model.version.activated，事件来时调本包 Reload(name)。
 package loader
@@ -94,15 +95,15 @@ func New(cfg Config) (*Loader, error) {
 
 // Result 单个 tag 的加载结果（给 main 启动期日志用）。
 type Result struct {
-	Tag         string
-	Name        string
-	Version     string
-	Kind        string
-	CachedPath  string
-	SizeBytes   int64
-	SHA256OK    bool
-	Loaded      bool
-	Error       error
+	Tag        string
+	Name       string
+	Version    string
+	Kind       string
+	CachedPath string
+	SizeBytes  int64
+	SHA256OK   bool
+	Loaded     bool
+	Error      error
 }
 
 // LoadByName 给一个 model 名（同时是 cv-engine 注册 tag），跑完整流水线。
@@ -118,10 +119,18 @@ func (l *Loader) LoadByName(ctx context.Context, name string) Result {
 		return r
 	}
 	r.Version = m.Version
-	meta := modelregistryclient.ParseMetadata(m.Metadata)
-	r.Kind = meta.Kind
+	meta, err := modelregistryclient.ParseMetadata(m.Metadata)
+	if err != nil {
+		r.Error = err
+		return r
+	}
+	r.Kind = strings.ToLower(strings.TrimSpace(meta.Kind))
 	if r.Kind == "" {
 		r.Kind = "general"
+	}
+	if r.Kind != "general" && r.Kind != "mask" && r.Kind != "yolo" && r.Kind != "com" {
+		r.Error = fmt.Errorf("未知 model metadata.kind=%q", r.Kind)
+		return r
 	}
 
 	// 2. MinIO 直拉到本地缓存
@@ -170,6 +179,18 @@ func (l *Loader) LoadByName(ctx context.Context, name string) Result {
 			r.Error = fmt.Errorf("RegisterMaskONNX: %w", err)
 			return r
 		}
+	case "yolo":
+		opts := core.DefaultYoloOptions(meta.Classes...)
+		if len(meta.Strides) > 0 {
+			opts.Strides = append([]int(nil), meta.Strides...)
+		}
+		if len(meta.Anchors) > 0 {
+			opts.Anchors = append([]int(nil), meta.Anchors...)
+		}
+		if err := l.cfg.Registry.RegisterYoloONNX(r.Tag, cached, opts); err != nil {
+			r.Error = fmt.Errorf("RegisterYoloONNX: %w", err)
+			return r
+		}
 	case "com":
 		// 通用原始输出模型（gocv.CreateORTCom，吐扁平 []float32，后处理调用方做；如 yolo-obb VIN 字符 OBB）。
 		// std 归一系数：metadata.std 优先；缺省 1/255（÷255，与端侧 yolo-obb 预处理一致）。mean 默认 0。
@@ -181,7 +202,7 @@ func (l *Loader) LoadByName(ctx context.Context, name string) Result {
 			r.Error = fmt.Errorf("RegisterComONNX: %w", err)
 			return r
 		}
-	default:
+	case "general":
 		if err := l.cfg.Registry.RegisterONNX(r.Tag, cached); err != nil {
 			r.Error = fmt.Errorf("RegisterONNX: %w", err)
 			return r

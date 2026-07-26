@@ -30,6 +30,12 @@ func (s *fakeCropBoxStore) SaveCropBox(_ context.Context, k, unit string, b Crop
 	s.box[k+"/"+unit] = b
 	return nil
 }
+func (s *fakeCropBoxStore) DeleteCropBox(_ context.Context, k, unit string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.box, k+"/"+unit)
+	return nil
+}
 
 // fake CloudReader：按 key 回固定 PCD 字节。
 type fakeReader struct{ data map[string][]byte }
@@ -63,7 +69,7 @@ func TestCropBoxGetPutRoundtrip(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(validBox())
-	if rec := do(h, "PUT", "/v1/scans/laser/crop-box", string(body), "7"); rec.Code != http.StatusOK {
+	if rec := doAs(h, "PUT", "/v1/scans/laser/crop-box", string(body), "7", "admin"); rec.Code != http.StatusOK {
 		t.Fatalf("PUT 应 200，得 %d (%s)", rec.Code, rec.Body)
 	}
 	rec = do(h, "GET", "/v1/scans/laser/crop-box", "", "7")
@@ -77,6 +83,14 @@ func TestCropBoxGetPutRoundtrip(t *testing.T) {
 	if got.Half != validBox().Half || got.Center != validBox().Center {
 		t.Errorf("回读框不符: %+v", got)
 	}
+	if rec := doAs(h, "DELETE", "/v1/scans/laser/crop-box", "", "7", "admin"); rec.Code != http.StatusOK {
+		t.Fatalf("DELETE 应 200，得 %d (%s)", rec.Code, rec.Body)
+	}
+	rec = do(h, "GET", "/v1/scans/laser/crop-box", "", "7")
+	_ = json.Unmarshal(rec.Body.Bytes(), &g)
+	if g["set"] != false {
+		t.Fatalf("DELETE 后应 set=false，得 %v", g["set"])
+	}
 }
 
 // PUT 退化框（零半尺）→ 400。
@@ -85,7 +99,7 @@ func TestCropBoxPutDegenerate(t *testing.T) {
 	h.SetCropBoxStore(newFakeCropBoxStore())
 	bad := CropBox{Up: [3]float32{0, 0, 1}, Half: [3]float32{0, 1, 1}}
 	body, _ := json.Marshal(bad)
-	if rec := do(h, "PUT", "/v1/scans/laser/crop-box", string(body), "7"); rec.Code != http.StatusBadRequest {
+	if rec := doAs(h, "PUT", "/v1/scans/laser/crop-box", string(body), "7", "admin"); rec.Code != http.StatusBadRequest {
 		t.Errorf("退化框应 400，得 %d", rec.Code)
 	}
 }
@@ -98,6 +112,11 @@ func TestCropBoxAuthAndUnconfigured(t *testing.T) {
 	}
 	if rec := do(h, "GET", "/v1/scans/laser/crop-box", "", "7"); rec.Code != http.StatusNotImplemented {
 		t.Errorf("未配 store 应 501，得 %d", rec.Code)
+	}
+	h.SetCropBoxStore(newFakeCropBoxStore())
+	body, _ := json.Marshal(validBox())
+	if rec := do(h, "PUT", "/v1/scans/laser/crop-box", string(body), "7"); rec.Code != http.StatusForbidden {
+		t.Errorf("普通用户保存工位框应 403，得 %d", rec.Code)
 	}
 }
 
@@ -147,7 +166,7 @@ func TestCropBoxPerUnit(t *testing.T) {
 
 	bBox := CropBox{Center: [3]float32{-500, 0, 600}, Up: [3]float32{0, 0, 1}, YawDeg: 30, Half: [3]float32{400, 700, 350}}
 	body, _ := json.Marshal(bBox)
-	if rec := do(h, "PUT", "/v1/scans/laser/crop-box?unit=b", string(body), "7"); rec.Code != http.StatusOK {
+	if rec := doAs(h, "PUT", "/v1/scans/laser/crop-box?unit=b", string(body), "7", "admin"); rec.Code != http.StatusOK {
 		t.Fatalf("PUT unit=b 应 200，得 %d (%s)", rec.Code, rec.Body)
 	}
 	// a 单元仍未设置（与 b 独立）。

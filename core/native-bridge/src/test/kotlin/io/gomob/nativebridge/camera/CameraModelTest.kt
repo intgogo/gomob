@@ -16,6 +16,14 @@ class CameraModelTest {
     }
 
     @Test
+    fun fromUsbIds_hlsd8() {
+        val m = CameraModel.fromUsbIds(0x0C45, 0x6366)
+        assertThat(m).isEqualTo(CameraModel.Hlsd8)
+        assertThat(m.isDepthSource).isFalse()
+        assertThat(m.fdCount).isEqualTo(1)
+    }
+
+    @Test
     fun fromUsbIds_berxelMasterAndCompanion() {
         // master 节点
         assertThat(CameraModel.fromUsbIds(0x0603, 0x001f)).isEqualTo(CameraModel.Berxel)
@@ -36,6 +44,7 @@ class CameraModelTest {
     @Test
     fun isRecognized_matchesSupportedOnly() {
         assertThat(CameraModel.isRecognized(0x3438, 0x0206)).isTrue()
+        assertThat(CameraModel.isRecognized(0x0C45, 0x6366)).isTrue()
         assertThat(CameraModel.isRecognized(0x0603, 0x001f)).isTrue()
         assertThat(CameraModel.isRecognized(0x3558, 0x1012)).isTrue()
         assertThat(CameraModel.isRecognized(0xdead, 0xbeef)).isFalse()

@@ -18,8 +18,11 @@
 #include "camera/camera_session.h"
 #include "eys3d/android/vendor_uvc_abi.h"
 #include "eys3d/portable/eys3d_session_core.h"
+#include "eys3d/portable/vendor_worker_lifecycle.h"
 
 namespace gomob::eys3d::android {
+
+struct FrameCallbackContext;
 
 class Eys3dVendorCppSession : public gomob::camera::ICameraSession {
  public:
@@ -46,6 +49,8 @@ class Eys3dVendorCppSession : public gomob::camera::ICameraSession {
  private:
   void Run();              // dlopen→连接→arming→起流→保活
   void Teardown();         // 停流 + 释放厂商对象
+  bool WaitForFrameGrabberStarted();
+  void QuarantineVendorObjects(const char* reason);
 
   int fd_ = -1;
   gomob::camera::SessionConfig cfg_;
@@ -58,6 +63,9 @@ class Eys3dVendorCppSession : public gomob::camera::ICameraSession {
   void* fg_ = nullptr;   // FrameGrabber 对象（厂商所有，仅借指针 repoint 回调）
   void* old_fg_cb_ = nullptr;
   void* old_fg_ctx_ = nullptr;
+  FrameCallbackContext* fg_callback_ctx_ = nullptr;
+  VendorWorkerLifecycle fg_lifecycle_;
+  bool cam_connected_ = false;
   // 离屏窗口：startPreview 硬要非空 ANativeWindow(门控)，但 FrameGrabber 路径旁路绘制故不真渲染。AImageReader 纯 native。
   void* color_reader_ = nullptr;  // AImageReader*
   void* depth_reader_ = nullptr;
@@ -65,6 +73,7 @@ class Eys3dVendorCppSession : public gomob::camera::ICameraSession {
   void* depth_win_ = nullptr;
 
   std::atomic<int64_t> cb_frames_{0};
+  std::atomic<bool> first_frame_ready_{false};
 };
 
 }  // namespace gomob::eys3d::android

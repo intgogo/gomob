@@ -149,7 +149,9 @@ fun DefaultPageDragBox(
 }
 
 /**
- * 固定在页面拖动层之上的控件：标题栏、底部 TabBar、输入栏等。
+ * 固定在页面拖动层之上的完整 chrome 容器。
+ *
+ * 必须挂在包含玻璃背景的外层，不能只挂标题文字、Tab 图标或输入控件，避免表面与内容错层。
  */
 @Composable
 fun Modifier.fixedDuringPageDrag(): Modifier {

@@ -1,0 +1,256 @@
+# 能力成熟度矩阵（机器可校验真理源）
+#
+# status:
+#   implemented                 软件与目标环境验收均完成
+#   implemented_pending_device  软件链完成，仍缺当前 revision 的真机/现场验收
+#   partial                     仅覆盖部分业务范围，不得包装成完整能力
+#   missing                     尚无可用实现
+
+version: 1
+coverage_scope: "当前先覆盖激光车辆外廓关键能力；其它专题在发生能力变化时补入"
+
+capabilities:
+  - id: laser_station_authority
+    name: 激光工位服务端真理源
+    status: implemented_pending_device
+    owners: [laserworker, web/laser-station]
+    provides:
+      - "按 A/B 单元保存刚体 site 外参与 RMS/common 质量证据"
+      - "按工位保存 region；客户端 legacy 字段仅做一致性校验"
+      - "保留率与 acquisition profile 由服务端统一决定"
+    evidence:
+      - server/migrations/0022_laser_site_calibration.up.sql
+      - server/migrations/0023_laser_site_calibration_quality.up.sql
+      - server/migrations/0024_laser_region_calibration.up.sql
+      - server/internal/laser/station_profile.go
+    blockers:
+      - "须先补齐 ArUco 权威标靶与鲁棒求解门，再重做 RMS≤5mm、公共标记≥4 的现场标定"
+
+  - id: laser_raw_background_isolation
+    name: A/B 原始背景同域车辆隔离
+    status: implemented_pending_device
+    owners: [laserworker]
+    provides:
+      - "不可变 raw_unit_frames_v1 背景 revision"
+      - "绑定 site hash、设备身份、get_config 标定与扫描设置"
+      - "live/background 分设备应用 region、相减后再按最终 B→A 合并"
+    evidence:
+      - server/migrations/0025_laser_background_revision.up.sql
+      - server/internal/laser/runner.go
+      - tests/harness/laser_background
+    blockers:
+      - "需用户确认空工位后重采 A/B raw 背景"
+
+  - id: laser_geometric_vehicle_measurement
+    name: 激光车辆几何外廓测量
+    status: implemented_pending_device
+    owners: [laserworker]
+    provides:
+      - "L/W/H、轴距、前后悬、货箱外形"
+      - "与 MeasureFull 输入同源的 measured PCD 和 overlay"
+      - "refine applied/pairs≥1000/RMS≤15mm/Δt≤50mm/ΔR≤1° 与 ground drift 生产拒绝门"
+    evidence:
+      - server/internal/laser/measure.go
+      - server/internal/laser/axle.go
+      - server/internal/laser/cargobox.go
+      - server/migrations/0026_laser_measured_cloud.up.sql
+    blockers:
+      - "当前 site/region/background revision 下同车连续三次真扫尚未完成"
+      - "refine 尚缺对立面、fitness、空间覆盖、条件数和 holdout 对应质量门"
+
+  - id: laser_refine_correspondence_quality
+    name: B→A 精修对应质量
+    status: partial
+    owners: [laserworker]
+    provides:
+      - "点到面精修与法向相容性筛选"
+      - "pairs、RMS、Δt、ΔR 标量 fail-closed；job207 RMS=10.17mm 基线、上限 15mm"
+    evidence:
+      - server/internal/laser/refine_btoa.go
+      - server/internal/laser/runner.go
+      - server/internal/laser/refine_btoa_test.go
+    blockers:
+      - "缺双向/互为最近对应、有向法向、trimmed fitness 与空间覆盖"
+      - "缺法方程秩/条件数和独立 holdout 残差，仍可被对立面/局部退化误导"
+
+  - id: laser_canonical_measured_artifact
+    name: 车辆测量点云内容身份
+    status: implemented
+    owners: [laserworker, ":core:data", web/laser-station]
+    provides:
+      - "unit_a_world_mm_v1 + 源点数 + XYZ SHA-256"
+      - "site/region/background revision + 最终 B→A SHA-256"
+      - "manifest/响应头/PCD 注释/完整 XYZ 错配时整体失效测量与 overlay"
+    evidence:
+      - server/internal/laser/measured_artifact.go
+      - server/internal/laser/handler.go
+      - core/data/src/main/kotlin/io/gomob/data/scan/LaserScanRepository.kt
+      - web/laser-station/app_contract_test.js
+
+  - id: laser_app_web_result_parity
+    name: App/Web 外廓结果一致性
+    status: implemented_pending_device
+    owners: [":feature:scan3d", web/laser-station, laserworker]
+    provides:
+      - "WS/REST 映射同一完整结果模型"
+      - "WebSocket 101 握手正常放行，active/latest 恢复与缺失点云幂等补下载"
+      - "latest 最多校验 20 个候选，跳过 manifest 或 measured PCD 损坏任务"
+      - "客户端优先显示 measured，不以 fused 冒充车辆"
+    evidence:
+      - core/network/src/main/kotlin/io/gomob/network/EnvelopeErrorInterceptor.kt
+      - core/network/src/test/kotlin/io/gomob/network/EnvelopeErrorInterceptorTest.kt
+      - core/data/src/main/kotlin/io/gomob/data/scan/LaserScanRepository.kt
+      - feature/scan3d/src/main/kotlin/io/gomob/feature/scan3d/LaserScanViewModel.kt
+      - web/laser-station/app.js
+      - tests/harness/laser_app_web_parity
+    blockers:
+      - "parity harness 当前输入仍是合成 fixture；须对同一真实 scan_id 核对 artifact、尺寸、轴/货箱、overlay、ground 与 revision"
+
+  - id: laser_android_render_resource_bounds
+    name: Android 激光点云资源上界
+    status: implemented
+    owners: [":feature:scan3d", ":core:realtime", ":core:data"]
+    provides:
+      - "实时 A/B 各 131072 点，measured/fused 各 262144 点，终态 A/B 各 65536 点"
+      - "可靠事件/激光点分队列，嵌套体素采样和 Filament 固定双槽"
+      - "完整 canonical PCD 不整体常驻 Java 堆"
+    evidence:
+      - core/realtime/src/main/kotlin/io/gomob/realtime/RealtimeSocketClient.kt
+      - core/data/src/main/kotlin/io/gomob/data/scan/LaserScanRepository.kt
+      - feature/scan3d/src/main/kotlin/io/gomob/feature/scan3d/LaserScanViewModel.kt
+      - feature/scan3d/src/main/kotlin/io/gomob/feature/scan3d/PointCloud3dView.kt
+      - feature/scan3d/src/test/kotlin/io/gomob/feature/scan3d/LaserScanViewModelTest.kt
+
+  - id: laser_production_quality_harness
+    name: 激光生产质量验收门
+    status: implemented_pending_device
+    owners: [laserworker]
+    provides:
+      - "laser_background 默认要求真实 A/B live/background、region 和最终 B→A"
+      - "laser_repeatability 默认要求同 inspection/revision 三次、真值、artifact、ground 与 refine"
+      - "laser_app_web_parity 执行真实 Web JS 与 Android Kotlin 契约"
+    evidence:
+      - tests/harness/laser_background
+      - tests/harness/laser_repeatability
+      - tests/harness/laser_app_web_parity
+    blockers:
+      - "尚缺当前 production revision 的真实背景数据、同 inspection 三次扫描与同 scan_id 双端对账"
+
+  - id: laserworker_native_backend_guard
+    name: laserworker 真采集后端健康门
+    status: implemented
+    owners: [laserworker]
+    provides:
+      - "未链接 laser_cgo 真实采集后端时进程在监听 healthz 前退出"
+      - "不允许 stub 二进制以健康服务形态进入部署"
+    evidence:
+      - server/cmd/laserworker/main.go
+      - server/internal/laser/cgo_stub_test.go
+
+  - id: laser_job_terminal_consistency
+    name: 激光任务终态一致性
+    status: implemented
+    owners: [laserworker]
+    provides:
+      - "capturing→fusing→done 原子 CAS"
+      - "仅进行中任务可 failed/cancelled，终态不可覆盖"
+      - "latest 完整校验候选 measured，最新损坏时恢复更早健康任务"
+    evidence:
+      - server/pkg/repo/laser_scan.go
+      - server/pkg/repo/laser_scan_test.go
+
+  - id: laser_worker_crash_recovery
+    name: laserworker 崩溃恢复
+    status: missing
+    owners: [laserworker]
+    provides: []
+    blockers:
+      - "缺 station lease/heartbeat/fencing/reconciliation；进程崩溃可能遗留 capturing/fusing、设备扫描状态和迟到写"
+
+  - id: laser_station_installation_health
+    name: 激光工位物理安装健康检查
+    status: partial
+    owners: [laserworker]
+    provides:
+      - "site hash 变化会立即使旧背景失效"
+      - "ground drift 门可拒绝明显倾斜或竖直位移"
+    blockers:
+      - "A/B 整体纯水平移动且管理员未重做 site 时，现有 hash/地面门可能漏检"
+      - "缺不可变 installation_epoch/station_geometry_revision 与静态场景重合度健康检查"
+
+  - id: laser_multi_station_binding
+    name: App 多工位显式绑定
+    status: partial
+    owners: [":feature:scan3d", web/laser-station, laserworker]
+    provides:
+      - "服务端按 A/B IP 查询工位配置"
+    blockers:
+      - "App/Web 仍使用 worker 默认 A/B，缺 station_id→A/B+installation_epoch 权威映射与返回单元身份校验"
+
+  - id: laser_inspection_asset_lifecycle
+    name: 激光扫描查验归属与资产闭环
+    status: partial
+    owners: [laserworker, ":feature:scan3d", web/laser-station]
+    provides:
+      - "请求携带 inspection_id 时，服务端校验 owner/station/status"
+      - "network/repository 已有可选 inspection_id 和 vehicle_type_id DTO"
+    evidence:
+      - server/internal/laser/handler.go
+      - server/internal/laser/handler_test.go
+      - core/network/src/main/kotlin/io/gomob/network/LaserScanApi.kt
+    blockers:
+      - "App/Web 实际未传 inspection_id，契约无 vehicle_id，App 实际不传 vehicle_type_id"
+      - "done 结果未幂等登记为 inspection_assets，测量/artifact/revision 证据未归档"
+
+  - id: laser_site_marker_calibration_robustness
+    name: ArUco site 标定鲁棒性
+    status: partial
+    owners: [laserworker]
+    provides:
+      - "4 角点 solvePnP + 跨单元 Umeyama 基础求解"
+      - "site 保存 RMS/common 质量字段与刚体矩阵门"
+      - "生产 setup 固定 OpenCV 4.6+aruco，native site marker test 已构建通过"
+    evidence:
+      - server/native/lidar/src/calib/site_marker_calib.h
+      - server/native/lidar/tests/test_site_marker_calib.cpp
+      - server/scripts/laser-cgo-setup.sh
+      - server/migrations/0023_laser_site_calibration_quality.up.sql
+    blockers:
+      - "marker_len 未绑定权威标靶资产"
+      - "缺 corner refinement、IPPE 双解/正深度、离群剔除、holdout、覆盖与条件数门"
+      - "裸 CMake 可误选 /usr/local OpenCV 4.5.5；仅生产 setup 的 4.6+aruco 构建结果可作证据"
+
+  - id: laser_device_configuration_safety
+    name: 激光设备配置权限与并发安全
+    status: implemented
+    owners: [laserworker, ":feature:scan3d", web/laser-station]
+    provides:
+      - "设备命令、扫描设置、设备标定和 site 标定统一要求 admin、受管 A/B allowlist 与审计"
+      - "物理 mutation 与正式扫描/取景共享单活 reservation，profile 读取至 SCAN_START 无配置写窗口"
+      - "正式扫描禁止裸 SCAN_STOP，必须走 job stop；起扫要求双机 READY"
+    evidence:
+      - server/internal/laser/handler.go
+      - server/internal/laser/device_guard_test.go
+
+  - id: laser_compliance_fail_closed
+    name: 法规结论安全拒绝门
+    status: implemented
+    owners: [laserworker, ":feature:scan3d", web/laser-station]
+    provides:
+      - "缺车辆/车型/版本化规则时 compliance_determined=false"
+      - "Web 显示法规未判定，App 不显示合规结论，均不用通用固定上限伪造结论"
+    evidence:
+      - server/internal/laser/measure.go
+      - server/internal/laser/measure_test.go
+      - server/internal/laser/runner.go
+      - web/laser-station/app.js
+      - web/laser-station/app_contract_test.js
+
+  - id: laser_vehicle_specific_compliance
+    name: 逐车型法规合规判定
+    status: missing
+    owners: [laserworker]
+    provides: []
+    blockers:
+      - "通用固定上限已禁止产生合规结论；客户端仍未绑定车辆/车型"
+      - "缺按车类/轴数/用途/特殊结构选规则、生效日、版本和条款证据链"

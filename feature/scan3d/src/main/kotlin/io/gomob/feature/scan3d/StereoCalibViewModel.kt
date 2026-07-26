@@ -53,9 +53,10 @@ class StereoCalibViewModel @Inject constructor(
     private val _capturing = MutableStateFlow(false)
     val capturing: StateFlow<Boolean> = _capturing.asStateFlow()
 
-    @Volatile private var latestColor: ColorFrame? = null   // HLSD8（降采样预览帧；存盘用全分辨率 MJPEG）
-    @Volatile private var latestLPrime: ColorFrame? = null  // eYs3D L'
-    @Volatile private var latestDepth: DepthFrame? = null
+    private val framePairer = StereoCalibFramePairer(
+        maxDeltaUs = CALIB_PAIR_MAX_DELTA_US,
+        maxAgeUs = CALIB_PAIR_MAX_AGE_US,
+    )
     @Volatile private var irOff = false
 
     init {
@@ -66,11 +67,11 @@ class StereoCalibViewModel @Inject constructor(
             viewModelScope.launch {
                 var last = 0L
                 rgb.colorFrames.collect { f ->
-                    latestColor = f
+                    framePairer.offerHlsd8(f)
                     val now = SystemClock.elapsedRealtime()
                     if (now - last < PREVIEW_MS) return@collect
                     last = now
-                    withContext(Dispatchers.Default) { FrameRenderer.colorRgb24ToBitmap(f) }?.let { _hlsd8Preview.value = it }
+                    withContext(Dispatchers.Default) { FrameRenderer.colorToBitmap(f) }?.let { _hlsd8Preview.value = it }
                 }
             }
         }
@@ -78,7 +79,7 @@ class StereoCalibViewModel @Inject constructor(
         viewModelScope.launch {
             var last = 0L
             source.colorFrames.collect { f ->
-                latestLPrime = f
+                framePairer.offerLprime(f)
                 if (!irOff) {
                     source.setIrProjector(false) // 关散斑 → L' 干净
                     irOff = true
@@ -86,27 +87,39 @@ class StereoCalibViewModel @Inject constructor(
                 val now = SystemClock.elapsedRealtime()
                 if (now - last < PREVIEW_MS) return@collect
                 last = now
-                withContext(Dispatchers.Default) { FrameRenderer.colorRgb24ToBitmap(f) }?.let { _lprimePreview.value = it }
+                withContext(Dispatchers.Default) { FrameRenderer.colorToBitmap(f) }?.let { _lprimePreview.value = it }
             }
         }
-        viewModelScope.launch { source.depthFrames.collect { latestDepth = it } }
+        viewModelScope.launch { source.depthFrames.collect { framePairer.offerDepth(it) } }
     }
 
     /** 采一组标定对（HLSD8 全分辨率 + 无散斑 L' + depth）。对准 ChArUco 板多姿态/倾角各采一张。 */
     fun captureCalib() {
         if (_capturing.value) return
         if (rgbSource == null) { _msg.value = "无 HLSD8，双相机标定不可用"; return }
-        val hlsd8 = latestColor
-        val lprime = latestLPrime
-        val depth = latestDepth
-        if (hlsd8 == null || lprime == null) { _msg.value = "尚无 HLSD8/L' 帧，等两路相机在流再采"; return }
+        val frames = framePairer.snapshot()
+        if (frames == null) {
+            _msg.value = "尚无同步 HLSD8/L'/Depth 帧组，请稳住标定板再采"
+            return
+        }
+        if (frames.hlsd8.encodedJpeg == null) {
+            _msg.value = "HLSD8 未提供与时间戳绑定的原始 JPEG，拒绝标定采集"
+            return
+        }
+        if (source.deviceSerial.isNullOrBlank() || rgbSource.deviceSerial.isNullOrBlank()) {
+            _msg.value = "未读取到完整双相机序列号，拒绝生成不可追溯标定采集"
+            return
+        }
         _capturing.value = true
         viewModelScope.launch {
             try {
                 val seq = _calibCount.value + 1
-                val dir = withContext(Dispatchers.IO) { saveCalibCapture(hlsd8, lprime, depth, seq) }
+                val dir = withContext(Dispatchers.IO) { saveCalibCapture(frames, seq) }
                 _calibCount.value = seq
-                _msg.value = "已采 $seq 张（换姿态/倾角/远近继续）"
+                _msg.value = "已采 $seq 张（HLΔ %.1fms / L'DΔ %.1fms），换姿态/远近继续".format(
+                    frames.hlsd8LprimeDeltaUs / 1000.0,
+                    frames.lprimeDepthDeltaUs / 1000.0,
+                )
                 Log.i(TAG, "calib saved seq=$seq dir=${dir.absolutePath}")
             } catch (e: Exception) {
                 _msg.value = "采集失败：${e.message}"; Log.e(TAG, "calib failed", e)
@@ -124,29 +137,31 @@ class StereoCalibViewModel @Inject constructor(
         val a = ByteArray(minOf(width * height * 2, b.remaining())); b.get(a); return a
     }
 
-    private fun saveCalibCapture(hlsd8: ColorFrame, lprime: ColorFrame, depth: DepthFrame?, seq: Int): File {
+    private fun saveCalibCapture(frames: StereoCalibFrameSet, seq: Int): File {
+        val hlsd8 = frames.hlsd8
+        val lprime = frames.lprime
+        val depth = frames.depth
         val ts = System.currentTimeMillis()
         val root = File(appContext.getExternalFilesDir(null), CALIB_ROOT).apply { mkdirs() }
         val dir = File(root, "calib_%03d_%d".format(seq, ts)).apply { mkdirs() }
-        // HLSD8 存全分辨率 MJPEG（标定需清晰 ChArUco；预览降采样到 ~1280 会糊掉标记）。拿不到回退降采样。
-        val full = rgbSource?.latestFullColorJpeg()
-        if (full != null) File(dir, "rgb1300.jpg").writeBytes(full)
-        else FrameRenderer.colorRgb24ToBitmap(hlsd8)?.let { File(dir, "rgb1300.jpg").writeBytes(it.toJpeg(95)) }
-        FrameRenderer.colorRgb24ToBitmap(lprime)?.let { File(dir, "lprime.jpg").writeBytes(it.toJpeg(95)) }
-        if (depth != null) File(dir, "depth.yuv").writeBytes(depth.toU16LeBytes())
-        val depthMeta = if (depth != null)
-            ""","depth":{"w":${depth.width},"h":${depth.height},"fx":${depth.intrinsics.fx},"fy":${depth.intrinsics.fy},"cx":${depth.intrinsics.cx},"cy":${depth.intrinsics.cy},"unit":"u16_le_mm"}"""
-        else ""
+        // 必须存与 hlsd8.timestampUs 同一 native 回调的原始 MJPEG，禁止另抓 latest 拼错姿态。
+        File(dir, "rgb1300.jpg").writeBytes(requireNotNull(hlsd8.encodedJpeg))
+        FrameRenderer.colorToBitmap(lprime)?.let { File(dir, "lprime.jpg").writeBytes(it.toJpeg(95)) }
+        File(dir, "depth.yuv").writeBytes(depth.toU16LeBytes())
         File(dir, "meta.json").writeText(
             """
             {
               "seq": $seq,
               "ts": $ts,
-              "deviceId": "${android.os.Build.MODEL}",
+              "depthDeviceSerial": "${source.deviceSerial}",
+              "colorDeviceSerial": "${rgbSource?.deviceSerial}",
+              "phoneModel": "${android.os.Build.MODEL}",
               "kind": "vin_stereo_calib",
               "ir_projector": "off",
-              "hlsd8": {"pixelType": "${hlsd8.pixelType}", "w": ${hlsd8.width}, "h": ${hlsd8.height}, "fx": ${hlsd8.intrinsics.fx}, "fy": ${hlsd8.intrinsics.fy}, "cx": ${hlsd8.intrinsics.cx}, "cy": ${hlsd8.intrinsics.cy}},
-              "lprime": {"pixelType": "${lprime.pixelType}", "w": ${lprime.width}, "h": ${lprime.height}, "fx": ${lprime.intrinsics.fx}, "fy": ${lprime.intrinsics.fy}, "cx": ${lprime.intrinsics.cx}, "cy": ${lprime.intrinsics.cy}}$depthMeta
+              "sync": {"hlsd8TimestampUs": ${hlsd8.timestampUs}, "lprimeTimestampUs": ${lprime.timestampUs}, "depthTimestampUs": ${depth.timestampUs}, "hlsd8LprimeDeltaUs": ${frames.hlsd8LprimeDeltaUs}, "lprimeDepthDeltaUs": ${frames.lprimeDepthDeltaUs}},
+              "hlsd8": {"pixelType": "${hlsd8.pixelType}", "w": ${hlsd8.encodedWidth}, "h": ${hlsd8.encodedHeight}, "fx": ${hlsd8.intrinsics.fx}, "fy": ${hlsd8.intrinsics.fy}, "cx": ${hlsd8.intrinsics.cx}, "cy": ${hlsd8.intrinsics.cy}},
+              "lprime": {"pixelType": "${lprime.pixelType}", "w": ${lprime.width}, "h": ${lprime.height}, "fx": ${lprime.intrinsics.fx}, "fy": ${lprime.intrinsics.fy}, "cx": ${lprime.intrinsics.cx}, "cy": ${lprime.intrinsics.cy}},
+              "depth": {"w":${depth.width},"h":${depth.height},"fx":${depth.intrinsics.fx},"fy":${depth.intrinsics.fy},"cx":${depth.intrinsics.cx},"cy":${depth.intrinsics.cy},"sampleFormat":"${depth.sampleFormat.name}"}
             }
             """.trimIndent(),
         )
@@ -164,5 +179,7 @@ class StereoCalibViewModel @Inject constructor(
         private const val TAG = "StereoCalibVM"
         private const val PREVIEW_MS = 40L
         private const val CALIB_ROOT = "vin_calib"
+        private const val CALIB_PAIR_MAX_DELTA_US = 25_000L
+        private const val CALIB_PAIR_MAX_AGE_US = 250_000L
     }
 }

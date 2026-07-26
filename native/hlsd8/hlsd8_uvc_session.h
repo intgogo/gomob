@@ -4,9 +4,9 @@
 //   HLSD8 出真彩 RGB（VINCreator 正射图的高分辨率来源，约 4160 宽）。gomob 之前只接了深度模组，
 //   HLSD8 从未触及；本会话补齐 RGB 这一路。
 //
-// 实现走与 eYs3D 同一 libuvc_lusb100 后端（pupil 源解析 MJPEG + libusb100 能出流的后端），但因 HLSD8 是
-// 标准 Sonix UVC 摄像头：无 XU arming、无手动 depth bulk —— 纯 libuvc 标准 PROBE/COMMIT。
-// 开流时用 uvc_get_format_descs 枚举设备真实格式，自动选最大 MJPEG 帧（不猜分辨率），
+// 对齐 VINCreator：HLSD8 走独立 libuvc1 + libusb1001，RS-D550 走 libuvc + libusb100，
+// 两套 SONAME 物理隔离。HLSD8 是标准 Sonix UVC 摄像头：无 XU arming、无手动 depth bulk。
+// 开流时严格协商 VINCreator 的 4160×832 MJPEG（native 实际固定 1..5fps），
 // start_streaming 起 libuvc 自有阻塞 handler 线程排空 → 最新 MJPEG 帧快照给 snapshot_color。
 #pragma once
 
@@ -24,7 +24,7 @@ namespace gomob::hlsd8 {
 // HLSD8 RGB 相机 USB ID（manufacturer "Image+"，VID 0x0C45=Sonix）。
 inline constexpr gomob::camera::UsbId kHlsd8UsbId{0x0C45, 0x6366};
 
-// Android fd 会话：wrap usbfs fd → libuvc_lusb100 标准 UVC MJPEG 流 → 最新帧快照。
+// Android fd 会话：usbfs fd → libuvc1 标准 UVC MJPEG 流 → 最新帧快照。
 class Hlsd8UvcSession : public gomob::camera::ICameraSession {
  public:
   Hlsd8UvcSession(int fd, const gomob::camera::SessionConfig& cfg);
@@ -41,8 +41,8 @@ class Hlsd8UvcSession : public gomob::camera::ICameraSession {
   bool snapshot_color(std::vector<uint8_t>* out, int64_t* meta) override;
   int dump_raw_color(const char* path) override;
 
-  // libuvc 回调线程调用：存最新 MJPEG 帧。
-  void OnColorFrame(const uint8_t* data, size_t bytes, int w, int h, int64_t ns);
+  // libuvc 回调线程调用：存最新 MJPEG 帧；几何取已协商档，避免读取 vendor 私有 frame 尾字段。
+  void OnColorFrame(const uint8_t* data, size_t bytes, int64_t ns);
 
  private:
   void Run();
@@ -61,6 +61,8 @@ class Hlsd8UvcSession : public gomob::camera::ICameraSession {
   int64_t latest_serial_ = 0;
   int64_t latest_ns_ = 0;
   int64_t returned_serial_ = -1;
+  int stream_w_ = 0;
+  int stream_h_ = 0;
 
   std::atomic<int64_t> color_frames_{0};
   std::atomic<int64_t> errors_{0};

@@ -34,7 +34,7 @@ struct MarkerCenterObs {
 struct SiteMarkerConfig {
   double marker_len_m{0.15};  // 现场打印的 ArUco 物理边长（米）——必须与实际一致
   int    min_common{2};       // 两单元公共标记下限（角点法单标记即可解，留 2 做冗余/校验）
-  double max_rms_m{0.05};     // 解算 RMS 上限（米），超则判不可信
+  double max_rms_m{0.005};    // 生产外廓 1% 预算：531mm 宽度对应约 5.3mm，RMS 须≤5mm
 };
 
 struct SiteMarkerResult {

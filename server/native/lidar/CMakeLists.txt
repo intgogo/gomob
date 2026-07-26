@@ -66,6 +66,7 @@ endif()
 find_package(OpenCV 4 QUIET COMPONENTS core imgproc imgcodecs calib3d)
 if(OpenCV_FOUND)
   message(STATUS "[lidar] OpenCV ${OpenCV_VERSION} found: ${OpenCV_DIR}")
+  set(LIDAR_OPENCV_VERSION "${OpenCV_VERSION}")
   # ArUco moved main->objdetect at 4.7; in 4.6 it is the contrib 'aruco' module.
   # Probe both; calibration (M1c) REQUIRES one of them.
   set(LIDAR_ARUCO_LIBS "")
@@ -74,11 +75,14 @@ if(OpenCV_FOUND)
     set(LIDAR_ARUCO_LIBS opencv_aruco)
     message(STATUS "[lidar] OpenCV ArUco module: 'aruco' (contrib) present.")
   else()
-    find_package(OpenCV 4 QUIET COMPONENTS objdetect)
-    if(OpenCV_OBJDETECT_FOUND OR TARGET opencv_objdetect)
-      set(LIDAR_ARUCO_LIBS opencv_objdetect)
-      message(STATUS "[lidar] OpenCV ArUco module: via 'objdetect' (OpenCV>=4.7).")
-    else()
+    if(LIDAR_OPENCV_VERSION VERSION_GREATER_EQUAL "4.7")
+      find_package(OpenCV 4 QUIET COMPONENTS objdetect)
+      if(OpenCV_OBJDETECT_FOUND OR TARGET opencv_objdetect)
+        set(LIDAR_ARUCO_LIBS opencv_objdetect)
+        message(STATUS "[lidar] OpenCV ArUco module: via 'objdetect' (OpenCV>=4.7).")
+      endif()
+    endif()
+    if(NOT LIDAR_ARUCO_LIBS)
       message(WARNING "[lidar] OpenCV present but NO aruco/objdetect module found. "
                       "Calibration marker detection (M1c) will not build. "
                       "Fix: source-build OpenCV 4.6 + opencv_contrib, or install opencv-contrib.")
@@ -224,6 +228,21 @@ if(_texture_s)
   endif()
 endif()
 
+# 目标启用条件必须来自实际编入 lidar_core 的实现源，不能用宽泛的
+# LIDAR_LINK_OPENCV 代替。后者在仅 texture/ 启用时同样为 TRUE。
+set(LIDAR_HAVE_SITE_MARKER_CALIB FALSE)
+set(_site_marker_calib_src "${CMAKE_CURRENT_SOURCE_DIR}/src/calib/site_marker_calib.cpp")
+list(FIND LIDAR_CORE_SRC "${_site_marker_calib_src}" _site_marker_calib_src_index)
+if(NOT _site_marker_calib_src_index EQUAL -1)
+  set(LIDAR_HAVE_SITE_MARKER_CALIB TRUE)
+endif()
+set(LIDAR_HAVE_FRAMING_STREAM FALSE)
+set(_framing_stream_src "${CMAKE_CURRENT_SOURCE_DIR}/src/calib/framing_stream.cpp")
+list(FIND LIDAR_CORE_SRC "${_framing_stream_src}" _framing_stream_src_index)
+if(NOT _framing_stream_src_index EQUAL -1)
+  set(LIDAR_HAVE_FRAMING_STREAM TRUE)
+endif()
+
 # Expected M1 source manifest (for reference / to detect not-yet-created files).
 # These are the files the M1 plan creates; missing ones are simply skipped here.
 set(LIDAR_EXPECTED_SRC
@@ -348,9 +367,14 @@ endif()
 # CLI executable (M1 entry point)
 # ---------------------------------------------------------------------------
 if(TARGET lidar_core AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/app/main_cli.cpp")
-  add_executable(lidar_cli src/app/main_cli.cpp)
-  target_link_libraries(lidar_cli PRIVATE lidar_core)
-  message(STATUS "[lidar] lidar_cli target enabled.")
+  if(LIDAR_HAVE_SITE_MARKER_CALIB AND LIDAR_HAVE_FRAMING_STREAM)
+    add_executable(lidar_cli src/app/main_cli.cpp)
+    target_link_libraries(lidar_cli PRIVATE lidar_core)
+    message(STATUS "[lidar] lidar_cli target enabled.")
+  else()
+    message(STATUS "[lidar] lidar_cli skipped: main_cli.cpp requires site marker calibration "
+                   "and framing stream sources (Ceres + OpenCV ArUco).")
+  endif()
 elseif(TARGET lidar_core)
   message(STATUS "[lidar] src/app/main_cli.cpp not present yet -> lidar_cli skipped.")
 endif()
@@ -455,12 +479,18 @@ if(LIDAR_BUILD_TESTS AND TARGET lidar_core)
     message(STATUS "[lidar] test_calibration target enabled.")
   endif()
 
-  # 现场共享 ArUco 标记场自标定（aggregate + umeyama 复原已知 B->A，合成数据）。需 calib 源(OpenCV+aruco)。
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_site_marker_calib.cpp" AND LIDAR_LINK_OPENCV)
-    add_executable(test_site_marker_calib tests/test_site_marker_calib.cpp)
-    target_link_libraries(test_site_marker_calib PRIVATE lidar_core)
-    add_test(NAME site_marker_calib COMMAND test_site_marker_calib)
-    message(STATUS "[lidar] test_site_marker_calib target enabled.")
+  # 现场共享 ArUco 标记场自标定（aggregate + umeyama 复原已知 B->A，合成数据）。
+  # 仅当对应实现已实际编入 lidar_core 时启用；texture 的 OpenCV 不能代表 ArUco calib 可用。
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_site_marker_calib.cpp")
+    if(LIDAR_HAVE_SITE_MARKER_CALIB)
+      add_executable(test_site_marker_calib tests/test_site_marker_calib.cpp)
+      target_link_libraries(test_site_marker_calib PRIVATE lidar_core)
+      add_test(NAME site_marker_calib COMMAND test_site_marker_calib)
+      message(STATUS "[lidar] test_site_marker_calib target enabled.")
+    else()
+      message(STATUS "[lidar] test_site_marker_calib skipped: site_marker_calib.cpp is not in "
+                     "lidar_core (requires Ceres + OpenCV ArUco).")
+    endif()
   endif()
 
   # Device HTTP client test (builders/parsers + in-process mock-device round-trip).

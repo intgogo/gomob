@@ -2,14 +2,13 @@ package io.gomob.feature.profile
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -20,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Text
@@ -46,52 +46,44 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.gomob.designsystem.component.BackHeader
-import io.gomob.designsystem.component.Chip
 import io.gomob.designsystem.component.HairlineCard
-import io.gomob.designsystem.component.SegmentedTabItem
-import io.gomob.designsystem.component.SegmentedTabs
 import io.gomob.designsystem.component.SettingRow
 import io.gomob.designsystem.component.SettingRowDivider
-import io.gomob.designsystem.component.StatusTag
-import io.gomob.designsystem.component.StatusTone
 import io.gomob.designsystem.glass.GlassHeaderScaffold
+import io.gomob.designsystem.glass.glassPanelBg
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.model.user.UserProfile
 
 // ============================================================================
-// 个人信息
+// 我的资料 (纯表单, 与「我的案例」拆为两个独立路由)
 // ============================================================================
 @Composable
 fun ProfilePersonalRoute(
     onBack: () -> Unit,
-    initialTab: Int = 0,
     vm: ProfileViewModel = hiltViewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
-    val p = state.profile
-    var tab by rememberSaveable(initialTab) { mutableStateOf(initialTab.coerceIn(0, 1)) }
-    val basicListState = rememberLazyListState()
-    val caseListState = rememberLazyListState()
+    val listState = rememberLazyListState()
     GlassHeaderScaffold(
-        listState = if (tab == 0) basicListState else caseListState,
-        header = {
-            // SegmentedTabs 与 BackHeader 同入 header 槽, 共享玻璃底
-            Column {
-                BackHeader(title = "我的资料", onBack = onBack, eyebrow = "PROFILE · EDIT")
-                SegmentedTabs(
-                    items = listOf(SegmentedTabItem("基本资料"), SegmentedTabItem("我的案例")),
-                    selectedIndex = tab,
-                    onSelect = { tab = it },
-                    modifier = Modifier.padding(horizontal = Gomob.spacing.s20, vertical = Gomob.spacing.s6),
-                )
-            }
-        },
+        listState = listState,
+        header = { BackHeader(title = "我的资料", onBack = onBack, eyebrow = "我的") },
     ) { padding ->
-        when (tab) {
-            0 -> ProfileBasicPane(profile = p, listState = basicListState, padding = padding)
-            else -> ProfileCasePane(listState = caseListState, padding = padding)
-        }
+        ProfileBasicPane(profile = state.profile, listState = listState, padding = padding)
+    }
+}
+
+// ============================================================================
+// 我的案例 (独立路由)
+// ============================================================================
+@Composable
+fun ProfileCasesRoute(onBack: () -> Unit) {
+    val listState = rememberLazyListState()
+    GlassHeaderScaffold(
+        listState = listState,
+        header = { BackHeader(title = "我的案例", onBack = onBack, eyebrow = "我的") },
+    ) { padding ->
+        ProfileCasePane(listState = listState, padding = padding)
     }
 }
 
@@ -114,8 +106,8 @@ private fun ProfileBasicPane(
         state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
-            start = Gomob.spacing.s20,
-            end = Gomob.spacing.s20,
+            start = Gomob.spacing.pageGutter,
+            end = Gomob.spacing.pageGutter,
             top = padding.calculateTopPadding() + Gomob.spacing.s8,
             bottom = padding.calculateBottomPadding() + Gomob.spacing.s24,
         ),
@@ -160,44 +152,44 @@ private fun ProfileAvatarCard(name: String, onChange: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(Gomob.shapes.r3)
-            .background(Gomob.colors.bg1)
-            .padding(Gomob.spacing.s16),
+            .glassPanelBg(shape = Gomob.shapes.r3)
+            .padding(Gomob.spacing.s14),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s14),
     ) {
         Box(
             Modifier
-                .size(60.dp)
-                .clip(Gomob.shapes.r2)
+                .size(Gomob.spacing.avatarHero)
+                .clip(Gomob.shapes.r3)
                 .background(Gomob.colors.accentSoft),
             contentAlignment = Alignment.Center,
         ) {
             Text(
                 name.take(1).ifBlank { "?" },
-                fontSize = 28.sp,
+                fontSize = 20.sp,
                 fontWeight = FontWeight.Medium,
                 letterSpacing = 0.04.em,
-                color = Gomob.colors.accentStrong,
+                color = Gomob.colors.accent,
             )
         }
         Column(
             Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
         ) {
-            Text("头像", style = Gomob.type.body, color = Gomob.colors.fg0)
+            Text("头像", fontSize = 14.sp, fontWeight = FontWeight.Medium, color = Gomob.colors.fg0)
             Text("JPG / PNG · <= 2 MB", style = Gomob.type.eyebrow, color = Gomob.colors.fg3)
         }
         Box(
             Modifier
                 .height(32.dp)
-                .clip(Gomob.shapes.r1)
-                .background(Gomob.colors.bg2)
+                .clip(Gomob.shapes.r2)
+                .background(Gomob.colors.bg1.copy(alpha = 0.6f))
+                .border(Gomob.spacing.hairline, Gomob.colors.lineStrong, Gomob.shapes.r2)
                 .clickable(onClick = onChange)
                 .padding(horizontal = Gomob.spacing.s14),
             contentAlignment = Alignment.Center,
         ) {
-            Text("更换", style = Gomob.type.bodySm, color = Gomob.colors.fg1)
+            Text("更换", fontSize = 13.sp, color = Gomob.colors.fg1)
         }
     }
 }
@@ -220,9 +212,13 @@ private fun ProfileInputField(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(label, style = Gomob.type.bodySm, color = Gomob.colors.fg2)
+            Text(label, style = Gomob.type.caption, color = Gomob.colors.fg2)
             if (trailing != null) {
-                Text(trailing, style = Gomob.type.eyebrow, color = Gomob.colors.fg3)
+                Text(
+                    trailing,
+                    style = Gomob.type.eyebrow.copy(fontSize = 10.sp, letterSpacing = 1.sp),
+                    color = Gomob.colors.fg3,
+                )
             }
         }
         Box(
@@ -230,7 +226,16 @@ private fun ProfileInputField(
                 .fillMaxWidth()
                 .height(minHeight)
                 .clip(Gomob.shapes.r2)
-                .background(Gomob.colors.bg2)
+                .background(
+                    if (readOnly) Gomob.colors.fg0.copy(alpha = 0.03f) else Gomob.colors.bg1.copy(alpha = 0.8f),
+                )
+                .then(
+                    if (readOnly) {
+                        Modifier
+                    } else {
+                        Modifier.border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
+                    },
+                )
                 .padding(horizontal = Gomob.spacing.s12, vertical = if (singleLine) 0.dp else Gomob.spacing.s8),
             contentAlignment = if (singleLine) Alignment.CenterStart else Alignment.TopStart,
         ) {
@@ -240,8 +245,8 @@ private fun ProfileInputField(
                     onValueChange = onChange,
                     readOnly = readOnly,
                     singleLine = singleLine,
-                    textStyle = (if (mono) Gomob.type.numInline else Gomob.type.body).copy(
-                        color = if (readOnly) Gomob.colors.fg2 else Gomob.colors.fg0,
+                    textStyle = (if (mono) Gomob.type.numInline.copy(fontSize = 14.sp) else Gomob.type.bodySm).copy(
+                        color = if (readOnly) Gomob.colors.fg3 else Gomob.colors.fg0,
                     ),
                     cursorBrush = SolidColor(Gomob.colors.accent),
                     modifier = Modifier.weight(1f),
@@ -262,13 +267,14 @@ private fun ProfileInputField(
 @Composable
 private fun ProfileSelectField(label: String, value: String, onClick: () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6)) {
-        Text(label, style = Gomob.type.bodySm, color = Gomob.colors.fg2)
+        Text(label, style = Gomob.type.caption, color = Gomob.colors.fg2)
         Row(
             Modifier
                 .fillMaxWidth()
                 .height(Gomob.spacing.touchMin)
                 .clip(Gomob.shapes.r2)
-                .background(Gomob.colors.bg2)
+                .background(Gomob.colors.bg1.copy(alpha = 0.8f))
+                .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
                 .clickable(onClick = onClick)
                 .padding(horizontal = Gomob.spacing.s12),
             verticalAlignment = Alignment.CenterVertically,
@@ -276,7 +282,7 @@ private fun ProfileSelectField(label: String, value: String, onClick: () -> Unit
         ) {
             Text(
                 value,
-                style = Gomob.type.body,
+                style = Gomob.type.bodySm,
                 color = Gomob.colors.fg0,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -364,8 +370,8 @@ private fun ProfileCasePane(
         state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
-            start = Gomob.spacing.s20,
-            end = Gomob.spacing.s20,
+            start = Gomob.spacing.pageGutter,
+            end = Gomob.spacing.pageGutter,
             top = padding.calculateTopPadding() + Gomob.spacing.s8,
             bottom = padding.calculateBottomPadding() + Gomob.spacing.s24,
         ),
@@ -397,17 +403,12 @@ private fun ProfileCaseStatTile(
 ) {
     Column(
         modifier
-            .clip(Gomob.shapes.r2)
-            .background(Gomob.colors.bg1)
-            .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
+            .glassPanelBg(shape = Gomob.shapes.r3)
+            .padding(horizontal = Gomob.spacing.s12, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
     ) {
-        Text(label, style = Gomob.type.caption, color = Gomob.colors.fg2)
-        Text(
-            value,
-            style = Gomob.type.metricMd.copy(fontSize = 22.sp, lineHeight = 24.sp),
-            color = color,
-        )
+        Text(label, style = Gomob.type.micro, color = Gomob.colors.fg2)
+        Text(value, style = Gomob.type.metricMd, color = color)
     }
 }
 
@@ -416,35 +417,52 @@ private fun ProfileCaseFilters() {
     Row(
         Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
     ) {
         listOf("全部", "异常案例", "疑难复核", "经验分享").forEachIndexed { index, label ->
-            Chip(label, selected = index == 0, onClick = {})
+            ProfileCaseFilterChip(label, selected = index == 0, onClick = {})
         }
-        Spacer(Modifier.weight(1f))
-        Text("最新⌄", style = Gomob.type.caption, color = Gomob.colors.fg3)
     }
 }
 
+@Composable
+private fun ProfileCaseFilterChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .height(30.dp)
+            .clip(Gomob.shapes.r2)
+            .background(if (selected) Gomob.colors.accentSoft else Gomob.colors.fg0.copy(alpha = 0.04f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = Gomob.spacing.s14),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            fontSize = 12.sp,
+            fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+            color = if (selected) Gomob.colors.accent else Gomob.colors.fg2,
+        )
+    }
+}
+
+// TODO(终态): 案例详情 / 编辑入口待接线 — 设计无卡内编辑按钮, 接线后整卡可点进详情。
 @Composable
 private fun ProfileCaseCard(item: ProfileCase) {
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(Gomob.shapes.r3)
-            .background(Gomob.colors.bg1)
-            .clickable {}
-            .padding(Gomob.spacing.s12),
+            .glassPanelBg(shape = Gomob.shapes.r3)
+            .padding(Gomob.spacing.s14),
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
     ) {
-        CaseThumb(label = item.thumb, modifier = Modifier.width(68.dp).aspectRatio(0.78f))
+        CaseThumb(label = item.thumb, modifier = Modifier.size(64.dp))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6)) {
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                ProfileCaseStatusPill(item.status)
+                ProfileCaseStatusMark(item.status)
                 Text(item.id, style = Gomob.type.eyebrow, color = Gomob.colors.fg3)
             }
             Text(
@@ -454,9 +472,7 @@ private fun ProfileCaseCard(item: ProfileCase) {
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            Text(item.vin, style = Gomob.type.numInline.copy(fontSize = 11.sp), color = Gomob.colors.fg2)
-            Text(item.vehicle, style = Gomob.type.caption, color = Gomob.colors.fg3, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Box(Modifier.fillMaxWidth().height(Gomob.spacing.hairline).background(Gomob.colors.line1.copy(alpha = 0.5f)))
+            Text(item.vin, style = Gomob.type.numInline.copy(fontSize = 11.sp), color = Gomob.colors.fg3)
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -464,21 +480,17 @@ private fun ProfileCaseCard(item: ProfileCase) {
             ) {
                 ProfileCaseTag(item.tag)
                 if (item.pendingText != null) {
-                    Text(item.pendingText, style = Gomob.type.numInline.copy(fontSize = 10.sp), color = Gomob.colors.warn)
+                    Text(
+                        item.pendingText,
+                        style = Gomob.type.numInline.copy(fontSize = 11.sp),
+                        color = Gomob.colors.warn,
+                    )
                 } else {
-                    CaseMeta(icon = GomobIcons.Eyeball, text = item.views.toString())
-                    CaseMeta(icon = GomobIcons.LinkShare, text = item.shares.toString())
-                }
-                Spacer(Modifier.weight(1f))
-                Box(
-                    Modifier
-                        .size(28.dp)
-                        .clip(Gomob.shapes.r1)
-                        .background(Gomob.colors.bg2)
-                        .clickable {},
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(GomobIcons.Edit, contentDescription = "编辑案例", tint = Gomob.colors.fg2, modifier = Modifier.size(14.dp))
+                    Text(
+                        "${item.views} 浏览 · ${item.shares} 引用",
+                        style = Gomob.type.numInline.copy(fontSize = 11.sp),
+                        color = Gomob.colors.fg3,
+                    )
                 }
             }
         }
@@ -489,7 +501,7 @@ private fun ProfileCaseCard(item: ProfileCase) {
 private fun CaseThumb(label: String, modifier: Modifier = Modifier) {
     Box(
         modifier
-            .clip(Gomob.shapes.r1)
+            .clip(Gomob.shapes.r2)
             .background(Gomob.colors.bg2),
         contentAlignment = Alignment.Center,
     ) {
@@ -507,25 +519,31 @@ private fun CaseThumb(label: String, modifier: Modifier = Modifier) {
                 x += step
             }
         }
-        Box(
-            Modifier
-                .clip(Gomob.shapes.r1)
-                .background(Gomob.colors.bg0.copy(alpha = 0.76f))
-                .padding(horizontal = Gomob.spacing.s8, vertical = Gomob.spacing.s4),
-        ) {
-            Text(label, style = Gomob.type.eyebrow, color = Gomob.colors.fg2)
-        }
+        // 标签直接压在底纹上, 不再垫底块 pill
+        Text(label, style = Gomob.type.eyebrow.copy(fontSize = 9.sp), color = Gomob.colors.fg3)
     }
 }
 
+/** 状态徽: 裸 5dp 点 + 11sp 状态色字, 无底。 */
 @Composable
-private fun ProfileCaseStatusPill(status: ProfileCaseStatus) {
-    val (text, tone) = when (status) {
-        ProfileCaseStatus.Published -> "已公开" to StatusTone.Ok
-        ProfileCaseStatus.Reviewing -> "审核中" to StatusTone.Warn
-        ProfileCaseStatus.Draft -> "草稿" to StatusTone.Neutral
+private fun ProfileCaseStatusMark(status: ProfileCaseStatus) {
+    val (text, color) = when (status) {
+        ProfileCaseStatus.Published -> "已公开" to Gomob.colors.ok
+        ProfileCaseStatus.Reviewing -> "审核中" to Gomob.colors.warn
+        ProfileCaseStatus.Draft -> "草稿" to Gomob.colors.fg2
     }
-    StatusTag(text = text, tone = tone, showDot = true)
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
+    ) {
+        Box(
+            Modifier
+                .size(5.dp)
+                .clip(CircleShape)
+                .background(color),
+        )
+        Text(text, fontSize = 11.sp, color = color)
+    }
 }
 
 @Composable
@@ -538,15 +556,7 @@ private fun ProfileCaseTag(text: String) {
             .padding(horizontal = Gomob.spacing.s8),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text, style = Gomob.type.caption, color = Gomob.colors.fg2)
-    }
-}
-
-@Composable
-private fun CaseMeta(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s4)) {
-        Icon(icon, contentDescription = null, tint = Gomob.colors.fg3, modifier = Modifier.size(12.dp))
-        Text(text, style = Gomob.type.numInline.copy(fontSize = 10.sp), color = Gomob.colors.fg3)
+        Text(text, fontSize = 11.sp, color = Gomob.colors.fg2)
     }
 }
 
@@ -559,13 +569,13 @@ fun ProfileAccountRoute(onBack: () -> Unit) {
     var newPwd by remember { mutableStateOf("") }
     var confirmPwd by remember { mutableStateOf("") }
     GlassHeaderScaffold(
-        header = { BackHeader(title = "账号与安全", onBack = onBack, eyebrow = "修改密码 / 设备管理") },
+        header = { BackHeader(title = "账号与安全", onBack = onBack, eyebrow = "设置") },
     ) { padding ->
         Column(
             Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s12),
+                .padding(horizontal = Gomob.spacing.pageGutter, vertical = Gomob.spacing.s12),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
             PasswordInput("当前密码", oldPwd, "请输入当前密码") { oldPwd = it }
@@ -646,13 +656,13 @@ fun ProfileNotificationRoute(onBack: () -> Unit) {
     var inAppOn by remember { mutableStateOf(true) }
     var sysBarOn by remember { mutableStateOf(false) }
     GlassHeaderScaffold(
-        header = { BackHeader(title = "通知", onBack = onBack, eyebrow = "推送 + 系统通知栏") },
+        header = { BackHeader(title = "通知", onBack = onBack, eyebrow = "设置") },
     ) { padding ->
         Column(
             Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s12),
+                .padding(horizontal = Gomob.spacing.pageGutter, vertical = Gomob.spacing.s12),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
             HairlineCard(padding = 0.dp) {
@@ -715,13 +725,13 @@ private fun ToggleRow(
 @Composable
 fun ProfileAboutRoute(onBack: () -> Unit) {
     GlassHeaderScaffold(
-        header = { BackHeader(title = "关于 gomob", onBack = onBack, eyebrow = "版本 + 法务") },
+        header = { BackHeader(title = "关于 gomob", onBack = onBack, eyebrow = "设置") },
     ) { padding ->
         Column(
             Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s12),
+                .padding(horizontal = Gomob.spacing.pageGutter, vertical = Gomob.spacing.s12),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
             HairlineCard {

@@ -18,8 +18,8 @@ namespace gomob::vin {
 // 正射相机配置。
 struct OrthoConfig {
   float pixel_size_mm = 0.2f;   // 每正射像素的物理尺寸（mm/px）
-  int out_w = 1024;             // 正射图宽
-  int out_h = 512;              // 正射图高
+  int out_w = 1200;             // 正射图宽
+  int out_h = 260;              // 正射图高
   float plane_dist_thresh_mm = 3.0f;  // RANSAC 平面内点阈下限（实际取 max(此, 0.8%×中位深度)）
   int ransac_iter = 200;        // RANSAC 迭代
   float min_inlier_ratio = 0.5f;  // 低于此判平面拟合失败

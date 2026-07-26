@@ -64,6 +64,9 @@ import (
 	"unsafe"
 )
 
+// NativeScanAvailable 表示当前二进制已真实链接激光 native 采集实现。
+func NativeScanAvailable() bool { return true }
+
 //export goPointCB
 func goPointCB(handle C.uintptr_t, unit C.int, xyz *C.float, n C.int, hAngle C.float) {
 	if n <= 0 || xyz == nil {

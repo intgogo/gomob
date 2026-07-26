@@ -433,6 +433,9 @@ Body：原始字节流（非 multipart，简化）。Header：`Content-Length: <
 默认按 `since_seq` 做离线增量补齐；`latest=true` 时忽略 `since_seq`，返回该会话最新
 `limit` 条消息，并仍按 `server_seq` 升序排列，供 App 首屏预热使用。
 
+若当前用户删除过该会话，REST 历史和 WebSocket `msg.fetch` 都只返回删除边界之后的消息；
+客户端传入更早的 `since_seq` 不能越过服务端权威边界。
+
 ```json
 {
   "id": "m_999",
@@ -482,7 +485,28 @@ Body：原始字节流（非 multipart，简化）。Header：`Content-Length: <
 }
 ```
 
-### 7.5 退出群聊
+### 7.5 删除当前用户的会话
+
+`DELETE /v1/conversations/:id`
+
+该操作只删除当前用户视角下的会话及既有历史，不删除共享消息、不移除成员关系，也不影响
+其他成员。服务端在会话行锁内读取当时的 `next_seq`，把此前消息设为该用户不可见；因此与
+并发消息写入之间具备明确顺序：先完成的消息被隐藏，后完成的消息拿到更大序号并恢复会话。
+
+返回：
+
+```json
+{
+  "conversation_id": "1",
+  "deleted_before_seq": 43
+}
+```
+
+`deleted_before_seq` 是排他删除边界：当前用户本地与服务端都应删除 / 隐藏
+`server_seq < deleted_before_seq` 的消息。后续首条消息的 `server_seq >= deleted_before_seq`，
+会话会自动重新出现在列表中，历史只从该边界开始返回。
+
+### 7.6 退出群聊
 
 `POST /v1/conversations/:id/leave`
 
@@ -910,6 +934,73 @@ sign = base64( HMAC-SHA256(
   }
 }
 ```
+
+#### 14.2.1 App 识别代理
+
+`POST /cv/ocr/v1/vin_recognize` 接收服务端权威还原 PNG 的 multipart 字段
+`image_binary`。Gomob 服务端代签调用现场外部算法；私钥仅由 cv-engine 通过只读部署密钥
+挂载加载，禁止写入源码、镜像或 Android APK。
+
+成功响应：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "provider": "gosmart",
+    "vin": "ABC",
+    "confidence": 0.98,
+    "character_scores": [0.99, 0.98, 0.97],
+    "character_count": 3,
+    "log_id": "...",
+    "infer_ms": 327,
+    "character_crops": [
+      {
+        "position": 1,
+        "character": "A",
+        "image": {
+          "mime_type": "image/webp",
+          "data_base64": "<裸 base64，不带 data: 前缀>",
+          "width": 64,
+          "height": 128
+        }
+      },
+      {
+        "position": 2,
+        "character": "B",
+        "image": {
+          "mime_type": "image/webp",
+          "data_base64": "<裸 base64，不带 data: 前缀>",
+          "width": 64,
+          "height": 128
+        }
+      },
+      {
+        "position": 3,
+        "character": "C",
+        "image": {
+          "mime_type": "image/webp",
+          "data_base64": "<裸 base64，不带 data: 前缀>",
+          "width": 64,
+          "height": 128
+        }
+      }
+    ]
+  }
+}
+```
+
+示例使用 3 位结果便于阅读；正常 VIN 的 `character_scores`、`character_crops` 和
+`character_count` 均为 17。非 17 位结果仍可按实际长度返回，由 App 标记“需复核”。
+
+代理不发送外部算法的 `skip_image`。单字符素材只取所选 VIN item 的
+`more[].origin_image_data`；`alpha_image_data` 是机器比对掩膜，`result.image[].vin_detect_image`
+是整行检测图，两者都不下发 App。返回前必须保证：
+
+- `character_scores`、`character_crops` 数量等于 VIN 字符数，`position` 从 1 连续递增；
+- `character_crops[].character` 按顺序拼接后等于 VIN；
+- 每张图严格 base64 解码、WebP 全量解码且尺寸为 `64×128`，单图和总大小不越界；
+- `more` 缺失或损坏直接返回上游失败，禁止回退整行图、拆分整行图或用文本生成字符图。
 
 ### 14.3 VIN 双图比对
 

@@ -208,6 +208,17 @@ class MessageListViewModel @Inject constructor(
         }
     }
 
+    fun deleteConversation(conversationId: Long) {
+        if (conversationId <= 0) return
+        viewModelScope.launch {
+            _contactActionError.value = null
+            runCatching { repository.deleteConversation(conversationId) }
+                .onFailure { error ->
+                    _contactActionError.value = "删除会话失败：${error.readableMessage()}"
+                }
+        }
+    }
+
     fun openSearchMessage(message: MessageListSearchMessageUi) {
         if (message.conversationId <= 0 || message.localKey.isBlank()) return
         viewModelScope.launch {
@@ -869,7 +880,8 @@ data class MultiLineRoomRowUi(
     val time: String,
     val unreadCount: Long,
     val memberCountLabel: String,
-    val avatarSeeds: List<String>,
+    /** 群头像用成员名列表(≥2 拼 2x2 首字母 tile;不足则回退群名首字) */
+    val avatarLabels: List<String>,
     val unreadTone: WatchTone,
 )
 
@@ -969,7 +981,7 @@ private fun conversationUiState(
 ): ConversationUiState = ConversationUiState(
     conversationId = conversationId,
     title = conversation?.displayMultiLineTitle() ?: if (conversationId > 0) "会话 #$conversationId" else "会话",
-    eyebrow = if (conversationId > 0) "会话 · #$conversationId" else "会话",
+    eyebrow = conversation.conversationEyebrow(conversationId),
     messages = messages.mergeCallResultMessages(json).map { it.toBubbleUi(json, currentUserId) },
     loading = false,
     offlineCached = messages.isNotEmpty() && refresh is RefreshState.Error,
@@ -977,6 +989,19 @@ private fun conversationUiState(
     pinned = conversation?.pinned ?: false,
     group = conversation?.kind == "group" || conversation?.isOnlineHelpRoom() == true,
 )
+
+private fun ConversationSummary?.conversationEyebrow(conversationId: Long): String {
+    val conversation = this ?: return if (conversationId > 0) "会话 · #$conversationId" else "会话"
+    val peer = conversation.peer
+    return when {
+        !peer?.employeeId.isNullOrBlank() -> peer?.employeeId.orEmpty()
+        peer != null -> "联系人 · #${peer.id}"
+        conversation.isOnlineHelpRoom() -> "多人会话 · #${conversation.id}"
+        conversation.kind == "group" -> "群组 · #${conversation.id}"
+        !conversation.subjectKind.isNullOrBlank() -> "${conversation.subjectKind.orEmpty()} · #${conversation.id}"
+        else -> "会话 · #${conversation.id}"
+    }
+}
 
 data class MessageBubbleUi(
     val localKey: String,
@@ -1200,16 +1225,6 @@ private fun ConversationSummary.toMultiLineRoomRowUi(
         !subjectKind.isNullOrBlank() -> subjectKind.orEmpty()
         else -> "多人聊天"
     }
-    val seeds = if (memberNames.isNotEmpty()) {
-        experts.take(4).map { "expert-${it.userId}-${it.name}" }
-    } else {
-        listOf(
-            "group-$id-$title-a",
-            "group-$id-$title-b",
-            "group-$id-$title-c",
-            "group-$id-$title-d",
-        )
-    }
     val last = lastMessage
     return MultiLineRoomRowUi(
         id = id,
@@ -1219,7 +1234,7 @@ private fun ConversationSummary.toMultiLineRoomRowUi(
         time = last?.createdAt?.formatMessageTime().orEmpty(),
         unreadCount = unreadCount,
         memberCountLabel = memberCountLabel,
-        avatarSeeds = seeds,
+        avatarLabels = memberNames.take(4),
         unreadTone = if (unreadCount > 0) WatchTone.Accent else WatchTone.Neutral,
     )
 }
@@ -1587,7 +1602,7 @@ private fun MessageRecord.inspectionCardPayload(json: Json): InspectionCardUi? {
         vin = vin,
         vehicleLine = vehicleLine,
         timeLabel = obj["time_label"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-        status = obj["status"]?.jsonPrimitive?.contentOrNull.orEmpty().ifBlank { "warn" },
+        status = obj["status"]?.jsonPrimitive?.contentOrNull.orEmpty().trim(),
         tags = tags,
     )
 }

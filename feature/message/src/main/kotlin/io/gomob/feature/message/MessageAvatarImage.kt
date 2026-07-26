@@ -4,8 +4,10 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -17,9 +19,80 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import io.gomob.designsystem.theme.Gomob
+
+/**
+ * 首字母 tile 头像 — 设计快照同款骨架:tone-soft 底 + 首字 tone 色 + 在线时右下 ok 圆点。
+ * 会话列表 / 联系人 / 详情主卡 / 聊天设置成员统一用它;
+ * 旧卡通渐变头像 [MessageAvatarImage] 不再用于这些场景。
+ *
+ * @param text 取首字的名称文本(联系人名 / 会话标题)
+ * @param tone 联系人语义 tone;无 tone 数据的调用点默认 Accent
+ * @param online true 时右下叠 10dp ok 圆点(外圈 2dp bg0 描边, overhang 2dp)
+ */
+@Composable
+internal fun InitialAvatarTile(
+    text: String,
+    modifier: Modifier = Modifier,
+    size: Dp = 44.dp,
+    shape: Shape = Gomob.shapes.r3,
+    tone: WatchTone = WatchTone.Accent,
+    fontSize: TextUnit = 16.sp,
+    online: Boolean? = null,
+) {
+    val colors = Gomob.colors
+    val (bg, fg) = when (tone) {
+        WatchTone.Accent -> colors.accentSoft to colors.accent
+        WatchTone.Warn -> colors.warnSoft to colors.warn
+        WatchTone.Danger -> colors.dangerSoft to colors.danger
+        WatchTone.Ok -> colors.okSoft to colors.ok
+        WatchTone.Neutral -> colors.bg3 to colors.fg2
+    }
+    Box(
+        modifier
+            .size(size)
+            .semantics { contentDescription = "头像" },
+    ) {
+        Box(
+            Modifier
+                .matchParentSize()
+                .clip(shape)
+                .background(bg),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = text.trim().firstOrNull()?.toString() ?: "?",
+                fontSize = fontSize,
+                fontWeight = FontWeight.Medium,
+                color = fg,
+                maxLines = 1,
+            )
+        }
+        if (online == true) {
+            Box(
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .offset(x = 2.dp, y = 2.dp)
+                    .size(14.dp)
+                    .clip(CircleShape)
+                    .background(colors.bg0),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    Modifier
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(colors.ok),
+                )
+            }
+        }
+    }
+}
 
 @Composable
 internal fun MessageAvatarImage(

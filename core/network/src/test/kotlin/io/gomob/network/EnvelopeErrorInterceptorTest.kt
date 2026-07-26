@@ -96,6 +96,73 @@ class EnvelopeErrorInterceptorTest {
         assertThat((thrown as ApiException).code).isEqualTo(40102)
         assertThat(tokenProvider.expiredMessages).isEmpty()
     }
+
+    @Test
+    fun plainLaserWorkerErrorKeepsActionableMessage() {
+        val tokenProvider = RecordingTokenProvider()
+        val interceptor = EnvelopeErrorInterceptor(tokenProvider)
+        val request = Request.Builder().url("http://127.0.0.1/v1/scans/laser").build()
+        val response = Response.Builder()
+            .request(request)
+            .protocol(Protocol.HTTP_1_1)
+            .code(409)
+            .message("Conflict")
+            .body(
+                """{"error":"工位外参质量未达生产要求：缺少 RMS 证据"}"""
+                    .toResponseBody("application/json; charset=utf-8".toMediaType()),
+            )
+            .build()
+
+        val thrown = runCatching { interceptor.intercept(FakeChain(request, response)) }.exceptionOrNull()
+
+        assertThat(thrown).isInstanceOf(ApiException::class.java)
+        thrown as ApiException
+        assertThat(thrown.httpStatus).isEqualTo(409)
+        assertThat(thrown.message).isEqualTo("工位外参质量未达生产要求：缺少 RMS 证据")
+    }
+
+    @Test
+    fun largeSuccessfulEnvelopeIsNotConsumedOrRebuiltByTheInterceptor() {
+        val tokenProvider = RecordingTokenProvider()
+        val interceptor = EnvelopeErrorInterceptor(tokenProvider)
+        val request = Request.Builder().url("http://127.0.0.1/cv/ocr/v1/vin_restore").build()
+        val largeValue = "A".repeat(200_000)
+        val raw = """{"code":0,"data":{"result_png_base64":"$largeValue"}}"""
+        val response = Response.Builder()
+            .request(request)
+            .protocol(Protocol.HTTP_1_1)
+            .code(200)
+            .message("OK")
+            .body(raw.toResponseBody("application/json; charset=utf-8".toMediaType()))
+            .build()
+
+        val intercepted = interceptor.intercept(FakeChain(request, response))
+
+        assertThat(intercepted).isSameInstanceAs(response)
+        assertThat(intercepted.body!!.string()).isEqualTo(raw)
+    }
+
+    @Test
+    fun websocketSwitchingProtocolsPassesThrough() {
+        val interceptor = EnvelopeErrorInterceptor(RecordingTokenProvider())
+        val request = Request.Builder()
+            .url("http://127.0.0.1/v1/ws?token=token")
+            .header("Connection", "Upgrade")
+            .header("Upgrade", "websocket")
+            .build()
+        val response = Response.Builder()
+            .request(request)
+            .protocol(Protocol.HTTP_1_1)
+            .code(101)
+            .message("Switching Protocols")
+            .header("Connection", "Upgrade")
+            .header("Upgrade", "websocket")
+            .build()
+
+        val intercepted = interceptor.intercept(FakeChain(request, response))
+
+        assertThat(intercepted).isSameInstanceAs(response)
+    }
 }
 
 private class RecordingTokenProvider : TokenProvider {

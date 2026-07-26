@@ -6,7 +6,6 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -23,16 +22,14 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreHoriz
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -46,10 +43,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -57,21 +50,17 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupProperties
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import io.gomob.designsystem.component.LocalFeedbackTitleLongPress
+import io.gomob.designsystem.component.LocalFeedbackTitleTrigger
 import io.gomob.designsystem.component.StatusTag
 import io.gomob.designsystem.component.StatusTone
-import io.gomob.designsystem.component.feedbackTitleLongPress
+import io.gomob.designsystem.component.feedbackTitleFiveTap
 import io.gomob.designsystem.glass.GlassHeaderScaffold
 import io.gomob.designsystem.glass.glassChrome
 import io.gomob.designsystem.icons.GomobIcons
-import io.gomob.designsystem.motion.fixedDuringPageDrag
 import io.gomob.designsystem.theme.Gomob
 import kotlinx.coroutines.launch
 
@@ -94,7 +83,6 @@ fun ConversationRoute(
     var voiceRecording by remember { mutableStateOf(false) }
     var inspectionPickerOpen by rememberSaveable { mutableStateOf(false) }
     var inputFocused by remember { mutableStateOf(false) }
-    var clearConfirmOpen by remember { mutableStateOf(false) }
     var quoteDraft by remember { mutableStateOf<QuoteDraftUi?>(null) }
     var pendingMentions by remember { mutableStateOf<List<MentionRef>>(emptyList()) }
     val mentionCandidates by viewModel.mentionCandidates.collectAsStateWithLifecycle()
@@ -330,31 +318,6 @@ fun ConversationRoute(
         }
     }
 
-    if (clearConfirmOpen) {
-        AlertDialog(
-            onDismissRequest = { clearConfirmOpen = false },
-            containerColor = Gomob.colors.bg2.copy(alpha = 0.97f),
-            shape = Gomob.shapes.r3,
-            title = { Text("清空聊天记录", style = Gomob.type.title, color = Gomob.colors.fg0) },
-            text = { Text("清空后，本机不会再显示当前已同步的历史消息。", style = Gomob.type.bodySm, color = Gomob.colors.fg2) },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        clearConfirmOpen = false
-                        viewModel.clearMessages()
-                    },
-                ) {
-                    Text("清空", color = Gomob.colors.danger)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { clearConfirmOpen = false }) {
-                    Text("取消", color = Gomob.colors.fg2)
-                }
-            },
-        )
-    }
-
     MessageForwardTargetDialog(
         visible = forwardingMessages.isNotEmpty(),
         targets = forwardTargets,
@@ -381,14 +344,12 @@ fun ConversationRoute(
         header = {
             ConversationTopBar(
                 title = state.title,
+                eyebrow = state.eyebrow,
                 onBack = onBack,
-                pinned = state.pinned,
-                group = state.group,
+                // TODO(终态): 接入 peer presence 后传真实在线态点亮 ok 圆点
+                online = null,
                 modifier = Modifier.clearInputFocusOnPointerDown(focusManager),
-                onSearch = { onOpenSearch(conversationId) },
                 onOpenInfo = { onOpenInfo(conversationId) },
-                onClearMessages = { clearConfirmOpen = true },
-                onTogglePinned = viewModel::togglePinned,
             )
         },
         overlay = { _ ->
@@ -522,20 +483,16 @@ fun ConversationRoute(
 @Composable
 private fun ConversationTopBar(
     title: String,
-    pinned: Boolean,
-    group: Boolean,
+    eyebrow: String,
     onBack: () -> Unit,
-    onSearch: () -> Unit,
     onOpenInfo: () -> Unit,
-    onClearMessages: () -> Unit,
-    onTogglePinned: () -> Unit,
+    online: Boolean? = null,
     modifier: Modifier = Modifier,
 ) {
-    var menuOpen by remember { mutableStateOf(false) }
-    val feedbackTrigger = LocalFeedbackTitleLongPress.current
+    val feedbackTrigger = LocalFeedbackTitleTrigger.current
 
     // 顶栏在 GlassHeaderScaffold header 槽内 → 不画实底，由玻璃层负责
-    Column(modifier.fixedDuringPageDrag().fillMaxWidth()) {
+    Column(modifier.fillMaxWidth()) {
         Box(
             Modifier
                 .fillMaxWidth()
@@ -552,159 +509,71 @@ private fun ConversationTopBar(
                     imageVector = GomobIcons.ChevronLeft,
                     contentDescription = "返回",
                     modifier = Modifier.size(26.dp),
-                    tint = Gomob.colors.fg1,
+                    tint = Gomob.colors.accent,
                 )
             }
-            Text(
-                title,
-                style = Gomob.type.title,
-                color = Gomob.colors.fg0,
-                maxLines = 1,
-                textAlign = TextAlign.Center,
+            Column(
                 modifier = Modifier
                     .align(Alignment.Center)
                     .fillMaxWidth()
                     .then(
                         if (feedbackTrigger != null) {
-                            Modifier.feedbackTitleLongPress(title, feedbackTrigger)
+                            Modifier.feedbackTitleFiveTap(title, feedbackTrigger)
                         } else {
                             Modifier
                         },
                     )
                     .padding(horizontal = 72.dp),
-            )
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2),
+            ) {
+                Text(
+                    title,
+                    style = Gomob.type.title,
+                    color = Gomob.colors.fg0,
+                    maxLines = 1,
+                    textAlign = TextAlign.Center,
+                )
+                if (eyebrow.isNotBlank()) {
+                    // 副标题:在线语义存在时点亮 5dp ok 圆点 + micro 文本
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
+                    ) {
+                        if (online == true) {
+                            Box(
+                                Modifier
+                                    .size(5.dp)
+                                    .clip(CircleShape)
+                                    .background(Gomob.colors.ok),
+                            )
+                        }
+                        Text(
+                            eyebrow,
+                            style = Gomob.type.micro,
+                            color = Gomob.colors.fg3,
+                            maxLines = 1,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
+                }
+            }
+            // 1:1 与群聊统一进聊天设置页(查找/置顶/清空 info 页已有)
             Box(
                 Modifier
                     .align(Alignment.CenterEnd)
-                    .size(Gomob.spacing.touchMin),
+                    .size(Gomob.spacing.touchMin)
+                    .clickable(onClick = onOpenInfo),
                 contentAlignment = Alignment.Center,
             ) {
-                Box(
-                    Modifier
-                        .size(Gomob.spacing.touchMin)
-                        .clickable {
-                            if (group) {
-                                onOpenInfo()
-                            } else {
-                                menuOpen = true
-                            }
-                        },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.MoreHoriz,
-                        contentDescription = "聊天设置",
-                        tint = Gomob.colors.fg1,
-                        modifier = Modifier.size(24.dp),
-                    )
-                }
-                ConversationOverflowMenu(
-                    expanded = menuOpen,
-                    pinned = pinned,
-                    onDismiss = { menuOpen = false },
-                    onSearch = {
-                        menuOpen = false
-                        onSearch()
-                    },
-                    onTogglePinned = {
-                        menuOpen = false
-                        onTogglePinned()
-                    },
-                    onClearMessages = {
-                        menuOpen = false
-                        onClearMessages()
-                    },
+                Icon(
+                    imageVector = Icons.Filled.MoreHoriz,
+                    contentDescription = "聊天设置",
+                    tint = Gomob.colors.fg1,
+                    modifier = Modifier.size(24.dp),
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun ConversationOverflowMenu(
-    expanded: Boolean,
-    pinned: Boolean,
-    onDismiss: () -> Unit,
-    onSearch: () -> Unit,
-    onTogglePinned: () -> Unit,
-    onClearMessages: () -> Unit,
-) {
-    if (!expanded) return
-
-    val offset = with(LocalDensity.current) {
-        IntOffset(
-            x = (-10).dp.roundToPx(),
-            y = (Gomob.spacing.touchMin - 2.dp).roundToPx(),
-        )
-    }
-    Popup(
-        alignment = Alignment.TopEnd,
-        offset = offset,
-        onDismissRequest = onDismiss,
-        properties = PopupProperties(focusable = true),
-    ) {
-        Column(
-            Modifier
-                .width(156.dp)
-                .clip(Gomob.shapes.r3)
-                .background(Gomob.colors.bg1)
-                .padding(vertical = Gomob.spacing.s4),
-        ) {
-            ConversationMenuItem(
-                icon = GomobIcons.Search,
-                label = "查找聊天记录",
-                onClick = onSearch,
-            )
-            ConversationMenuItem(
-                icon = GomobIcons.Pin,
-                label = if (pinned) "取消置顶" else "置顶聊天",
-                active = pinned,
-                onClick = onTogglePinned,
-            )
-            ConversationMenuItem(
-                icon = GomobIcons.Trash,
-                label = "清空聊天记录",
-                danger = true,
-                onClick = onClearMessages,
-            )
-        }
-    }
-}
-
-@Composable
-private fun ConversationMenuItem(
-    icon: ImageVector,
-    label: String,
-    onClick: () -> Unit,
-    active: Boolean = false,
-    danger: Boolean = false,
-) {
-    val tint = when {
-        danger -> Gomob.colors.danger
-        active -> Gomob.colors.accent
-        else -> Gomob.colors.fg1
-    }
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .height(42.dp)
-            .clickable(onClick = onClick)
-            .padding(horizontal = Gomob.spacing.s12),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = tint,
-            modifier = Modifier.size(18.dp),
-        )
-        Text(
-            text = label,
-            style = Gomob.type.bodySm,
-            color = tint,
-            maxLines = 1,
-        )
     }
 }
 
@@ -803,13 +672,12 @@ private fun ConversationBody(
             .clipToBounds()
             .clearInputFocusOnPointerDown(focusManager),
     ) {
-        StarfieldBackground(Modifier.matchParentSize())
         LazyColumn(
             Modifier.fillMaxSize(),
             state = listState,
             // 顶/底避让并进 contentPadding（外部算好传入），消息从玻璃顶栏与吸底栏下穿过
             contentPadding = contentPadding,
-            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
             reverseLayout = reverseMessages,
         ) {
             when {
@@ -825,6 +693,7 @@ private fun ConversationBody(
                             val bubble = item.bubble
                             ChatMessageRow(
                                 bubble = bubble,
+                                peerName = state.title,
                                 favorite = bubble.localKey in favoriteMessageKeys,
                                 selected = bubble.localKey in selectedMessageKeys,
                                 multiSelectMode = multiSelectMode,
@@ -872,74 +741,6 @@ private fun conversationListItemCount(
     state.errorMessage != null && state.messages.isEmpty() -> 0
     else -> displayItems.size
 }
-
-@Composable
-internal fun StarfieldBackground(modifier: Modifier = Modifier) {
-    val colors = Gomob.colors
-    val top = if (colors.isLight) Color(0xFFEFF5FF) else Color(0xFF07101F)
-    val bottom = if (colors.isLight) Color(0xFFF8FBFF) else Color(0xFF03070E)
-    val haze = if (colors.isLight) Color(0x383AA7D6) else Color(0x2E65C6E4)
-    val star = if (colors.isLight) Color(0x8A467EA4) else Color(0xCFEAF8FF)
-    val dimStar = if (colors.isLight) Color(0x3A467EA4) else Color(0x62EAF8FF)
-    val starPoints = remember {
-        listOf(
-            StarPoint(0.08f, 0.12f, 1.2f, true),
-            StarPoint(0.18f, 0.38f, 0.8f, false),
-            StarPoint(0.26f, 0.18f, 1.0f, false),
-            StarPoint(0.34f, 0.72f, 1.3f, true),
-            StarPoint(0.43f, 0.31f, 0.7f, false),
-            StarPoint(0.51f, 0.56f, 1.0f, true),
-            StarPoint(0.58f, 0.16f, 0.8f, false),
-            StarPoint(0.66f, 0.84f, 1.2f, false),
-            StarPoint(0.74f, 0.44f, 1.4f, true),
-            StarPoint(0.82f, 0.22f, 0.9f, false),
-            StarPoint(0.90f, 0.64f, 1.1f, false),
-            StarPoint(0.96f, 0.36f, 0.7f, true),
-        )
-    }
-
-    Canvas(modifier) {
-        drawRect(
-            Brush.verticalGradient(
-                colors = listOf(top, bottom),
-                startY = 0f,
-                endY = size.height,
-            ),
-        )
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(haze, Color.Transparent),
-                center = Offset(size.width * 0.22f, size.height * 0.18f),
-                radius = size.minDimension * 0.75f,
-            ),
-            radius = size.minDimension * 0.75f,
-            center = Offset(size.width * 0.22f, size.height * 0.18f),
-        )
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(haze.copy(alpha = haze.alpha * 0.6f), Color.Transparent),
-                center = Offset(size.width * 0.82f, size.height * 0.76f),
-                radius = size.minDimension * 0.58f,
-            ),
-            radius = size.minDimension * 0.58f,
-            center = Offset(size.width * 0.82f, size.height * 0.76f),
-        )
-        starPoints.forEach { point ->
-            drawCircle(
-                color = if (point.bright) star else dimStar,
-                radius = point.radius,
-                center = Offset(size.width * point.x, size.height * point.y),
-            )
-        }
-    }
-}
-
-private data class StarPoint(
-    val x: Float,
-    val y: Float,
-    val radius: Float,
-    val bright: Boolean,
-)
 
 @Composable
 private fun InlineStatus(

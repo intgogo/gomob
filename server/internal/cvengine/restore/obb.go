@@ -1,9 +1,9 @@
 // Package restore —— VIN 数码拓印还原管线（端口自 tests/harness/vin_restore/*.py，逐函数对齐）。
 //
-// 链路：彩色 + 深度 → 深度 RANSAC 主平面去透视 → YOLO OBB 定 VIN 区中心/朝向 →
-// 四角单应正射 remap → GetSignature3G 去阴影二值化 → OCR 级签名 PNG。
+// 链路：彩色 + 深度 → 深度 RANSAC 承印面 → YOLO OBB 限定范围 → VINCHAR 拟合 17 位刚性格架 →
+// 从原始彩色图按物理平面一次 Remap 到固定规范画布。
 //
-// 算法以 Python harness 为准（已在真机数据上验证「多张还原重合=正常」）。
+// 一致性以 vin_restore_consistency harness 的固定坐标直接比较为准，禁止评估前配准。
 package restore
 
 import (

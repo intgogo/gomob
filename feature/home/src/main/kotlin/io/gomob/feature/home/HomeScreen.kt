@@ -21,6 +21,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -48,6 +49,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Icon
@@ -94,10 +97,10 @@ import androidx.compose.ui.zIndex
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.HairlineCard
 import io.gomob.designsystem.component.ScreenHeader
-import io.gomob.designsystem.decoration.ticks
 import io.gomob.designsystem.glass.GlassHeaderScaffold
-import io.gomob.designsystem.glass.LocalContentBottomInset
+import io.gomob.designsystem.glass.RootBottomChromeSlot
 import io.gomob.designsystem.glass.glassChrome
+import io.gomob.designsystem.glass.glassPanelBg
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
 import kotlinx.coroutines.delay
@@ -166,6 +169,23 @@ fun HomeRoute(
     }
     BackHandler(enabled = composerActive, onBack = exitInput)
 
+    RootBottomChromeSlot {
+        ChatComposer(
+            onSubmit = { text ->
+                val token = attachedBitmap?.let(HomeImageHolder::put)
+                attachedBitmap = null
+                onOpenNewChat(text, token)
+            },
+            attachedBitmap = attachedBitmap,
+            onClearAttachment = { attachedBitmap = null },
+            onCameraClick = { requestCapture = true },
+            active = composerActive,
+            onActiveChange = { composerActive = it },
+            embeddedInRootChrome = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+
     val rootListState = rememberLazyListState()
     GlassHeaderScaffold(
         modifier = Modifier.consumeWindowInsets(WindowInsets.ime),
@@ -173,33 +193,15 @@ fun HomeRoute(
         header = {
             ScreenHeader(
                 title = "智能助手",
-                eyebrow = "车辆检验智能体 · 检测站合规识别",
                 trailing = {
                     HistoryIconButton(onClick = onOpenHistory)
                 },
             )
         },
-        overlay = { padding ->
+        overlay = { _ ->
             InputScrim(
                 visible = composerActive,
                 onDismiss = exitInput,
-            )
-            ChatComposer(
-                onSubmit = { text ->
-                    val token = attachedBitmap?.let(HomeImageHolder::put)
-                    attachedBitmap = null
-                    onOpenNewChat(text, token)
-                },
-                attachedBitmap = attachedBitmap,
-                onClearAttachment = { attachedBitmap = null },
-                onCameraClick = { requestCapture = true },
-                active = composerActive,
-                onActiveChange = { composerActive = it },
-                bottomAnchorInset = padding.calculateBottomPadding(),
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .padding(bottom = LocalContentBottomInset.current),
             )
         },
     ) { padding ->
@@ -210,18 +212,26 @@ fun HomeRoute(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(
                     top = padding.calculateTopPadding(),
-                    bottom = padding.calculateBottomPadding() + (if (compact) 104.dp else 112.dp),
+                    bottom = padding.calculateBottomPadding() + Gomob.spacing.sectionGap,
                 ),
             ) {
                 item { AgentIntroCard(compact = compact) }
-                item { Spacer(Modifier.height(if (compact) Gomob.spacing.s12 else Gomob.spacing.s16)) }
+                item { SectionTitle("专项智能体", "03 组", compact = compact) }
                 item {
                     AgentCapabilityList(
                         onSelect = { onOpenAgent(it.key) },
                         compact = compact,
                     )
                 }
-                item { Spacer(Modifier.height(if (compact) Gomob.spacing.s16 else Gomob.spacing.s24)) }
+                item {
+                    SectionTitle(
+                        title = "最近会话",
+                        hint = "全部 ›",
+                        compact = compact,
+                        onHintClick = onOpenHistory,
+                    )
+                }
+                item { RecentConversationList(onOpenHistory = onOpenHistory) }
             }
         }
     }
@@ -294,8 +304,8 @@ fun HomeAiChatRoute(
                 .fillMaxSize()
                 .dismissInputOnTap(exitInput),
             contentPadding = PaddingValues(
-                start = Gomob.spacing.s20,
-                end = Gomob.spacing.s20,
+                start = Gomob.spacing.pageGutter,
+                end = Gomob.spacing.pageGutter,
                 top = padding.calculateTopPadding() + Gomob.spacing.s12,
                 // 底部预留吸底输入条高度，最后一条气泡不被压住
                 bottom = padding.calculateBottomPadding() + 104.dp,
@@ -325,12 +335,10 @@ private fun AgentIntroBubble(agent: AgentCapability, modifier: Modifier = Modifi
         Box(
             Modifier
                 .fillMaxWidth()
-                .clip(Gomob.shapes.r3)
-                .background(Gomob.colors.bg1)
-                .ticks(),
+                .glassPanelBg(),
         ) {
             Column(
-                Modifier.padding(horizontal = Gomob.spacing.s14, vertical = Gomob.spacing.s12),
+                Modifier.padding(Gomob.spacing.s14),
                 verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
             ) {
                 Row(
@@ -339,7 +347,7 @@ private fun AgentIntroBubble(agent: AgentCapability, modifier: Modifier = Modifi
                 ) {
                     Box(
                         Modifier
-                            .size(28.dp)
+                            .size(36.dp)
                             .clip(Gomob.shapes.r2)
                             .background(Gomob.colors.accentSoft),
                         contentAlignment = Alignment.Center,
@@ -354,14 +362,14 @@ private fun AgentIntroBubble(agent: AgentCapability, modifier: Modifier = Modifi
                     Column(Modifier.weight(1f)) {
                         Text(
                             "助手 · ${agent.k}",
-                            fontSize = 10.sp,
+                            fontSize = 11.sp,
                             fontFamily = FontFamily.Monospace,
                             letterSpacing = 0.08.em,
                             color = Gomob.colors.accent,
                         )
                         Text(
                             agent.title,
-                            fontSize = 13.sp,
+                            fontSize = 15.sp,
                             fontWeight = FontWeight.Medium,
                             color = Gomob.colors.fg0,
                         )
@@ -370,8 +378,8 @@ private fun AgentIntroBubble(agent: AgentCapability, modifier: Modifier = Modifi
                 Text(
                     agent.intro,
                     fontSize = 13.sp,
-                    lineHeight = 21.sp,
-                    color = Gomob.colors.fg0,
+                    lineHeight = 20.sp,
+                    color = Gomob.colors.fg1,
                 )
             }
         }
@@ -380,19 +388,28 @@ private fun AgentIntroBubble(agent: AgentCapability, modifier: Modifier = Modifi
 
 @Composable
 private fun HistoryIconButton(onClick: () -> Unit) {
+    // 命中区保持 44dp，视觉圆钮 36dp（设计 root header 右上钮规格）
     Box(
         Modifier
             .size(Gomob.spacing.touchMin)
-            .clip(Gomob.shapes.r1)
+            .clip(CircleShape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            GomobIcons.History,
-            contentDescription = "历史会话",
-            tint = Gomob.colors.fg2,
-            modifier = Modifier.size(Gomob.spacing.icon20),
-        )
+        Box(
+            Modifier
+                .size(36.dp)
+                .clip(CircleShape)
+                .background(Gomob.colors.bg3),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                GomobIcons.History,
+                contentDescription = "历史会话",
+                tint = Gomob.colors.fg1,
+                modifier = Modifier.size(Gomob.spacing.icon16),
+            )
+        }
     }
 }
 
@@ -409,6 +426,7 @@ fun ChatHistoryRoute(onBack: () -> Unit) {
                 title = "历史会话",
                 eyebrow = "智能助手",
                 onBack = onBack,
+                trailing = { HistoryCountBadge(HISTORY_ITEMS.size) },
             )
         },
     ) { padding ->
@@ -423,20 +441,12 @@ fun ChatHistoryRoute(onBack: () -> Unit) {
             ),
         ) {
             item {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = Gomob.spacing.s12),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.Bottom,
-                ) {
-                    Text("近 7 天", fontSize = 12.sp, color = Gomob.colors.fg2)
-                    Text(
-                        "${HISTORY_ITEMS.size}",
-                        style = Gomob.type.numInline.copy(fontSize = 18.sp),
-                        color = Gomob.colors.accent,
-                    )
-                }
+                Text(
+                    "近 7 天",
+                    fontSize = 12.sp,
+                    color = Gomob.colors.fg2,
+                    modifier = Modifier.padding(bottom = Gomob.spacing.s12),
+                )
             }
             item {
                 HairlineCard(padding = 0.dp) {
@@ -449,6 +459,23 @@ fun ChatHistoryRoute(onBack: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun HistoryCountBadge(count: Int) {
+    Box(
+        Modifier
+            .clip(Gomob.shapes.pill)
+            .background(Gomob.colors.accentSoft)
+            .padding(horizontal = Gomob.spacing.s8, vertical = 4.dp),
+    ) {
+        Text(
+            "共 $count 条会话",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+            color = Gomob.colors.accent,
+        )
     }
 }
 
@@ -494,7 +521,7 @@ private fun UserMessageBubble(prompt: String, turnNumber: Int, image: Bitmap? = 
     ) {
         Text(
             "你 · ${turnNumber.toString().padStart(2, '0')}",
-            fontSize = 10.sp,
+            fontSize = 11.sp,
             fontFamily = FontFamily.Monospace,
             letterSpacing = 0.08.em,
             color = Gomob.colors.fg3,
@@ -519,11 +546,12 @@ private fun UserMessageBubble(prompt: String, turnNumber: Int, image: Bitmap? = 
         Box(
             Modifier
                 .fillMaxWidth(0.86f)
-                .clip(Gomob.shapes.r3)
+                // 己方气泡右上角收 2dp 成气泡尾（设计 r8 + top-right 2）
+                .clip(RoundedCornerShape(topStart = 8.dp, topEnd = 2.dp, bottomStart = 8.dp, bottomEnd = 8.dp))
                 .background(Gomob.colors.accentSoft)
-                .padding(horizontal = Gomob.spacing.s14, vertical = Gomob.spacing.s12),
+                .padding(horizontal = Gomob.spacing.s12, vertical = 10.dp),
         ) {
-            Text(prompt, fontSize = 13.sp, lineHeight = 20.sp, color = Gomob.colors.fg0)
+            Text(prompt, fontSize = 14.sp, lineHeight = 20.sp, color = Gomob.colors.fg0)
         }
     }
 }
@@ -542,9 +570,7 @@ private fun VehicleDossierCard() {
         Column(
             Modifier
                 .fillMaxWidth()
-                .clip(Gomob.shapes.r3)
-                .background(Gomob.colors.bg1)
-                .ticks()
+                .glassPanelBg()
                 .padding(horizontal = Gomob.spacing.s14, vertical = Gomob.spacing.s12),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
         ) {
@@ -596,9 +622,10 @@ private fun AssistantMessageCard(
         Box(
             Modifier
                 .fillMaxWidth()
-                .clip(Gomob.shapes.r3)
-                .background(Gomob.colors.bg1)
-                .ticks(),
+                // 助手卡左上角收 2dp（设计拟玻璃卡 r8 + top-left 2）
+                .glassPanelBg(
+                    shape = RoundedCornerShape(topStart = 2.dp, topEnd = 8.dp, bottomStart = 8.dp, bottomEnd = 8.dp),
+                ),
         ) {
             Column {
                 AssistantBubble(prompt = prompt, streaming = streaming, hasImage = hasImage)
@@ -644,13 +671,12 @@ private fun AssistantBubble(prompt: String, streaming: Boolean, hasImage: Boolea
             ) {
                 Text(
                     "助手",
-                    fontSize = 10.sp,
-                    fontFamily = FontFamily.Monospace,
-                    letterSpacing = 0.08.em,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
                     color = Gomob.colors.accent,
                 )
                 if (streaming) {
-                    Text("· 正在生成…", fontSize = 10.sp, color = Gomob.colors.fg3)
+                    Text("· 正在生成…", fontSize = 11.sp, color = Gomob.colors.fg3)
                 }
             }
             // 第一段：含内嵌 RefChip "3 项"
@@ -660,14 +686,14 @@ private fun AssistantBubble(prompt: String, streaming: Boolean, hasImage: Boolea
             ) {
                 Text(
                     assistantLead(prompt, hasImage),
-                    fontSize = 13.sp,
+                    fontSize = 14.sp,
                     color = Gomob.colors.fg0,
                 )
                 RefChip(if (hasImage) "图 + 上下文" else "3 项")
             }
             Text(
                 assistantBody(prompt, hasImage),
-                fontSize = 13.sp,
+                fontSize = 14.sp,
                 lineHeight = 21.sp,
                 color = Gomob.colors.fg0,
             )
@@ -676,14 +702,14 @@ private fun AssistantBubble(prompt: String, streaming: Boolean, hasImage: Boolea
                     append("供你参考，可信度 ")
                     withStyle(
                         SpanStyle(
-                            color = Gomob.colors.accentStrong,
+                            color = Gomob.colors.accent,
                             fontFamily = FontFamily.Monospace,
                             letterSpacing = (-0.01).em,
                         ),
                     ) { append(if (hasImage) "92.4%" else "87.3%") }
                     append("。")
                 },
-                fontSize = 13.sp,
+                fontSize = 14.sp,
                 lineHeight = 21.sp,
                 color = Gomob.colors.fg0,
             )
@@ -744,7 +770,7 @@ private fun RefChip(label: String) {
             fontFamily = FontFamily.Monospace,
             color = Gomob.colors.accent,
         )
-        Text(label, fontSize = 11.sp, color = Gomob.colors.accent)
+        Text(label, fontSize = 12.sp, color = Gomob.colors.accent)
     }
 }
 
@@ -752,41 +778,46 @@ private fun RefChip(label: String) {
 private fun InlineAction(label: String) {
     Row(
         Modifier
-            .height(26.dp)
-            .clip(Gomob.shapes.r1)
-            .background(Gomob.colors.bg2)
+            .height(28.dp)
+            .clip(Gomob.shapes.r2)
+            .background(Gomob.colors.fg0.copy(alpha = 0.03f))
+            .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
             .clickable {}
             .padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
     ) {
         Text("›", fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = Gomob.colors.accent)
-        Text(label, fontSize = 11.sp, color = Gomob.colors.fg1)
+        Text(label, fontSize = 12.sp, color = Gomob.colors.fg1)
     }
 }
 
 // ─── SectionTitle / 分隔线 ──────────────────────────────────────────────────
 @Composable
-private fun SectionTitle(title: String, hint: String, compact: Boolean = false) {
+private fun SectionTitle(
+    title: String,
+    hint: String,
+    compact: Boolean = false,
+    onHintClick: (() -> Unit)? = null,
+) {
     Row(
         Modifier
             .fillMaxWidth()
             .padding(
-                start = Gomob.spacing.s20,
-                end = Gomob.spacing.s20,
-                top = if (compact) Gomob.spacing.s12 else Gomob.spacing.s20,
-                bottom = if (compact) Gomob.spacing.s8 else 10.dp,
+                start = Gomob.spacing.pageGutter,
+                end = Gomob.spacing.pageGutter,
+                top = if (compact) Gomob.spacing.s12 else Gomob.spacing.sectionGap,
+                bottom = Gomob.spacing.s8,
             ),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.Bottom,
     ) {
-        Text(title, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Gomob.colors.fg0)
+        Text(title, style = Gomob.type.sectionTitle, color = Gomob.colors.fg1)
         Text(
             hint,
-            fontSize = 10.sp,
-            fontFamily = FontFamily.Monospace,
-            letterSpacing = 0.06.em,
-            color = Gomob.colors.fg3,
+            style = Gomob.type.numInline.copy(fontSize = 12.sp),
+            color = if (onHintClick != null) Gomob.colors.accent else Gomob.colors.fg3,
+            modifier = if (onHintClick != null) Modifier.clickable(onClick = onHintClick) else Modifier,
         )
     }
 }
@@ -797,75 +828,45 @@ private fun FullDivider() {
         Modifier
             .fillMaxWidth()
             .height(Gomob.spacing.hairline)
-            .background(Gomob.colors.line1.copy(alpha = 0.03f)),
+            .background(Gomob.colors.line1),
     )
 }
 
 @Composable
-private fun InsetDivider() {
+private fun InsetDivider(start: Dp = 62.dp) {
     Box(
         Modifier
             .fillMaxWidth()
-            .padding(start = Gomob.spacing.s14)
+            .padding(start = start)
             .height(Gomob.spacing.hairline)
-            .background(Gomob.colors.line1.copy(alpha = 0.03f)),
+            .background(Gomob.colors.line1),
     )
 }
 
 // ─── 智能体身份卡 ──────────────────────────────────────────────────────────
 @Composable
 private fun AgentIntroCard(compact: Boolean = false) {
-    Box(
-        Modifier.padding(
-            start = Gomob.spacing.s20,
-            end = Gomob.spacing.s20,
-            top = if (compact) Gomob.spacing.s12 else Gomob.spacing.s16,
-        ),
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(
+                start = Gomob.spacing.pageGutter,
+                end = Gomob.spacing.pageGutter,
+                top = if (compact) Gomob.spacing.s12 else Gomob.spacing.s20,
+            )
+            .padding(horizontal = Gomob.spacing.s2),
+        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
     ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .clip(Gomob.shapes.r3)
-                .background(Gomob.colors.bg1)
-                .ticks()
-                .padding(
-                    horizontal = Gomob.spacing.s14,
-                    vertical = if (compact) Gomob.spacing.s12 else Gomob.spacing.s14,
-                ),
-            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
-        ) {
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "INSPECTION AGENT",
-                    fontSize = 9.sp,
-                    fontFamily = FontFamily.Monospace,
-                    letterSpacing = 0.14.em,
-                    color = Gomob.colors.accent,
-                )
-                Text(
-                    "能力 · ${AGENT_CAPABILITIES.size} 项主线",
-                    fontSize = 10.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = Gomob.colors.fg3,
-                )
-            }
-            Text(
-                "拍照即问 · 实时识别车辆合规风险",
-                fontSize = if (compact) 13.sp else 14.sp,
-                fontWeight = FontWeight.Medium,
-                color = Gomob.colors.fg0,
-            )
-            Text(
-                "聚焦改装识别、车架号伪刻、铭牌伪造，给出可信度判定与依据。",
-                fontSize = 11.sp,
-                lineHeight = 16.sp,
-                color = Gomob.colors.fg2,
-            )
-        }
+        Text(
+            "拍照即问，实时识别\n车辆合规风险",
+            style = Gomob.type.heroTitle,
+            color = Gomob.colors.fg0,
+        )
+        Text(
+            "聚焦改装识别、车架号伪刻、铭牌伪造，给出可信度判定与依据",
+            style = Gomob.type.caption,
+            color = Gomob.colors.fg2,
+        )
     }
 }
 
@@ -916,11 +917,13 @@ private fun AgentCapabilityList(
     compact: Boolean = false,
 ) {
     Column(
-        Modifier.padding(horizontal = Gomob.spacing.s20),
-        verticalArrangement = Arrangement.spacedBy(if (compact) Gomob.spacing.s6 else Gomob.spacing.s8),
+        Modifier
+            .padding(horizontal = Gomob.spacing.pageGutter)
+            .glassPanelBg(),
     ) {
-        AGENT_CAPABILITIES.forEach { item ->
+        AGENT_CAPABILITIES.forEachIndexed { index, item ->
             CapabilityRow(item = item, compact = compact, onClick = { onSelect(item) })
+            if (index != AGENT_CAPABILITIES.lastIndex) InsetDivider()
         }
     }
 }
@@ -934,20 +937,15 @@ private fun CapabilityRow(
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(Gomob.shapes.r3)
-            .background(Gomob.colors.bg1)
-            .ticks()
+            .height(Gomob.spacing.rowList)
             .clickable(onClick = onClick)
-            .padding(
-                horizontal = Gomob.spacing.s14,
-                vertical = if (compact) Gomob.spacing.s12 else Gomob.spacing.s14,
-            ),
+            .padding(horizontal = Gomob.spacing.s14),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
     ) {
         Box(
             Modifier
-                .size(if (compact) 40.dp else 44.dp)
+                .size(if (compact) 34.dp else 36.dp)
                 .clip(Gomob.shapes.r2)
                 .background(Gomob.colors.accentSoft),
             contentAlignment = Alignment.Center,
@@ -956,7 +954,7 @@ private fun CapabilityRow(
                 item.icon,
                 contentDescription = null,
                 tint = Gomob.colors.accent,
-                modifier = Modifier.size(if (compact) 20.dp else 22.dp),
+                modifier = Modifier.size(Gomob.spacing.icon20),
             )
         }
         Column(Modifier.weight(1f)) {
@@ -966,14 +964,13 @@ private fun CapabilityRow(
             ) {
                 Text(
                     item.k,
-                    fontSize = 9.sp,
+                    style = Gomob.type.eyebrow,
                     fontFamily = FontFamily.Monospace,
-                    letterSpacing = 0.14.em,
                     color = Gomob.colors.fg3,
                 )
                 Text(
                     item.title,
-                    fontSize = if (compact) 13.sp else 14.sp,
+                    style = Gomob.type.body,
                     fontWeight = FontWeight.Medium,
                     color = Gomob.colors.fg0,
                     maxLines = 1,
@@ -983,7 +980,7 @@ private fun CapabilityRow(
             Spacer(Modifier.height(2.dp))
             Text(
                 item.description,
-                fontSize = 11.sp,
+                style = Gomob.type.caption,
                 color = Gomob.colors.fg2,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -991,9 +988,9 @@ private fun CapabilityRow(
         }
         Text(
             "›",
-            fontSize = 18.sp,
+            fontSize = 15.sp,
             fontFamily = FontFamily.Monospace,
-            color = Gomob.colors.accent,
+            color = Gomob.colors.fg3,
         )
     }
 }
@@ -1009,24 +1006,41 @@ private val HISTORY_ITEMS = listOf(
 )
 
 @Composable
-private fun HistoryRow(item: HistoryItem) {
+private fun RecentConversationList(onOpenHistory: () -> Unit) {
+    HairlineCard(
+        modifier = Modifier.padding(horizontal = Gomob.spacing.pageGutter),
+        padding = 0.dp,
+    ) {
+        Column {
+            HISTORY_ITEMS.take(2).forEachIndexed { index, item ->
+                HistoryRow(item = item, onClick = onOpenHistory)
+                if (index != 1) InsetDivider(start = 48.dp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryRow(item: HistoryItem, onClick: () -> Unit = {}) {
     Row(
         Modifier
             .fillMaxWidth()
-            .clickable {}
-            .padding(horizontal = Gomob.spacing.s14, vertical = Gomob.spacing.s12),
+            .height(Gomob.spacing.rowList)
+            .clickable(onClick = onClick)
+            .padding(horizontal = Gomob.spacing.s14),
+        verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Box(
             Modifier
                 .size(24.dp)
-                .clip(Gomob.shapes.r1)
-                .background(Gomob.colors.bg2),
+                .clip(Gomob.shapes.r2)
+                .background(Gomob.colors.bg3),
             contentAlignment = Alignment.Center,
         ) {
             Text(
                 item.turns.toString(),
-                fontSize = 10.sp,
+                fontSize = 11.sp,
                 fontFamily = FontFamily.Monospace,
                 color = Gomob.colors.fg2,
             )
@@ -1039,7 +1053,7 @@ private fun HistoryRow(item: HistoryItem) {
             ) {
                 Text(
                     item.title,
-                    fontSize = 12.sp,
+                    fontSize = 14.sp,
                     fontWeight = FontWeight.Medium,
                     color = Gomob.colors.fg0,
                     modifier = Modifier.weight(1f),
@@ -1048,7 +1062,7 @@ private fun HistoryRow(item: HistoryItem) {
                 Spacer(Modifier.width(Gomob.spacing.s8))
                 Text(
                     item.ts,
-                    style = Gomob.type.numInline.copy(fontSize = 10.sp),
+                    style = Gomob.type.numInline.copy(fontSize = 11.sp),
                     color = Gomob.colors.fg3,
                 )
             }
@@ -1075,6 +1089,7 @@ private fun ChatComposer(
     attachedBitmap: Bitmap? = null,
     onClearAttachment: () -> Unit = {},
     onCameraClick: () -> Unit = {},
+    embeddedInRootChrome: Boolean = false,
 ) {
     var draft by remember { mutableStateOf("") }
     val exitInput = rememberExitInput()
@@ -1095,7 +1110,12 @@ private fun ChatComposer(
     } else {
         0
     }
-    val bottomPadding = if (expanded && imeVisible) Gomob.spacing.s8 else 10.dp
+    val bottomPadding = when {
+        embeddedInRootChrome && !expanded -> Gomob.spacing.s8
+        expanded && imeVisible -> Gomob.spacing.s8
+        else -> 10.dp
+    }
+    val topPadding = if (embeddedInRootChrome && !expanded) Gomob.spacing.s8 else 9.dp
 
     fun showKeyboard() {
         keyboardController?.show()
@@ -1158,14 +1178,18 @@ private fun ChatComposer(
         }
     }
 
+    val chromeModifier = if (embeddedInRootChrome) {
+        Modifier
+    } else {
+        Modifier
+            .offset { IntOffset(x = 0, y = -keyboardTravel) }
+            .glassChrome()
+            .navigationBarsPadding()
+    }
     Box(
         modifier
             .zIndex(10f)
-            .offset { IntOffset(x = 0, y = -keyboardTravel) }
-            // 玻璃吸底条：内容从底下滚过时透出模糊背景；导航栏 inset 吃在玻璃内侧。
-            // 不画顶缘线 —— 输入区与内容之间靠模糊+tint 自然分层, 叠线显生硬
-            .glassChrome()
-            .navigationBarsPadding()
+            .then(chromeModifier)
             .clickable(
                 interactionSource = inputClickSource,
                 indication = null,
@@ -1174,7 +1198,7 @@ private fun ChatComposer(
             .padding(
                 start = Gomob.spacing.s16,
                 end = Gomob.spacing.s16,
-                top = 9.dp,
+                top = topPadding,
                 bottom = bottomPadding,
             )
             .animateContentSize(animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing)),
@@ -1275,53 +1299,62 @@ private fun ChatComposer(
                 }
             }
         } else {
+            // 折叠态 = 输入 pill（相机/占位/麦克风内联裸图标）+ 外置发送钮，总高 40
             Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(Gomob.shapes.r3)
-                    .background(Gomob.colors.bg2)
-                    .padding(horizontal = Gomob.spacing.s8, vertical = Gomob.spacing.s6),
+                Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s8),
             ) {
-                ComposerIconButton(
-                    icon = GomobIcons.Camera,
-                    tint = Gomob.colors.accent,
-                    bg = Gomob.colors.accentSoft,
-                    size = 36.dp,
-                    iconSize = 20.dp,
-                    onClick = onCameraClick,
-                )
-                Box(
+                Row(
                     Modifier
                         .weight(1f)
-                        .heightIn(min = 36.dp)
+                        .height(40.dp)
+                        .clip(Gomob.shapes.r2)
+                        .background(Gomob.colors.bg1.copy(alpha = 0.8f))
+                        .border(Gomob.spacing.hairline, Gomob.colors.line2, Gomob.shapes.r2)
                         .clickable(
                             interactionSource = inputClickSource,
                             indication = null,
                             onClick = { activateInput() },
-                        ),
-                    contentAlignment = Alignment.CenterStart,
+                        )
+                        .padding(horizontal = Gomob.spacing.s12),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
+                    Icon(
+                        GomobIcons.Camera,
+                        contentDescription = "拍照提问",
+                        tint = Gomob.colors.accent,
+                        modifier = Modifier
+                            .size(Gomob.spacing.icon16)
+                            .clickable(
+                                interactionSource = inputClickSource,
+                                indication = null,
+                                onClick = onCameraClick,
+                            ),
+                    )
                     Text(
                         draft.ifEmpty { "拍图问助手 · 或输入文字提问" },
-                        fontSize = 13.sp,
+                        fontSize = 14.sp,
                         color = if (draft.isEmpty()) Gomob.colors.fg3 else Gomob.colors.fg0,
                         maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Icon(
+                        GomobIcons.Mic,
+                        contentDescription = "语音输入",
+                        tint = Gomob.colors.fg2,
+                        modifier = Modifier.size(Gomob.spacing.icon16),
                     )
                 }
-                ComposerIconButton(
-                    icon = GomobIcons.Mic,
-                    tint = Gomob.colors.fg1,
-                    size = 36.dp,
-                    iconSize = 20.dp,
-                )
+                Spacer(Modifier.width(Gomob.spacing.s8))
                 ComposerIconButton(
                     icon = GomobIcons.Send,
                     tint = Gomob.colors.accent,
                     bg = Gomob.colors.accentSoft,
-                    size = 36.dp,
+                    size = 40.dp,
                     iconSize = 20.dp,
+                    shape = Gomob.shapes.r2,
                     onClick = { submitDraft() },
                 )
             }
@@ -1458,12 +1491,13 @@ private fun ComposerIconButton(
     bg: Color = Color.Transparent,
     size: Dp = Gomob.spacing.avatar28,
     iconSize: Dp = 14.dp,
+    shape: RoundedCornerShape = Gomob.shapes.r1,
     onClick: () -> Unit = {},
 ) {
     Box(
         Modifier
             .size(size)
-            .clip(Gomob.shapes.r1)
+            .clip(shape)
             .background(bg)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,

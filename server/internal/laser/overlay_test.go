@@ -45,6 +45,21 @@ func TestOverlay_BoxTruck(t *testing.T) {
 	}
 }
 
+func TestOverlay_RejectsThinCargoResidual(t *testing.T) {
+	body := makeVehicleWithThinCargoResidual()
+	p := DefaultMeasureParams()
+	p.UseROI = false
+	p.UseROR = false
+	p.ClusterLeaf = 100
+	ov := BuildVehicleOverlay(body, p, DefaultAxleParams(), DefaultCargoBoxParams())
+	if !ov.Valid {
+		t.Fatal("叠加无效")
+	}
+	if ov.HasCargoBox || len(ov.CargoBox) > 0 {
+		t.Fatalf("细长高残留不应绘制货箱叠加: %+v", ov)
+	}
+}
+
 // TestOverlay_AxleLines 合成 4 轴车：叠加轴线数=轴数，端点横跨车宽。
 func TestOverlay_AxleLines(t *testing.T) {
 	axleY := []float64{300, 1000, 1400, 1700}

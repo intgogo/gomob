@@ -23,16 +23,21 @@ type VehicleOverlay struct {
 
 // BuildVehicleOverlay 在融合云世界系导出车体框/货箱框/轴线。world=测量用的同一融合云([x,y,z,...] mm)。
 func BuildVehicleOverlay(world []float32, p MeasureParams, ap AxleParams, cbp CargoBoxParams) VehicleOverlay {
-	roiPts, cleaned, d := measureBody(world, p)
+	_, _, _, overlay := measureFullWithOverlay(world, p, ap, cbp)
+	return overlay
+}
+
+func buildVehicleOverlayFromMeasurement(
+	cleaned []pt,
+	d Dimensions,
+	bounds measurementBounds,
+	ax AxleResult,
+	cb CargoBox,
+	p MeasureParams,
+) VehicleOverlay {
 	if !d.Valid || len(cleaned) < 50 {
 		return VehicleOverlay{}
 	}
-	// 车体框用 cleaned(主簇→ROR)，与测量 OBB 一致、剔端噪/离群；轴心/货箱用 roiPts(自带 trim)，
-	// 但裁到车体足迹内并过合理性闸——与 MeasureFull 同源，叠加轴线与测量数字保持一致。
-	det := clipToBodyFootprint(roiPts, cleaned, d, footprintMarginMM)
-	ax := gateAxlePlausibility(DetectAxles(det, d.OBBAngleDeg, anchorAxleParams(ap, cleaned, d)), d)
-	cb := DetectCargoBox(det, d.OBBAngleDeg, cbp)
-
 	O, A0, A1, A2 := invTransform(p)
 	ldir, wdir := lengthWidthDirs(cleaned, d.OBBAngleDeg)
 	// 世界系 OBB 轴：Lw=ldir.x·A0+ldir.y·A1（ldir.z=0），Ww 同理，Hw=A2。
@@ -47,17 +52,8 @@ func BuildVehicleOverlay(world []float32, p MeasureParams, ap AxleParams, cbp Ca
 		}
 	}
 
-	// 车体框：干净车体在 l/w/h 投影系的范围（与测量 OBB 一致）。
-	var lMin, lMax, wMin, wMax, hMin, hMax float32 = math.MaxFloat32, -math.MaxFloat32, math.MaxFloat32, -math.MaxFloat32, math.MaxFloat32, -math.MaxFloat32
-	for _, q := range cleaned {
-		l := q.x*ldir[0] + q.y*ldir[1]
-		w := q.x*wdir[0] + q.y*wdir[1]
-		lMin, lMax = minf(lMin, l), maxf(lMax, l)
-		wMin, wMax = minf(wMin, w), maxf(wMax, w)
-		hMin, hMax = minf(hMin, q.z), maxf(hMax, q.z)
-	}
 	ov := VehicleOverlay{Valid: true}
-	ov.VehicleBox = box8(worldOf, lMin, lMax, wMin, wMax, hMin, hMax)
+	ov.VehicleBox = box8(worldOf, bounds.LMin, bounds.LMax, bounds.WMin, bounds.WMax, bounds.HMin, bounds.HMax)
 
 	if cb.Valid && cb.HasBox {
 		ov.HasCargoBox = true
@@ -67,7 +63,7 @@ func BuildVehicleOverlay(world []float32, p MeasureParams, ap AxleParams, cbp Ca
 	if ax.Valid {
 		for _, c := range ax.AxleCentersRawMM { // 各轴在车底横跨一条标线
 			ov.AxleLines = append(ov.AxleLines, [2][3]float32{
-				worldOf(c, wMin, hMin+20), worldOf(c, wMax, hMin+20),
+				worldOf(c, bounds.WMin, bounds.HMin+20), worldOf(c, bounds.WMax, bounds.HMin+20),
 			})
 		}
 	}

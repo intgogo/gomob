@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -60,8 +61,8 @@ func (s DeviceStatus) Online() bool {
 	return s.EncoderOnline && s.LidarOnline && s.ControlOnline
 }
 
-// DeviceInfo = device_info 关键标识 + 规格 + 当前扫描设置(control) + 当前标定(parameters)。
-// 探活只看 Model/SN；App 设备面板用其余字段做信息展示 + 扫描设置/标定的回显与编辑底本。
+// DeviceInfo = device_info 关键标识/规格 + get_config 权威运行设置和标定。
+// 背景兼容性会哈希 Control/Calib，因此 GetInfo 不允许在 get_config 缺失时返回本结构。
 type DeviceInfo struct {
 	Model       string `json:"model"`        // device.model，应为 "LTS-T1"
 	SN          string `json:"sn"`           // device.sn
@@ -80,11 +81,11 @@ type DeviceInfo struct {
 	CameraHeight      int        `json:"camera_height"`
 	CameraCaptureFPS  float64    `json:"camera_capture_fps"`
 
-	Control ControlSettings `json:"control"` // 当前扫描运动设置（device_info.control）
-	Calib   CalibParams     `json:"calib"`   // 当前标定（device_info.parameters）
+	Control ControlSettings `json:"control"` // 当前扫描运动设置（get_config）
+	Calib   CalibParams     `json:"calib"`   // 当前标定（get_config）
 }
 
-// ControlSettings = 扫描运动参数（device_info.control 读 / update_control 写）。
+// ControlSettings = 扫描运动参数（get_config 读 / update_control 写）。
 // 字段名对齐 lidar http_client ControlParams 与 /api/update_control body。
 type ControlSettings struct {
 	ScanSpeed        float64    `json:"scan_speed"`           // 扫描速度 °/s
@@ -98,7 +99,7 @@ type ControlSettings struct {
 	CameraFPS        float64    `json:"camera_fps"`           // 相机 FPS
 }
 
-// CalibParams = 设备标定（device_info.parameters 读 / update_calib_parameters 写）。
+// CalibParams = 设备标定（get_config 读 / update_calib_parameters 写）。
 // 三套：激光→轴、相机→轴+内参畸变、身体→世界。JSON 形状与设备一致，可原样回写。
 type CalibParams struct {
 	Lidar      LidarCalib      `json:"lidar"`
@@ -243,6 +244,214 @@ func ParseDeviceInfo(body []byte) (DeviceInfo, error) {
 	}, nil
 }
 
+// RuntimeDeviceConfig 是 /api/get_config 中会影响采集几何和背景兼容性的权威配置。
+type RuntimeDeviceConfig struct {
+	Control   ControlSettings
+	Calib     CalibParams
+	CameraFPS float64
+}
+
+type rawRuntimeDeviceConfig struct {
+	Control *struct {
+		ScanSpeed      *float64 `json:"scan_speed"`
+		ZeroSpeed      *float64 `json:"zero_speed"`
+		ScanStartAngle *float64 `json:"scan_start_angle"`
+		ScanStopAngle  *float64 `json:"scan_stop_angle"`
+		WatchingAngle  *float64 `json:"watching_angle"`
+	} `json:"control"`
+	Lidar *struct {
+		CorrQuat   json.RawMessage `json:"corr_quat"`
+		CorrOffset json.RawMessage `json:"corr_offset"`
+		RotQuat    json.RawMessage `json:"rot_quat"`
+	} `json:"lidar"`
+	Camera *struct {
+		FPS        *float64        `json:"fps"`
+		CorrQuat   json.RawMessage `json:"corr_quat"`
+		CorrOffset json.RawMessage `json:"corr_offset"`
+		RotQuat    json.RawMessage `json:"rot_quat"`
+		Intrinsic  json.RawMessage `json:"intrinsic"`
+		Distortion json.RawMessage `json:"distortion"`
+	} `json:"camera"`
+	Calculate *struct {
+		LidarFilterZone  json.RawMessage `json:"lidar_filter_zone"`
+		LidarFilterGhost *float64        `json:"lidar_filter_ghost"`
+		B2WQuat          json.RawMessage `json:"b2w_quat"`
+		B2WOffset        json.RawMessage `json:"b2w_offset"`
+		B2WScale         *float64        `json:"b2w_scale"`
+	} `json:"calculate"`
+}
+
+// ParseDeviceConfig 严格解析 /api/get_config。
+// 缺字段、数组长度错误或非有限数都拒绝，避免用零值/设备规格伪装真实运行配置。
+func ParseDeviceConfig(body []byte) (RuntimeDeviceConfig, error) {
+	var raw rawRuntimeDeviceConfig
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return RuntimeDeviceConfig{}, fmt.Errorf("get_config 解析失败: %w", err)
+	}
+	if raw.Control == nil || raw.Lidar == nil || raw.Camera == nil || raw.Calculate == nil {
+		return RuntimeDeviceConfig{}, fmt.Errorf("get_config 缺少 control/lidar/camera/calculate 节点")
+	}
+
+	scanSpeed, err := requiredConfigNumber("control.scan_speed", raw.Control.ScanSpeed)
+	if err != nil {
+		return RuntimeDeviceConfig{}, err
+	}
+	zeroSpeed, err := requiredConfigNumber("control.zero_speed", raw.Control.ZeroSpeed)
+	if err != nil {
+		return RuntimeDeviceConfig{}, err
+	}
+	startAngle, err := requiredConfigNumber("control.scan_start_angle", raw.Control.ScanStartAngle)
+	if err != nil {
+		return RuntimeDeviceConfig{}, err
+	}
+	stopAngle, err := requiredConfigNumber("control.scan_stop_angle", raw.Control.ScanStopAngle)
+	if err != nil {
+		return RuntimeDeviceConfig{}, err
+	}
+	watchingAngle, err := requiredConfigNumber("control.watching_angle", raw.Control.WatchingAngle)
+	if err != nil {
+		return RuntimeDeviceConfig{}, err
+	}
+	cameraFPS, err := requiredConfigNumber("camera.fps", raw.Camera.FPS)
+	if err != nil {
+		return RuntimeDeviceConfig{}, err
+	}
+	filterGhost, err := requiredConfigNumber("calculate.lidar_filter_ghost", raw.Calculate.LidarFilterGhost)
+	if err != nil {
+		return RuntimeDeviceConfig{}, err
+	}
+	b2wScale, err := requiredConfigNumber("calculate.b2w_scale", raw.Calculate.B2WScale)
+	if err != nil {
+		return RuntimeDeviceConfig{}, err
+	}
+	if scanSpeed <= 0 || zeroSpeed <= 0 || cameraFPS <= 0 || b2wScale <= 0 || filterGhost < 0 {
+		return RuntimeDeviceConfig{}, fmt.Errorf("get_config 速度、camera.fps、b2w_scale 必须为正且滤波阈值不能为负")
+	}
+
+	lidarRot, err := requiredConfigArray("lidar.rot_quat", raw.Lidar.RotQuat, 4)
+	if err != nil {
+		return RuntimeDeviceConfig{}, err
+	}
+	lidarCorr, err := requiredConfigArray("lidar.corr_quat", raw.Lidar.CorrQuat, 4)
+	if err != nil {
+		return RuntimeDeviceConfig{}, err
+	}
+	lidarOffset, err := requiredConfigArray("lidar.corr_offset", raw.Lidar.CorrOffset, 3)
+	if err != nil {
+		return RuntimeDeviceConfig{}, err
+	}
+	cameraRot, err := requiredConfigArray("camera.rot_quat", raw.Camera.RotQuat, 4)
+	if err != nil {
+		return RuntimeDeviceConfig{}, err
+	}
+	cameraCorr, err := requiredConfigArray("camera.corr_quat", raw.Camera.CorrQuat, 4)
+	if err != nil {
+		return RuntimeDeviceConfig{}, err
+	}
+	cameraOffset, err := requiredConfigArray("camera.corr_offset", raw.Camera.CorrOffset, 3)
+	if err != nil {
+		return RuntimeDeviceConfig{}, err
+	}
+	intrinsic, err := requiredConfigArray("camera.intrinsic", raw.Camera.Intrinsic, 4)
+	if err != nil {
+		return RuntimeDeviceConfig{}, err
+	}
+	distortion, err := requiredConfigArray("camera.distortion", raw.Camera.Distortion, 5)
+	if err != nil {
+		return RuntimeDeviceConfig{}, err
+	}
+	filterZone, err := requiredConfigArray("calculate.lidar_filter_zone", raw.Calculate.LidarFilterZone, 2)
+	if err != nil {
+		return RuntimeDeviceConfig{}, err
+	}
+	b2wQuat, err := requiredConfigArray("calculate.b2w_quat", raw.Calculate.B2WQuat, 4)
+	if err != nil {
+		return RuntimeDeviceConfig{}, err
+	}
+	b2wOffset, err := requiredConfigArray("calculate.b2w_offset", raw.Calculate.B2WOffset, 3)
+	if err != nil {
+		return RuntimeDeviceConfig{}, err
+	}
+	if filterZone[0] >= filterZone[1] {
+		return RuntimeDeviceConfig{}, fmt.Errorf("get_config calculate.lidar_filter_zone 必须满足 min < max")
+	}
+	if intrinsic[0] <= 0 || intrinsic[1] <= 0 {
+		return RuntimeDeviceConfig{}, fmt.Errorf("get_config camera.intrinsic 的 fx/fy 必须为正")
+	}
+	if zeroQuaternion(lidarRot) || zeroQuaternion(lidarCorr) || zeroQuaternion(cameraRot) ||
+		zeroQuaternion(cameraCorr) || zeroQuaternion(b2wQuat) {
+		return RuntimeDeviceConfig{}, fmt.Errorf("get_config 标定四元数不能为零")
+	}
+
+	var cfg RuntimeDeviceConfig
+	cfg.Control = ControlSettings{
+		ScanSpeed:        scanSpeed,
+		ZeroSpeed:        zeroSpeed,
+		ScanStartAngle:   startAngle,
+		ScanStopAngle:    stopAngle,
+		WatchingAngle:    watchingAngle,
+		LidarFilterGhost: filterGhost,
+		LidarFilterZone:  [2]float64{filterZone[0], filterZone[1]},
+		CameraFPS:        cameraFPS,
+	}
+	copy(cfg.Calib.Lidar.RotQuat[:], lidarRot)
+	copy(cfg.Calib.Lidar.CorrQuat[:], lidarCorr)
+	copy(cfg.Calib.Lidar.CorrOffset[:], lidarOffset)
+	copy(cfg.Calib.Camera.RotQuat[:], cameraRot)
+	copy(cfg.Calib.Camera.CorrQuat[:], cameraCorr)
+	copy(cfg.Calib.Camera.CorrOffset[:], cameraOffset)
+	copy(cfg.Calib.Camera.Intrinsic[:], intrinsic)
+	copy(cfg.Calib.Camera.Distortion[:], distortion)
+	copy(cfg.Calib.Body2World.Quat[:], b2wQuat)
+	copy(cfg.Calib.Body2World.Offset[:], b2wOffset)
+	cfg.Calib.Body2World.Scale = b2wScale
+	cfg.CameraFPS = cameraFPS
+	return cfg, nil
+}
+
+func requiredConfigNumber(name string, value *float64) (float64, error) {
+	if value == nil {
+		return 0, fmt.Errorf("get_config 缺少 %s", name)
+	}
+	if math.IsNaN(*value) || math.IsInf(*value, 0) {
+		return 0, fmt.Errorf("get_config %s 必须是有限数", name)
+	}
+	return *value, nil
+}
+
+func requiredConfigArray(name string, raw json.RawMessage, size int) ([]float64, error) {
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("get_config 缺少 %s", name)
+	}
+	var values []float64
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return nil, fmt.Errorf("get_config %s 解析失败: %w", name, err)
+	}
+	if len(values) != size {
+		return nil, fmt.Errorf("get_config %s 必须包含 %d 个数", name, size)
+	}
+	for _, value := range values {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return nil, fmt.Errorf("get_config %s 不能包含非有限数", name)
+		}
+	}
+	return values, nil
+}
+
+func zeroQuaternion(values []float64) bool {
+	var norm2 float64
+	for _, value := range values {
+		norm2 += value * value
+	}
+	return norm2 == 0
+}
+
+func applyRuntimeDeviceConfig(info *DeviceInfo, cfg RuntimeDeviceConfig) {
+	info.Control = cfg.Control
+	info.Calib = cfg.Calib
+	info.CameraCaptureFPS = cfg.CameraFPS
+}
+
 // --- 传输 ---
 
 // DeviceClient 对单台扫描单元（.101 或 .102）的 :4000 REST 客户端。
@@ -279,7 +488,7 @@ func (c *DeviceClient) GetStatus(ctx context.Context) (*DeviceStatus, error) {
 	return &s, nil
 }
 
-// GetInfo GET /api/device_info。
+// GetInfo 同时读取 /api/device_info 与 /api/get_config；后者失败时不得回退伪默认配置。
 func (c *DeviceClient) GetInfo(ctx context.Context) (*DeviceInfo, error) {
 	body, err := c.get(ctx, "/api/device_info")
 	if err != nil {
@@ -289,6 +498,15 @@ func (c *DeviceClient) GetInfo(ctx context.Context) (*DeviceInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	configBody, err := c.get(ctx, "/api/get_config")
+	if err != nil {
+		return nil, fmt.Errorf("读取设备运行配置失败: %w", err)
+	}
+	cfg, err := ParseDeviceConfig(configBody)
+	if err != nil {
+		return nil, err
+	}
+	applyRuntimeDeviceConfig(&info, cfg)
 	return &info, nil
 }
 
@@ -390,9 +608,13 @@ func (c *DeviceClient) Probe(ctx context.Context) ProbeResult {
 	pr.Reachable = true
 	pr.Online = st.Online()
 	pr.State = st.State
-	if info, ierr := c.GetInfo(ctx); ierr == nil {
-		pr.Model = info.Model
-		pr.SN = info.SN
+	info, ierr := c.GetInfo(ctx)
+	if ierr != nil {
+		pr.Online = false
+		pr.Err = ierr.Error()
+		return pr
 	}
+	pr.Model = info.Model
+	pr.SN = info.SN
 	return pr
 }

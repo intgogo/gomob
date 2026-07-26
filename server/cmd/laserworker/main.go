@@ -43,6 +43,10 @@ import (
 
 func main() {
 	log := logger.New("laserworker")
+	if !laser.NativeScanAvailable() {
+		log.Error("laserworker 未链接激光 native 采集实现，必须使用 -tags laser_cgo 构建")
+		os.Exit(1)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -82,8 +86,10 @@ func main() {
 
 	jobs := repo.NewLaserScanRepo(pool)
 	runner := laser.NewRunner(jobs, clouds, publisher, logger.New("laser.runner"))
-	// 空工位背景相减（路 B）：runner 用同一 MinIO 实例读回背景融合云做相减抠车（背景采集存在固定 key）。
+	// 空工位背景相减：MinIO 保存不可变 A/B 原始云，PG 只切 active revision 指针。
 	runner.Reader = clouds
+	backgrounds := repo.NewLaserBackgroundRevisionRepo(pool)
+	runner.BackgroundFinalizer = backgrounds
 	// 持久车位框（M9.11）：runner 测量优先用框、handler 提供 get/put/preview，同一实例。
 	cropBoxes := laser.NewDBCropBoxStore(repo.NewLaserCropBoxRepo(pool))
 	runner.CropBoxes = cropBoxes
@@ -93,10 +99,12 @@ func main() {
 	runner.FlipVertical = parseBool("GOMOB_LASER_FLIP_VERTICAL", true)
 
 	cfg := laser.Config{
-		DefaultUnitAIP: envOr("GOMOB_LASER_UNIT_A_IP", "192.168.9.101"),
-		DefaultUnitBIP: envOr("GOMOB_LASER_UNIT_B_IP", "192.168.9.102"),
-		DefaultAlign:   envOr("GOMOB_LASER_ALIGN", "site"),
-		DefaultKeep:    float32(parseFloat("GOMOB_LASER_KEEP_RATIO", 1.0)),
+		StationID:              parseInt64("GOMOB_LASER_STATION_ID", 0),
+		DefaultUnitAIP:         envOr("GOMOB_LASER_UNIT_A_IP", "192.168.9.101"),
+		DefaultUnitBIP:         envOr("GOMOB_LASER_UNIT_B_IP", "192.168.9.102"),
+		DefaultAlign:           envOr("GOMOB_LASER_ALIGN", "site"),
+		DefaultKeep:            float32(parseFloat("GOMOB_LASER_KEEP_RATIO", 1.0)),
+		UnverifiedSiteRevision: os.Getenv("GOMOB_LASER_UNVERIFIED_SITE_REVISION"),
 		// 默认尊重设备已持久化的扫描角度；只有显式配置 env=true 时才在起扫前覆盖。
 		SetScanAngles: parseBool("GOMOB_LASER_SET_SCAN_ANGLES", false),
 		ScanAStart:    parseFloat("GOMOB_LASER_A_START_ANGLE", 0),
@@ -105,6 +113,11 @@ func main() {
 		ScanBStop:     parseFloat("GOMOB_LASER_B_STOP_ANGLE", -10),
 	}
 	h := laser.NewHandler(cfg, jobs, runner, publisher, log)
+	// 工位外参是网页/App/worker 共享真理源，Android 起扫按双单元 IP 自动解析。
+	h.SetSiteCalibrationStore(repo.NewLaserSiteCalibrationRepo(pool))
+	h.SetRegionCalibrationStore(repo.NewLaserRegionCalibrationRepo(pool))
+	h.SetBackgroundRevisionStore(backgrounds)
+	h.SetInspectionStore(repo.NewInspectionRepo(pool))
 	// 标定级操作（车位框 put/preview 等）审计落 PG（M11.4）：与 devserver/asset 同一 PG recorder 范式。
 	h.SetAuditRecorder(audit.NewPG(pool))
 	h.SetCloudReader(clouds) // 同一 MinIO 实例兼作 PCD 下载读取器
@@ -126,7 +139,8 @@ func main() {
 		_ = srv.Shutdown(shutCtx)
 	}()
 
-	log.Info("laserworker 启动", "addr", addr, "unitA", cfg.DefaultUnitAIP, "unitB", cfg.DefaultUnitBIP,
+	log.Info("laserworker 启动", "addr", addr, "station_id", cfg.StationID,
+		"unitA", cfg.DefaultUnitAIP, "unitB", cfg.DefaultUnitBIP,
 		"align", cfg.DefaultAlign, "nats", publisher != nil,
 		"set_scan_angles", cfg.SetScanAngles,
 		"angle_a", [2]float64{cfg.ScanAStart, cfg.ScanAStop}, "angle_b", [2]float64{cfg.ScanBStart, cfg.ScanBStop})
@@ -157,6 +171,15 @@ func parseBool(key string, def bool) bool {
 	if v := os.Getenv(key); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			return b
+		}
+	}
+	return def
+}
+
+func parseInt64(key string, def int64) int64 {
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
+			return parsed
 		}
 	}
 	return def

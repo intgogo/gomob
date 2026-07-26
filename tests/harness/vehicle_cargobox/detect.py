@@ -26,6 +26,7 @@ def detect_cargobox(P, binw=20.0):
     g=np.where(h>h.max()*0.05)[0]; llo,lhi=e[g[0]],e[g[-1]+1]
     m=(l>=llo)&(l<=lhi); l,w,z=l[m],w[m],z[m]
     ground=np.percentile(z,0.3); top=np.percentile(z,99.5); Hveh=top-ground
+    Wveh=np.percentile(w,98)-np.percentile(w,2)
     nb=int((lhi-llo)/binw)+1; edg=np.linspace(llo,lhi,nb+1)
     idx=np.clip(((l-llo)/binw).astype(int),0,nb-1)
     maxZ=np.full(nb,ground)
@@ -70,9 +71,21 @@ def detect_cargobox(P, binw=20.0):
             px=hc[pk]; left=px[px<cx]; right=px[px>cx]
             if len(left) and len(right): innerW=float(right.min()-left.max())  # 最靠中心两壁=内腔面
             else: innerW=float(px.max()-px.min())
+    if not credible_cargobox(outerL, outerW, boxH, lhi-llo, Wveh, Hveh, binw):
+        return dict(has_box=False,llo=float(llo),lhi=float(lhi),rejected=True,
+                    outerL=outerL,outerW=outerW,boxH=boxH)
     return dict(has_box=True,llo=float(llo),lhi=float(lhi),bl0=float(bl0),bl1=float(bl1),
                 outerL=outerL,outerW=outerW,innerW=innerW,top=float(top),bed=float(bed),
                 ground=float(ground),boxH=boxH)
+
+def credible_cargobox(outerL, outerW, boxH, vehL, vehW, vehH, binw):
+    if min(outerL, outerW, boxH, vehL, vehW, vehH) <= 0:
+        return False
+    minL=max(4*binw, 0.18*vehL)
+    minW=max(3*binw, 0.35*vehW)
+    minH=max(2*binw, 0.08*vehH)
+    maxH=min(0.92*vehH, 1.35*outerW, 1.60*outerL)
+    return outerL>=minL and outerW>=minW and boxH>=minH and boxH<=maxH
 
 if __name__=="__main__":
     D="/root/WindowsR/JCHY_OFFLINE/Data/100742/"

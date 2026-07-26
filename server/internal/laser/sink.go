@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -29,15 +30,20 @@ type LaserPointsMsg struct {
 	Unit        int       `json:"unit"` // 0=unitA, 1=unitB（融合云不走实时，经 scan.fusion_done 的 PCD 下载）
 	Points      []float32 `json:"points"`
 	HAngleDeg   float32   `json:"h_angle_deg"`
+	// SourcePoints 是该单元经 canonical region 裁剪后的累计源点数。客户端即使丢弃中间预览帧，
+	// 收到后续帧也能恢复权威计数；渲染样本数量仍由客户端独立有界化。
+	SourcePoints int `json:"source_points"`
 }
 
 // LaserStatusMsg = laser.status 载荷。
 type LaserStatusMsg struct {
-	OwnerUserID *int64 `json:"owner_user_id,omitempty"`
-	SessionKey  string `json:"session_key"`
-	State       string `json:"state"`
-	FramesA     int    `json:"frames_a"`
-	FramesB     int    `json:"frames_b"`
+	OwnerUserID   *int64 `json:"owner_user_id,omitempty"`
+	SessionKey    string `json:"session_key"`
+	State         string `json:"state"`
+	FramesA       int    `json:"frames_a"`
+	FramesB       int    `json:"frames_b"`
+	SourcePointsA int    `json:"source_points_a"`
+	SourcePointsB int    `json:"source_points_b"`
 }
 
 // natsSink 实现 Sink。
@@ -46,6 +52,9 @@ type natsSink struct {
 	sessionKey string
 	owner      *int64
 	log        *slog.Logger
+	pointsMu   sync.Mutex
+	// 仅统计已经进入服务端实时出口的区域内点；A/B 各自独立累计。
+	sourcePoints [2]int
 }
 
 // NewNATSSink 建实时出口。pub 为空则退化为 nop（不阻断扫描）。
@@ -69,6 +78,13 @@ func (s *natsSink) Points(f PointFrame) {
 }
 
 func (s *natsSink) publishPoints(unit int, points []float32, hAngleDeg float32) {
+	s.pointsMu.Lock()
+	defer s.pointsMu.Unlock()
+	baseSourcePoints := s.sourcePoints[unit]
+	framePoints := len(points) / 3
+	// 即使某次 Publish 失败，也保留整帧累计量。后续成功消息会用累计跳变明确暴露传输缺口，
+	// 而不是把客户端收到的点数伪装成服务端源点数。
+	s.sourcePoints[unit] += framePoints
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	// 按 maxPointsPerMsg 切分（正常单帧远小于此，不触发）。
@@ -79,11 +95,12 @@ func (s *natsSink) publishPoints(unit int, points []float32, hAngleDeg float32) 
 			end = len(pts)
 		}
 		msg := LaserPointsMsg{
-			OwnerUserID: s.owner,
-			SessionKey:  s.sessionKey,
-			Unit:        unit,
-			Points:      pts[off:end],
-			HAngleDeg:   hAngleDeg,
+			OwnerUserID:  s.owner,
+			SessionKey:   s.sessionKey,
+			Unit:         unit,
+			Points:       pts[off:end],
+			HAngleDeg:    hAngleDeg,
+			SourcePoints: baseSourcePoints + end/3,
 		}
 		if err := s.pub.Publish(ctx, TopicLaserPoints, msg); err != nil {
 			s.log.Warn("发布 laser.points 失败", "err", err, "session", s.sessionKey)
@@ -93,9 +110,16 @@ func (s *natsSink) publishPoints(unit int, points []float32, hAngleDeg float32) 
 }
 
 func (s *natsSink) Status(state string, a, b int) {
+	s.pointsMu.Lock()
+	sourcePointsA := s.sourcePoints[0]
+	sourcePointsB := s.sourcePoints[1]
+	s.pointsMu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	msg := LaserStatusMsg{OwnerUserID: s.owner, SessionKey: s.sessionKey, State: state, FramesA: a, FramesB: b}
+	msg := LaserStatusMsg{
+		OwnerUserID: s.owner, SessionKey: s.sessionKey, State: state, FramesA: a, FramesB: b,
+		SourcePointsA: sourcePointsA, SourcePointsB: sourcePointsB,
+	}
 	if err := s.pub.Publish(ctx, TopicLaserStatus, msg); err != nil {
 		s.log.Warn("发布 laser.status 失败", "err", err, "session", s.sessionKey)
 	}

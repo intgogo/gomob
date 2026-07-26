@@ -2,32 +2,93 @@ package laser
 
 import "sync"
 
-// livePointCache 保存当前活动扫描的分镜原始点，供网页刷新后恢复已扫到的部分。
+const livePointCacheMaxPointsPerUnit = 262_144
+
+// livePointCache 保存当前活动扫描的确定性有界预览样本，供客户端刷新后恢复。
+// 融合权威数据仍由 Runner 的完整 A/B 云负责，预览缓存不得随扫描时长无界增长。
 type livePointCache struct {
-	mu  sync.RWMutex
-	xyz [2][]float32
+	mu        sync.RWMutex
+	maxPoints int
+	xyz       [2][]float32
+	seen      [2]uint64
 }
 
-func newLivePointCache() *livePointCache { return &livePointCache{} }
+type livePointSnapshot struct {
+	XYZ          []float32
+	SourcePoints int
+}
+
+func newLivePointCache() *livePointCache {
+	return newLivePointCacheWithLimit(livePointCacheMaxPointsPerUnit)
+}
+
+func newLivePointCacheWithLimit(maxPoints int) *livePointCache {
+	if maxPoints < 0 {
+		maxPoints = 0
+	}
+	cache := &livePointCache{maxPoints: maxPoints}
+	cache.xyz[0] = make([]float32, 0, maxPoints*3)
+	cache.xyz[1] = make([]float32, 0, maxPoints*3)
+	return cache
+}
 
 func (c *livePointCache) append(f PointFrame) {
 	if c == nil || (f.Unit != 0 && f.Unit != 1) || len(f.XYZmm) == 0 {
 		return
 	}
 	c.mu.Lock()
-	c.xyz[f.Unit] = append(c.xyz[f.Unit], f.XYZmm...)
+	unit := f.Unit
+	for offset := 0; offset+2 < len(f.XYZmm); offset += 3 {
+		c.seen[unit]++
+		sourceIndex := c.seen[unit]
+		cachedPoints := len(c.xyz[unit]) / 3
+		if cachedPoints < c.maxPoints {
+			c.xyz[unit] = append(c.xyz[unit], f.XYZmm[offset:offset+3]...)
+			continue
+		}
+		if c.maxPoints == 0 {
+			continue
+		}
+		slot := deterministicReservoirSlot(sourceIndex, uint64(unit+1))
+		if slot >= uint64(c.maxPoints) {
+			continue
+		}
+		dst := int(slot) * 3
+		copy(c.xyz[unit][dst:dst+3], f.XYZmm[offset:offset+3])
+	}
 	c.mu.Unlock()
 }
 
-func (c *livePointCache) snapshot(unit int) []float32 {
+func deterministicReservoirSlot(sourcePoints, seed uint64) uint64 {
+	value := sourcePoints ^ (seed * 0x9e3779b97f4a7c15)
+	value += 0x9e3779b97f4a7c15
+	value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9
+	value = (value ^ (value >> 27)) * 0x94d049bb133111eb
+	value ^= value >> 31
+	return value % sourcePoints
+}
+
+func (c *livePointCache) snapshot(unit, maxPoints int) livePointSnapshot {
 	if c == nil || unit < 0 || unit > 1 {
-		return nil
+		return livePointSnapshot{}
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	out := make([]float32, len(c.xyz[unit]))
-	copy(out, c.xyz[unit])
-	return out
+	cachedPoints := len(c.xyz[unit]) / 3
+	renderPoints := cachedPoints
+	if maxPoints > 0 && renderPoints > maxPoints {
+		renderPoints = maxPoints
+	}
+	out := make([]float32, renderPoints*3)
+	if renderPoints == cachedPoints {
+		copy(out, c.xyz[unit])
+	} else {
+		for index := 0; index < renderPoints; index++ {
+			sourceIndex := stratifiedSampleIndex(index, renderPoints, cachedPoints)
+			copy(out[index*3:index*3+3], c.xyz[unit][sourceIndex*3:sourceIndex*3+3])
+		}
+	}
+	return livePointSnapshot{XYZ: out, SourcePoints: uint64ToInt(c.seen[unit])}
 }
 
 func (c *livePointCache) counts() [2]int {
@@ -37,9 +98,17 @@ func (c *livePointCache) counts() [2]int {
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	out[0] = len(c.xyz[0]) / 3
-	out[1] = len(c.xyz[1]) / 3
+	out[0] = uint64ToInt(c.seen[0])
+	out[1] = uint64ToInt(c.seen[1])
 	return out
+}
+
+func uint64ToInt(value uint64) int {
+	maxInt := uint64(^uint(0) >> 1)
+	if value > maxInt {
+		return int(maxInt)
+	}
+	return int(value)
 }
 
 type liveSessionSink struct {

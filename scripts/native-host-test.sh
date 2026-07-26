@@ -82,6 +82,9 @@ build_and_run eys3d_session_core_test \
     native/eys3d/portable/eys3d_protocol.cpp \
     native/berxel/portable/gomob_berxel_portable.cpp
 
+build_and_run eys3d_vendor_worker_lifecycle_test \
+    tests/native_host/eys3d_vendor_worker_lifecycle_test.cpp
+
 build_and_run eys3d_stereo_depth_test \
     tests/native_host/eys3d_stereo_depth_test.cpp \
     native/eys3d/portable/eys3d_stereo_depth.cpp \

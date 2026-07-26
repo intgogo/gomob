@@ -23,6 +23,13 @@ func CreateORTMetric(gpuId, modelId int, weights []byte, clusters int, iSize ima
 
 	go func() {
 		runtime.LockOSThread()
+		var workerDone chan struct{}
+		defer func() {
+			runtime.UnlockOSThread()
+			if workerDone != nil {
+				close(workerDone)
+			}
+		}()
 
 		optShapes := C.CStrings{}
 		defer C.CStrings_Release(optShapes)
@@ -32,6 +39,10 @@ func CreateORTMetric(gpuId, modelId int, weights []byte, clusters int, iSize ima
 			c <- &net
 			return
 		}
+		net.nativeKind = netNativeORT
+		net.workerDone = make(chan struct{})
+		workerDone = net.workerDone
+		defer func() { C.ORTSession_Destroy(C.ORTSession(net.p)) }()
 
 		if iChan <= 0 {
 			cShapes := C.IntVector{}
@@ -58,7 +69,10 @@ func CreateORTMetric(gpuId, modelId int, weights []byte, clusters int, iSize ima
 		c <- &net
 
 		for {
-			inData := <-net.inChan
+			inData, ok := <-net.inChan
+			if !ok {
+				return
+			}
 			data := inData.(MetricIn)
 
 			res := C.FloatVector{}
@@ -84,6 +98,13 @@ func CreateORTClassify(gpuId, modelId int, weights []byte, classes []string, iSi
 
 	go func() {
 		runtime.LockOSThread()
+		var workerDone chan struct{}
+		defer func() {
+			runtime.UnlockOSThread()
+			if workerDone != nil {
+				close(workerDone)
+			}
+		}()
 
 		optShapes := C.CStrings{}
 		defer C.CStrings_Release(optShapes)
@@ -93,6 +114,10 @@ func CreateORTClassify(gpuId, modelId int, weights []byte, classes []string, iSi
 			c <- &net
 			return
 		}
+		net.nativeKind = netNativeORT
+		net.workerDone = make(chan struct{})
+		workerDone = net.workerDone
+		defer func() { C.ORTSession_Destroy(C.ORTSession(net.p)) }()
 
 		if iChan <= 0 {
 			cShapes := C.IntVector{}
@@ -120,7 +145,10 @@ func CreateORTClassify(gpuId, modelId int, weights []byte, classes []string, iSi
 		c <- &net
 
 		for {
-			inData := <-net.inChan
+			inData, ok := <-net.inChan
+			if !ok {
+				return
+			}
 			data := inData.(ClassifyIn)
 
 			cIds := C.IntVector{}
@@ -147,6 +175,13 @@ func CreateORTCom(gpuId, modelId int, weights []byte, iSize image.Point, iChan i
 
 	go func() {
 		runtime.LockOSThread()
+		var workerDone chan struct{}
+		defer func() {
+			runtime.UnlockOSThread()
+			if workerDone != nil {
+				close(workerDone)
+			}
+		}()
 
 		optShapes := C.CStrings{}
 		if iSize.Y == 48 && iSize.X <= 0 { // OCR
@@ -160,6 +195,10 @@ func CreateORTCom(gpuId, modelId int, weights []byte, iSize image.Point, iChan i
 			c <- &net
 			return
 		}
+		net.nativeKind = netNativeORT
+		net.workerDone = make(chan struct{})
+		workerDone = net.workerDone
+		defer func() { C.ORTSession_Destroy(C.ORTSession(net.p)) }()
 
 		if iChan <= 0 {
 			cShapes := C.IntVector{}
@@ -189,7 +228,10 @@ func CreateORTCom(gpuId, modelId int, weights []byte, iSize image.Point, iChan i
 		c <- &net
 
 		for {
-			inData := <-net.inChan
+			inData, ok := <-net.inChan
+			if !ok {
+				return
+			}
 			data := inData.(ComIn)
 
 			res := C.FloatVector{}
@@ -214,6 +256,13 @@ func CreateORTYolo(gpuId, modelId int, classes []string, weights []byte, strides
 
 	go func() {
 		runtime.LockOSThread()
+		var workerDone chan struct{}
+		defer func() {
+			runtime.UnlockOSThread()
+			if workerDone != nil {
+				close(workerDone)
+			}
+		}()
 
 		optShapes := C.CStrings{}
 		defer C.CStrings_Release(optShapes)
@@ -223,6 +272,10 @@ func CreateORTYolo(gpuId, modelId int, classes []string, weights []byte, strides
 			c <- &net
 			return
 		}
+		net.nativeKind = netNativeORT
+		net.workerDone = make(chan struct{})
+		workerDone = net.workerDone
+		defer func() { C.ORTSession_Destroy(C.ORTSession(net.p)) }()
 
 		cShapes := C.IntVector{}
 		C.ORTSession_GetInputShapes(C.ORTSession(net.p), &cShapes)
@@ -249,7 +302,10 @@ func CreateORTYolo(gpuId, modelId int, classes []string, weights []byte, strides
 		c <- &net
 
 		for {
-			inData := <-net.inChan
+			inData, ok := <-net.inChan
+			if !ok {
+				return
+			}
 			data := inData.(YoloIn)
 
 			cBoxes := C.Rects{}
@@ -282,6 +338,13 @@ func CreateORTMask(gpuId, modelId int, classes []string, weights []byte, iSize i
 
 	go func() {
 		runtime.LockOSThread()
+		var workerDone chan struct{}
+		defer func() {
+			runtime.UnlockOSThread()
+			if workerDone != nil {
+				close(workerDone)
+			}
+		}()
 
 		optShapes := C.CStrings{}
 		defer C.CStrings_Release(optShapes)
@@ -291,6 +354,10 @@ func CreateORTMask(gpuId, modelId int, classes []string, weights []byte, iSize i
 			c <- &net
 			return
 		}
+		net.nativeKind = netNativeORT
+		net.workerDone = make(chan struct{})
+		workerDone = net.workerDone
+		defer func() { C.ORTSession_Destroy(C.ORTSession(net.p)) }()
 
 		if iChan <= 0 {
 			cShapes := C.IntVector{}
@@ -316,7 +383,10 @@ func CreateORTMask(gpuId, modelId int, classes []string, weights []byte, iSize i
 		c <- &net
 
 		for {
-			inData := <-net.inChan
+			inData, ok := <-net.inChan
+			if !ok {
+				return
+			}
 			data := inData.(MaskIn)
 
 			cContours := C.Contours{}
@@ -353,6 +423,13 @@ func CreateORTDB(gpuId, modelId int, weights []byte, iSize image.Point, iChan in
 
 	go func() {
 		runtime.LockOSThread()
+		var workerDone chan struct{}
+		defer func() {
+			runtime.UnlockOSThread()
+			if workerDone != nil {
+				close(workerDone)
+			}
+		}()
 
 		optShapes := C.CStrings{}
 		defer C.CStrings_Release(optShapes)
@@ -362,6 +439,10 @@ func CreateORTDB(gpuId, modelId int, weights []byte, iSize image.Point, iChan in
 			c <- &net
 			return
 		}
+		net.nativeKind = netNativeORT
+		net.workerDone = make(chan struct{})
+		workerDone = net.workerDone
+		defer func() { C.ORTSession_Destroy(C.ORTSession(net.p)) }()
 
 		if iChan <= 0 {
 			cShapes := C.IntVector{}
@@ -386,7 +467,10 @@ func CreateORTDB(gpuId, modelId int, weights []byte, iSize image.Point, iChan in
 		c <- &net
 
 		for {
-			inData := <-net.inChan
+			inData, ok := <-net.inChan
+			if !ok {
+				return
+			}
 			data := inData.(DBIn)
 
 			cRR := C.RotatedRects{}
@@ -416,6 +500,13 @@ func CreateORTYolact(gpuId, modelId int, classes []string, weights []byte, iSize
 
 	go func() {
 		runtime.LockOSThread()
+		var workerDone chan struct{}
+		defer func() {
+			runtime.UnlockOSThread()
+			if workerDone != nil {
+				close(workerDone)
+			}
+		}()
 
 		optShapes := C.CStrings{}
 		defer C.CStrings_Release(optShapes)
@@ -425,6 +516,10 @@ func CreateORTYolact(gpuId, modelId int, classes []string, weights []byte, iSize
 			c <- &net
 			return
 		}
+		net.nativeKind = netNativeORT
+		net.workerDone = make(chan struct{})
+		workerDone = net.workerDone
+		defer func() { C.ORTSession_Destroy(C.ORTSession(net.p)) }()
 
 		if iChan <= 0 {
 			cShapes := C.IntVector{}
@@ -450,7 +545,10 @@ func CreateORTYolact(gpuId, modelId int, classes []string, weights []byte, iSize
 		c <- &net
 
 		for {
-			inData := <-net.inChan
+			inData, ok := <-net.inChan
+			if !ok {
+				return
+			}
 			data := inData.(MaskIn)
 
 			cContours := C.Contours{}
@@ -488,6 +586,13 @@ func CreateORTCenterFace(gpuId, modelId int, weights []byte, iSize image.Point, 
 
 	go func() {
 		runtime.LockOSThread()
+		var workerDone chan struct{}
+		defer func() {
+			runtime.UnlockOSThread()
+			if workerDone != nil {
+				close(workerDone)
+			}
+		}()
 
 		optShapes := C.CStrings{}
 		defer C.CStrings_Release(optShapes)
@@ -497,6 +602,10 @@ func CreateORTCenterFace(gpuId, modelId int, weights []byte, iSize image.Point, 
 			c <- &net
 			return
 		}
+		net.nativeKind = netNativeORT
+		net.workerDone = make(chan struct{})
+		workerDone = net.workerDone
+		defer func() { C.ORTSession_Destroy(C.ORTSession(net.p)) }()
 
 		if iChan <= 0 {
 			cShapes := C.IntVector{}
@@ -523,7 +632,10 @@ func CreateORTCenterFace(gpuId, modelId int, weights []byte, iSize image.Point, 
 		c <- &net
 
 		for {
-			inData := <-net.inChan
+			inData, ok := <-net.inChan
+			if !ok {
+				return
+			}
 			data := inData.(CenterNetIn)
 
 			cBoxes := C.Rects{}
@@ -556,6 +668,13 @@ func CreateORTCenterPose(gpuId, modelId int, weights []byte, iSize image.Point, 
 
 	go func() {
 		runtime.LockOSThread()
+		var workerDone chan struct{}
+		defer func() {
+			runtime.UnlockOSThread()
+			if workerDone != nil {
+				close(workerDone)
+			}
+		}()
 
 		optShapes := C.CStrings{}
 		defer C.CStrings_Release(optShapes)
@@ -565,6 +684,10 @@ func CreateORTCenterPose(gpuId, modelId int, weights []byte, iSize image.Point, 
 			c <- &net
 			return
 		}
+		net.nativeKind = netNativeORT
+		net.workerDone = make(chan struct{})
+		workerDone = net.workerDone
+		defer func() { C.ORTSession_Destroy(C.ORTSession(net.p)) }()
 
 		if iChan <= 0 {
 			cShapes := C.IntVector{}
@@ -591,7 +714,10 @@ func CreateORTCenterPose(gpuId, modelId int, weights []byte, iSize image.Point, 
 		c <- &net
 
 		for {
-			inData := <-net.inChan
+			inData, ok := <-net.inChan
+			if !ok {
+				return
+			}
 			data := inData.(CenterNetIn)
 
 			cBoxes := C.Rects{}
@@ -624,6 +750,13 @@ func CreateORTMatting(gpuId, modelId int, weights []byte, iSize image.Point, iCh
 
 	go func() {
 		runtime.LockOSThread()
+		var workerDone chan struct{}
+		defer func() {
+			runtime.UnlockOSThread()
+			if workerDone != nil {
+				close(workerDone)
+			}
+		}()
 
 		optShapes := C.CStrings{}
 		defer C.CStrings_Release(optShapes)
@@ -633,6 +766,10 @@ func CreateORTMatting(gpuId, modelId int, weights []byte, iSize image.Point, iCh
 			c <- &net
 			return
 		}
+		net.nativeKind = netNativeORT
+		net.workerDone = make(chan struct{})
+		workerDone = net.workerDone
+		defer func() { C.ORTSession_Destroy(C.ORTSession(net.p)) }()
 
 		if iChan <= 0 {
 			cShapes := C.IntVector{}
@@ -659,7 +796,10 @@ func CreateORTMatting(gpuId, modelId int, weights []byte, iSize image.Point, iCh
 		c <- &net
 
 		for {
-			inData := <-net.inChan
+			inData, ok := <-net.inChan
+			if !ok {
+				return
+			}
 			data := inData.(MattingIn)
 			out := MattingOut{
 				Matting: NewMat(),

@@ -19,13 +19,16 @@
 
 ## How to apply
 
-- 修法全在 `server/internal/laser`（M13，真机复算验收 L −0.3%/W −0.7%/H +0.5%，互差 ≤5mm）：
-  ① 持久化地面：背景采集时拟合入库（migration 0021 `laser_ground_plane` + `Runner.Grounds`），
-  扫描复用，重拟合仅漂移告警；② `MeasureParams.WidthBinMM=1 / SpanTrimPct=0.5`（bg_subtract 路径），
-  鲁棒分位跨度替代极值；③ `RefineBToA`（refine_btoa.go）点到面 ICP + 法向相容性拒绝，
-  从任意初值收敛同一解，守卫 150mm/5°，围栏与融合同用精修后 B→A；④ `SupportBG` 支撑面相对车高。
-- 验收/监控：`./dev.sh harness laser_repeatability`（σ≤5mm 门 + 真值门 + ground_source/refine 卫生检查）；
-  深挖单扫描用 `server/cmd/laserreplay` 对落盘 PCD 复算。
+- 修法全在 `server/internal/laser`（M13，历史真机复算 L −0.3%/W −0.7%/H +0.5%，互差≤5mm）：
+  ① 地面优先从当前 A/B raw background revision 经当前 region/最终 B→A 重建，live 重拟合只做漂移比对，
+  >1.5°/50mm 禁止 measured；② `WidthBinMM=1 / SpanTrimPct=0.5`，鲁棒分位跨度替代极值；
+  ③ `RefineBToA` 使用点到面 ICP + 法向相容性，生产要求 applied、pairs≥1000、RMS≤15mm、
+  修正≤50mm/1°，否则只保留诊断云；④ `SupportBG` 使用支撑面相对车高。
+- 验收/监控：`laser_repeatability` 只统计同一 inspection、mode、site、region、background revision；
+  不同 revision 和旧链不得混算。单扫描用 `server/cmd/laserreplay`，客户端契约用 `laser_app_web_parity`。
 - 铁律：**极值统计(max−min/单 bin 边界)不要直接当测量输出**；固定安装的基准量（地面/外参）
   标定一次持久化，不要逐扫描重估；跨单元配准在"对立面可见"场景必须点到面+法向相容。
-- refine delta 持续 >100mm = site 标记外参偏差大，去现场按 4 角点版重标（§docs/architecture/17 §9.5）。
+- site 保存要求 RMS≤5mm、公共标记≥4；refine 超 50mm/1° 已直接拒绝生产。现场重标后必须重采 raw A/B 背景。
+- 2026-07-11 起，`align=site` 的 native 层只应用权威外参，不再做点到点 ICP；生产精修唯一入口为上述
+  Go 点到面算法。正式 ArUco + scan208 全量 A/B PCD 离线验证：直接从 site 初值收敛到线上终态仅差
+  0.010mm/0.067°，证明删除 native 精修不损失结果，并消除其“只比较幸存近邻均值、无覆盖率/位姿守卫”的误采纳风险。

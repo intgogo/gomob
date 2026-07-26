@@ -1,3 +1,4 @@
+//go:build linux
 // +build linux
 
 package gocv
@@ -24,7 +25,7 @@ func CreateAtlasYolo(gpuId int, classes []string, weights []byte, strides, ancho
 		runtime.LockOSThread()
 
 		bModel := toByteVector(weights)
-		net := Net{p: unsafe.Pointer(C.AtlasSession_Create(*bModel, C.int(gpuId)))}
+		net := Net{p: unsafe.Pointer(C.AtlasSession_Create(*bModel, C.int(gpuId))), nativeKind: netNativeAtlas}
 		if net.p == nil {
 			c <- &net
 			return
@@ -84,7 +85,7 @@ func CreateAtlasMask(gpuId int, classes []string, weights []byte, iSize image.Po
 		runtime.LockOSThread()
 
 		bModel := toByteVector(weights)
-		net := Net{p: unsafe.Pointer(C.AtlasSession_Create(*bModel, C.int(gpuId)))}
+		net := Net{p: unsafe.Pointer(C.AtlasSession_Create(*bModel, C.int(gpuId))), nativeKind: netNativeAtlas}
 		if net.p == nil {
 			c <- &net
 			return
@@ -145,7 +146,7 @@ func CreateAtlasYolact(gpuId int, classes []string, weights []byte, iSize image.
 		runtime.LockOSThread()
 
 		bModel := toByteVector(weights)
-		net := Net{p: unsafe.Pointer(C.AtlasSession_Create(*bModel, C.int(gpuId)))}
+		net := Net{p: unsafe.Pointer(C.AtlasSession_Create(*bModel, C.int(gpuId))), nativeKind: netNativeAtlas}
 		if net.p == nil {
 			c <- &net
 			return
@@ -206,7 +207,7 @@ func CreateAtlasMetric(gpuId int, weights []byte, clusters int, iSize image.Poin
 		runtime.LockOSThread()
 
 		bModel := toByteVector(weights)
-		net := Net{p: unsafe.Pointer(C.AtlasSession_Create(*bModel, C.int(gpuId)))}
+		net := Net{p: unsafe.Pointer(C.AtlasSession_Create(*bModel, C.int(gpuId))), nativeKind: netNativeAtlas}
 		if net.p == nil {
 			c <- &net
 			return
@@ -256,7 +257,7 @@ func CreateAtlasCom(gpuId int, weights []byte, iSize image.Point, iChan int, std
 		runtime.LockOSThread()
 
 		bModel := toByteVector(weights)
-		net := Net{p: unsafe.Pointer(C.AtlasSession_Create(*bModel, C.int(gpuId)))}
+		net := Net{p: unsafe.Pointer(C.AtlasSession_Create(*bModel, C.int(gpuId))), nativeKind: netNativeAtlas}
 		if net.p == nil {
 			c <- &net
 			return
@@ -306,7 +307,7 @@ func CreateAtlasMatting(gpuId int, weights []byte, iSize image.Point, iChan int,
 		runtime.LockOSThread()
 
 		bModel := toByteVector(weights)
-		net := Net{p: unsafe.Pointer(C.AtlasSession_Create(*bModel, C.int(gpuId)))}
+		net := Net{p: unsafe.Pointer(C.AtlasSession_Create(*bModel, C.int(gpuId))), nativeKind: netNativeAtlas}
 		if net.p == nil {
 			c <- &net
 			return
@@ -353,7 +354,7 @@ func CreateAtlasDB(gpuId int, weights []byte, iSize image.Point, iChan int, std 
 		runtime.LockOSThread()
 
 		bModel := toByteVector(weights)
-		net := Net{p: unsafe.Pointer(C.AtlasSession_Create(*bModel, C.int(gpuId)))}
+		net := Net{p: unsafe.Pointer(C.AtlasSession_Create(*bModel, C.int(gpuId))), nativeKind: netNativeAtlas}
 		if net.p == nil {
 			c <- &net
 			return
@@ -407,7 +408,7 @@ func CreateAtlasCenterFace(gpuId int, weights []byte, iSize image.Point, iChan i
 		runtime.LockOSThread()
 
 		bModel := toByteVector(weights)
-		net := Net{p: unsafe.Pointer(C.AtlasSession_Create(*bModel, C.int(gpuId)))}
+		net := Net{p: unsafe.Pointer(C.AtlasSession_Create(*bModel, C.int(gpuId))), nativeKind: netNativeAtlas}
 		if net.p == nil {
 			c <- &net
 			return
@@ -465,7 +466,7 @@ func CreateAtlasCenterPose(gpuId int, weights []byte, iSize image.Point, iChan i
 		runtime.LockOSThread()
 
 		bModel := toByteVector(weights)
-		net := Net{p: unsafe.Pointer(C.AtlasSession_Create(*bModel, C.int(gpuId)))}
+		net := Net{p: unsafe.Pointer(C.AtlasSession_Create(*bModel, C.int(gpuId))), nativeKind: netNativeAtlas}
 		if net.p == nil {
 			c <- &net
 			return
@@ -523,7 +524,7 @@ func CreateAtlasClassify(gpuId int, weights []byte, classes []string, iSize imag
 		runtime.LockOSThread()
 
 		bModel := toByteVector(weights)
-		net := Net{p: unsafe.Pointer(C.AtlasSession_Create(*bModel, C.int(gpuId)))}
+		net := Net{p: unsafe.Pointer(C.AtlasSession_Create(*bModel, C.int(gpuId))), nativeKind: netNativeAtlas}
 		if net.p == nil {
 			c <- &net
 			return

@@ -4,6 +4,7 @@
 #   1. 边显式声明，未列出的调用关系视为禁止
 #   2. forbidden 段额外锁死反模式（即使将来谁要写代码也跑不过校验）
 #   3. NATS 发布 / 订阅在 server-modules.yaml 里已声明，本文件交叉校验
+#   4. 单发布者用 publisher，多发布者共用同一 topic 时用 publishers
 #
 # 详见 docs/architecture/server/00-server-overview.md §6.app
 
@@ -19,6 +20,7 @@ edges:
   - { from: gateway, to: device,         kind: http,  reason: "/v1/devices/* 反代" }
   - { from: gateway, to: cv-engine,      kind: http,  reason: "/cv/ocr/v1/* 直达反代（实时 OCR）" }
   - { from: gateway, to: llm-gateway,    kind: http,  reason: "/v1/llm/* 直达反代（流式 SSE）" }
+  - { from: gateway, to: laserworker,    kind: http,  reason: "/v1/scans/laser* 反代；鉴权用户/角色透传" }
 
   # api 作为参考库三件套的 BFF
   - { from: api, to: vehicle-catalog,    kind: grpc,  reason: "/v1/catalog/vehicles* BFF 透传" }
@@ -35,8 +37,9 @@ edges:
 
   # cv-engine 同步算法 → 厂商参考 / 模型
   - { from: cv-engine, to: vin-ref,       kind: grpc,  reason: "vin_compare 时按 vehicle_model_id 拉对照样本" }
-  - { from: cv-engine, to: model-registry, kind: grpc, reason: "启动 + 热更时拉 active 模型版本元数据" }
+  - { from: cv-engine, to: model-registry, kind: grpc, reason: "启动 + 热更时拉 VINOBB/VINCHAR 等 active 模型及 yolo anchors/strides 元数据" }
   - { from: cv-engine, to: asset,         kind: grpc,  reason: "下载模型二进制（启动时）" }
+  - { from: cv-engine, to: gosmart-vin,   kind: http,  reason: "/cv/ocr/v1/vin_recognize 服务端签名代理到外部 vin_detect" }
 
   # signaling → 业务元信息（最小化）
   - { from: signaling, to: api,          kind: grpc,  reason: "查询用户元信息 / 写 call_logs" }
@@ -74,9 +77,21 @@ nats_topics:
     subscribers: [api]
     description: "车型档案变更 → api 失效本地 LRU 缓存"
   - topic: scan.fusion_done
-    publisher: fusionworker
+    publishers: [fusionworker, laserworker]
     subscribers: [signaling]
-    description: "M3.14 多视角 RGBD 融合完成 → 载 result GLB 对象键;signaling 按 owner_user_id 经 ws 推给端侧 gallery 拉回看(M3.15 服务端桥)"
+    description: "RGBD/激光完成事件；激光载 measured artifact、measurement、overlay、ground 和 revision，signaling 按 owner_user_id 推送"
+  - topic: laser.points
+    publisher: laserworker
+    subscribers: [signaling]
+    description: "激光采集中 A/B 增量点预览；最终大云不经 WS"
+  - topic: laser.status
+    publisher: laserworker
+    subscribers: [signaling]
+    description: "激光采集/融合状态；REST 状态查询负责丢事件恢复"
+  - topic: laser.frame
+    publisher: laserworker
+    subscribers: [signaling]
+    description: "工位 site-framing 低帧率 RGB/ArUco 取景帧"
 
 # 禁止的调用关系
 forbidden:
@@ -108,6 +123,10 @@ forbidden:
     to: deepseek
     reason: "外部 LLM 仅由 llm-gateway 触达；其它服务想用 LLM 必须走 llm-gateway"
     except: [llm-gateway]
+
+  - from_pattern: "^(?!cv-engine$).*"
+    to: gosmart-vin
+    reason: "外部 VIN 签名私钥只由 cv-engine 运行时密钥挂载加载；Android 与其它服务不得直连算法机"
 
   - from_pattern: "^(?!admin$).*"
     to: vehicle-catalog

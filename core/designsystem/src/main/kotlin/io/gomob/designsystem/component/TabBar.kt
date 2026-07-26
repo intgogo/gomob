@@ -60,8 +60,9 @@ fun TabBar(
     selectedKey: String,
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
+    embedded: Boolean = false,
 ) {
-    TabBarFrame(modifier) {
+    TabBarFrame(modifier, embedded = embedded) {
         items.forEach { item ->
             TabBarCell(
                 active = item.key == selectedKey,
@@ -87,8 +88,9 @@ fun TabBarVector(
     selectedKey: String,
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
+    embedded: Boolean = false,
 ) {
-    TabBarFrame(modifier) {
+    TabBarFrame(modifier, embedded = embedded) {
         items.forEach { item ->
             TabBarCell(
                 active = item.key == selectedKey,
@@ -111,14 +113,16 @@ fun TabBarVector(
 @Composable
 private fun TabBarFrame(
     modifier: Modifier = Modifier,
+    embedded: Boolean,
     content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit,
 ) {
+    val frameModifier = (if (embedded) modifier else modifier.fixedDuringPageDrag())
+        .fillMaxWidth()
+        .let { base ->
+            if (embedded) base else base.glassChrome(topEdge = true).navigationBarsPadding()
+        }
     Column(
-        modifier
-            .fixedDuringPageDrag()
-            .fillMaxWidth()
-            .glassChrome(topEdge = true)
-            .navigationBarsPadding(),
+        frameModifier,
     ) {
         Row(
             Modifier.fillMaxWidth().height(Gomob.spacing.tabBarHeight),

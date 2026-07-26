@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -36,8 +37,10 @@ class RealtimeSocketClient @Inject constructor(
 ) {
     private companion object {
         const val TAG = "RealtimeSocketClient"
-        const val INBOUND_TEXT_BUFFER = 512
+        const val RELIABLE_TEXT_BUFFER = 512
+        const val LASER_POINT_TEXT_BUFFER = 4
         const val EVENT_BUFFER = 512
+        const val LASER_POINT_EVENT_BUFFER = 4
     }
 
     // 单线程 confinement：socket / reconnect 的读写全部 post 到这条独立线程，
@@ -59,16 +62,35 @@ class RealtimeSocketClient @Inject constructor(
     private val mutableState = MutableStateFlow(RealtimeConnectionState.Disconnected)
     val state: StateFlow<RealtimeConnectionState> = mutableState
 
-    private val inboundTexts = Channel<String>(capacity = INBOUND_TEXT_BUFFER)
+    private val reliableInboundTexts = Channel<String>(capacity = RELIABLE_TEXT_BUFFER)
+    private val laserPointInboundTexts = Channel<String>(
+        capacity = LASER_POINT_TEXT_BUFFER,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
 
     private val mutableEvents = MutableSharedFlow<RealtimeEvent>(extraBufferCapacity = EVENT_BUFFER)
     val events: SharedFlow<RealtimeEvent> = mutableEvents
 
+    private val mutableLaserPoints = MutableSharedFlow<RealtimeEvent.LaserPoints>(
+        extraBufferCapacity = LASER_POINT_EVENT_BUFFER,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val laserPoints: SharedFlow<RealtimeEvent.LaserPoints> = mutableLaserPoints
+
     init {
         // 事件解析消费跑在 IO，不占 controlDispatcher。
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
-            for (text in inboundTexts) {
+            for (text in reliableInboundTexts) {
                 mutableEvents.emit(parseEvent(text))
+            }
+        }
+        // 激光点是可丢的端侧预览，独立小队列保证巨型 JSON/FloatArray 不挤占可靠状态和 done 事件。
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            for (text in laserPointInboundTexts) {
+                when (val event = parseEvent(text)) {
+                    is RealtimeEvent.LaserPoints -> mutableLaserPoints.tryEmit(event)
+                    else -> mutableEvents.emit(event)
+                }
             }
         }
     }
@@ -144,8 +166,13 @@ class RealtimeSocketClient @Inject constructor(
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
-            if (!inboundTexts.trySend(text).isSuccess) {
-                Log.w(TAG, "实时帧接收队列已满，丢弃一帧")
+            val accepted = if (isLaserPointEnvelopeText(text)) {
+                laserPointInboundTexts.trySend(text).isSuccess
+            } else {
+                reliableInboundTexts.trySend(text).isSuccess
+            }
+            if (!accepted) {
+                Log.w(TAG, "实时帧接收队列已满，丢弃 type=${if (isLaserPointEnvelopeText(text)) "laser.points" else "reliable"}")
             }
         }
 
@@ -180,3 +207,7 @@ class RealtimeSocketClient @Inject constructor(
                 )
             }
 }
+
+private val laserPointTypePattern = Regex("\\\"type\\\"\\s*:\\s*\\\"laser\\.points\\\"")
+
+internal fun isLaserPointEnvelopeText(text: String): Boolean = laserPointTypePattern.containsMatchIn(text)

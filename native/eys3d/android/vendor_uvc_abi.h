@@ -78,9 +78,10 @@ struct VendorUvcAbi {
   void* live_ply_callback = nullptr;  // UVCCamera::livePlyCallback
 
   bool Loaded() const {
-    return lib && cam_ctor && cam_connect && cam_set_video_mode && cam_set_preview_size &&
-           cam_start_preview && cam_get_zd_table && fg_set_frame_format && fg_open &&
-           cam_set_external_storage && live_ply_callback;
+    return lib && cam_ctor && cam_dtor && cam_connect && cam_set_video_mode && cam_set_preview_size &&
+           cam_set_preview_display && cam_start_preview && cam_stop_preview && cam_get_zd_table &&
+           fg_set_frame_format && fg_open && fg_close && fg_is_started && cam_set_external_storage &&
+           live_ply_callback;
   }
 };
 

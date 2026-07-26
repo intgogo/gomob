@@ -4,8 +4,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,12 +12,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -30,52 +26,51 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.gomob.data.scan.LaserLatestScan
 import io.gomob.designsystem.component.ScreenHeader
+import io.gomob.designsystem.component.HairlineCard
 import io.gomob.designsystem.glass.GlassHeaderScaffold
 import io.gomob.designsystem.icons.GomobIcons
 import io.gomob.designsystem.theme.Gomob
-import io.gomob.nativebridge.berxel.BerxelDeviceState
+import java.text.NumberFormat
 
 const val SCAN3D_ROUTE = "scan3d"
 
 @Composable
 fun Scan3dRoute(
-    cameraSlot: @Composable () -> Unit = {},
     onOpenContourScan: () -> Unit = {},
-    onOpenDepthCamera: () -> Unit = {},
-    onOpenSonixDebug: () -> Unit = {},
     onOpenVinRectify: () -> Unit = {},
     vm: Scan3dViewModel = hiltViewModel(),
 ) {
-    val ui by vm.uiState.collectAsStateWithLifecycle()
+    val latestScan by vm.latestScan.collectAsStateWithLifecycle()
+
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        vm.refreshLatestScan()
+    }
 
     val listState = rememberLazyListState()
     GlassHeaderScaffold(
         listState = listState,
         header = {
-            Scan3dHeader(
-                state = ui,
-                onOpenDepthCamera = onOpenDepthCamera,
-                onOpenSonixDebug = onOpenSonixDebug,
-            )
+            ScreenHeader(title = "三维扫描")
         },
     ) { padding ->
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
-                top = padding.calculateTopPadding(),
+                top = padding.calculateTopPadding() + Gomob.spacing.s12,
                 bottom = padding.calculateBottomPadding() + Gomob.spacing.s28,
             ),
         ) {
@@ -85,96 +80,13 @@ fun Scan3dRoute(
                     onOpenVinRectify = onOpenVinRectify,
                 )
             }
-            item { AssetSection() }
+            item {
+                AssetSection(
+                    state = latestScan,
+                    onRetry = vm::refreshLatestScan,
+                )
+            }
         }
-    }
-}
-
-@Composable
-private fun Scan3dHeader(
-    state: Scan3dDeviceUiState,
-    onOpenDepthCamera: () -> Unit,
-    onOpenSonixDebug: () -> Unit = {},
-) {
-    val badge = state.toBadgeView()
-    ScreenHeader(
-        title = "三维扫描",
-        eyebrow = "便携手持采集 · 实时点云预览",
-        trailing = {
-            DepthCameraBadge(
-                badge = badge,
-                onClick = onOpenDepthCamera,
-                onLongClick = onOpenSonixDebug,
-            )
-        },
-    )
-}
-
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
-@Composable
-private fun DepthCameraBadge(
-    badge: DeviceBadgeView,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit = {},
-) {
-    Box(
-        modifier = Modifier
-            .size(30.dp)
-            .clip(Gomob.shapes.r2)
-            .background(Gomob.colors.bg1)
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = GomobIcons.USB,
-            contentDescription = badge.contentDescription,
-            tint = badge.iconTint,
-            modifier = Modifier.size(15.dp),
-        )
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 2.dp, end = 2.dp)
-                .size(6.dp)
-                .clip(CircleShape)
-                .background(badge.dotColor)
-                .border(BorderStroke(1.dp, Gomob.colors.bg1), CircleShape),
-        )
-    }
-}
-
-private data class DeviceBadgeView(
-    val contentDescription: String,
-    val iconTint: Color,
-    val dotColor: Color,
-)
-
-@Composable
-private fun Scan3dDeviceUiState.toBadgeView(): DeviceBadgeView {
-    val serial = lastKnownInfo?.serialNumber?.ifBlank { null } ?: "iHawk"
-    return when (state) {
-        is BerxelDeviceState.Streaming -> DeviceBadgeView(
-            contentDescription = "深度相机已连接：${state.info.serialNumber.ifBlank { serial }}",
-            iconTint = Gomob.colors.accent,
-            dotColor = Gomob.colors.ok,
-        )
-        is BerxelDeviceState.Initializing,
-        is BerxelDeviceState.Opening,
-        is BerxelDeviceState.WaitingPermission -> DeviceBadgeView(
-            contentDescription = "深度相机连接中：$serial",
-            iconTint = Gomob.colors.fg3,
-            dotColor = Gomob.colors.fg3,
-        )
-        is BerxelDeviceState.Error -> DeviceBadgeView(
-            contentDescription = "深度相机异常：$serial",
-            iconTint = Gomob.colors.danger,
-            dotColor = Gomob.colors.danger,
-        )
-        else -> DeviceBadgeView(
-            contentDescription = "深度相机未连接：$serial",
-            iconTint = Gomob.colors.fg3,
-            dotColor = Gomob.colors.fg3,
-        )
     }
 }
 
@@ -186,24 +98,24 @@ private fun ActionTilePair(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+            .padding(horizontal = Gomob.spacing.pageGutter),
+        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.cardGap),
     ) {
         ActionTile(
             modifier = Modifier.fillMaxWidth(),
             title = "VIN 数码拓印",
-            desc = "无墨拓印·一拍即录入档",
-            detail = "自动识别 17 位 · 入档归档",
-            compact = false,
+            desc = "RGBD 采集 · 服务端正射还原",
+            detail = "权威还原后可识别 17 位 VIN",
+            index = "01",
             onClick = onOpenVinRectify,
             illustration = { VinStampIllustration() },
         )
         ActionTile(
             modifier = Modifier.fillMaxWidth(),
             title = "车辆外廓扫描",
-            desc = "手持即扫·免架设快部署",
-            detail = "主从合一 · 实时点云预览",
-            compact = false,
+            desc = "3D 工位 · 多镜头云台扫掠",
+            detail = "A/B 双单元 · 融合测量预览",
+            index = "02",
             onClick = onOpenContourScan,
             illustration = { VehicleScanIllustration() },
         )
@@ -216,70 +128,80 @@ private fun ActionTile(
     title: String,
     desc: String,
     detail: String,
-    compact: Boolean,
+    index: String,
     onClick: () -> Unit,
     illustration: @Composable () -> Unit,
 ) {
-    val bgColor = Gomob.colors.bg1
-    val titleColor = Gomob.colors.fg0
-    val descColor = Gomob.colors.fg2
-    val cardPadding = if (compact) 12.dp else 14.dp
-    val illustrationHeight = if (compact) 86.dp else 104.dp
-    val tileMinHeight = if (compact) 202.dp else 220.dp
-
-    Column(
-        modifier
-            .clip(Gomob.shapes.r3)
-            .background(bgColor)
-            .clickable(onClick = onClick)
-            .heightIn(min = tileMinHeight)
-            .padding(cardPadding),
+    HairlineCard(
+        modifier = modifier,
+        padding = Gomob.spacing.cardPadding,
+        onClick = onClick,
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(illustrationHeight)
-                .clip(Gomob.shapes.r1),
-            contentAlignment = Alignment.Center,
-        ) {
-            illustration()
+        Column {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(84.dp)
+                    .clip(Gomob.shapes.r2)
+                    .background(Gomob.colors.bg3),
+                contentAlignment = Alignment.Center,
+            ) {
+                illustration()
+            }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = Gomob.spacing.s12),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    title,
+                    style = Gomob.type.title,
+                    color = Gomob.colors.fg0,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Icon(
+                    imageVector = GomobIcons.ChevronRight,
+                    contentDescription = null,
+                    tint = Gomob.colors.fg3,
+                    modifier = Modifier.size(Gomob.spacing.icon16),
+                )
+            }
+            Text(
+                desc,
+                modifier = Modifier.padding(top = Gomob.spacing.s4),
+                style = Gomob.type.caption,
+                color = Gomob.colors.fg2,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Box(
+                Modifier
+                    .padding(top = Gomob.spacing.s12)
+                    .fillMaxWidth()
+                    .height(Gomob.spacing.hairline)
+                    .background(Gomob.colors.line1),
+            )
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    detail,
+                    style = Gomob.type.caption,
+                    color = Gomob.colors.fg3,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(index, style = Gomob.type.eyebrow, color = Gomob.colors.accent)
+            }
         }
-
-        Text(
-            title,
-            modifier = Modifier.padding(top = 12.dp),
-            fontSize = 16.sp,
-            lineHeight = 20.sp,
-            fontWeight = FontWeight.Medium,
-            color = titleColor,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Text(
-            desc,
-            modifier = Modifier.padding(top = 4.dp),
-            fontSize = 11.sp,
-            lineHeight = 14.sp,
-            color = descColor,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Box(
-            modifier = Modifier
-                .padding(top = 10.dp)
-                .fillMaxWidth()
-                .height(Gomob.spacing.hairline)
-                .background(Gomob.colors.line1),
-        )
-        Text(
-            detail,
-            modifier = Modifier.padding(top = 8.dp),
-            fontSize = 10.sp,
-            lineHeight = 15.sp,
-            color = Gomob.colors.fg3,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
     }
 }
 
@@ -416,105 +338,167 @@ private fun VinStampIllustration() {
 }
 
 @Composable
-private fun AssetSection() {
+private fun AssetSection(
+    state: LatestScanUiState,
+    onRetry: () -> Unit,
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 20.dp, top = 24.dp, end = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(
+                start = Gomob.spacing.pageGutter,
+                top = Gomob.spacing.sectionGap,
+                end = Gomob.spacing.pageGutter,
+            ),
+        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.cardGap),
     ) {
         Row(
-            Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("最近 3D 资产", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Gomob.colors.fg0)
-            Row(
-                modifier = Modifier.clickable {},
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(3.dp),
-            ) {
-                Text("查看全部", fontSize = 11.sp, color = Gomob.colors.accent)
-                Icon(GomobIcons.ArrowRight, contentDescription = null, tint = Gomob.colors.accent, modifier = Modifier.size(11.dp))
+            Text("默认工位最近扫描", style = Gomob.type.sectionTitle, color = Gomob.colors.fg1)
+            // TODO(终态): 跳转 3D 资产全列表（路由未接线，先做视觉入口）
+            Text("查看全部 ›", fontSize = 12.sp, color = Gomob.colors.accent)
+        }
+        HairlineCard(
+            padding = 0.dp,
+            onClick = if (state is LatestScanUiState.Error) onRetry else null,
+        ) {
+            when (state) {
+                LatestScanUiState.Loading -> LatestScanStatusRow(
+                    title = "正在读取最近扫描",
+                    detail = "从服务端同步默认工位结果",
+                    icon = GomobIcons.Refresh,
+                )
+                LatestScanUiState.Empty -> LatestScanStatusRow(
+                    title = "暂无已完成扫描",
+                    detail = "完成车辆外廓扫描后将在这里显示",
+                    icon = GomobIcons.Cube,
+                )
+                LatestScanUiState.Error -> LatestScanStatusRow(
+                    title = "最近扫描加载失败",
+                    detail = "点击重试",
+                    icon = GomobIcons.AlertCircle,
+                    danger = true,
+                    action = "重试",
+                )
+                is LatestScanUiState.Ready -> LatestScanRow(state.scan)
             }
         }
-        AssetRow(name = "VIN-1", type = "车辆外廓", pts = "0.7M", time = "2024/05/10 14:22", dur = "00:48")
-        AssetRow(name = "VIN-2", type = "VIN 拓印", pts = "1.2M", time = "2024/05/10 11:05", dur = "01:12")
-        AssetRow(name = "VIN-3", type = "车辆外廓", pts = "0.9M", time = "2024/05/09 18:32", dur = "00:54")
     }
 }
 
 @Composable
-private fun AssetRow(
-    name: String,
-    type: String,
-    pts: String,
-    time: String,
-    dur: String,
+private fun LatestScanStatusRow(
+    title: String,
+    detail: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    danger: Boolean = false,
+    action: String? = null,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(Gomob.shapes.r1)
-            .background(Gomob.colors.bg1)
-            .clickable {}
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .height(Gomob.spacing.rowList)
+            .padding(horizontal = Gomob.spacing.s14),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        PointCloudThumb()
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    name,
-                    style = Gomob.type.numInline.copy(fontSize = 13.sp, letterSpacing = 0.04.em),
-                    color = Gomob.colors.fg0,
-                )
-                Text(
-                    type,
-                    fontSize = 9.sp,
-                    color = Gomob.colors.fg2,
-                    modifier = Modifier
-                        .clip(Gomob.shapes.r1)
-                        .border(BorderStroke(1.dp, Gomob.colors.line2), Gomob.shapes.r1)
-                        .padding(horizontal = 5.dp, vertical = 1.dp),
-                )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(time, style = Gomob.type.numInline.copy(fontSize = 10.sp, letterSpacing = 0.04.em), color = Gomob.colors.fg3)
-                Text("·", fontSize = 10.sp, color = Gomob.colors.line2)
-                Text("时长 $dur", style = Gomob.type.numInline.copy(fontSize = 10.sp, letterSpacing = 0.04.em), color = Gomob.colors.fg3)
-            }
-        }
-        Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text(
-                pts,
-                style = Gomob.type.numInline.copy(fontSize = 13.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.02.em),
-                color = Gomob.colors.accentStrong,
+        Box(
+            modifier = Modifier
+                .size(38.dp)
+                .clip(Gomob.shapes.r1)
+                .background(if (danger) Gomob.colors.dangerSoft else Gomob.colors.bg2),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (danger) Gomob.colors.danger else Gomob.colors.fg3,
+                modifier = Modifier.size(Gomob.spacing.icon20),
             )
-            Text("POINTS", style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.06.em), color = Gomob.colors.fg3)
         }
-        Icon(GomobIcons.ChevronRight, contentDescription = null, tint = Gomob.colors.fg3, modifier = Modifier.size(12.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(title, style = Gomob.type.body, color = if (danger) Gomob.colors.danger else Gomob.colors.fg0)
+            Text(detail, style = Gomob.type.caption, color = Gomob.colors.fg3)
+        }
+        if (action != null) {
+            Text(
+                action,
+                style = Gomob.type.caption,
+                color = Gomob.colors.accent,
+            )
+        }
     }
 }
 
 @Composable
-private fun PointCloudThumb() {
-    val acc = Gomob.colors.accent
-    Box(
+private fun LatestScanRow(scan: LaserLatestScan) {
+    val title = if (scan.backgroundCaptured) "背景采集 #${scan.scanId}" else "扫描 #${scan.scanId}"
+    val type = if (scan.backgroundCaptured) "空工位背景" else "车辆外廓"
+    val status = if (scan.backgroundCaptured) "采集完成" else "已完成"
+    Row(
         modifier = Modifier
-            .size(38.dp)
-            .clip(Gomob.shapes.r1)
-            .background(Gomob.colors.bg3)
-            .border(BorderStroke(1.dp, Gomob.colors.line1), Gomob.shapes.r1),
+            .fillMaxWidth()
+            .height(Gomob.spacing.rowList)
+            .padding(horizontal = Gomob.spacing.s14),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Canvas(Modifier.fillMaxSize()) {
-            for (i in 0 until 22) {
-                val x = (i * 41 % 100) / 100f * size.width
-                val y = (i * 59 % 100) / 100f * size.height
-                val r = (0.7f + (i % 3) * 0.5f).dp.toPx()
-                drawCircle(acc.copy(alpha = 0.55f), radius = r, center = Offset(x, y))
-            }
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(Gomob.shapes.r2)
+                .background(Gomob.colors.bg3)
+                .border(BorderStroke(Gomob.spacing.hairline, Gomob.colors.line1), Gomob.shapes.r2),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = GomobIcons.Cube,
+                contentDescription = null,
+                tint = Gomob.colors.accentStrong,
+                modifier = Modifier.size(Gomob.spacing.icon20),
+            )
         }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    title,
+                    style = Gomob.type.numInline.copy(fontSize = 15.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.04.em),
+                    color = Gomob.colors.fg0,
+                )
+                Text(
+                    type,
+                    fontSize = 10.sp,
+                    color = Gomob.colors.fg2,
+                    modifier = Modifier
+                        .clip(Gomob.shapes.r1)
+                        .border(BorderStroke(1.dp, Gomob.colors.line2), Gomob.shapes.r1)
+                        .padding(horizontal = Gomob.spacing.s6, vertical = 1.dp),
+                )
+            }
+            // 模型无时间戳/时长字段，第二行 meta 保留状态文案，字体色对齐 11 mono fg3
+            Text(status, style = Gomob.type.numInline.copy(fontSize = 11.sp), color = Gomob.colors.fg3)
+        }
+        val points = scan.points
+        if (points != null) {
+            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    NumberFormat.getIntegerInstance().format(points),
+                    style = Gomob.type.numInline.copy(fontSize = 14.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.02.em),
+                    color = Gomob.colors.accent,
+                )
+                Text("POINTS", style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.06.em), color = Gomob.colors.fg3)
+            }
+        } else {
+            Text("点数未返回", style = Gomob.type.caption, color = Gomob.colors.fg3)
+        }
+        Icon(
+            imageVector = GomobIcons.ChevronRight,
+            contentDescription = null,
+            tint = Gomob.colors.fg3,
+            modifier = Modifier.size(Gomob.spacing.icon16),
+        )
     }
 }

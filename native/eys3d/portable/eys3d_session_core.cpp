@@ -151,6 +151,7 @@ void Eys3dSessionCore::OnColorFrame(const uint8_t* data, size_t size, int64_t ho
 
 int Eys3dSessionCore::SnapshotLatestDepthMm(uint16_t* dst, size_t cap_px, int64_t* meta) {
   std::lock_guard<std::mutex> lk(mu_);
+  if (state_ == SessionState::kError) return -1;
   if (!has_new_depth_ || latest_depth_.bytes.empty()) return 0;
   const size_t px = static_cast<size_t>(latest_depth_.width) * latest_depth_.height;
   if (cap_px < px) return -1;

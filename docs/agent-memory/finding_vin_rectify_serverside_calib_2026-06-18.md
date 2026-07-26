@@ -16,7 +16,7 @@ VIN「数码拓印」= 拍照后用深度对 RGB 做正射校正 + 去阴影 + O
   4角 GetPlaneXYZ/GetRotatedXY → `getPerspectiveTransform`+`warpPerspective` → postProcessV3G → picshadow → IsCheckImage。
 - ❌❌ **订正臆测**：`picshadow` **不是去阴影**(是黑像素行列投影的**内容裁剪**,无滤波)；`postProcessV3G` **不是亮度/对比度/gamma**
   (是**四角合法性裁剪**:≥3角 minAreaRect去斜/<3角 128灰底居中ROI)。真二值化/去阴影/gamma 在**上游**(GetSignature3G/CaptchaRecog,待逆向)。
-- 畸变 = 偶次径向多项式+Brown切向+前置 atan(FOV)，LM(MINPACK)去畸变，**非 OpenCV 5 参**；标定 bin 硬校验 **camCount==3**。
+- 畸变 = 偶次径向多项式+Brown切向+前置 atan(FOV)，LM(MINPACK)去畸变，**非 OpenCV 5 参**。2026-07-14 订正：标定 bin 的 `0x200` 是 format version=3，不是 camCount；原厂 loader 不校验相机数量。
 - 4 月 `Tools/VinRectifyDemo/vin_rectify_demo.cpp` + `VinRectifyGui` + `VIN_RGBD_Rectification_Design.md` 是
   **旧简化逆向稿**（单相机 registered 假设、forward splat+hole fill），**非原厂真源码，不作对齐基准**。
 - 端侧 `native/vin/ortho_rectify.{h,cpp}` + JNI `vinOrthoRectify` 降级为「拍到了」即时近似预览，**不再是真还原路径**。
@@ -32,8 +32,7 @@ VIN「数码拓印」= 拍照后用深度对 RGB 做正射校正 + 去阴影 + O
 ## 首批真机数据（脱机自测基准）
 
 `.dev/vin_captures/` 11 张/2 块板（2510DRK44C）：板1 cap_001-006=`☆LA99FRP32G0LTH013☆`、板2 cap_007-011=另一串(暗+反光+角度)。
-彩色 **1280×256**(HLSD8_RGB24,非 13MP)；深度 640×128，内参 fx=614.6025/fy=163.894/cx=324/cy=64.382，有效79~81%，板距~1850mm。
-⚠ **彩色=深度精确 2×**：是否同光路(registered 零标定) vs 独立 HLSD8(有视差需标定)**待离线实测**(先用「color内参=2×depth+单位外参」跑看重合度定论)。
+该批彩色是旧 1280×256 预览转储；深度 640×128 的 u16 实为 raw disparity×8，历史 meta 误写 mm 与 `fy=163.894`，所以“板距1850mm”无效。当前生产使用 HLSD8 4160×832、原厂 BIN 的 640×128 `fx=fy=614.60498,cx=324,cy=65.4325` 及完整双相机外参。
 
 ## How to apply
 

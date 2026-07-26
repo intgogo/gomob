@@ -110,27 +110,57 @@ type Dimensions struct {
 	Valid       bool    `json:"valid"`
 }
 
+type measurementBounds struct {
+	LMin float32
+	LMax float32
+	WMin float32
+	WMax float32
+	HMin float32
+	HMax float32
+}
+
 type vkey = [3]int32
 
 func ifloor(v, leaf float32) int32 { return int32(math.Floor(float64(v) / float64(leaf))) }
 
 // Measure 跑完整测量管线，返回外廓 LWH。xyzMM=[x,y,z,...] mm。空/退化输入返回 Valid=false（不 panic）。
 func Measure(xyzMM []float32, p MeasureParams) Dimensions {
-	_, _, d := measureBody(xyzMM, p)
+	_, _, d, _ := measureBody(xyzMM, p)
 	return d
 }
 
 // MeasureFull 跑测量管线，同时返回外廓 LWH + 轴距/前后悬 + 货箱（同一车体点、同一 OBB 帧，不重复裁剪）。
 // 测量无效时 AxleResult/CargoBox.Valid=false。轴心检测见 axle.go，货箱见 cargobox.go（均几何 PCL-free）。
 func MeasureFull(xyzMM []float32, p MeasureParams, ap AxleParams) (Dimensions, AxleResult, CargoBox) {
-	roiPts, body, d := measureBody(xyzMM, p)
+	d, axle, cargo, _ := measureFullWithOverlay(xyzMM, p, ap, DefaultCargoBoxParams())
+	return d, axle, cargo
+}
+
+// MeasureFullWithOverlay 一次分割/测量同时产出数字与世界系叠加，禁止二次推导造成框线和 LWH 分叉。
+func MeasureFullWithOverlay(
+	xyzMM []float32,
+	p MeasureParams,
+	ap AxleParams,
+) (Dimensions, AxleResult, CargoBox, VehicleOverlay) {
+	return measureFullWithOverlay(xyzMM, p, ap, DefaultCargoBoxParams())
+}
+
+func measureFullWithOverlay(
+	xyzMM []float32,
+	p MeasureParams,
+	ap AxleParams,
+	cbp CargoBoxParams,
+) (Dimensions, AxleResult, CargoBox, VehicleOverlay) {
+	roiPts, body, d, bounds := measureBody(xyzMM, p)
 	if !d.Valid {
-		return d, AxleResult{}, CargoBox{}
+		return d, AxleResult{}, CargoBox{}, VehicleOverlay{}
 	}
 	det := clipToBodyFootprint(roiPts, body, d, footprintMarginMM)
 	axle := DetectAxles(det, d.OBBAngleDeg, anchorAxleParams(ap, body, d))
 	axle = gateAxlePlausibility(axle, d)
-	return d, axle, DetectCargoBox(det, d.OBBAngleDeg, DefaultCargoBoxParams())
+	cargo := DetectCargoBox(det, d.OBBAngleDeg, cbp)
+	overlay := buildVehicleOverlayFromMeasurement(body, d, bounds, axle, cargo, p)
+	return d, axle, cargo, overlay
 }
 
 // anchorAxleParams 主簇可信时把接触带锚到车体底（轮是车体自身最低部件，抗低垂残留/支撑面起伏，
@@ -200,10 +230,10 @@ func gateAxlePlausibility(a AxleResult, d Dimensions) AxleResult {
 
 // measureBody 跑裁剪→主簇→ROR→OBB+车高，返回：roiPts(裁剪后/聚类前，供轴心/货箱检测，含被聚类
 // 丢弃的悬挂轮)、cleaned(主簇→ROR 后的干净车体，供 OBB/车体框，剔端噪+离群)、外廓维度。OBB 所在帧 z=上。
-func measureBody(xyzMM []float32, p MeasureParams) (roiPts, cleaned []pt, d Dimensions) {
+func measureBody(xyzMM []float32, p MeasureParams) (roiPts, cleaned []pt, d Dimensions, bounds measurementBounds) {
 	d = Dimensions{RawPts: len(xyzMM) / 3}
 	if d.RawPts == 0 {
-		return nil, nil, d
+		return nil, nil, d, bounds
 	}
 	pts := toPoints(xyzMM)
 	if p.UseCropBox {
@@ -226,7 +256,7 @@ func measureBody(xyzMM []float32, p MeasureParams) (roiPts, cleaned []pt, d Dime
 	}
 	d.ROIPts = len(pts)
 	if len(pts) == 0 {
-		return nil, nil, d
+		return nil, nil, d, bounds
 	}
 	// 轴心检测返回的是 裁剪后、聚类前 的点(roiPts)：largestCluster 会把悬挂间隙>体素而与车体
 	// 不连通的轮(尤其驾驶室下遮挡的前轮)当独立小簇丢掉，使该轴接触峰塌到阈值下。贴地接触带 +
@@ -242,19 +272,22 @@ func measureBody(xyzMM []float32, p MeasureParams) (roiPts, cleaned []pt, d Dime
 		d.BodyRatio = float32(d.BodyPts) / float32(d.ROIPts)
 	}
 	if len(body) == 0 {
-		return nil, nil, d
+		return nil, nil, d, bounds
 	}
 	l, w, ang := minAreaRectXY(body, p.OBBStepDeg)
+	ls, ws, zs := projectLWZ(body, ang)
+	bounds.LMin, bounds.LMax = minMax(ls)
+	bounds.WMin, bounds.WMax = minMax(ws)
 	if p.SpanTrimPct > 0 {
 		// 鲁棒分位跨度：极值跨度对幕帘毛边/单点噪声敏感(真机毛边 ~15~25mm 直接进长宽)，
 		// 按 [p, 100−p] 分位差量。OBB 选角仍走极值面积(角度 0.25° 量化、对毛边不敏感)。
-		ls, ws, _ := projectLWZ(body, ang)
 		lo := float64(p.SpanTrimPct)
-		l = spanPct(ls, lo, 100-lo)
-		w = spanPct(ws, lo, 100-lo)
+		bounds.LMin, bounds.LMax = percentile(ls, lo), percentile(ls, 100-lo)
+		bounds.WMin, bounds.WMax = percentile(ws, lo), percentile(ws, 100-lo)
+		l = bounds.LMax - bounds.LMin
+		w = bounds.WMax - bounds.WMin
 	}
 	if p.WidthSupportFrac > 0 {
-		_, ws, _ := projectLWZ(body, ang)
 		wMin, wMax := minMax(ws)
 		bin := p.WidthBinMM
 		if bin <= 0 {
@@ -267,9 +300,11 @@ func measureBody(xyzMM []float32, p MeasureParams) (roiPts, cleaned []pt, d Dime
 			// 把宽撑大数倍)——修剪显著小于跨度(<0.8×)才采纳，避免削掉真实幕帘边缘。
 			if rw > 0 && rw < 0.8*w {
 				w = rw
+				bounds.WMin, bounds.WMax = lo, hi
 			}
 		} else if rw > 0 && rw < w {
 			w = rw
+			bounds.WMin, bounds.WMax = lo, hi
 		}
 	}
 	d.LengthMM, d.WidthMM, d.OBBAngleDeg = l, w, ang
@@ -278,19 +313,23 @@ func measureBody(xyzMM []float32, p MeasureParams) (roiPts, cleaned []pt, d Dime
 		// 没有可靠接地证据，改用车体自身高度，避免把台面离地高度算进车高。
 		bottom, top := robustZExtents(body)
 		if bottom > p.HeightMin+120 {
-			if h, ok := supportRelativeHeight(body, p, ang, bottom); ok {
-				d.HeightMM = h
+			if supportZ, supportTop, ok := supportRelativeHeightBounds(body, p, ang, bottom); ok {
+				bounds.HMin, bounds.HMax = supportZ, supportTop
+				d.HeightMM = bounds.HMax - bounds.HMin
 			} else {
-				d.HeightMM = zSpan(body)
+				bounds.HMin, bounds.HMax = minMax(zs)
+				d.HeightMM = bounds.HMax - bounds.HMin
 			}
 		} else {
-			d.HeightMM = top
+			bounds.HMin, bounds.HMax = 0, top
+			d.HeightMM = bounds.HMax - bounds.HMin
 		}
 	} else {
-		d.HeightMM = zSpan(body)
+		bounds.HMin, bounds.HMax = minMax(zs)
+		d.HeightMM = bounds.HMax - bounds.HMin
 	}
 	d.Valid = true
-	return roiPts, body, d // roiPts=聚类前(轴心/货箱用)、body=主簇→ROR 干净车体(OBB/车体框用)
+	return roiPts, body, d, bounds // roiPts=聚类前(轴心/货箱用)、body=主簇→ROR 干净车体
 }
 
 // toGroundFrame 把点变换到地面正交基：x'=p·right, y'=p·fwd, z'=n·p+d(离地高)。
@@ -328,9 +367,9 @@ func toGroundFrame(in []pt, n [3]float32, d float32) []pt {
 // 支撑面高 = 背景云中落在车辆 OBB 足迹内(收缩 60mm 去边缘混杂)、低于车底(bottom+50mm)的点的
 // P95 离地高——即车正下方台面/支架的上表面。背景不足(无 SupportBG / 足迹内 <200 点)返回 ok=false，
 // 上层回退 zSpan。物理动机见 MeasureParams.SupportBG 注释。
-func supportRelativeHeight(body []pt, p MeasureParams, angleDeg, bottom float32) (float32, bool) {
+func supportRelativeHeightBounds(body []pt, p MeasureParams, angleDeg, bottom float32) (float32, float32, bool) {
 	if len(p.SupportBG) < 3 || len(body) == 0 {
-		return 0, false
+		return 0, 0, false
 	}
 	// body 在 OBB 帧的投影与 长/宽轴指派(u/v 跨度大者为长)——bg 必须沿用同一指派。
 	const d2r = math.Pi / 180.0
@@ -348,7 +387,7 @@ func supportRelativeHeight(body []pt, p MeasureParams, angleDeg, bottom float32)
 	l0, l1 := percentile(ls, 1)+shrink, percentile(ls, 99)-shrink
 	w0, w1 := percentile(ws, 1)+shrink, percentile(ws, 99)-shrink
 	if l1 <= l0 || w1 <= w0 {
-		return 0, false
+		return 0, 0, false
 	}
 	bg := toGroundFrame(toPoints(p.SupportBG), p.GroundN, p.GroundD)
 	zCap := bottom + 50
@@ -368,15 +407,15 @@ func supportRelativeHeight(body []pt, p MeasureParams, angleDeg, bottom float32)
 		}
 	}
 	if len(sup) < 200 {
-		return 0, false
+		return 0, 0, false
 	}
 	supportZ := percentile(sup, 95)
 	top := percentile(zs, 99.9)
 	h := top - supportZ
 	if h <= 0 {
-		return 0, false
+		return 0, 0, false
 	}
-	return h, true
+	return supportZ, top, true
 }
 
 func robustZExtents(body []pt) (bottom, top float32) {
@@ -623,24 +662,24 @@ func DefaultLimits() Limits {
 	return Limits{MaxLengthMM: 12000, MaxWidthMM: 2550, MaxHeightMM: 4000}
 }
 
-// LimitsForVehicleType 按车型返回外廓限值。GB7258-2017 §4.15/§11 对不同类别（货车/半挂列车/牵引车…）
-// 车长上限不同（如货车≤12m、半挂列车≤17.1m），但**逐车型的已核验限值表尚未逆向/录入**，此处先对所有
-// 车型返回通用 [LIMT]（宽 2550/高 4000 各类一致；车长按型细化待补）。**不编造逐型数值**。
-// TODO(M9.2b)：从 GB7258-2017 类别表 / 原厂 setting.ini 录入逐型限值，替换此通用回退（docs/16 §8）。
-func LimitsForVehicleType(vehicleTypeID int) Limits {
-	return DefaultLimits()
+// LimitsForVehicleType 只返回已经按车型、适用条件和法规版本核验的规则。
+// 当前规则库尚未落地，必须返回 unavailable，禁止拿通用上限冒充逐车型合规结论。
+func LimitsForVehicleType(vehicleTypeID int) (Limits, bool) {
+	return Limits{}, false
 }
 
 // Compliance 合规结论。
 type Compliance struct {
+	Determined bool     `json:"determined"`
 	Compliant  bool     `json:"compliant"`
 	Violations []string `json:"violations,omitempty"`
+	Reason     string   `json:"reason,omitempty"`
 }
 
-// CheckCompliance 据 [LIMT] 判超限。测量无效时视为不可判定（Compliant=false + 说明）。
+// CheckCompliance 按已经核验的明确限值判超限。
 func CheckCompliance(d Dimensions, lim Limits) Compliance {
 	if !d.Valid {
-		return Compliance{Compliant: false, Violations: []string{"测量无效，无法判定合规"}}
+		return Compliance{Reason: "measurement_invalid"}
 	}
 	var v []string
 	if d.LengthMM > lim.MaxLengthMM {
@@ -652,5 +691,20 @@ func CheckCompliance(d Dimensions, lim Limits) Compliance {
 	if d.HeightMM > lim.MaxHeightMM {
 		v = append(v, "车高超限")
 	}
-	return Compliance{Compliant: len(v) == 0, Violations: v}
+	return Compliance{Determined: true, Compliant: len(v) == 0, Violations: v}
+}
+
+// ComplianceForVehicleType 只有“车辆类型 + 已核验法规规则”齐备时才允许给出合规/超限。
+func ComplianceForVehicleType(d Dimensions, vehicleTypeID int) Compliance {
+	if !d.Valid {
+		return Compliance{Reason: "measurement_invalid"}
+	}
+	if vehicleTypeID <= 0 {
+		return Compliance{Reason: "vehicle_type_missing"}
+	}
+	limits, ok := LimitsForVehicleType(vehicleTypeID)
+	if !ok {
+		return Compliance{Reason: "rule_unavailable"}
+	}
+	return CheckCompliance(d, limits)
 }

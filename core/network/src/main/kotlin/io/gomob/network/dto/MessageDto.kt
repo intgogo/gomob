@@ -151,6 +151,12 @@ data class LeaveConversationResponse(
 )
 
 @Serializable
+data class DeleteConversationResponse(
+    @SerialName("conversation_id") val conversationId: String,
+    @SerialName("deleted_before_seq") val deletedBeforeSeq: Long,
+)
+
+@Serializable
 data class ContactListResponse(
     val items: List<ContactDto>,
 )

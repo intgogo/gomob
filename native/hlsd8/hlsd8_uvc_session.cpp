@@ -1,7 +1,7 @@
 // HLSD8 RGB 相机取流实现 — 见 hlsd8_uvc_session.h 头注。
 #include "hlsd8/hlsd8_uvc_session.h"
 
-#include "libuvc/libuvc.h"
+#include "eys3d/android/eys3d_libuvc.h"
 
 #include <android/log.h>
 #include <dlfcn.h>
@@ -23,39 +23,56 @@ using gomob::camera::SessionConfig;
 using gomob::camera::SessionStats;
 using gomob::camera::StreamProfile;
 using SS = gomob::camera::SessionState;
+using gomob::eys3d::android::uvc_context;
+using gomob::eys3d::android::uvc_device;
+using gomob::eys3d::android::uvc_device_handle;
+using gomob::eys3d::android::uvc_frame;
+using gomob::eys3d::android::uvc_frame_callback_t;
+using gomob::eys3d::android::uvc_stream_ctrl;
 
 namespace {
 
-// libuvc_lusb100.so 用 dlopen(RTLD_LOCAL) 加载（同 eys3d_pupil_session 隔离策略）：其 libusb_* 走自己
-// NEEDED 的 libusb100.so，不被 gomob_native 全局 libusb-1.0.so 遮蔽。dlsym 出 color-only 需要的 uvc_*。
+// 对齐 VINCreator 的双栈隔离：HLSD8 使用 libuvc1.so → libusb1001.so，RS-D550 厂商引擎使用
+// libuvc.so → libusb100.so。两套不同 SONAME 保证各自拥有独立 libusb 全局状态和事件线程。
+// HLSD8 只需标准 color-only UVC API，不需要加载 libUVCCamera1.so；但协商与起流参数必须逐项
+// 对齐其 UVCPreview 实现，否则 10fps 会把同一 USB2 hub 上的 RS-D550 mode25 挤到全 transfer timeout。
 struct LusbUvcApi {
-  uvc_error_t (*init)(uvc_context_t**, struct libusb_context*) = nullptr;
-  uvc_error_t (*get_device_with_fd)(uvc_context_t*, uvc_device_handle_t**, int, int, const char*, int, int, int) = nullptr;
-  const uvc_format_desc_t* (*get_format_descs)(uvc_device_handle_t*) = nullptr;
-  uvc_error_t (*get_stream_ctrl_format_size)(uvc_device_handle_t*, uvc_stream_ctrl_t*, enum uvc_frame_format, int, int, int) = nullptr;
-  uvc_error_t (*start_streaming)(uvc_device_handle_t*, uvc_stream_ctrl_t*, uvc_frame_callback_t*, void*, uint8_t) = nullptr;
-  void (*stop_streaming)(uvc_device_handle_t*) = nullptr;
-  void (*close)(uvc_device_handle_t*) = nullptr;
-  void (*exit)(uvc_context_t*) = nullptr;
+  int (*init2)(uvc_context**, libusb_context*, const char*) = nullptr;
+  int (*get_device_with_fd)(uvc_context*, uvc_device**, int, int, const char*, int, int, int) = nullptr;
+  int (*open)(uvc_device*, uvc_device_handle**) = nullptr;
+  int (*get_stream_ctrl_format_size_fps)(
+      uvc_device_handle*, uvc_stream_ctrl*, int, int, int, int, int) = nullptr;
+  int (*start_streaming_bandwidth)(
+      uvc_device_handle*, uvc_stream_ctrl*, uvc_frame_callback_t*, void*, uint8_t, float) = nullptr;
+  void (*stop_streaming)(uvc_device_handle*) = nullptr;
+  void (*close)(uvc_device_handle*) = nullptr;
+  void (*unref_device)(uvc_device*) = nullptr;
+  void (*exit)(uvc_context*) = nullptr;
   void* lib = nullptr;
 };
 
+// libuvc1 是 VINCreator 新栈，frame-format 枚举与旧 libuvc.so 不同。
+// 反汇编 uvc_frame_format_matches_guid 的表项可见 9 → "MJPG"；旧头里的 MJPEG=7 会恒返 -51。
+constexpr int kUvc1FrameFormatMjpeg = 9;
+
 bool LoadLusbUvc(LusbUvcApi* a) {
-  a->lib = dlopen("libuvc_lusb100.so", RTLD_NOW | RTLD_LOCAL);
-  if (!a->lib) { HLOG("dlopen libuvc_lusb100.so failed: %s", dlerror()); return false; }
+  a->lib = dlopen("libuvc1.so", RTLD_NOW | RTLD_LOCAL);
+  if (!a->lib) { HLOG("dlopen libuvc1.so failed: %s", dlerror()); return false; }
 #define USYM(f, n) a->f = reinterpret_cast<decltype(a->f)>(dlsym(a->lib, n))
-  USYM(init, "uvc_init");
+  USYM(init2, "uvc_init2");
   USYM(get_device_with_fd, "uvc_get_device_with_fd");
-  USYM(get_format_descs, "uvc_get_format_descs");
-  USYM(get_stream_ctrl_format_size, "uvc_get_stream_ctrl_format_size");
-  USYM(start_streaming, "uvc_start_streaming");
+  USYM(open, "uvc_open");
+  USYM(get_stream_ctrl_format_size_fps, "uvc_get_stream_ctrl_format_size_fps");
+  USYM(start_streaming_bandwidth, "uvc_start_streaming_bandwidth");
   USYM(stop_streaming, "uvc_stop_streaming");
   USYM(close, "uvc_close");
+  USYM(unref_device, "uvc_unref_device");
   USYM(exit, "uvc_exit");
 #undef USYM
-  const bool ok = a->init && a->get_device_with_fd && a->get_stream_ctrl_format_size &&
-                  a->start_streaming && a->stop_streaming && a->close && a->exit;
-  HLOG("libuvc_lusb100 dlopen ok=%d (get_format_descs=%p)", ok, (void*)a->get_format_descs);
+  const bool ok = a->init2 && a->get_device_with_fd && a->open &&
+                  a->get_stream_ctrl_format_size_fps && a->start_streaming_bandwidth &&
+                  a->stop_streaming && a->close && a->unref_device && a->exit;
+  HLOG("libuvc1/libusb1001 dlopen ok=%d", ok);
   return ok;
 }
 
@@ -82,11 +99,11 @@ void ResolveBusDev(int fd, int* busnum, int* devaddr) {
 }
 
 // libuvc 回调（color-only）→ 转交会话存最新帧。
-void Hlsd8ColorCb(uvc_frame_t* frame, void* user) {
+void Hlsd8ColorCb(uvc_frame* frame, void* user) {
   auto* s = static_cast<Hlsd8UvcSession*>(user);
   if (!s || !frame || !frame->data || frame->data_bytes == 0) return;
-  s->OnColorFrame(static_cast<const uint8_t*>(frame->data), frame->data_bytes,
-                  static_cast<int>(frame->width), static_cast<int>(frame->height), NowNs());
+  // vendor uvc_frame 在 data_bytes 后有私有字段，不能用 pupil 头读取 width/height；几何取已协商档。
+  s->OnColorFrame(static_cast<const uint8_t*>(frame->data), frame->data_bytes, NowNs());
 }
 
 }  // namespace
@@ -105,15 +122,16 @@ bool Hlsd8UvcSession::start(const SessionCallbacks&) {
   return true;
 }
 
-void Hlsd8UvcSession::OnColorFrame(const uint8_t* data, size_t bytes, int w, int h, int64_t ns) {
+void Hlsd8UvcSession::OnColorFrame(const uint8_t* data, size_t bytes, int64_t ns) {
   std::lock_guard<std::mutex> lk(mu_);
   latest_.assign(data, data + bytes);
-  latest_w_ = w;
-  latest_h_ = h;
+  latest_w_ = stream_w_;
+  latest_h_ = stream_h_;
   latest_ns_ = ns;
   ++latest_serial_;
   const int64_t n = ++color_frames_;
-  if (n <= 3 || n % 30 == 0) HLOG("color(MJPEG) #%lld %zuB %dx%d", (long long)n, bytes, w, h);
+  if (n <= 3 || n % 30 == 0)
+    HLOG("color(MJPEG) #%lld %zuB %dx%d", (long long)n, bytes, stream_w_, stream_h_);
 }
 
 bool Hlsd8UvcSession::snapshot_color(std::vector<uint8_t>* out, int64_t* meta) {
@@ -157,81 +175,59 @@ void Hlsd8UvcSession::Run() {
   static LusbUvcApi uvc;  // HLSD8 单设备，进程内单会话；dlopen 句柄复用
   if (!uvc.lib && !LoadLusbUvc(&uvc)) { state_ = SS::kError; ++errors_; return; }
 
-  uvc_context_t* uctx = nullptr;
-  if (uvc.init(&uctx, nullptr) != UVC_SUCCESS || !uctx) {
-    HLOG("uvc_init failed");
+  uvc_context* uctx = nullptr;
+  if (uvc.init2(&uctx, nullptr, "/dev/bus/usb") != 0 || !uctx) {
+    HLOG("uvc_init2(libuvc1) failed");
     state_ = SS::kError; ++errors_; return;
   }
 
   int busnum = 0, devaddr = 0;
   ResolveBusDev(fd_, &busnum, &devaddr);
-  uvc_device_handle_t* devh = nullptr;
-  uvc_error_t er = uvc.get_device_with_fd(uctx, &devh, kHlsd8UsbId.vid, kHlsd8UsbId.pid, nullptr,
-                                          fd_, busnum, devaddr);
+  uvc_device* dev = nullptr;
+  int er = uvc.get_device_with_fd(uctx, &dev, kHlsd8UsbId.vid, kHlsd8UsbId.pid, nullptr,
+                                  fd_, busnum, devaddr);
   HLOG("uvc_get_device_with_fd(fd=%d bus=%d dev=%d) rc=%d", fd_, busnum, devaddr, er);
-  if (er != UVC_SUCCESS || !devh) { state_ = SS::kError; ++errors_; uvc.exit(uctx); return; }
+  if (er != 0 || !dev) { state_ = SS::kError; ++errors_; uvc.exit(uctx); return; }
 
-  // ① 枚举设备真实格式，自动选**最小** MJPEG 帧（≥640 宽，避免 tiny 无用档）。
-  //    ★ 2026-06-15：HLSD8 与 eYs3D 同裸 OTG 并发取流，必须压低 HLSD8 带宽否则把 eYs3D 挤死（color/depth 0 帧）。
-  //    预览只需小图；终态接带电 hub 后再恢复全分辨率（4160）。
-  int best_w = 0, best_h = 0, best_fps = 0;
-  long best_area = 0;
-  if (uvc.get_format_descs) {
-    for (const uvc_format_desc_t* f = uvc.get_format_descs(devh); f; f = f->next) {
-      if (f->bDescriptorSubtype != UVC_VS_FORMAT_MJPEG) continue;
-      for (const uvc_frame_desc_t* fr = f->frame_descs; fr; fr = fr->next) {
-        if (fr->wWidth < 640) continue;  // 跳过过小档
-        const long area = static_cast<long>(fr->wWidth) * fr->wHeight;
-        if (best_area != 0 && area >= best_area) continue;  // 选最小面积
-        uint32_t iv = fr->dwDefaultFrameInterval ? fr->dwDefaultFrameInterval : fr->dwMinFrameInterval;
-        if (iv == 0 && fr->intervals && fr->intervals[0]) iv = fr->intervals[0];
-        best_w = fr->wWidth; best_h = fr->wHeight; best_area = area;
-        best_fps = iv ? static_cast<int>(10000000.0 / iv + 0.5) : 0;
-      }
-    }
-    HLOG("auto-pick MJPEG(最小) %dx%d @%dfps", best_w, best_h, best_fps);
+  uvc_device_handle* devh = nullptr;
+  er = uvc.open(dev, &devh);
+  HLOG("uvc_open(HLSD8/libuvc1) rc=%d", er);
+  if (er != 0 || !devh) {
+    state_ = SS::kError; ++errors_; uvc.unref_device(dev); uvc.exit(uctx); return;
   }
 
-  uvc_stream_ctrl_t ctrl;
+  // ① 只协商 VINCreator 使用的 4160x832 MJPEG。vendor 结构体与 pupil 不同，按已知原厂档直接协商，
+  //    不跨 ABI 遍历 format descriptor；低分辨率或其它画幅不属于同一标定像素域。
+  constexpr int kWidth = 4160;
+  constexpr int kHeight = 832;
+  constexpr int kMinFps = 1;
+  constexpr int kMaxFps = 5;
+  constexpr float kBandwidthFactor = 1.0f;
+  uvc_stream_ctrl ctrl;
   std::memset(&ctrl, 0, sizeof(ctrl));
-  bool ok = false;
-  if (best_w > 0 && best_fps > 0) {
-    uvc_error_t rc = uvc.get_stream_ctrl_format_size(devh, &ctrl, UVC_FRAME_FORMAT_MJPEG,
-                                                     best_w, best_h, best_fps);
-    HLOG("nego auto %dx%d@%d rc=%d", best_w, best_h, best_fps, rc);
-    ok = (rc == UVC_SUCCESS);
-  }
-  // 自动选失败时回退候选扫（仍是对真实描述符协商，匹配才成）。
-  if (!ok) {
-    struct Cand { int w, h; };
-    static const Cand cands[] = {{4160, 832}, {4160, 3120}, {3840, 2160}, {1920, 1080},
-                                 {1280, 960}, {1280, 720}, {1024, 768}, {800, 600}, {640, 480}};
-    static const int fpss[] = {30, 25, 20, 15, 10, 5};
-    for (const auto& c : cands) {
-      for (int fps : fpss) {
-        uvc_stream_ctrl_t t;
-        std::memset(&t, 0, sizeof(t));
-        if (uvc.get_stream_ctrl_format_size(devh, &t, UVC_FRAME_FORMAT_MJPEG, c.w, c.h, fps) == UVC_SUCCESS) {
-          ctrl = t; best_w = c.w; best_h = c.h; best_fps = fps; ok = true; break;
-        }
-      }
-      if (ok) break;
-    }
-    HLOG("nego sweep ok=%d %dx%d@%d", (int)ok, best_w, best_h, best_fps);
-  }
-  if (!ok) {
+  // VINCreator libUVCCamera1::UVCPreview::setPreviewSize 反汇编实证：即使 Java 传 max_fps=30，
+  // native 也固定调用 uvc_get_stream_ctrl_format_size_fps(..., min=1, max=5)。不能先试 10fps。
+  const int negotiate_rc = uvc.get_stream_ctrl_format_size_fps(
+      devh, &ctrl, kUvc1FrameFormatMjpeg, kWidth, kHeight, kMinFps, kMaxFps);
+  HLOG("nego VINCreator %dx%d fps=%d..%d rc=%d fmt=%u frame=%u interval=%u", kWidth, kHeight,
+       kMinFps, kMaxFps, negotiate_rc, ctrl.bFormatIndex, ctrl.bFrameIndex, ctrl.dwFrameInterval);
+  if (negotiate_rc != 0) {
     state_ = SS::kError; ++errors_;
     HLOG("HLSD8 MJPEG 协商失败（无匹配格式）");
-    uvc.close(devh); uvc.exit(uctx);
+    uvc.close(devh); uvc.unref_device(dev); uvc.exit(uctx);
     return;
   }
+  stream_w_ = kWidth;
+  stream_h_ = kHeight;
 
-  // ② start_streaming 起 libuvc 自有阻塞 handler 线程 + MJPEG 排空，回调存最新帧。
-  uvc_error_t rc = uvc.start_streaming(devh, &ctrl, Hlsd8ColorCb, this, 0);
-  HLOG("uvc_start_streaming(MJPEG %dx%d@%d) rc=%d", best_w, best_h, best_fps, rc);
-  if (rc != UVC_SUCCESS) {
+  // ② VINCreator UVCPreview::do_preview 使用 bandwidth 变体；参数 1.0f 也必须一致。
+  int rc = uvc.start_streaming_bandwidth(
+      devh, &ctrl, Hlsd8ColorCb, this, 0, kBandwidthFactor);
+  HLOG("uvc_start_streaming_bandwidth(MJPEG %dx%d fps=%d..%d bw=%.1f) rc=%d", kWidth, kHeight,
+       kMinFps, kMaxFps, kBandwidthFactor, rc);
+  if (rc != 0) {
     state_ = SS::kError; ++errors_;
-    uvc.close(devh); uvc.exit(uctx);
+    uvc.close(devh); uvc.unref_device(dev); uvc.exit(uctx);
     return;
   }
   state_ = SS::kStreaming;
@@ -246,6 +242,7 @@ void Hlsd8UvcSession::Run() {
   // ④ 收尾。
   uvc.stop_streaming(devh);
   uvc.close(devh);
+  uvc.unref_device(dev);
   uvc.exit(uctx);
   state_ = SS::kStopped;
 }
@@ -268,8 +265,8 @@ CameraCapabilities Hlsd8Driver::capabilities() const {
   c.has_confidence = false;
   c.has_ir = false;
   c.depth_is_metric_onchip = false;
-  // 真实分辨率开流时按描述符自动选**最小** MJPEG 帧（压低带宽让 eYs3D 并发取流，见 Run() ①）；
-  // 此处仅给 UI 一个占位档（设备最大约 4160 宽幅），与实际协商分辨率无关。
+  // 真实分辨率开流时按描述符优先选 5:1 最大 MJPEG 帧；预览降采样在 Kotlin 层完成。
+  // 此处给 UI 声明原厂采集档，实际协商仍以设备描述符为准。
   c.color_profiles.push_back(StreamProfile{4160, 832, 0, StreamProfile::Format::kMjpeg, "HLSD8 MJPEG(auto)"});
   return c;
 }

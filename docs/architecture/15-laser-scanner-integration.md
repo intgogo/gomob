@@ -8,6 +8,94 @@
 > 用户拍板（M8'）：①C++ 管线 **cgo 链 `lidar_core.a`**（带逐帧点回调）；②融合 **半复用**（新 `laser_scan_jobs` 表 + 复用
 > `scan.fusion_done` 实时桥）；③点云 **ws/gRPC 流式推点**（采集中实时预览）；④laserworker **同网段**直连 `.101/.102`。
 
+## 0. 现行生产合同（2026-07-12）
+
+job207 与 job209/210 的差异证明，外廓错误不是 App/Web 使用了不同测量公式，而是两条链进入了不同几何域：
+网页先按 15 点 region 裁剪，App 链路却拿未裁整房间 live 减已裁背景，约 700 万区域外静态点被当成车辆。
+生产终态因此只允许一份服务端工位配置、一条车辆隔离链和一份 canonical 测量结果，客户端不得自行裁剪或重算。
+
+### 0.1 服务端工位真理源
+
+- site：`laser_site_calibration` 保存 A/B 刚体 B→A、来源、RMS、公共标记数和 hash；生产要求 RMS≤5mm、
+  公共标记≥4。单次扫描 refine 不是 site，禁止回填。
+- region：`laser_region_calibration` 定义 unit A 世界系扫描区域；车辆扫描要求已保存、启用且多边形有效。
+- acquisition：服务端读取 `device_info + get_config`，把设备身份、标定、扫描设置和过滤参数固化为 profile。
+- background：新采 revision 使用区域裁剪后的 A/B 设备系 `region_cropped_unit_frames_v1`，绑定 site、region
+  与 acquisition profile；区域外房间点不进入背景对象。迁移前背景经真实回放建立
+  `legacy_verified_region_fused_v1` 兼容绑定后，继续按修改前的区域裁剪融合云路径相减，不伪造采集元数据。
+- keep ratio 由服务端决定。客户端遗留的 `site_json/region_filter/keep_ratio` 只能做一致性校验。
+
+### 0.2 唯一隔离与测量顺序
+
+```text
+服务端 site / region / acquisition snapshot
+  → live A/B 用 canonical site 应用当前 region
+  → 与同 site/region revision 的已裁剪 background A/B 对齐
+  → A live-bg；B live-bg（各自在本设备系）
+  → B 前景使用本次最终 B→A 变换到 A 系
+  → 合并 measCloud
+  → MeasureFull + axle + cargo box + overlay + ground
+  → measured.pcd + 完整 WS/REST 结果
+```
+
+`fused.pcd` 表示区域场景，`measured.pcd` 才是 `MeasureFull` 的实际车辆输入；背景缺失或 revision 不兼容
+应在起扫前 409，不能完整扫描后再把场景尺寸作为车辆结果。
+
+### 0.3 canonical 制品与生产拒绝门
+
+`MeasuredCloudArtifact` 固化 `unit_a_world_mm_v1`、源点数、XYZ SHA-256、site/region/background revision
+和最终 B→A SHA-256。任务 manifest、下载响应头、PCD 注释与完整 XYZ 任一错配时，L/W/H、轴/货箱、overlay
+和车辆点云整体失效；fused 只能作为明确标注的诊断场景。
+
+生产 measured 还要求 refine 已应用、pairs≥1000、RMS≤15mm、Δt≤50mm、ΔR≤1°，以及 ground drift≤1.5°/50mm。
+这些标量门仍不能排除对立面或局部退化，对应的 fitness、覆盖率、条件数与 holdout 见 M13.18。
+
+### 0.3.1 App/Web 外廓叠加同源合同
+
+App 与 Web 只在融合视图展示尺寸叠加，且必须消费通过 `MeasuredCloudArtifact` 内容校验后保留下来的同一份
+`VehicleMeasurement + VehicleMeasurementOverlay`。车体/货箱 8 角、轴线均直接使用服务端融合世界系坐标；长宽高、
+货箱尺寸、前后悬与轴距读取同次测量标量，客户端不得从 fused 点云包围盒重新拟合。
+
+两端遵守同一工程图线几何规则：车体/货箱框、轴线、双端箭头尺寸线和虚线尺寸界线。Web 可继续显示锚定数值
+徽章；Android 按 2026-07-13 用户最新决定暂时只显示线框，顶部 L/W/H 徽章与 11 个锚定文字均不参与组合，完整
+数值统一在结果卡读取。Android 从 Filament 当前相机读取列主序 `projection × view` 矩阵，把少量世界点投影到与
+`SurfaceView` 同尺寸的 Compose Canvas；相机旋转、缩放、平移、重置和 viewport resize 都触发新快照。覆盖层
+不注册指针处理，手势继续落到点云视口；A/B 分镜仍是各自设备系，禁止套用该融合世界系 overlay。
+
+完成态结果卡同样只消费该次 `VehicleMeasurement`：固定列出车长、车宽、车高；`axle.valid` 时列轴数、每段
+轴距、服务端 `totalWheelbaseMm`、前悬和后悬；`cargoBox.hasBox` 时列货箱外长、外宽和深度，内宽仅在大于
+0 时作为“参考”展示。客户端不得求和轴距或从点云补算缺失值。结果卡使用两列紧凑布局。待扫描态控制栏只
+保留全宽“开始扫描”；扫描中的“取消扫描”、顶栏返回和系统返回安全停机链继续保留。
+
+Android 的 Filament 线程合同固定为：主线程只持有 `SurfaceView`、接收 Surface 回调并把手势解析成数值增量；
+`Utils.init`、Engine/资源创建、点云打包与上传、相机、Renderer/Fence 和销毁全部串行归属
+`PointCloudFilamentOwner`。三路视图保留独立 Engine 和相机状态，但切换显示只启停渲染，不反复建销；数据与
+手势命令采用 latest-wins 合并。上传使用两个固定 DirectByteBuffer 槽，槽忙时保留最后请求并在完成回调后重试，
+不得丢最终点云。Surface generation 同时约束 SwapChain 和投影快照，旧 Surface 的延迟命令不得进入新视口；
+有效 SwapChain 回收前仍须在 owner 线程 `destroySwapChain + flushAndWait`，冷初始化期间退出则不得让主线程等待
+Engine 初始化。静态点云按需绘制，只有连续手势/漫游才续帧，避免模拟器 llvmpipe 持续占用图形队列反压 HWUI。
+
+该合同由 `tests/harness/laser_render_stability/` 验证：恢复既有完成任务，不创建新扫描；覆盖首次分镜 A/B Engine
+初始化时立即返回、尺寸开关、20 轮融合/分镜切换、30 秒拖动和 10 秒静置，并同时核对三路源点/显示点、颜色、
+13 条完整测量结果及其屏幕 bounds；融合叠加开启时必须有唯一 `车辆外廓尺寸线框 <N> 条` 且 `N>0`，关闭或
+进入分镜时必须为 0，同时点云锚定文字和顶部 L/W/H 徽章始终为 0。另检查 Engine 线程守恒及
+ANR/FATAL/OOM/EGL/BufferQueue/主线程 5 秒帧。
+2026-07-13 在 `emulator-5556` 的最终证据为 PASS：退出竞态 3817ms（最大帧 1655.0ms）；完整流程最大帧
+637.4ms，20/20 轮通过，融合/A/B 显示点保持 262144/65536/65536；融合态线框 57 条、点云文字 0、顶部徽章 0，
+13 条测量结果完整，关闭叠加与分镜态线框均为 0。
+
+### 0.4 未完成能力
+
+- ArUco 尚缺权威标靶 revision、IPPE 双解/正深度、离群、重投影 holdout、覆盖与条件数门。
+- laserworker 尚缺数据库 station lease、heartbeat、fencing 与崩溃 reconciliation。
+- 缺 `installation_epoch/station_geometry_revision`，A/B 整体水平移动仍可能漏检。
+- App/Web 尚未完成 station、inspection、vehicle、vehicle type 与 `inspection_assets` 的原子归档闭环。
+- 缺逐车型、适用条件和法规版本证据链；当前只能返回 `compliance_determined=false`。
+
+软件门与合成 harness 不能替代新 A/B schema 的现场终验。该升级在用户确认空工位后重标 site、重采区域 A/B 背景，并对同一车辆、
+同一 inspection 连扫至少三次；App/Web 必须针对同一 scan_id 对账 measured 制品、尺寸、轴/货箱、overlay、
+ground 与全部 revision。但升级验收不得反向阻断真实历史扫描已证明可用的 legacy 工位。
+
 ## 1. 背景与目标
 
 激光硬件 = 两台一体化扫描单元 LTS-T1（2D 线激光 Pico100 + 旋转 PTZ 轴），分置车两侧扫整车外廓。
@@ -219,3 +307,57 @@ selectUnit/refresh/command/saveScanSettings/saveCalib）+ `LaserDeviceControlShe
 「control board offline」，ctrl=False；`CLEAR_ERROR` 返 403「控制板离线无法清错」）—— 这是**硬件级故障**（.101 相机本就
 IMX415 物理坏），起扫探活失败返 502。恢复须**软件复位（设备面板按钮，带二次确认）或现场断电重启**。镜头 autoFit 实时直渲的
 真扫可视验证待 .101 恢复后补做。
+
+### 9.9 全量权威云与端侧有界预览（2026-07-11）
+
+长扫资源契约必须把“测量真理源”和“显示派生物”分开：
+
+```text
+双单元全量采集 → 服务端全量 PCD / 融合 / 测量 / 复现
+                         └→ 有界渲染派生 → App 实时分镜与完成态回看
+```
+
+- 实时 A/B：App 各维护最多 131072 点的世界原点对齐嵌套体素网格，初始 25mm，容量满后整级合并到
+  50/100mm；每体素保留最靠近体素中心的点。服务端 `laser.points.source_points` 携带 canonical region
+  裁剪后的分单元累计源点数，App 即使因背压丢弃中间预览帧，收到后续帧也能恢复准确计数；旧 worker
+  缺字段时才退回已接收点数。进入融合前，可靠 `laser.status.source_points_a/b` 再发送最终累计值，兜住
+  最后一条 lossy 点帧被丢且已无后续帧的边界。`sourcePointCount` 与 `renderPointCount` 分离，界面同时标明
+  “源点 / 显示采样点”，不能把端侧有界渲染误报成权威点云缺失。
+- 背压：`laser.points` 从通用可靠事件流拆出，raw JSON、解析事件和 ViewModel 待处理队列均为 4 帧并
+  `DROP_OLDEST`；`laser.status`、`scan.fusion_done` 和消息事件仍走可靠通道。丢弃只影响非权威预览。
+- 最终 PCD：`GET /v1/scans/laser/{id}/cloud/{name}?max_points=N` 顺序读取权威 binary PCD，按记录序号做
+  确定性分层抖动采样，逐字节保留 XYZ/RGB/intensity；响应头与 `# GOMOB_SOURCE_POINTS` 保存原始点数。
+  不带参数时仍返回完整 PCD。App 预算为 fused 262144、unit_a/unit_b 各 65536。
+- 完成态语义：主窗口始终加载区域裁剪后的彩色 `fused.pcd`；`measured.pcd` 只下载最小样本并结合
+  `MeasuredCloudArtifact` 校验车辆测量输入身份，不进入渲染状态，也不得用其无色车辆子云冒充 fused。
+  A/B 分镜保持现有 2×2 版式，但 A、B 单格各自使用独立 `PointCloud3dView`、独立 auto-fit 与相机状态，
+  支持单指旋转、双指缩放和平移；禁止把不同设备坐标系套进共享二维投影边界。客户端还必须校验
+  `pts_a + pts_b = points`，且 site 完成态 A/B/fused 缺 RGB 时给出完整性告警，不能静默冒充正常结果。
+- 渲染：`PointCloud3dView` 默认预分配 50000 顶点，激光融合页显式 262144。上传使用两个固定
+  DirectByteBuffer 槽，Filament 完成回调前不复用；两槽都忙时跳过中间预览帧，不排无界上传队列。
+
+真实验证由 `tests/harness/laser_live_preview_memory/` 完成：scan203 跨过历史 44 秒 OOM 窗口后 UI 安全取消；
+scan204 自然完成 A/B 回看，暴露 Android 未携带网页 localStorage 外参而静默降为 raw 的独立断链；修复后
+scan206 从 Android UI 起扫并自然完成，服务端 A/B/fused 为 4459642/4236543/8696185 点，App 最终驻留
+65536/65536/262144 个彩色点并进入完成态。Dalvik 峰值 29.9MiB（growth limit 192MiB），无 OOM、ANR、
+FATAL，结束后无活动任务。最终 scan209 在正式 ArUco + native 直用 site 的链路下再次 PASS：A/B/fused
+4460172/4236775/8696947，完成态留观 47 秒内 Dalvik 30436→30434KiB、VmRSS 328036→328592KiB，无增长斜坡。
+
+### 9.10 工位外参服务端权威化（2026-07-11）
+
+旧管理台把工位、A/B IP 和 `calibration.result` 只存在浏览器 `localStorage`；网页起扫会临时发送
+`site_json`，Android `repo.start()` 则发送空请求。旧 handler 遇空 `site_json` 会静默改成 raw，导致同一物理
+工位网页能融合、App 只能得到 A/B 云。工位外参不能以浏览器状态作为真理源。
+
+- migration 0022 新增 `laser_site_calibration`，按物理 A/B IP 对保存 native `site_json`、来源、误差、来源扫描和
+  更新人；0023 补齐 ArUco RMS 与公共标记数，并把旧网页伪写的 0/0 误差迁为未知。历史只迁移最近一次
+  `align_method=site` 的成功扫描，执行显示系→native 的 `F*T*F` 及 mm→m。
+- `GET/PUT /v1/scans/laser/site-calibration` 提供共享读取和 admin 更新；网页启动时服务端配置优先，旧本地正式
+  标定会覆盖 `legacy_scan_backfill`，后续标定保存同步写服务端。
+- `POST /v1/scans/laser` 的 `align=site` 在未显式给 `site_json` 时必须从服务端解析；不存在则 409 明确拒绝，
+  不再静默 raw。只有调用方显式 `align=raw` 才允许只采 A/B。
+- site 矩阵在 native 层只做确定性变换，不再跑对立面易偏的点到点 ICP；唯一生产精修是 Go 点到面算法，
+  `stats.site_calibration` 快照来源/时间/hash/RMS，`stats.b_to_a_refine` 记录正式外参到最终解的完整增量。
+- scan209 验证 Android 空请求已解析为正式 `source=aruco`，stats 快照 source/updated_by/hash；native 不再改矩阵，
+  Go 点到面从正式初值修正 95.74mm/2.516°（pairs=19975，RMS=8.92mm）并明确告警重标。最终 B→A 与
+  scan208 仅差 0.235mm/0.0098°，三朵 PCD 与 fused 回看全通；链路正确，但当前 ArUco 初值仍未达重标目标。

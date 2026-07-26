@@ -92,7 +92,7 @@ private data class FloatingMessageStyle(
 private fun floatingMessageStyle(tone: FloatingMessageTone): FloatingMessageStyle = when (tone) {
     FloatingMessageTone.Info -> FloatingMessageStyle(
         icon = GomobIcons.Cache,
-        container = if (Gomob.colors.isLight) Color.White.copy(alpha = 0.96f) else Gomob.colors.bg2.copy(alpha = 0.96f),
+        container = Gomob.colors.bg1.copy(alpha = 0.96f),
         line = Gomob.colors.line2,
         iconColor = Gomob.colors.accent,
         textColor = Gomob.colors.fg1,
@@ -100,7 +100,7 @@ private fun floatingMessageStyle(tone: FloatingMessageTone): FloatingMessageStyl
     )
     FloatingMessageTone.Danger -> FloatingMessageStyle(
         icon = GomobIcons.AlertCircle,
-        container = if (Gomob.colors.isLight) Color.White.copy(alpha = 0.98f) else Gomob.colors.bg2.copy(alpha = 0.98f),
+        container = Gomob.colors.bg1.copy(alpha = 0.98f),
         line = Gomob.colors.dangerLine,
         iconColor = Gomob.colors.danger,
         textColor = Gomob.colors.fg0,

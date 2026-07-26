@@ -38,6 +38,13 @@ func TestPointRegionFilterNormalizes(t *testing.T) {
 	if _, err := (PointRegionFilter{Enabled: true, Points: [][3]float32{{0, 0, 0}, {1, 0, 0}, {2, 0, 0}}}).Normalized(); err == nil {
 		t.Fatal("共线区域点应报错")
 	}
+	bowTie := [][3]float32{{0, 0, 0}, {100, 100, 0}, {0, 100, 0}, {100, 0, 0}}
+	if !polygonSelfIntersects(bowTie) {
+		t.Fatal("测试自相交多边形应被几何检测命中")
+	}
+	if _, err := (PointRegionFilter{Enabled: true, Points: bowTie}).Normalized(); err == nil {
+		t.Fatal("自相交区域墙应报错")
+	}
 }
 
 func TestFilterPointFrameRegion(t *testing.T) {

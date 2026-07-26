@@ -16,11 +16,17 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ChatBubble
@@ -31,10 +37,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -51,6 +60,10 @@ import io.gomob.designsystem.component.TabBarVector
 import io.gomob.designsystem.component.TabItemVector
 import io.gomob.designsystem.glass.LocalContentBottomInset
 import io.gomob.designsystem.glass.LocalHazeState
+import io.gomob.designsystem.glass.LocalRootBottomChromeController
+import io.gomob.designsystem.glass.RootBottomChromeController
+import io.gomob.designsystem.glass.glassChrome
+import io.gomob.designsystem.motion.fixedDuringPageDrag
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.feature.collaboration.CollaborationRoute
 import io.gomob.feature.collaboration.FirstPersonViewerRoute
@@ -72,21 +85,27 @@ import io.gomob.feature.message.MessageRoute
 import io.gomob.feature.message.VideoCallMode
 import io.gomob.feature.message.VideoCallRoute
 import io.gomob.feature.profile.HistoryRoute
+import io.gomob.feature.profile.PROFILE_ABOUT_ROUTE
+import io.gomob.feature.profile.PROFILE_ACCOUNT_ROUTE
+import io.gomob.feature.profile.PROFILE_CASES_ROUTE
+import io.gomob.feature.profile.PROFILE_HISTORY_ROUTE
+import io.gomob.feature.profile.PROFILE_NOTIFICATION_ROUTE
+import io.gomob.feature.profile.PROFILE_PERSONAL_ROUTE
+import io.gomob.feature.profile.PROFILE_SETTINGS_ROUTE
+import io.gomob.feature.profile.PROFILE_THEME_ROUTE
 import io.gomob.feature.profile.ProfileAboutRoute
 import io.gomob.feature.profile.ProfileAccountRoute
+import io.gomob.feature.profile.ProfileCasesRoute
 import io.gomob.feature.profile.ProfileNotificationRoute
 import io.gomob.feature.profile.ProfilePersonalRoute
 import io.gomob.feature.profile.ProfileRoute
+import io.gomob.feature.profile.ProfileSettingsRoute
 import io.gomob.feature.profile.ThemeSettingsRoute
-import io.gomob.feature.scan3d.CalibrationRoute
-import io.gomob.feature.scan3d.DepthCameraCalibrationRoute
-import io.gomob.feature.scan3d.DepthCameraControlsRoute
 import io.gomob.feature.scan3d.DepthCameraInfoRoute
 import io.gomob.feature.scan3d.DepthCameraRoute
 import io.gomob.feature.scan3d.Scan3dRecordingRoute
 import io.gomob.feature.scan3d.Scan3dRoute
 import io.gomob.feature.scan3d.ScanCaptureRoute
-import io.gomob.feature.scan3d.SonixDebugRoute
 import io.gomob.feature.scan3d.VehicleContourScanRoute
 
 private const val ROUTE_HOME = "home"
@@ -131,12 +150,33 @@ fun GomobNavHost(
     val onTabRoot = currentRoute in TAB_ROUTES
     val density = LocalDensity.current
     val imeVisible = WindowInsets.ime.getBottom(density) > 0
-    // TabBar 总高 = 56dp + 导航栏 inset（玻璃条延伸到导航栏底下）
+    // TabBar 总高 = tabBarHeight(54dp) + 导航栏 inset（玻璃条延伸到导航栏底下）
     val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val tabChromeHeight = Gomob.spacing.tabBarHeight + navBarBottom
-    val stableRootBottomPadding = tabChromeHeight
+    val bottomChromeController = remember { RootBottomChromeController() }
+    val rootChromeTopContent = bottomChromeController.content
+    var measuredRootChromeHeightPx by remember { mutableIntStateOf(0) }
+    val rootChromeVisible = onTabRoot && (!imeVisible || currentRoute == ROUTE_HOME && rootChromeTopContent != null)
+    val fallbackRootChromeHeight = tabChromeHeight + if (
+        currentRoute == ROUTE_HOME && rootChromeTopContent != null
+    ) {
+        Gomob.spacing.compactComposerHeight
+    } else {
+        0.dp
+    }
+    LaunchedEffect(currentRoute, rootChromeTopContent != null) {
+        measuredRootChromeHeightPx = 0
+    }
     val rootBottomPadding by animateDpAsState(
-        targetValue = if (imeVisible) 0.dp else tabChromeHeight,
+        targetValue = if (rootChromeVisible) {
+            if (measuredRootChromeHeightPx > 0) {
+                with(density) { measuredRootChromeHeightPx.toDp() }
+            } else {
+                fallbackRootChromeHeight
+            }
+        } else {
+            0.dp
+        },
         animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
         label = "root-bottom-padding",
     )
@@ -154,7 +194,10 @@ fun GomobNavHost(
         currentOnSystemBarsPaddingRequiredChanged(systemBarsPaddingRequired)
     }
 
-    CompositionLocalProvider(LocalHazeState provides shellHaze) {
+    CompositionLocalProvider(
+        LocalHazeState provides shellHaze,
+        LocalRootBottomChromeController provides bottomChromeController,
+    ) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -174,7 +217,7 @@ fun GomobNavHost(
         ) {
             // ---- 首页 + 二级 ----
             composable(ROUTE_HOME) {
-                RootTabPage(bottomPadding = stableRootBottomPadding) {
+                RootTabPage(bottomPadding = rootBottomPadding) {
                     HomeRoute(
                         onOpenInspection = { id -> nav.navigate("home/inspection/$id") },
                         onOpenNewChat = { prompt, token ->
@@ -398,20 +441,16 @@ fun GomobNavHost(
                     Scan3dRoute(
                         // 车辆外廓扫描入口 → 8 角度 RGBD 采集子页
                         onOpenContourScan = { nav.navigate("scan3d/vehicle") },
-                        // 设备卡入口 → 深度相机详情页（看设备 / 调控制 / 标定 — 不含扫描动作）
-                        onOpenDepthCamera = { nav.navigate("scan3d/depth-camera") },
-                        // 设备卡长按 → 直达 Sonix 调试页，跳过 DepthCameraScreen 触发 BerxelService 双流导致的 vivo USB kill
-                        onOpenSonixDebug = { nav.navigate("scan3d/depth-camera/sonix-debug") },
                         // VIN 数码拓印入口
                         onOpenVinRectify = { nav.navigate("scan3d/scan") },
                     )
                 }
             }
-            composable("scan3d/calibration") {
-                CalibrationRoute(onBack = { nav.popBackStack() })
-            }
             composable("scan3d/scan") {
-                ScanCaptureRoute(onBack = { nav.popBackStack() })
+                ScanCaptureRoute(
+                    onBack = { nav.popBackStack() },
+                    onOpenDepthCamera = { nav.navigate("scan3d/depth-camera") },
+                )
             }
             composable("scan3d/vehicle") {
                 VehicleContourScanRoute(onBack = { nav.popBackStack() })
@@ -420,22 +459,10 @@ fun GomobNavHost(
                 DepthCameraRoute(
                     onBack = { nav.popBackStack() },
                     onOpenInfo = { nav.navigate("scan3d/depth-camera/info") },
-                    onOpenControls = { nav.navigate("scan3d/depth-camera/controls") },
-                    onOpenCalibration = { nav.navigate("scan3d/depth-camera/calibration") },
-                    onOpenSonixDebug = { nav.navigate("scan3d/depth-camera/sonix-debug") },
                 )
             }
             composable("scan3d/depth-camera/info") {
                 DepthCameraInfoRoute(onBack = { nav.popBackStack() })
-            }
-            composable("scan3d/depth-camera/controls") {
-                DepthCameraControlsRoute(onBack = { nav.popBackStack() })
-            }
-            composable("scan3d/depth-camera/calibration") {
-                DepthCameraCalibrationRoute(onBack = { nav.popBackStack() })
-            }
-            composable("scan3d/depth-camera/sonix-debug") {
-                SonixDebugRoute(onBack = { nav.popBackStack() })
             }
             composable("scan3d/recording") {
                 Scan3dRecordingRoute(onBack = { nav.popBackStack() })
@@ -470,51 +497,63 @@ fun GomobNavHost(
             composable(ROUTE_PROFILE) {
                 RootTabPage(bottomPadding = rootBottomPadding) {
                     ProfileRoute(
-                        onOpenPersonal = { nav.navigate("profile/personal/0") },
-                        onOpenCases = { nav.navigate("profile/personal/1") },
-                        onOpenAccount = { nav.navigate("profile/account") },
-                        onOpenNotification = { nav.navigate("profile/notification") },
-                        onOpenAbout = { nav.navigate("profile/about") },
-                        onOpenHistory = { nav.navigate("profile/history") },
-                        onOpenTheme = { nav.navigate("profile/theme") },
+                        onOpenPersonal = { nav.navigate(PROFILE_PERSONAL_ROUTE) },
+                        onOpenCases = { nav.navigate(PROFILE_CASES_ROUTE) },
+                        onOpenSettings = { nav.navigate(PROFILE_SETTINGS_ROUTE) },
+                        onOpenHistory = { nav.navigate(PROFILE_HISTORY_ROUTE) },
                     )
                 }
             }
-            composable("profile/theme") {
-                ThemeSettingsRoute(onBack = { nav.popBackStack() })
-            }
-            composable("profile/history") {
-                HistoryRoute(onBack = { nav.popBackStack() })
-            }
-            composable("profile/personal") {
-                ProfilePersonalRoute(onBack = { nav.popBackStack() }, initialTab = 0)
-            }
-            composable("profile/personal/{tab}") { entry ->
-                ProfilePersonalRoute(
+            composable(PROFILE_SETTINGS_ROUTE) {
+                ProfileSettingsRoute(
                     onBack = { nav.popBackStack() },
-                    initialTab = entry.arguments?.getString("tab")?.toIntOrNull() ?: 0,
+                    onOpenAccount = { nav.navigate(PROFILE_ACCOUNT_ROUTE) },
+                    onOpenNotification = { nav.navigate(PROFILE_NOTIFICATION_ROUTE) },
+                    onOpenAbout = { nav.navigate(PROFILE_ABOUT_ROUTE) },
+                    onOpenTheme = { nav.navigate(PROFILE_THEME_ROUTE) },
                 )
             }
-            composable("profile/account") {
+            composable(PROFILE_THEME_ROUTE) {
+                ThemeSettingsRoute(onBack = { nav.popBackStack() })
+            }
+            composable(PROFILE_HISTORY_ROUTE) {
+                HistoryRoute(onBack = { nav.popBackStack() })
+            }
+            composable(PROFILE_PERSONAL_ROUTE) {
+                ProfilePersonalRoute(onBack = { nav.popBackStack() })
+            }
+            composable(PROFILE_CASES_ROUTE) {
+                ProfileCasesRoute(onBack = { nav.popBackStack() })
+            }
+            composable(PROFILE_ACCOUNT_ROUTE) {
                 ProfileAccountRoute(onBack = { nav.popBackStack() })
             }
-            composable("profile/notification") {
+            composable(PROFILE_NOTIFICATION_ROUTE) {
                 ProfileNotificationRoute(onBack = { nav.popBackStack() })
             }
-            composable("profile/about") {
+            composable(PROFILE_ABOUT_ROUTE) {
                 ProfileAboutRoute(onBack = { nav.popBackStack() })
             }
         }
         AnimatedVisibility(
-            visible = onTabRoot && !imeVisible,
+            visible = rootChromeVisible,
             modifier = Modifier.align(Alignment.BottomCenter),
             enter = fadeIn(animationSpec = tween(IOS_TAB_DURATION_MS, easing = IosEasing)),
             exit = fadeOut(animationSpec = tween(IOS_TAB_DURATION_MS, easing = IosEasing)),
         ) {
-            TabBarVector(
-                items = TABS,
-                selectedKey = currentRoute ?: ROUTE_HOME,
-                onSelect = { key -> nav.switchTab(key) },
+            RootBottomChrome(
+                topContent = rootChromeTopContent.takeIf { currentRoute == ROUTE_HOME },
+                showTabs = !imeVisible,
+                onHeightChanged = { measuredRootChromeHeightPx = it },
+                modifier = if (imeVisible) Modifier.imePadding() else Modifier,
+                tabs = {
+                    TabBarVector(
+                        items = TABS,
+                        selectedKey = currentRoute ?: ROUTE_HOME,
+                        onSelect = { key -> nav.switchTab(key) },
+                        embedded = true,
+                    )
+                },
             )
         }
         // 全局来电浮窗：无论当前在哪个 tab，都能弹接听 / 拒绝。
@@ -528,10 +567,45 @@ fun GomobNavHost(
                         "message/video-call/${Uri.encode(roomId)}/${VideoCallMode.Callee.routeValue}/${Uri.encode(invite.title)}",
                     )
                 },
-                modifier = Modifier.align(Alignment.TopCenter),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fixedDuringPageDrag(),
             )
         }
     }
+    }
+}
+
+@Composable
+private fun RootBottomChrome(
+    topContent: (@Composable () -> Unit)?,
+    showTabs: Boolean,
+    onHeightChanged: (Int) -> Unit,
+    tabs: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier.fillMaxWidth()) {
+        Column(
+            Modifier
+                // 整块底部玻璃固定；内部 Tab/输入条不再各自重复抵消页面拖动。
+                .fixedDuringPageDrag()
+                .fillMaxWidth()
+                .onSizeChanged { onHeightChanged(it.height) }
+                .glassChrome(topEdge = true)
+                .navigationBarsPadding(),
+        ) {
+            topContent?.invoke()
+            if (topContent != null && showTabs) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Gomob.spacing.pageGutter)
+                        .height(Gomob.spacing.hairline)
+                        .background(Gomob.colors.line1),
+                )
+            }
+            if (showTabs) tabs()
+        }
     }
 }
 

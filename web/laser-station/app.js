@@ -1,3 +1,5 @@
+import { domToCanvas } from "./vendor/modern-screenshot.mjs";
+
 const $ = (id) => document.getElementById(id);
 
 const els = {
@@ -16,21 +18,30 @@ const els = {
   cameraIp: $("cameraIpInput"),
   cameraRole: $("cameraRoleInput"),
   addCamera: $("addCameraBtn"),
-  keepRatio: $("keepRatioInput"),
+  effectiveKeepRatio: $("effectiveKeepRatioInput") || $("keepRatioInput"),
   startScan: $("startScanBtn"),
-  captureBg: $("captureBgBtn"),
+  captureBgDrawer: $("captureBgDrawerBtn"),
   bgStatusChip: $("bgStatusChip"),
+  feedback: $("feedbackBtn"),
   scanMeta: $("scanMeta"),
   scanBanner: $("scanBanner"),
   scanBannerTitle: $("scanBannerTitle"),
   scanBannerDetail: $("scanBannerDetail"),
+  scanBannerAnnouncement: $("scanBannerAnnouncement"),
   measurePanel: $("measurePanel"),
   measureCompliance: $("measureCompliance"),
   measureBody: $("measureBody"),
+  mainCloudMode: document.querySelector('[data-cloud-mode="fused"]'),
   canvas: $("cloudCanvas"),
   markerLayer: $("markerLayer"),
   emptyHint: $("emptyHint"),
   activeCameraLabel: $("activeCameraLabel"),
+  readinessSummary: $("readinessSummary"),
+  readinessDeviceA: $("readinessDeviceA"),
+  readinessDeviceB: $("readinessDeviceB"),
+  readinessSite: $("readinessSite"),
+  readinessRegion: $("readinessRegion"),
+  readinessBackground: $("readinessBackground"),
   cloudTitle: $("cloudTitle"),
   cloudHint: $("cloudHint"),
   pointSize: $("pointSizeInput"),
@@ -56,6 +67,7 @@ const els = {
   autoCalibResult: $("autoCalibResult"),
   markerLenMm: $("markerLenMm"),
   openFraming: $("openFramingBtn"),
+  openFramingManual: $("openFramingManualBtn"),
   framingOverlay: $("framingOverlay"),
   closeFraming: $("closeFramingBtn"),
   runFraming: $("runFramingBtn"),
@@ -69,11 +81,27 @@ const els = {
   framingBStop: $("framingBStop"),
   framingCanvasA: $("framingCanvasA"),
   framingCanvasB: $("framingCanvasB"),
+  framingZoomOutA: $("framingZoomOutA"),
+  framingZoomInA: $("framingZoomInA"),
+  framingRotateLeftA: $("framingRotateLeftA"),
+  framingRotateRightA: $("framingRotateRightA"),
+  framingResetViewA: $("framingResetViewA"),
+  framingZoomOutB: $("framingZoomOutB"),
+  framingZoomInB: $("framingZoomInB"),
+  framingRotateLeftB: $("framingRotateLeftB"),
+  framingRotateRightB: $("framingRotateRightB"),
+  framingResetViewB: $("framingResetViewB"),
   framingStripA: $("framingStripA"),
   framingStripB: $("framingStripB"),
   framingCountA: $("framingCountA"),
   framingCountB: $("framingCountB"),
   framingResult: $("framingResult"),
+  framingManualToggle: $("framingManualToggle"),
+  framingManualUndo: $("framingManualUndo"),
+  framingManualClear: $("framingManualClear"),
+  framingManualSolve: $("framingManualSolve"),
+  framingManualStatus: $("framingManualStatus"),
+  framingManualPairs: $("framingManualPairs"),
   camPreviewA: $("camPreviewA"),
   camPreviewB: $("camPreviewB"),
   camCanvasA: $("camCanvasA"),
@@ -92,11 +120,26 @@ const els = {
   solveCalib: $("solveCalibBtn"),
   calibPairs: $("calibPairs"),
   calibResult: $("calibResult"),
+  openManualCloudAlign: $("openManualCloudAlignBtn"),
+  manualCloudPanel: $("manualCloudPanel"),
+  manualCloudStatus: $("manualCloudStatus"),
+  manualCloudTx: $("manualCloudTx"),
+  manualCloudTy: $("manualCloudTy"),
+  manualCloudTz: $("manualCloudTz"),
+  manualCloudRx: $("manualCloudRx"),
+  manualCloudRy: $("manualCloudRy"),
+  manualCloudRz: $("manualCloudRz"),
+  manualCloudLoadCurrent: $("manualCloudLoadCurrent"),
+  manualCloudReset: $("manualCloudReset"),
+  manualCloudClose: $("manualCloudClose"),
+  manualCloudSave: $("manualCloudSave"),
+  manualCloudResult: $("manualCloudResult"),
   regionHint: $("regionHint"),
   startRegion: $("startRegionBtn"),
   finishRegion: $("finishRegionBtn"),
   undoRegion: $("undoRegionBtn"),
   clearRegion: $("clearRegionBtn"),
+  discardRegionDraft: $("discardRegionDraftBtn"),
   toggleRegionClip: $("toggleRegionClipBtn"),
   regionPoints: $("regionPoints"),
   drawer: $("configDrawer"),
@@ -131,6 +174,14 @@ const CALIB_PICK_MAX_SCAN_POINTS = 1_500_000;
 const CALIB_PICK_RADIUS_PX = 36;
 const CALIB_CLICK_MAX_MOVE_PX = 5;
 const INTERACTION_SETTLE_MS = 180;
+const PCD_HEADER_MAX_BYTES = 64 * 1024;
+const CLOUD_SOURCE_POINTS_HEADER = "X-Gomob-Source-Points";
+const CLOUD_RENDER_POINTS_HEADER = "X-Gomob-Render-Points";
+const CLOUD_COORDINATE_SCHEMA_HEADER = "X-Gomob-Coordinate-Schema";
+const CLOUD_XYZ_SHA256_HEADER = "X-Gomob-XYZ-SHA256";
+const CLOUD_FINAL_B_TO_A_SHA256_HEADER = "X-Gomob-Final-B-To-A-SHA256";
+const MEASURED_COORDINATE_SCHEMA = "unit_a_world_mm_v1";
+const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
 const WEBGL_CONTEXT_NAMES = ["webgl2", "webgl", "experimental-webgl"];
 const WEBGL_CONTEXT_OPTIONS = [
   {
@@ -142,8 +193,8 @@ const WEBGL_CONTEXT_OPTIONS = [
     powerPreference: "high-performance",
     failIfMajorPerformanceCaveat: false,
   },
-  { antialias: false, depth: true, failIfMajorPerformanceCaveat: false },
-  { antialias: false, depth: false, failIfMajorPerformanceCaveat: false },
+  { antialias: false, depth: true, preserveDrawingBuffer: false, failIfMajorPerformanceCaveat: false },
+  { antialias: false, depth: false, preserveDrawingBuffer: false, failIfMajorPerformanceCaveat: false },
   null,
 ];
 
@@ -330,35 +381,82 @@ function createViewState() {
 const app = {
   endpoint: DEFAULT_ENDPOINT,
   token: "",
+  connectionSerial: 0,
   ws: null,
+  wsConnectionKey: "",
+  wsConnectPromise: null,
+  drawerReturnFocus: null,
+  framingReturnFocus: null,
   stations: [],
   activeStationId: "",
   selectedCameraId: "",
+  deviceSettingsCameraId: "",
+  deviceRefreshSerial: 0,
+  statusRequestSerial: 0,
+  statusPollingKey: "",
+  statusPollingPromise: null,
   activeSessionKey: "",
   activeScanId: null,
   scanState: "idle",
+  scanBannerPhase: "",
+  scanStartPending: false,
   cloudMode: "split",
   finalCloudsLoading: false,
   finalCloudsLoaded: false,
+  loadedCloudsScanId: null,
+  finalCloudPayload: null,
+  finalCloudPlanKey: "",
+  finalCloudLoadedNames: new Set(),
+  primaryCloudName: "fused",
   deferredFinalCloudPayload: null,
   restoringActiveScan: false,
   realtimeBacklog: [],
   restoreSerial: 0,
+  cloudPhaseSerial: 0,
+  finalPhaseScanId: null,
+  pendingConfigWrites: new Map(),
+  stationWriteTails: new Map(),
   fusedCount: 0,
   fusionUnavailable: false,
   capturingBackground: false, // 本次扫描是采集空工位背景（非测量）
+  backgroundReadiness: {
+    stationKey: "",
+    state: "unknown",
+    label: "检查中",
+    detail: "正在读取服务端背景状态",
+    revision: "",
+  },
+  authorityReadiness: {
+    siteKey: "",
+    regionKey: "",
+    site: "unknown",
+    region: "unknown",
+    siteDetail: "",
+    regionDetail: "",
+  },
+  authorityRequestSerial: { site: 0, region: 0 },
+  backgroundRequestSerial: 0,
   measure: null,
   overlay: null,
   deviceStatuses: { a: null, b: null },
   deviceInfos: { a: null, b: null },
   liveAngles: { a: null, b: null },
   camPreview: { a: { hasFrame: false, collapsed: false }, b: { hasFrame: false, collapsed: false } },
-  statusPolling: false,
   statusTimer: null,
   scanStatusPolling: false,
+  scanStatusRequestSerial: 0,
   scanStatusTimer: null,
   clouds: [new PointCloud(1_200_000), new PointCloud(1_200_000)],
   fusedCloud: new PointCloud(1_200_000),
+  manualCloud: {
+    enabled: false,
+    previewCloud: new PointCloud(1_200_000),
+    transform: { tx: 0, ty: 0, tz: 0, rx: 0, ry: 0, rz: 0 },
+    mode: "translate",
+    previousCloudMode: "split",
+    previousControlMode: "orbit",
+    previousViewPreset: "free",
+  },
   gl: null,
   ctx2d: null,
   renderer: "",
@@ -399,12 +497,28 @@ const app = {
     pairs: [],
     result: null,
   },
+  stationCalibrationPending: false,
+  calibrationOperationSerial: 0,
+  framingGeneration: 0,
+  framingSessionKey: "",
+  framingRunning: false,
+  framingStopping: false,
+  framingStopRequestPending: false,
+  framingControlsReady: false,
+  framingAbortController: null,
+  framingRequestSent: false,
   region: {
     enabled: false,
     points: [],
     closed: false,
     clipEnabled: false,
+    serverSet: false,
+    source: "",
+    updatedAt: "",
   },
+  regionEditSerial: 0,
+  regionDirty: false,
+  regionDiscardPending: false,
 };
 
 function makeId(prefix) {
@@ -423,23 +537,53 @@ function defaultStations() {
   }];
 }
 
+function normalizeStationCameraRoles(stations) {
+  for (const s of stations || []) {
+    const seen = new Set();
+    for (const cam of s.cameras || []) {
+      const role = String(cam.role || "aux").toLowerCase();
+      if ((role === "a" || role === "b") && !seen.has(role)) {
+        cam.role = role;
+        seen.add(role);
+      } else {
+        cam.role = "aux";
+      }
+    }
+  }
+}
+
+function camerasByRole(role, targetStation = station()) {
+  return (targetStation?.cameras || []).filter((cam) => cam.role === role);
+}
+
+function stationTopologyIssue(targetStation = station()) {
+  const countA = camerasByRole("a", targetStation).length;
+  const countB = camerasByRole("b", targetStation).length;
+  if (countA > 1 || countB > 1) return "当前工位的设备 A/B 角色存在重复，请先修正扫描单元拓扑";
+  if (countA !== 1 || countB !== 1) return "当前工位需要各配置一台设备 A 和设备 B";
+  return "";
+}
+
 function loadState() {
   try {
     const raw = JSON.parse(localStorage.getItem(STORE_KEY) || "{}");
+    if (Object.prototype.hasOwnProperty.call(raw, "keepRatio")) {
+      delete raw.keepRatio;
+      try { localStorage.setItem(STORE_KEY, JSON.stringify(raw)); } catch {}
+    }
     app.endpoint = raw.endpoint || DEFAULT_ENDPOINT;
     app.token = raw.token || "";
     app.stations = Array.isArray(raw.stations) && raw.stations.length ? raw.stations : defaultStations();
     app.activeStationId = raw.activeStationId || app.stations[0].id;
     app.selectedCameraId = raw.selectedCameraId || app.stations[0].cameras[0]?.id || "";
     app.pointBudget = Number(raw.pointBudget) || 1_200_000;
-    app.keepRatio = Number(raw.keepRatio) || 1;
   } catch {
     app.stations = defaultStations();
     app.activeStationId = app.stations[0].id;
     app.selectedCameraId = app.stations[0].cameras[0]?.id || "";
     app.pointBudget = 1_200_000;
-    app.keepRatio = 1;
   }
+  normalizeStationCameraRoles(app.stations);
 }
 
 function saveState() {
@@ -450,7 +594,6 @@ function saveState() {
     activeStationId: app.activeStationId,
     selectedCameraId: app.selectedCameraId,
     pointBudget: app.pointBudget,
-    keepRatio: app.keepRatio,
   }));
 }
 
@@ -461,13 +604,90 @@ function stationCalibrationSignature() {
   };
 }
 
+function stationServerConfigKey() {
+  const s = station();
+  const sig = stationCalibrationSignature();
+  return `${s?.id || ""}|${sig.unitAIp}|${sig.unitBIp}`;
+}
+
+function stationServiceConfigKey() {
+  const sig = stationCalibrationSignature();
+  return `${sig.unitAIp}|${sig.unitBIp}`;
+}
+
+function stationConfigQuery() {
+  const camA = cameraByRole("a");
+  const camB = cameraByRole("b");
+  if (!camA || !camB) return "";
+  return new URLSearchParams({ unit_a_ip: camA.ip, unit_b_ip: camB.ip }).toString();
+}
+
+function isOfficialSiteCalibrationResult(result) {
+  return Array.isArray(result?.matrix)
+    && result.matrix.length === 16
+    && result.matrix.every(Number.isFinite)
+    && (result.serverPersisted === true
+      || result.source === "aruco");
+}
+
+function optionalFiniteNumber(value) {
+  if (value == null || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function trackStationConfigWrite(promise, key = stationServiceConfigKey()) {
+  const tracked = Promise.resolve(promise);
+  const writes = app.pendingConfigWrites.get(key) || new Set();
+  writes.add(tracked);
+  app.pendingConfigWrites.set(key, writes);
+  const remove = () => {
+    writes.delete(tracked);
+    if (!writes.size) app.pendingConfigWrites.delete(key);
+  };
+  tracked.then(remove, remove);
+  return tracked;
+}
+
+function enqueueStationConfigWrite(task, key = stationServiceConfigKey()) {
+  const previous = app.stationWriteTails.get(key) || Promise.resolve();
+  const run = previous.catch(() => {}).then(() => task());
+  app.stationWriteTails.set(key, run);
+  const clearTail = () => {
+    if (app.stationWriteTails.get(key) === run) app.stationWriteTails.delete(key);
+  };
+  run.then(clearTail, clearTail);
+  return trackStationConfigWrite(run, key);
+}
+
+function hasPendingStationConfigWrites() {
+  return [...app.pendingConfigWrites.values()].some((writes) => writes.size > 0);
+}
+
+function nextAuthorityRequest(kind) {
+  app.authorityRequestSerial[kind] = Number(app.authorityRequestSerial[kind] || 0) + 1;
+  return app.authorityRequestSerial[kind];
+}
+
+function isAuthorityRequestCurrent(kind, serial) {
+  return app.authorityRequestSerial[kind] === serial;
+}
+
+async function waitForStationConfigWrites(key = stationServiceConfigKey()) {
+  const errors = [];
+  while (app.pendingConfigWrites.get(key)?.size) {
+    const results = await Promise.allSettled([...app.pendingConfigWrites.get(key)]);
+    errors.push(...results.filter((r) => r.status === "rejected").map((r) => r.reason?.message || String(r.reason)));
+  }
+  if (errors.length) throw new Error(errors.join("；"));
+}
 function sanitizePoint(p) {
   if (!Array.isArray(p) || p.length < 3) return null;
   const point = [Number(p[0]), Number(p[1]), Number(p[2])];
   return point.every(Number.isFinite) ? point : null;
 }
 
-function saveCalibrationState() {
+function saveCalibrationState({ persistServer = true } = {}) {
   const s = station();
   if (!s) return;
   const pairs = app.calibration.pairs
@@ -491,6 +711,15 @@ function saveCalibrationState() {
     result: app.calibration.result || null,
   };
   saveState();
+  if (persistServer && isOfficialSiteCalibrationResult(app.calibration.result)
+    && app.calibration.result.siteQualityState !== "local_backup"
+    && !app.calibration.result.serverPersisted) {
+    const resultToSave = app.calibration.result;
+    enqueueStationConfigWrite(() => persistStationCalibration(resultToSave)).catch((err) => {
+      console.warn("工位外参同步到服务端失败", err);
+      showToast(`工位外参保存失败：${err.message}`);
+    });
+  }
 }
 
 function restoreCalibrationState() {
@@ -520,12 +749,135 @@ function restoreCalibrationState() {
   renderCalibration();
 }
 
+function calibrationResultFromServer(payload) {
+  const native = payload?.site_json?.b_to_a;
+  if (!Array.isArray(native) || native.length !== 16 || !native.every(Number.isFinite)) return null;
+  const rmsErrorMm = optionalFiniteNumber(payload.rms_error_mm);
+  const scanEligible = typeof payload.scan_eligible === "boolean" ? payload.scan_eligible : null;
+  return {
+    matrix: nativeBToAToDisplay(native),
+    source: payload.source || "server",
+    meanError: optionalFiniteNumber(payload.mean_error_mm),
+    maxError: optionalFiniteNumber(payload.max_error_mm),
+    rms_m: rmsErrorMm == null ? null : rmsErrorMm / 1000,
+    n_common: optionalFiniteNumber(payload.common_markers),
+    serverPersisted: true,
+    siteQualityState: String(payload.site_quality_state || "unknown"),
+    siteQualityVerified: payload.site_quality_verified === true,
+    siteQualityOverride: payload.site_quality_override === true,
+    siteQualityOverrideReason: String(payload.site_quality_override_reason || ""),
+    siteQualityReason: String(payload.site_quality_reason || ""),
+    revision: String(payload.revision || ""),
+    scanEligible,
+    productionEligible: payload.production_eligible === true,
+  };
+}
+
+async function persistStationCalibration(result = app.calibration.result, expectedConnection = null) {
+  if (expectedConnection && !isConnectionCurrent(expectedConnection)) return false;
+  if (!expectedConnection) syncConnectionFromInputs();
+  if (!app.token || !isOfficialSiteCalibrationResult(result) || result.siteQualityState === "local_backup") return false;
+  const camA = cameraByRole("a");
+  const camB = cameraByRole("b");
+  const s = station();
+  if (!camA || !camB || !s) return false;
+  const targetKey = stationServerConfigKey();
+  const connection = expectedConnection || connectionSnapshot();
+  const requestSerial = nextAuthorityRequest("site");
+  const rmsM = optionalFiniteNumber(result.rms_m);
+  const commonMarkers = optionalFiniteNumber(result.n_common);
+  const body = {
+    unit_a_ip: camA.ip,
+    unit_b_ip: camB.ip,
+    site_json: toNativeSiteJson(result),
+    source: result.source || "unknown",
+    mean_error_mm: optionalFiniteNumber(result.meanError),
+    max_error_mm: optionalFiniteNumber(result.maxError),
+    rms_error_mm: rmsM == null ? null : rmsM * 1000,
+    common_markers: commonMarkers == null ? null : Math.trunc(commonMarkers),
+  };
+  await api("/v1/scans/laser/site-calibration", { method: "PUT", body: JSON.stringify(body) }, connection);
+  if (targetKey !== stationServerConfigKey()
+    || !isConnectionCurrent(connection)
+    || !isAuthorityRequestCurrent("site", requestSerial)) return false;
+  result.serverPersisted = true;
+  updateAuthorityReadiness("site", "verified", "服务端工位外参已保存", targetKey);
+  s.siteCalibrationMigrationDone = true;
+  saveCalibrationState({ persistServer: false });
+  return true;
+}
+
+async function syncStationCalibration() {
+  const query = stationConfigQuery();
+  const s = station();
+  const targetKey = stationServerConfigKey();
+  if (!app.token || !query || !s) {
+    updateAuthorityReadiness("site", "error", "缺少登录令牌或当前工位 A/B 配置不完整", targetKey);
+    return;
+  }
+  const connection = connectionSnapshot();
+  const requestSerial = nextAuthorityRequest("site");
+  updateAuthorityReadiness("site", "checking", "正在读取服务端工位外参", targetKey);
+  const local = isOfficialSiteCalibrationResult(app.calibration.result) ? app.calibration.result : null;
+  let payload;
+  try {
+    payload = await api(`/v1/scans/laser/site-calibration?${query}`, {}, connection);
+  } catch (err) {
+    if (targetKey === stationServerConfigKey()
+      && isConnectionCurrent(connection)
+      && isAuthorityRequestCurrent("site", requestSerial)) {
+      updateAuthorityReadiness("site", "error", `工位外参读取失败：${err.message}`, targetKey);
+    }
+    throw err;
+  }
+  if (targetKey !== stationServerConfigKey()
+    || !isConnectionCurrent(connection)
+    || !isAuthorityRequestCurrent("site", requestSerial)) return;
+  const server = payload?.set ? calibrationResultFromServer(payload) : null;
+  if (payload?.set && !server) {
+    updateAuthorityReadiness("site", "error", "服务端工位外参矩阵损坏", targetKey);
+    throw new Error("服务端工位外参已损坏：B→A 矩阵必须包含 16 个有限数");
+  }
+  updateAuthorityReadiness("site", "verified", "服务端工位外参已确认", targetKey);
+
+  if (server) {
+    app.calibration.result = server;
+    s.siteCalibrationMigrationDone = true;
+    saveCalibrationState({ persistServer: false });
+    renderCalibration();
+    return;
+  }
+
+  // 服务端暂时未返回外参时保留浏览器历史副本，避免网络、工位映射或迁移异常造成数据丢失。
+  // 本地副本只作恢复依据，serverPersisted=false 时仍禁止正式起扫，不能旁路服务端真理源。
+  if (local) {
+    const shouldNotify = local.serverPersisted === true || !s.siteCalibrationMigrationDone;
+    app.calibration.result = {
+      ...local,
+      serverPersisted: false,
+      siteQualityState: "local_backup",
+      scanEligible: false,
+      productionEligible: false,
+    };
+    s.siteCalibrationMigrationDone = true;
+    saveCalibrationState({ persistServer: false });
+    renderCalibration();
+    if (shouldNotify) {
+      showToast("服务端暂未返回工位外参，本地历史外参已保留且未删除；请联系管理员恢复服务端记录");
+    }
+    return;
+  }
+
+  s.siteCalibrationMigrationDone = true;
+  saveState();
+}
+
 function saveRegionState() {
   const s = station();
   if (!s) return;
   const points = app.region.points.map(sanitizePoint).filter(Boolean);
   const closed = app.region.closed && points.length >= 3;
-  if (!points.length) {
+  if (!points.length && !app.regionDirty) {
     delete s.regionCalibration;
     saveState();
     return;
@@ -535,6 +887,10 @@ function saveRegionState() {
     points,
     closed,
     clipEnabled: closed && Boolean(app.region.clipEnabled),
+    serverSet: Boolean(app.region.serverSet),
+    source: app.region.source || "",
+    updatedAt: app.region.updatedAt || "",
+    dirty: Boolean(app.regionDirty),
   };
   saveState();
 }
@@ -550,6 +906,10 @@ function restoreRegionState() {
     app.region.closed = false;
     app.region.clipEnabled = false;
     app.region.enabled = false;
+    app.region.serverSet = false;
+    app.region.source = "";
+    app.region.updatedAt = "";
+    app.regionDirty = false;
     renderRegionCalibration();
     return;
   }
@@ -557,17 +917,207 @@ function restoreRegionState() {
   app.region.closed = Boolean(saved.closed) && app.region.points.length >= 3;
   app.region.clipEnabled = app.region.closed && Boolean(saved.clipEnabled);
   app.region.enabled = false;
+  app.region.serverSet = Boolean(saved.serverSet);
+  app.region.source = saved.source || "";
+  app.region.updatedAt = saved.updatedAt || "";
+  // 新版本会显式持久化 dirty；旧版本没有该字段的本地区域由首次权威同步负责迁移。
+  app.regionDirty = saved.dirty === true;
   renderRegionCalibration();
 }
 
-function regionFilterForRequest() {
-  if (!app.region.clipEnabled || !app.region.closed) return null;
+function currentRegionPayload() {
   const points = app.region.points.map(sanitizePoint).filter(Boolean);
-  if (points.length < 3) return null;
-  const filter = { enabled: true, points };
-  const siteResult = Array.isArray(app.calibration.result?.matrix) ? app.calibration.result : null;
-  if (siteResult) filter.b_to_a = siteResult.matrix;
-  return filter;
+  if (!app.region.closed || points.length < 3 || Math.abs(regionPolygonArea2(points)) < 1e-3) return null;
+  return {
+    enabled: Boolean(app.region.clipEnabled && app.region.closed),
+    points,
+  };
+}
+
+function regionPayloadSignature(payload) {
+  if (!payload) return "";
+  return JSON.stringify({ enabled: Boolean(payload.enabled), points: payload.points });
+}
+
+async function persistRegionCalibration(source = "web_region_editor", payloadSnapshot = null) {
+  syncConnectionFromInputs();
+  if (!app.token) throw new Error("缺少登录 token");
+  const payload = payloadSnapshot || currentRegionPayload();
+  const camA = cameraByRole("a");
+  const camB = cameraByRole("b");
+  const s = station();
+  if (!payload) throw new Error("区域标定至少需要 3 个非共线点");
+  if (!camA || !camB || !s) throw new Error("当前工位缺少镜头 A/B");
+  const targetKey = stationServerConfigKey();
+  const connection = connectionSnapshot();
+  const requestSerial = nextAuthorityRequest("region");
+  await api("/v1/scans/laser/region-calibration", {
+    method: "PUT",
+    body: JSON.stringify({
+      unit_a_ip: camA.ip,
+      unit_b_ip: camB.ip,
+      enabled: payload.enabled,
+      points: payload.points,
+      source,
+    }),
+  }, connection);
+  if (targetKey !== stationServerConfigKey()
+    || !isConnectionCurrent(connection)
+    || !isAuthorityRequestCurrent("region", requestSerial)) return false;
+  s.regionCalibrationMigrationDone = true;
+  if (regionPayloadSignature(currentRegionPayload()) === regionPayloadSignature(payload)) {
+    app.regionDirty = false;
+    app.region.serverSet = true;
+    app.region.source = source;
+    app.region.updatedAt = new Date().toISOString();
+    saveRegionState();
+    updateAuthorityReadiness("region", "verified", "服务端扫描区域已保存", targetKey);
+  } else {
+    app.regionDirty = true;
+    app.region.serverSet = false;
+    saveRegionState();
+    updateAuthorityReadiness("region", "checking", "前一版区域已保存，正在等待后续变更写入", targetKey);
+  }
+  renderRegionCalibration();
+  return true;
+}
+
+async function deleteRegionCalibration() {
+  syncConnectionFromInputs();
+  if (!app.token) throw new Error("缺少登录 token");
+  const query = stationConfigQuery();
+  const s = station();
+  if (!query || !s) throw new Error("当前工位缺少镜头 A/B");
+  const targetKey = stationServerConfigKey();
+  const connection = connectionSnapshot();
+  const editSerial = app.regionEditSerial;
+  const requestSerial = nextAuthorityRequest("region");
+  await api(`/v1/scans/laser/region-calibration?${query}`, { method: "DELETE" }, connection);
+  if (targetKey !== stationServerConfigKey()
+    || !isConnectionCurrent(connection)
+    || !isAuthorityRequestCurrent("region", requestSerial)) return false;
+  app.region.serverSet = false;
+  app.region.source = "";
+  app.region.updatedAt = "";
+  s.regionCalibrationMigrationDone = true;
+  if (editSerial === app.regionEditSerial && app.region.points.length === 0 && !app.region.closed) {
+    app.regionDirty = false;
+    saveRegionState();
+    updateAuthorityReadiness("region", "verified", "服务端扫描区域已删除", targetKey);
+  } else {
+    app.regionDirty = true;
+    saveRegionState();
+    updateAuthorityReadiness("region", "verified", "服务端旧区域已删除；当前保留新的本地编辑草稿", targetKey);
+  }
+  renderRegionCalibration();
+  return true;
+}
+
+async function syncStationRegionCalibration({ discardDraft = false } = {}) {
+  const query = stationConfigQuery();
+  const s = station();
+  const targetKey = stationServerConfigKey();
+  if (!app.token || !query || !s) {
+    updateAuthorityReadiness("region", "error", "缺少登录令牌或当前工位 A/B 配置不完整", targetKey);
+    return;
+  }
+  const connection = connectionSnapshot();
+  const requestSerial = nextAuthorityRequest("region");
+  const editSerial = app.regionEditSerial;
+  const dirtyAtStart = app.regionDirty;
+  updateAuthorityReadiness("region", "checking", "正在读取服务端扫描区域", targetKey);
+  const local = currentRegionPayload();
+  let payload;
+  try {
+    payload = await api(`/v1/scans/laser/region-calibration?${query}`, {}, connection);
+  } catch (err) {
+    if (targetKey === stationServerConfigKey()
+      && isConnectionCurrent(connection)
+      && isAuthorityRequestCurrent("region", requestSerial)) {
+      updateAuthorityReadiness("region", "error", `扫描区域读取失败：${err.message}`, targetKey);
+    }
+    throw err;
+  }
+  if (targetKey !== stationServerConfigKey()
+    || !isConnectionCurrent(connection)
+    || !isAuthorityRequestCurrent("region", requestSerial)) return;
+  if (editSerial !== app.regionEditSerial || (!discardDraft && (dirtyAtStart || app.regionDirty))) {
+    updateAuthorityReadiness("region", "verified", "服务端区域已读取；当前保留本地编辑草稿", targetKey);
+    return;
+  }
+
+  if (payload?.set) {
+    const points = Array.isArray(payload.points) ? payload.points.map(sanitizePoint).filter(Boolean) : [];
+    if (points.length < 3) {
+      updateAuthorityReadiness("region", "error", "服务端区域边界点少于 3 个", targetKey);
+      throw new Error("服务端区域标定已损坏：边界点少于 3 个");
+    }
+    if (Math.abs(regionPolygonArea2(points)) < 1e-3) {
+      updateAuthorityReadiness("region", "error", "服务端区域边界点共线", targetKey);
+      throw new Error("服务端区域标定已损坏：边界点共线");
+    }
+    app.region.points = points;
+    app.region.closed = true;
+    app.region.clipEnabled = Boolean(payload.enabled);
+    app.region.enabled = false;
+    app.region.serverSet = true;
+    app.region.source = payload.source || "server";
+    app.region.updatedAt = payload.updated_at || "";
+    app.regionDirty = false;
+    s.regionCalibrationMigrationDone = true;
+    saveRegionState();
+    updateAuthorityReadiness("region", "verified", "服务端扫描区域已确认", targetKey);
+    renderRegionCalibration();
+    renderMarkers();
+    return;
+  }
+
+  // 旧 localStorage 区域仅允许迁移一次；服务端删除后不会被旧浏览器缓存重新创建。
+  if (!discardDraft && local && !s.regionCalibrationMigrationDone) {
+    try {
+      await persistRegionCalibration("legacy_web_local_storage", local);
+    } catch (err) {
+      updateAuthorityReadiness("region", "error", `旧区域迁移失败：${err.message}`, targetKey);
+      throw err;
+    }
+    return;
+  }
+
+  app.region.points = [];
+  app.region.closed = false;
+  app.region.clipEnabled = false;
+  app.region.enabled = false;
+  app.region.serverSet = false;
+  app.region.source = "";
+  app.region.updatedAt = "";
+  app.regionDirty = false;
+  s.regionCalibrationMigrationDone = true;
+  delete s.regionCalibration;
+  saveState();
+  updateAuthorityReadiness("region", "verified", "服务端确认当前工位尚未配置扫描区域", targetKey);
+  renderRegionCalibration();
+  renderMarkers();
+}
+
+async function syncStationServerConfiguration() {
+  syncConnectionFromInputs();
+  const results = await Promise.allSettled([
+    syncStationCalibration(),
+    syncStationRegionCalibration(),
+  ]);
+  const errors = results.filter((r) => r.status === "rejected").map((r) => r.reason?.message || String(r.reason));
+  if (errors.length) throw new Error(errors.join("；"));
+}
+
+async function recoverRegionCalibrationAfterWriteFailure(action, err) {
+  showToast(`${action}失败：${err.message}，正在恢复服务端配置`);
+  try {
+    await syncStationRegionCalibration();
+    await refreshBackgroundStatus();
+  } catch (syncErr) {
+    console.warn("区域配置回读失败", syncErr);
+    showToast(`${action}失败，且服务端配置回读失败：${syncErr.message}`);
+  }
 }
 
 async function bootstrapStationSession() {
@@ -575,11 +1125,13 @@ async function bootstrapStationSession() {
     const res = await fetch("/station/session", { cache: "no-store" });
     if (!res.ok) return;
     const session = await res.json();
-    if (session.gateway) app.endpoint = session.gateway;
-    if (session.access_token) app.token = session.access_token;
+    applyConnection(
+      session.gateway || app.endpoint,
+      session.access_token || app.token,
+      { persist: true, invalidate: true },
+    );
     els.endpoint.value = app.endpoint;
     els.token.value = app.token;
-    saveState();
   } catch {
     // 静态文件方式打开时没有 /station/session，保留手动 Gateway token。
   }
@@ -595,7 +1147,7 @@ function selectedCamera() {
 }
 
 function cameraByRole(role) {
-  return station()?.cameras.find((c) => c.role === role) || null;
+  return camerasByRole(role)[0] || null;
 }
 
 function showToast(msg) {
@@ -631,19 +1183,35 @@ function renderStations() {
     item.addEventListener("click", (ev) => {
       if (ev.target.closest("button")) return;
       app.selectedCameraId = cam.id;
+      app.deviceRefreshSerial++;
+      clearDeviceSettings();
       saveState();
       renderStations();
+      if (document.querySelector('[data-drawer-panel="device"]')?.classList.contains("active")) {
+        refreshDevice({ silent: true });
+      }
     });
     els.cameraList.append(item);
   }
 
   for (const btn of els.cameraList.querySelectorAll("[data-delete-camera]")) {
     btn.addEventListener("click", () => {
+      if (blockStationTopologyChange()) return;
       const id = btn.getAttribute("data-delete-camera");
       currentStation.cameras = currentStation.cameras.filter((c) => c.id !== id);
       app.selectedCameraId = currentStation.cameras[0]?.id || "";
+      invalidateStationConfigurationContext("扫描单元拓扑已变化，等待重新读取工位配置");
+      invalidateScanContext();
       saveState();
       renderStations();
+      restoreCalibrationState();
+      restoreRegionState();
+      syncStationServerConfiguration()
+        .then(async () => {
+          await refreshBackgroundStatus();
+          await restoreActiveScan({ clearInactive: true, silent: true });
+        })
+        .catch((err) => showToast(`工位配置同步失败：${err.message}`));
     });
   }
 
@@ -658,6 +1226,8 @@ function renderStations() {
   const camA = cameraByRole("a");
   const camB = cameraByRole("b");
   els.activeCameraLabel.textContent = `A ${camA?.ip || "-"} / B ${camB?.ip || "-"}`;
+  renderStationReadiness();
+  renderScanActionButton();
 }
 
 function roleName(role) {
@@ -678,40 +1248,116 @@ function escapeHtml(text) {
 
 function renderScanMeta() {
   const status = scanStateView(app.scanState);
+  const mainCloudLabel = primaryCloudLabel();
   const rows = [
     ["状态", status.label],
     ["A", cameraStatusSummary("a")],
     ["B", cameraStatusSummary("b")],
+    ["主云", primaryCloudStatusLabel()],
     ["scan_id", app.activeScanId || "-"],
   ];
   els.scanMeta.innerHTML = rows.map(([k, v]) => `<span>${k}</span><strong>${escapeHtml(v)}</strong>`).join("");
   renderScanActionButton();
   const counts = [app.clouds[0].count, app.clouds[1].count];
   const visibleCount = app.cloudMode === "fused" ? app.fusedCloud.count : counts[0] + counts[1];
+  const manualPreview = app.manualCloud.enabled && app.cloudMode === "fused";
+  const displayCount = manualPreview ? app.manualCloud.previewCloud.count : visibleCount;
   const fusionUnavailable = app.cloudMode === "fused" && app.fusionUnavailable;
-  els.emptyHint.classList.toggle("hidden", visibleCount > 0);
+  els.emptyHint.classList.toggle("hidden", displayCount > 0);
   els.emptyHint.textContent = fusionUnavailable ? "未标定无法融合" : "等待点云数据";
-  const title = app.cloudMode === "fused" ? "融合点云" : "分镜点云";
+  const title = manualPreview ? "手动融合预览" : (app.cloudMode === "fused" ? mainCloudLabel : "分镜点云");
   els.cloudTitle.textContent = title;
+  if (els.mainCloudMode) els.mainCloudMode.textContent = app.primaryCloudName === "measured" ? "车辆测量点云" : "融合";
+  const touchPrimary = window.matchMedia?.("(pointer: coarse)")?.matches === true;
   const controlHint = annotationActive()
     ? "标注中点云已冻结"
     : app.controlMode === "roam"
-    ? "WASD 行走 · 左键转身/抬头"
-    : "右键平移 · 左键旋转 · 滚轮缩放";
+    ? (touchPrimary ? "单指环顾 · 键盘 WASD 行走" : "WASD 行走 · 左键转身/抬头")
+    : (touchPrimary ? "单指拖动 · 双指缩放" : "右键平移 · 左键旋转 · 滚轮缩放");
   const rendererHint = app.renderer === "webgl"
     ? `WebGL ${app.webglContextName || ""}`.trim()
     : (app.renderer === "2d" ? "Canvas 兼容渲染" : "");
   const hintParts = [controlHint];
   if (rendererHint) hintParts.push(rendererHint);
   if (app.webglStatus && app.renderer === "2d") hintParts.push(app.webglStatus);
-  els.cloudHint.textContent = visibleCount > 0
-    ? `${visibleCount.toLocaleString()} 点 · ${hintParts.join(" · ")}`
-    : (fusionUnavailable ? "未标定无法融合" : (app.cloudMode === "fused" ? "等待融合点云" : `等待分镜点云${rendererHint ? ` · ${rendererHint}` : ""}`));
+  els.cloudHint.textContent = displayCount > 0
+    ? `${displayCount.toLocaleString()} 点 · ${hintParts.join(" · ")}`
+    : (fusionUnavailable ? "未标定无法融合" : (app.cloudMode === "fused" ? `等待${mainCloudLabel}` : `等待分镜点云${rendererHint ? ` · ${rendererHint}` : ""}`));
+  renderStationReadiness();
   updateScanBanner();
 }
 
-// 车辆外廓测量面板：随 scan.fusion_done 到达的 LWH + 轴距/前后悬 + GB7258 合规。
-// 测量无效（未标定/点云退化）则隐藏；不编造数字。单位 mm。
+const SITE_QUALITY_OVERRIDE_NOTICE = "当前外参已受控启用，历史质量字段未留存";
+const SITE_QUALITY_UNVERIFIED_WARNING = "工位外参未通过生产验证，不可用于正式量测";
+const SITE_PRODUCTION_INELIGIBLE_WARNING = "当前扫描不具备生产量测资格";
+
+function optionalPayloadBoolean(payload, snakeKey, camelKey) {
+  for (const source of [payload, payload?.measure]) {
+    if (!source || typeof source !== "object") continue;
+    for (const key of [snakeKey, camelKey]) {
+      if (source[key] === true || source[key] === false) return source[key];
+    }
+  }
+  return null;
+}
+
+function measurementProductionFlags(payload) {
+  return {
+    siteQualityVerified: optionalPayloadBoolean(payload, "site_quality_verified", "siteQualityVerified"),
+    siteQualityOverride: optionalPayloadBoolean(payload, "site_quality_override", "siteQualityOverride"),
+    productionEligible: optionalPayloadBoolean(payload, "production_eligible", "productionEligible"),
+  };
+}
+
+function normalizeMeasurementPayload(payload) {
+  if (!payload) return null;
+  const normalized = { ...payload };
+  const flags = measurementProductionFlags(payload);
+  if (flags.siteQualityVerified != null) normalized.site_quality_verified = flags.siteQualityVerified;
+  if (flags.siteQualityOverride != null) normalized.site_quality_override = flags.siteQualityOverride;
+  if (flags.productionEligible != null) normalized.production_eligible = flags.productionEligible;
+  if (flags.siteQualityVerified === false || flags.productionEligible === false) {
+    normalized.compliance_determined = false;
+    normalized.compliance_reason = flags.siteQualityOverride === true
+      ? "site_quality_override"
+      : (flags.siteQualityVerified === false ? "site_quality_unverified" : "production_ineligible");
+    normalized.compliant = false;
+    normalized.violations = [];
+    if (normalized.compliance && typeof normalized.compliance === "object") {
+      normalized.compliance = {
+        ...normalized.compliance,
+        determined: false,
+        compliant: false,
+        violations: [],
+      };
+    }
+  }
+  return normalized;
+}
+
+function siteQualityResultMode(payload) {
+  const flags = measurementProductionFlags(payload);
+  if (flags.siteQualityOverride === true && flags.productionEligible === false) return "override";
+  if (flags.siteQualityVerified === false) return "unverified";
+  if (flags.productionEligible === false) return "ineligible";
+  return "";
+}
+
+function siteQualityResultText(payload) {
+  switch (siteQualityResultMode(payload)) {
+    case "override": return SITE_QUALITY_OVERRIDE_NOTICE;
+    case "unverified": return SITE_QUALITY_UNVERIFIED_WARNING;
+    case "ineligible": return SITE_PRODUCTION_INELIGIBLE_WARNING;
+    default: return "";
+  }
+}
+
+function isSiteQualityIntegrationResult(payload) {
+  return siteQualityResultMode(payload) !== "";
+}
+
+// 车辆外廓测量面板：随 scan.fusion_done 到达的 LWH + 轴距/前后悬。
+// 法规规则未明确给出 determined=true 时只能显示“未判定”，不得把通用阈值冒充逐车型结论。
 function renderMeasure() {
   const p = app.measure;
   const panel = els.measurePanel;
@@ -721,15 +1367,47 @@ function renderMeasure() {
   if ((!p || !p.measure_valid)) {
     if (!done || app.capturingBackground) { panel.hidden = true; return; }
     panel.hidden = false;
-    let reason = "未能自动测量 · 请圈定车位框，或确保点云完整覆盖车辆";
-    let badge = "需圈车位框";
-    if (app.fusionUnavailable) {
+    let reason = "未能自动测量 · 请检查工位标定、扫描区域、空工位背景和车辆覆盖";
+    let badge = "测量未完成";
+    const measMode = String(p?.meas_mode || p?.measure_mode || "").toLowerCase();
+    const backgroundIncompatible = p?.background_incompatible === true
+      || p?.background_compatible === false
+      || measMode.startsWith("background_incompatible");
+    const regionMissing = p?.region_missing === true
+      || p?.region_configured === false
+      || measMode.startsWith("region_missing");
+    if (backgroundIncompatible) {
+      reason = `${backgroundCompatibilityReasonText(p?.background_reason)} · 请保持工位为空并重新采集`;
+      badge = "背景需重采";
+    } else if (regionMissing) {
+      reason = "当前工位尚未保存扫描区域 · 请先在配置中完成区域标定";
+      badge = "区域未配置";
+    } else if (app.fusionUnavailable) {
       reason = "工位未标定，无法融合测量";
       badge = "未标定";
-    } else if (p && p.meas_mode === "no_isolation") {
-      // 融合云=整个房间，没有背景/车位框无法把车抠出来 → 指向「采集空工位背景」。
-      reason = "未采集空工位背景 · 点右上「采集空工位背景」扫一次空工位，之后自动抠车测量（或圈定车位框）";
+    } else if (measMode === "refine_unaccepted") {
+      reason = "B→A 场景精修未通过生产门 · 请重新执行工位标定，诊断点云已保留";
+      badge = "精修未通过";
+    } else if (measMode === "ground_invalid") {
+      reason = "工位地面基准无效 · 请检查区域覆盖并重新采集空工位背景";
+      badge = "地面基准无效";
+    } else if (measMode === "ground_refit_invalid") {
+      reason = "当前扫描无法复核地面几何 · 请检查遮挡、设备安装和区域覆盖后重扫";
+      badge = "地面复核失败";
+    } else if (measMode === "ground_drift") {
+      reason = "当前扫描与背景的地面几何漂移超限 · 请检查设备安装并重新标定、重采背景";
+      badge = "工位已漂移";
+    } else if (p?.measure_reason === "measured_cloud_unverified") {
+      reason = "车辆测量点云下载或内容校验尚未通过 · 当前仅显示融合场景诊断，尺寸与外廓叠加已停用";
+      badge = "车辆云待校验";
+    } else if (measMode === "no_isolation") {
+      reason = "未采集兼容的 A/B 原始空工位背景 · 请保持工位为空后重新采集";
       badge = "需采集背景";
+    }
+    const qualityMode = siteQualityResultMode(p);
+    if (qualityMode) {
+      reason = `${siteQualityResultText(p)} · ${reason}`;
+      badge = qualityMode === "override" ? "外参已启用" : "联调结果";
     }
     els.measureBody.innerHTML = `<span>状态</span><strong>${escapeHtml(reason)}</strong>`;
     els.measureCompliance.textContent = badge;
@@ -743,6 +1421,12 @@ function renderMeasure() {
     ["车宽", mm(p.width_mm)],
     ["车高", mm(p.height_mm)],
   ];
+  const qualityMode = siteQualityResultMode(p);
+  if (qualityMode === "override") {
+    rows.unshift(["外参", SITE_QUALITY_OVERRIDE_NOTICE]);
+  } else if (qualityMode) {
+    rows.unshift(["状态", siteQualityResultText(p)]);
+  }
   if (p.axle_valid) {
     const wb = Array.isArray(p.wheelbases_mm) ? p.wheelbases_mm.map((v) => Math.round(v)).join(" / ") : "-";
     rows.push([`轴距(${p.num_axles}轴)`, `${wb} mm`]);
@@ -761,39 +1445,60 @@ function renderMeasure() {
       `<i class="ov-dot ov-v"></i>车体 <i class="ov-dot ov-c"></i>货箱 <i class="ov-dot ov-a"></i>轴</strong>`;
   }
   els.measureBody.innerHTML = html;
-  const ok = Boolean(p.compliant);
   const badge = els.measureCompliance;
+  if (qualityMode) {
+    badge.textContent = qualityMode === "override" ? "法规未判定" : "联调结果 · 法规未判定";
+    badge.className = "measure-badge warn";
+    return;
+  }
+  const determined = p.compliance_determined === true
+    || p?.compliance?.determined === true;
+  if (!determined) {
+    badge.textContent = "法规未判定";
+    badge.className = "measure-badge warn";
+    return;
+  }
+  const ok = Boolean(p.compliant);
   badge.textContent = ok ? "合规" : (Array.isArray(p.violations) && p.violations.length ? p.violations.join("、") : "超限");
   badge.className = `measure-badge ${ok ? "ok" : "bad"}`;
 }
 
-// 扫描进行中的醒目横幅：采集/融合/加载各状态 + 已用时 + 旋转 spinner。靠 1.2s 轮询驱动（不依赖实时 WS），
-// 长扫描（采集慢 + 融合精修）有持续的“在动”反馈，避免被误判卡死而中途取消。
+// 扫描进行中的醒目横幅：采集/融合/加载各状态 + 已用时。终态质量结论统一进入测量面板，
+// 避免完成后仍显示旋转进度或遮挡外廓结果。
 function updateScanBanner() {
   const b = els.scanBanner;
   if (!b) return;
   const state = normalizedScanState();
-  const showing = !isScanTerminalState(state) ||
-    (app.activeScanId && ["capturing", "scanning", "fusing", "processing"].includes(state));
-  if (!showing) { b.hidden = true; return; }
+  if (isScanTerminalState(state)) {
+    b.hidden = true;
+    if (app.scanBannerPhase) {
+      app.scanBannerPhase = "";
+      els.scanBannerAnnouncement.textContent = "扫描任务已结束";
+    }
+    return;
+  }
   const sec = app.scanStartedAt ? Math.max(0, Math.floor((Date.now() - app.scanStartedAt) / 1000)) : 0;
   const mmss = `${String(Math.floor(sec / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`;
-  let title = "处理中…", detail = mmss, kind = "busy";
-  if (["starting", "connecting"].includes(state)) {
-    title = "启动中…"; detail = `连接设备 · 已用 ${mmss}`;
+  let title = "处理中…", detail = mmss, kind = "busy", phase = "processing";
+  if (["starting", "connecting", "starting_unknown"].includes(state)) {
+    title = "启动中…"; detail = `连接设备 · 已用 ${mmss}`; phase = "starting";
   } else if (["capturing", "scanning"].includes(state)) {
     const fa = app.liveFrames?.a || 0, fb = app.liveFrames?.b || 0;
-    title = "采集中"; kind = "scan";
+    title = "采集中"; kind = "scan"; phase = "capturing";
     detail = (fa || fb) ? `A ${fa.toLocaleString()} 帧 · B ${fb.toLocaleString()} 帧 · 已用 ${mmss}` : `云台扫掠中 · 已用 ${mmss}`;
   } else if (["fusing", "processing"].includes(state)) {
-    title = "融合处理中，请稍候"; detail = `外参精修 + 拼合（约十几秒）· 已用 ${mmss}`;
+    title = "融合处理中，请稍候"; detail = `外参精修 + 拼合（约十几秒）· 已用 ${mmss}`; phase = "fusing";
   } else if (state === "loading_clouds") {
-    title = "加载点云中…"; detail = `下载结果 · 已用 ${mmss}`;
+    title = "加载点云中…"; detail = `下载结果 · 已用 ${mmss}`; phase = "loading";
   }
   els.scanBannerTitle.textContent = title;
   els.scanBannerDetail.textContent = detail;
   b.className = `scan-banner ${kind}`;
   b.hidden = false;
+  if (app.scanBannerPhase !== phase) {
+    app.scanBannerPhase = phase;
+    els.scanBannerAnnouncement.textContent = title;
+  }
 }
 
 function scanStateView(state) {
@@ -812,8 +1517,9 @@ function scanStateView(state) {
     case "failed":
       return { label: "错误", kind: "bad" };
     case "starting":
+    case "starting_unknown":
     case "connecting":
-      return { label: "连接中", kind: "busy" };
+      return { label: state === "starting_unknown" ? "确认启动状态" : "连接中", kind: "busy" };
     case "cancelled":
     case "canceled":
     case "idle":
@@ -832,6 +1538,185 @@ function cameraStatusSummary(role) {
   return `${state} ${angleText}`;
 }
 
+const READINESS_STATES = ["ready", "busy", "warning", "blocked", "unknown"];
+
+function deviceReadiness(role) {
+  const roleCameras = camerasByRole(role);
+  if (roleCameras.length > 1) {
+    return { state: "blocked", label: "角色重复", detail: `当前工位配置了 ${roleCameras.length} 台设备 ${role.toUpperCase()}` };
+  }
+  const cam = roleCameras[0] || null;
+  if (!cam) {
+    return { state: "blocked", label: "未配置", detail: `当前工位缺少设备 ${role.toUpperCase()}` };
+  }
+  const status = app.deviceStatuses[role];
+  if (!status) {
+    return { state: "unknown", label: "检查中", detail: `${cam.ip} 状态尚未返回` };
+  }
+  if (status.ip && status.ip !== cam.ip) {
+    return { state: "unknown", label: "等待刷新", detail: `缓存状态属于 ${status.ip}，当前设备为 ${cam.ip}` };
+  }
+  const rawState = String(status.state || "").toUpperCase();
+  const stateLabel = deviceStateLabel(rawState);
+  const detail = [
+    cam.ip,
+    status.online ? "在线" : "离线",
+    rawState || "状态未知",
+    Number(status.errorCode || 0) ? `错误 ${formatErrorCode(status.errorCode)}` : "无设备错误",
+  ].join(" · ");
+  if (!status.online || rawState === "ERROR") {
+    return { state: "blocked", label: !status.online ? "离线" : "设备错误", detail };
+  }
+  if (!rawState) {
+    return { state: "unknown", label: "状态未知", detail };
+  }
+  if (["SCAN", "ALIGN", "BUSY", "WATCH"].includes(rawState)) {
+    return { state: "busy", label: stateLabel, detail };
+  }
+  if (rawState !== "READY") {
+    return { state: "unknown", label: stateLabel || "状态未知", detail };
+  }
+  if (Number(status.errorCode || 0) !== 0) {
+    return { state: "warning", label: "存在告警", detail };
+  }
+  return { state: "ready", label: "就绪", detail };
+}
+
+function authorityReadinessState(kind) {
+  if (app.authorityReadiness[`${kind}Key`] !== stationServerConfigKey()) {
+    return { status: "unknown", detail: "尚未读取当前工位服务端配置" };
+  }
+  return {
+    status: app.authorityReadiness[kind] || "unknown",
+    detail: app.authorityReadiness[`${kind}Detail`] || "",
+  };
+}
+
+function updateAuthorityReadiness(kind, status, detail = "", stationKey = stationServerConfigKey()) {
+  app.authorityReadiness[`${kind}Key`] = stationKey;
+  app.authorityReadiness[kind] = status;
+  app.authorityReadiness[`${kind}Detail`] = detail;
+  renderStationReadiness();
+  renderScanActionButton();
+}
+
+function siteReadiness() {
+  const authority = authorityReadinessState("site");
+  if (authority.status !== "verified") {
+    return {
+      state: "unknown",
+      label: authority.status === "error" ? "读取失败" : "检查中",
+      detail: authority.detail || "正在读取服务端工位外参",
+    };
+  }
+  const result = app.calibration.result;
+  if (!Array.isArray(result?.matrix)) {
+    return { state: "blocked", label: "未保存", detail: "服务端尚无当前 A/B 工位外参" };
+  }
+  const revision = String(result.revision || "");
+  const rmsM = optionalFiniteNumber(result.rms_m);
+  const metrics = [
+    revision ? `revision ${revision.slice(0, 12)}` : "revision 未返回",
+    rmsM == null ? "RMS 未记录" : `RMS ${(rmsM * 1000).toFixed(2)} mm`,
+    optionalFiniteNumber(result.n_common) == null ? "公共标记未记录" : `公共标记 ${Math.trunc(result.n_common)} 个`,
+  ].join(" · ");
+  if (result.serverPersisted !== true || result.siteQualityState === "local_backup") {
+    return { state: "blocked", label: "仅本地备份", detail: `服务端记录未恢复 · ${metrics}` };
+  }
+  if (result.scanEligible === false) {
+    return { state: "blocked", label: "不可起扫", detail: `${siteCalibrationBlockedMessage(result)} · ${metrics}` };
+  }
+  if (result.siteQualityVerified) {
+    return { state: "ready", label: "生产可用", detail: metrics };
+  }
+  if (result.siteQualityOverride) {
+    return { state: "warning", label: "联调放行", detail: `${SITE_QUALITY_OVERRIDE_NOTICE} · ${metrics}` };
+  }
+  return { state: "warning", label: "质量待确认", detail: `外参已加载，生产质量状态以服务端起扫判定为准 · ${metrics}` };
+}
+
+function regionReadiness() {
+  const authority = authorityReadinessState("region");
+  if (authority.status !== "verified") {
+    return {
+      state: "unknown",
+      label: authority.status === "error" ? "读取失败" : "检查中",
+      detail: authority.detail || "正在读取服务端扫描区域",
+    };
+  }
+  if (app.regionDirty) {
+    return {
+      state: "blocked",
+      label: "草稿未保存",
+      detail: "当前区域草稿尚未写入服务端",
+    };
+  }
+  const count = app.region.points.length;
+  if (app.region.serverSet && app.region.clipEnabled) {
+    return {
+      state: "ready",
+      label: app.region.clipEnabled ? "已启用" : "已保存",
+      detail: `服务端区域已保存 · ${count} 个边界点${app.region.updatedAt ? ` · ${app.region.updatedAt}` : ""}`,
+    };
+  }
+  if (app.region.serverSet && !app.region.clipEnabled) {
+    return { state: "blocked", label: "未启用", detail: "服务端区域已保存，但墙内过滤尚未启用" };
+  }
+  if (app.region.closed) {
+    return { state: "blocked", label: "待服务端保存", detail: `本地已有 ${count} 个边界点，但服务端尚未确认` };
+  }
+  return { state: "blocked", label: "未配置", detail: "服务端尚未保存当前工位扫描区域" };
+}
+
+function backgroundReadiness() {
+  if (app.backgroundReadiness.stationKey !== stationServerConfigKey()) {
+    return { state: "unknown", label: "检查中", detail: "正在读取当前工位背景状态" };
+  }
+  return app.backgroundReadiness;
+}
+
+function setReadinessValue(el, result) {
+  if (!el) return;
+  el.textContent = result.label;
+  el.className = `readiness-value ${result.state}`;
+  el.title = result.detail || result.label;
+  const step = el.parentElement;
+  if (!step?.classList) return;
+  for (const state of READINESS_STATES) step.classList.remove(`is-${state}`);
+  step.classList.add(`is-${result.state}`);
+  step.title = result.detail || result.label;
+}
+
+function renderStationReadiness() {
+  const results = [
+    [els.readinessDeviceA, deviceReadiness("a")],
+    [els.readinessDeviceB, deviceReadiness("b")],
+    [els.readinessSite, siteReadiness()],
+    [els.readinessRegion, regionReadiness()],
+    [els.readinessBackground, backgroundReadiness()],
+  ];
+  for (const [el, result] of results) setReadinessValue(el, result);
+  if (!els.readinessSummary) return;
+
+  const scanState = normalizedScanState();
+  let summary;
+  if (!isScanTerminalState(scanState)) {
+    summary = { state: "busy", label: scanStateView(scanState).label, detail: "当前工位已有扫描任务进行中" };
+  } else {
+    const values = results.map(([, result]) => result);
+    const blocked = values.filter((result) => result.state === "blocked").length;
+    const unknown = values.filter((result) => result.state === "unknown").length;
+    const warning = values.filter((result) => result.state === "warning").length;
+    if (blocked > 0) summary = { state: "blocked", label: `${blocked} 项阻塞`, detail: "处理阻塞项后再开始车辆扫描" };
+    else if (unknown > 0) summary = { state: "unknown", label: `${unknown} 项检查中`, detail: "正在同步工位真实状态" };
+    else if (warning > 0) summary = { state: "warning", label: `${warning} 项需关注`, detail: "工位可用于受控联调，但生产质量证据尚不完整" };
+    else summary = { state: "ready", label: "生产扫描就绪", detail: "A/B、外参、区域与背景均已就绪" };
+  }
+  els.readinessSummary.textContent = summary.label;
+  els.readinessSummary.className = `readiness-summary ${summary.state}`;
+  els.readinessSummary.title = summary.detail;
+}
+
 function normalizedScanState(state = app.scanState) {
   return String(state || "idle").toLowerCase();
 }
@@ -840,23 +1725,122 @@ function isScanTerminalState(state = app.scanState) {
   return ["idle", "done", "completed", "cancelled", "canceled", "failed", "error"].includes(normalizedScanState(state));
 }
 
+function isExplicitScanTerminalState(state) {
+  const normalized = String(state || "").toLowerCase();
+  return normalized !== "" && ["done", "completed", "cancelled", "canceled", "failed", "error"].includes(normalized);
+}
+
+function activePayloadState(payload, fallback = app.scanState || "capturing") {
+  const databaseState = String(payload?.status || "").toLowerCase();
+  const liveState = String(payload?.live_state || payload?.liveState || "").toLowerCase();
+  // live_state 来自 native 回调，可能在结果落库前先到 done；终态只能由数据库 job 确认。
+  if (isExplicitScanTerminalState(databaseState)) return databaseState;
+  if (isExplicitScanTerminalState(liveState)) return databaseState || fallback;
+  return liveState || databaseState || fallback;
+}
+
+function isCompletedScanState(state) {
+  return ["done", "completed"].includes(String(state || "").toLowerCase());
+}
+
 function isServerActiveScanState(state = app.scanState) {
   return !isScanTerminalState(state) || Boolean(app.activeScanId && ["capturing", "scanning", "fusing", "processing"].includes(normalizedScanState(state)));
 }
 
+function needsFinalCloudRetry() {
+  return Boolean(
+    app.activeScanId
+    && app.finalCloudPayload
+    && isCompletedScanState(app.scanState)
+    && !app.finalCloudsLoaded
+    && !app.finalCloudsLoading,
+  );
+}
+
 function scanActionMode() {
+  if (app.scanStartPending) return "busy";
   const state = normalizedScanState();
-  if (["starting", "connecting", "loading_clouds"].includes(state)) return "busy";
+  if (["starting", "starting_unknown", "connecting", "loading_clouds"].includes(state)) return "busy";
   return isServerActiveScanState() ? "stop" : "start";
+}
+
+function blockStationTopologyChange() {
+  if (scanActionMode() === "start"
+    && !hasPendingStationConfigWrites()
+    && !app.stationCalibrationPending
+    && !app.framingStopping
+    && !app.framingRunning) return false;
+  showToast(app.stationCalibrationPending || app.framingRunning || app.framingStopping
+    ? "工位外参标定正在进行，请先停止或等待标定完成"
+    : hasPendingStationConfigWrites()
+    ? "工位配置正在保存，请等待权威状态回读完成后再切换"
+    : "扫描启动、采集、融合或点云加载期间不能切换工位、镜头或连接，请先结束当前任务");
+  return true;
+}
+
+function scanSetupBlocker({ background = false } = {}) {
+  const topologyIssue = stationTopologyIssue();
+  if (topologyIssue) return topologyIssue;
+  const camA = cameraByRole("a");
+  const camB = cameraByRole("b");
+  if (!camA || !camB) return "当前工位需要各配置一台设备 A 和设备 B";
+
+  if (annotationActive()) return "请先暂停外参或区域标注，再检查并开始扫描";
+  if (app.stationCalibrationPending || app.framingRunning || app.framingStopping) return "工位外参标定正在进行，请等待完成后再开始扫描";
+
+  for (const role of ["a", "b"]) {
+    const readiness = deviceReadiness(role);
+    if (!["ready", "warning"].includes(readiness.state)) {
+      return `设备 ${role.toUpperCase()} 尚未就绪：${readiness.label}`;
+    }
+  }
+
+  const site = siteReadiness();
+  if (!["ready", "warning"].includes(site.state)) {
+    if (site.state === "blocked" && site.label === "未保存") return "当前工位尚未保存 A/B 外参";
+    return site.detail || "工位外参状态尚未确认";
+  }
+  if (!isOfficialSiteCalibrationResult(app.calibration.result) || !app.calibration.result.serverPersisted) {
+    return "服务端尚未恢复当前工位外参";
+  }
+  if (app.calibration.result.scanEligible === false) return siteCalibrationBlockedMessage(app.calibration.result);
+
+  const region = regionReadiness();
+  if (region.state !== "ready") {
+    if (region.state === "blocked" && region.label === "未配置") return "当前工位尚未保存扫描区域";
+    if (region.state === "blocked" && region.label === "未启用") return "当前工位扫描区域尚未启用";
+    return region.detail || "扫描区域状态尚未确认";
+  }
+
+  if (!background) {
+    const bg = backgroundReadiness();
+    if (bg.state !== "ready") return bg.detail || "当前工位尚未采集兼容的空工位背景";
+  }
+  return "";
 }
 
 function renderScanActionButton() {
   const mode = scanActionMode();
   const loading = normalizedScanState() === "loading_clouds";
-  els.startScan.textContent = mode === "stop" ? "结束扫描" : mode === "busy" ? (loading ? "加载中" : "启动中") : "开始扫描";
+  const blocker = mode === "start" ? scanSetupBlocker() : "";
+  els.startScan.textContent = mode === "stop"
+    ? "结束扫描"
+    : mode === "busy"
+    ? (loading ? "加载中" : (app.scanStartPending ? "检查中" : "启动中"))
+    : blocker
+    ? "检查并开始"
+    : "开始扫描";
   els.startScan.disabled = mode === "busy";
+  els.startScan.title = blocker || (mode === "stop" ? "结束当前扫描任务" : "开始车辆外廓扫描");
   els.startScan.classList.toggle("danger", mode === "stop");
-  els.startScan.classList.toggle("primary", mode !== "stop");
+  els.startScan.classList.toggle("primary", mode !== "stop" && !blocker);
+  els.startScan.classList.toggle("setup-required", Boolean(blocker));
+  const backgroundBlocker = mode === "start" ? scanSetupBlocker({ background: true }) : "";
+  for (const button of [els.captureBgDrawer]) {
+    if (!button) continue;
+    button.disabled = mode !== "start" || Boolean(backgroundBlocker);
+    button.title = backgroundBlocker || "扫描空工位作为背景；之后通过背景相减隔离车辆点云";
+  }
 }
 
 function setWsState(text, kind = "") {
@@ -864,22 +1848,96 @@ function setWsState(text, kind = "") {
   els.wsState.className = `state-pill ${kind}`;
 }
 
-function syncConnectionFromInputs(persist = false) {
-  app.endpoint = els.endpoint.value.trim() || DEFAULT_ENDPOINT;
-  app.token = els.token.value.trim();
-  if (persist) saveState();
-}
-
-function endpointBase() {
-  syncConnectionFromInputs();
-  const raw = app.endpoint.replace(/\/+$/, "") || DEFAULT_ENDPOINT;
+function endpointBase(endpoint = app.endpoint) {
+  const raw = String(endpoint || DEFAULT_ENDPOINT).replace(/\/+$/, "") || DEFAULT_ENDPOINT;
   return new URL(raw, window.location.origin).toString().replace(/\/+$/, "");
 }
 
-async function api(path, options = {}) {
-  const base = endpointBase();
+function connectionSnapshot() {
+  return {
+    serial: app.connectionSerial,
+    base: endpointBase(app.endpoint),
+    token: app.token,
+  };
+}
+
+function isConnectionCurrent(connection) {
+  if (!connection) return false;
+  const current = connectionSnapshot();
+  return connection.serial === current.serial
+    && connection.base === current.base
+    && connection.token === current.token;
+}
+
+function invalidateDeviceStatusPolling() {
+  app.statusRequestSerial++;
+  app.statusPollingKey = "";
+  app.statusPollingPromise = null;
+}
+
+function invalidateStationConfigurationContext(reason = "工位上下文已变化，等待重新读取服务端配置") {
+  app.deviceRefreshSerial++;
+  invalidateDeviceStatusPolling();
+  nextAuthorityRequest("site");
+  nextAuthorityRequest("region");
+  app.backgroundRequestSerial++;
+  app.deviceStatuses = { a: null, b: null };
+  app.deviceInfos = { a: null, b: null };
+  app.backgroundReadiness = {
+    stationKey: "",
+    state: "unknown",
+    label: "检查中",
+    detail: reason,
+    revision: "",
+  };
+  app.authorityReadiness = {
+    siteKey: "",
+    regionKey: "",
+    site: "unknown",
+    region: "unknown",
+    siteDetail: reason,
+    regionDetail: reason,
+  };
+  clearDeviceSettings();
+  renderStationReadiness();
+  renderScanActionButton();
+}
+
+function applyConnection(endpoint, token, { persist = false, invalidate = true } = {}) {
+  const nextEndpoint = String(endpoint || "").trim() || DEFAULT_ENDPOINT;
+  const nextToken = String(token || "").trim();
+  // 保存前先规范化并验证 URL，避免把不可用连接写入状态。
+  endpointBase(nextEndpoint);
+  const changed = nextEndpoint !== app.endpoint || nextToken !== app.token;
+  app.endpoint = nextEndpoint;
+  app.token = nextToken;
+  if (changed) {
+    app.connectionSerial++;
+    if (app.ws) app.ws.close();
+    app.ws = null;
+    app.wsConnectionKey = "";
+    app.wsConnectPromise = null;
+    invalidateStationConfigurationContext("连接已变化，等待重新读取当前工位配置");
+    if (invalidate) invalidateScanContext();
+  }
+  if (persist) saveState();
+  return changed;
+}
+
+function syncConnectionFromInputs(persist = false) {
+  return applyConnection(els.endpoint.value, els.token.value, { persist, invalidate: true });
+}
+
+function connectionInputsDiffer() {
+  const endpoint = els.endpoint.value.trim() || DEFAULT_ENDPOINT;
+  const token = els.token.value.trim();
+  return endpoint !== app.endpoint || token !== app.token;
+}
+
+async function api(path, options = {}, connection = connectionSnapshot()) {
+  const base = connection.base;
   const headers = new Headers(options.headers || {});
-  if (app.token) headers.set("Authorization", `Bearer ${app.token}`);
+  if (connection.token) headers.set("Authorization", `Bearer ${connection.token}`);
   if (options.body && !(options.body instanceof FormData)) headers.set("Content-Type", "application/json");
   const res = await fetch(`${base}${path}`, { ...options, headers });
   const text = await res.text();
@@ -889,62 +1947,100 @@ async function api(path, options = {}) {
   }
   if (!res.ok) {
     const msg = body?.message || body?.error || text || `${res.status}`;
-    throw new Error(msg);
+    const err = new Error(msg);
+    err.status = res.status;
+    err.body = body;
+    throw err;
   }
   return body;
 }
 
-async function apiBuffer(path) {
-  const base = endpointBase();
+async function apiBuffer(path, connection = connectionSnapshot()) {
+  const base = connection.base;
   const headers = new Headers();
-  if (app.token) headers.set("Authorization", `Bearer ${app.token}`);
+  if (connection.token) headers.set("Authorization", `Bearer ${connection.token}`);
   const res = await fetch(`${base}${path}`, { headers });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(text || `${res.status}`);
+    const err = new Error(text || `${res.status}`);
+    err.status = res.status;
+    throw err;
   }
-  return res.arrayBuffer();
+  return {
+    buffer: await res.arrayBuffer(),
+    headers: res.headers,
+  };
 }
 
-function connectWs() {
-  syncConnectionFromInputs(true);
-  if (!app.token) {
+function connectWs(connection = connectionSnapshot()) {
+  if (!connection.token) {
     showToast("需要先填写 token");
     return Promise.reject(new Error("缺少 token"));
   }
-  if (app.ws?.readyState === WebSocket.OPEN) {
+  const connectionKey = `${connection.serial}|${connection.base}|${connection.token}`;
+  if (app.ws?.readyState === WebSocket.OPEN && app.wsConnectionKey === connectionKey) {
     setWsState("实时已连接", "ok");
     return Promise.resolve();
   }
+  if (app.ws?.readyState === WebSocket.CONNECTING
+      && app.wsConnectionKey === connectionKey
+      && app.wsConnectPromise) {
+    return app.wsConnectPromise;
+  }
   if (app.ws) app.ws.close();
-  const url = new URL(`${endpointBase()}/v1/ws`);
+  const url = new URL(`${connection.base}/v1/ws`);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.searchParams.set("token", app.token);
-  app.ws = new WebSocket(url.toString());
-  attachWsMessageHandler();
+  url.searchParams.set("token", connection.token);
+  const socket = new WebSocket(url.toString());
+  app.ws = socket;
+  app.wsConnectionKey = connectionKey;
+  attachWsMessageHandler(socket, connection);
   setWsState("连接中");
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("实时连接超时")), 3500);
-    app.ws.onopen = () => {
+  let settled = false;
+  let connectPromise;
+  connectPromise = new Promise((resolve, reject) => {
+    const finish = (error = null) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      if (app.ws === socket && app.wsConnectPromise === connectPromise) {
+        app.wsConnectPromise = null;
+      }
+      if (error) reject(error);
+      else resolve();
+    };
+    const timer = setTimeout(() => {
+      if (app.ws === socket) {
+        setWsState("实时连接超时", "bad");
+        socket.close();
+      }
+      finish(new Error("实时连接超时"));
+    }, 3500);
+    socket.onopen = () => {
+      if (app.ws !== socket || !isConnectionCurrent(connection)) {
+        finish(new Error("实时连接上下文已失效"));
+        return;
+      }
       setWsState("实时已连接", "ok");
-      resolve();
+      finish();
     };
-    app.ws.onclose = () => {
-      clearTimeout(timer);
-      setWsState("实时已断开", "bad");
+    socket.onclose = () => {
+      if (app.ws === socket) setWsState("实时已断开", "bad");
+      finish(new Error(app.ws === socket ? "实时连接已断开" : "实时连接已被新连接替代"));
     };
-    app.ws.onerror = () => {
-      clearTimeout(timer);
-      setWsState("实时错误", "bad");
-      reject(new Error("实时连接失败"));
+    socket.onerror = () => {
+      if (app.ws === socket) setWsState("实时错误", "bad");
+      finish(new Error("实时连接失败"));
     };
   });
+  app.wsConnectPromise = connectPromise;
+  return connectPromise;
 }
 
-function attachWsMessageHandler() {
-  if (!app.ws) return;
-  app.ws.onmessage = (ev) => {
+function attachWsMessageHandler(socket = app.ws, connection = connectionSnapshot()) {
+  if (!socket) return;
+  socket.onmessage = (ev) => {
+    if (app.ws !== socket || !isConnectionCurrent(connection)) return;
     try {
       handleRealtime(JSON.parse(ev.data));
     } catch (err) {
@@ -953,10 +2049,141 @@ function attachWsMessageHandler() {
   };
 }
 
+function rememberCompletedScanPayload(payload) {
+  const scanId = Number(payload?.job_id || payload?.scan_id || app.activeScanId || 0);
+  if (!scanId) return payload || {};
+  const previousId = Number(app.finalCloudPayload?.job_id || app.finalCloudPayload?.scan_id || 0);
+  const previous = previousId === scanId ? app.finalCloudPayload : null;
+  app.finalCloudPayload = {
+    ...(previous || {}),
+    ...(payload || {}),
+    job_id: scanId,
+    scan_id: scanId,
+  };
+  return app.finalCloudPayload;
+}
+
+function applyCompletedScanPayload(payload, { notifyBackground = false } = {}) {
+  payload = rememberCompletedScanPayload(payload);
+  const scanId = Number(payload?.job_id || payload?.scan_id || app.activeScanId || 0);
+  if (scanId) app.activeScanId = scanId;
+  app.activeSessionKey = payload?.session_key || app.activeSessionKey;
+  app.scanState = "done";
+  app.fusionUnavailable = isRawScanPayload(payload);
+  const plan = finalCloudPlan(payload, app.fusionUnavailable);
+  const expectedPlanKey = finalCloudPlanKey(scanId, plan);
+  if (app.finalCloudPlanKey && app.finalCloudPlanKey !== expectedPlanKey) {
+    app.finalCloudsLoaded = false;
+    app.loadedCloudsScanId = null;
+  }
+  app.primaryCloudName = plan.primaryCloudName || "fused";
+  if (payload?.points != null) app.fusedCount = Number(payload.points) || 0;
+  const measuredAlreadyVerified = plan.measuredRequired
+    && app.finalCloudPlanKey === expectedPlanKey
+    && app.finalCloudsLoaded
+    && app.loadedCloudsScanId === scanId
+    && app.finalCloudLoadedNames.has("measured");
+
+  const backgroundCaptured = payload?.background_captured === true;
+  const wasCapturingBackground = app.capturingBackground;
+  app.capturingBackground = false;
+  if (backgroundCaptured) {
+    app.measure = null;
+    app.overlay = null;
+  } else if (plan.contractError) {
+    applyUnverifiedMeasurement(payload, plan.contractError, { contractError: true });
+    const detail = plan.contractError === "measure_valid_without_measured_cloud"
+      ? "车辆测量点云缺失"
+      : "车辆测量点云内容身份缺失或与任务 revision 不一致";
+    showToast(`扫描结果契约错误：${detail}，已拒绝用整场 fused 冒充车辆云`);
+  } else {
+    const measureValid = payload?.measure_valid === true
+      || payload?.measureValid === true
+      || payload?.measure?.valid === true;
+    if (measureValid && plan.measuredRequired) {
+      // manifest 只声明身份；必须等 measured PCD 响应头、注释和服务端完整源哈希校验通过后才能展示结论。
+      if (measuredAlreadyVerified) applyVerifiedMeasurement(payload);
+      else applyUnverifiedMeasurement(payload, "measured_cloud_unverified");
+    } else {
+      applyVerifiedMeasurement(payload);
+    }
+  }
+  app.overlayDirty = true;
+  renderMeasure();
+  if (app.finalCloudsLoading) app.scanState = "loading_clouds";
+  renderScanMeta();
+
+  if (backgroundCaptured) {
+    if (notifyBackground || wasCapturingBackground) {
+      showToast(`空工位背景已采集（${(Number(payload?.points || 0) / 10000).toFixed(0)} 万点）· 后续将通过背景相减隔离车辆点云`);
+    }
+    refreshBackgroundStatus();
+  }
+  return backgroundCaptured;
+}
+
+function applyUnverifiedMeasurement(payload, reason, { contractError = false } = {}) {
+  const normalized = normalizeMeasurementPayload(payload);
+  app.measure = {
+    ...(normalized || {}),
+    length_mm: 0,
+    width_mm: 0,
+    height_mm: 0,
+    measure_valid: false,
+    compliance_determined: false,
+    compliance_reason: reason,
+    compliant: false,
+    violations: [],
+    axle_valid: false,
+    num_axles: 0,
+    wheelbases_mm: [],
+    total_wheelbase_mm: 0,
+    front_overhang_mm: 0,
+    rear_overhang_mm: 0,
+    has_cargo_box: false,
+    box_outer_length_mm: 0,
+    box_outer_width_mm: 0,
+    box_depth_mm: 0,
+    box_inner_width_mm: 0,
+    overlay: null,
+    measure_reason: reason,
+    ...(contractError ? { measurement_contract_error: reason } : {}),
+  };
+  app.overlay = null;
+  app.overlayDirty = true;
+}
+
+function applyVerifiedMeasurement(payload) {
+  const normalized = normalizeMeasurementPayload(payload);
+  app.measure = normalized;
+  const measureValid = normalized?.measure_valid === true
+    || normalized?.measureValid === true
+    || normalized?.measure?.valid === true;
+  app.overlay = measureValid ? (normalized?.overlay || null) : null;
+  app.overlayDirty = true;
+}
+
+async function restoreCompletedScanFromRest(scan, context = scanContextSnapshot()) {
+  if (!isScanContextCurrent(context)) return false;
+  const scanId = Number(scan?.scan_id || scan?.job_id || app.activeScanId || 0);
+  if (!scanId) throw new Error("扫描终态缺少 scan_id");
+  if (app.loadedCloudsScanId !== scanId) {
+    app.finalCloudsLoaded = false;
+  }
+
+  // 先恢复完整 REST 结果，再开始点云下载；下载期间测量/背景状态也必须已经正确。
+  applyCompletedScanPayload({ ...scan, scan_id: scanId });
+  if (!app.finalCloudsLoaded && !app.finalCloudsLoading) {
+    await downloadFinalClouds(app.finalCloudPayload, context);
+  }
+  return isScanContextCurrent(context);
+}
+
 function handleRealtime(envelope) {
   const payload = envelope.payload || {};
   if (envelope.type === "laser.points") {
-    if (app.activeSessionKey && payload.session_key !== app.activeSessionKey) return;
+    if (!app.activeSessionKey || payload.session_key !== app.activeSessionKey) return;
+    if (app.finalPhaseScanId === app.activeScanId) return;
     const unit = Number(payload.unit);
     if (unit !== 0 && unit !== 1) return;
     const role = unit === 0 ? "a" : "b";
@@ -966,7 +2193,8 @@ function handleRealtime(envelope) {
       renderScanMeta();
       return;
     }
-    const frame = clipRegionPointPayload({ unit, points: payload.points || [], colors: realtimeColors(payload) });
+    // Runner 已按该扫描固化的服务端区域裁剪；浏览器不再用本地缓存几何二次裁剪。
+    const frame = { unit, points: payload.points || [], colors: realtimeColors(payload) };
     if (app.restoringActiveScan) {
       app.realtimeBacklog.push(frame);
     }
@@ -975,53 +2203,37 @@ function handleRealtime(envelope) {
     return;
   }
   if (envelope.type === "laser.status") {
-    if (app.activeSessionKey && payload.session_key !== app.activeSessionKey) return;
-    app.scanState = payload.state || app.scanState;
-    renderScanMeta();
-    if (payload.state === "done" && app.activeScanId && !app.finalCloudsLoaded && !app.finalCloudsLoading) {
-      if (isCloudRefreshPaused()) {
-        app.deferredFinalCloudPayload = { job_id: app.activeScanId };
-        return;
+    if (!app.activeSessionKey || payload.session_key !== app.activeSessionKey) return;
+    if (app.finalPhaseScanId === app.activeScanId) return;
+    const liveState = String(payload.state || "").toLowerCase();
+    if (isExplicitScanTerminalState(liveState)) {
+      // native done 早于 repo.Complete；只提示进入处理阶段，最终状态和结果统一由 REST/融合完成事件确认。
+      if (isCompletedScanState(liveState) && !["fusing", "processing", "loading_clouds"].includes(normalizedScanState())) {
+        app.scanState = "fusing";
       }
-      setTimeout(() => {
-        downloadFinalClouds({ job_id: app.activeScanId }).catch((err) => {
-          console.warn("最终点云下载失败", err);
-        });
-      }, 600);
+      renderScanMeta();
+      refreshActiveScanStatus({ silent: true }).catch((err) => console.warn("扫描终态确认失败", err));
+      return;
     }
+    app.scanState = liveState || app.scanState;
+    renderScanMeta();
     return;
   }
   if (envelope.type === "laser.frame") {
     if (!els.framingOverlay.hidden) {
-      renderFramingFrame(payload); // 取景标定页打开 → 走胶片
-    } else if (payload.session_key !== "site-framing") {
+      if (app.framingSessionKey && payload.session_key === app.framingSessionKey) renderFramingFrame(payload);
+    } else if (app.activeSessionKey && payload.session_key === app.activeSessionKey) {
       renderScanPreview(payload); // 点云扫描页 → 相机实时小窗
     }
     return;
   }
   if (envelope.type === "scan.fusion_done" && payload.kind === "laser") {
-    if (app.activeSessionKey && payload.session_key !== app.activeSessionKey) return;
-    app.scanState = "done";
-    app.fusionUnavailable = isRawScanPayload(payload);
-    app.fusedCount = Number(payload.points || 0);
-    // 采集空工位背景：不是测量，给成功提示并刷新背景状态，不走测量面板。
-    if (payload.background_captured) {
-      app.capturingBackground = false;
-      app.measure = null;
-      app.overlay = null;
-      app.overlayDirty = true;
-      renderMeasure();
-      renderScanMeta();
-      showToast(`✓ 空工位背景已采集（${(Number(payload.points || 0) / 10000).toFixed(0)} 万点）· 之后扫描将自动抠车`);
-      refreshBackgroundStatus();
+    if (!app.activeSessionKey || payload.session_key !== app.activeSessionKey) return;
+    const backgroundCaptured = applyCompletedScanPayload(payload, { notifyBackground: true });
+    if (backgroundCaptured) {
       downloadFinalClouds(payload).catch(() => {});
       return;
     }
-    app.measure = payload; // 始终留 payload：测得出显数字，测不出据此给原因
-    app.overlay = payload.overlay || null; // 世界系车体框/货箱框/轴线，融合视图叠加
-    app.overlayDirty = true;
-    renderMeasure();
-    renderScanMeta();
     if (isCloudRefreshPaused()) {
       app.deferredFinalCloudPayload = payload;
       return;
@@ -1057,6 +2269,107 @@ function isRawScanPayload(payload) {
   return false;
 }
 
+function finalCloudPlan(payload, rawOnly = false) {
+  const measuredObjectKey = String(payload?.measured_object_key || payload?.measuredObjectKey || "").trim();
+  const measureValid = payload?.measure_valid === true
+    || payload?.measureValid === true
+    || payload?.measure?.valid === true;
+  const artifactContract = measuredArtifactContract(payload);
+  let contractError = "";
+  if (!rawOnly && measureValid && !measuredObjectKey) {
+    contractError = "measure_valid_without_measured_cloud";
+  } else if (!rawOnly && measureValid && artifactContract.error) {
+    contractError = artifactContract.error;
+  }
+  const measuredReady = Boolean(measuredObjectKey && !artifactContract.error);
+  const measuredRequired = !rawOnly && measureValid && measuredReady && !contractError;
+  // measured 只作为尺寸输入的内容身份校验；主视图始终显示带 RGB 的 fused 场景点云。
+  const primaryCloudName = rawOnly ? null : "fused";
+  const requiredCloudNames = ["unit_a", "unit_b"];
+  if (primaryCloudName) requiredCloudNames.push(primaryCloudName);
+  if (measuredRequired) requiredCloudNames.push("measured");
+  return {
+    primaryCloudName,
+    requiredCloudNames,
+    measuredRequired,
+    contractError,
+    measuredArtifact: artifactContract.artifact,
+  };
+}
+
+function finalCloudPlanKey(scanId, plan) {
+  const artifactKey = plan.measuredArtifact
+    ? `${plan.measuredArtifact.xyzSha256}:${plan.measuredArtifact.finalBToASha256}`
+    : "none";
+  return `${Number(scanId) || 0}|${plan.requiredCloudNames.join(",")}|${plan.contractError || "ready"}|${artifactKey}`;
+}
+
+function measuredArtifactContract(payload) {
+  const raw = payload?.measured_artifact || payload?.measuredArtifact;
+  if (!raw || typeof raw !== "object") {
+    return { artifact: null, error: "measured_artifact_missing" };
+  }
+  const artifact = {
+    xyzSha256: String(raw.xyz_sha256 || raw.xyzSha256 || "").trim(),
+    coordinateSchema: String(raw.coordinate_schema || raw.coordinateSchema || "").trim(),
+    sourcePoints: Number(raw.source_points ?? raw.sourcePoints),
+    siteRevision: String(raw.site_revision || raw.siteRevision || "").trim(),
+    regionRevision: String(raw.region_revision || raw.regionRevision || "").trim(),
+    backgroundRevision: Number(raw.background_revision ?? raw.backgroundRevision ?? 0),
+    finalBToASha256: String(raw.final_b_to_a_sha256 || raw.finalBToASha256 || "").trim(),
+  };
+  const measuredPoints = Number(payload?.measured_points ?? payload?.measuredPoints);
+  const siteRevision = String(payload?.site_revision || payload?.siteRevision || "").trim();
+  const regionRevision = String(payload?.region_revision || payload?.regionRevision || "").trim();
+  const backgroundRevision = Number(payload?.background_revision_id ?? payload?.backgroundRevisionId ?? 0);
+  const valid = artifact.coordinateSchema === MEASURED_COORDINATE_SCHEMA
+    && Number.isSafeInteger(artifact.sourcePoints)
+    && artifact.sourcePoints > 0
+    && SHA256_HEX_PATTERN.test(artifact.xyzSha256)
+    && SHA256_HEX_PATTERN.test(artifact.finalBToASha256)
+    && Number.isSafeInteger(artifact.backgroundRevision)
+    && artifact.backgroundRevision >= 0
+    && Number.isSafeInteger(measuredPoints)
+    && measuredPoints === artifact.sourcePoints
+    && siteRevision !== ""
+    && artifact.siteRevision === siteRevision
+    && regionRevision !== ""
+    && artifact.regionRevision === regionRevision
+    && Number.isSafeInteger(backgroundRevision)
+    && backgroundRevision >= 0
+    && artifact.backgroundRevision === backgroundRevision;
+  return valid
+    ? { artifact, error: "" }
+    : { artifact: null, error: "measured_artifact_mismatch" };
+}
+
+function primaryCloudLabel(name = app.primaryCloudName) {
+  return name === "measured" ? "车辆测量点云" : "融合点云";
+}
+
+function primaryCloudStatusLabel() {
+  const label = primaryCloudLabel();
+  if (!app.finalCloudPayload) return label;
+  if (app.finalCloudsLoading) return `${label}（下载中）`;
+  if (app.finalCloudsLoaded) return `${label}（已就绪）`;
+  if (!app.finalCloudPlanKey) return `${label}（待下载）`;
+  return `${label}（待重试）`;
+}
+
+function finalCloudNameLabel(name) {
+  if (name === "unit_a") return "A 点云";
+  if (name === "unit_b") return "B 点云";
+  if (name === "measured") return "车辆测量点云校验";
+  return primaryCloudLabel(name);
+}
+
+function failedRequiredCloudNames(requiredNames, results) {
+  return requiredNames.filter((_, index) => {
+    const result = results[index];
+    return !result || result.status !== "fulfilled" || result.value === false;
+  });
+}
+
 function annotationActive() {
   return Boolean(app.calibration.enabled || app.region.enabled);
 }
@@ -1075,28 +2388,82 @@ function resumeDeferredCloudRefresh() {
   });
 }
 
-async function downloadFinalClouds(payload) {
-  const scanId = Number(payload.job_id || app.activeScanId || 0);
-  if (!scanId || app.finalCloudsLoading || app.finalCloudsLoaded) return;
+async function downloadFinalClouds(payload, context = scanContextSnapshot()) {
+  if (!isScanContextCurrent(context)) return false;
+  payload = rememberCompletedScanPayload(payload);
+  const scanId = Number(payload?.job_id || payload?.scan_id || app.activeScanId || 0);
+  if (!scanId) return false;
+  const cloudContext = beginFinalCloudPhase(scanId, context);
+  if (!cloudContext) return false;
+  const rawOnly = isRawScanPayload(payload) || app.fusionUnavailable;
+  const plan = finalCloudPlan(payload, rawOnly);
+  const planKey = finalCloudPlanKey(scanId, plan);
+  if (app.finalCloudPlanKey !== planKey) {
+    app.finalCloudPlanKey = planKey;
+    app.finalCloudLoadedNames = new Set();
+    app.finalCloudsLoaded = false;
+    app.loadedCloudsScanId = null;
+    app.fusedCloud.reset(Number(els.pointBudget.value || 1_200_000));
+  }
+  app.primaryCloudName = plan.primaryCloudName || "fused";
+  if (app.finalCloudsLoading || app.finalCloudsLoaded) {
+    if (app.finalCloudsLoaded
+      && plan.measuredRequired
+      && app.finalCloudLoadedNames.has("measured")) {
+      applyVerifiedMeasurement(payload);
+      renderMeasure();
+    }
+    renderScanMeta();
+    return app.finalCloudsLoaded;
+  }
   if (isCloudRefreshPaused()) {
     app.deferredFinalCloudPayload = payload;
-    return;
+    return false;
   }
   app.finalCloudsLoading = true;
   app.scanState = "loading_clouds";
-  const rawOnly = isRawScanPayload(payload) || app.fusionUnavailable;
   app.fusionUnavailable = rawOnly;
   if (rawOnly) {
     app.fusedCloud.reset(Number(els.pointBudget.value || 1_200_000));
     app.fusedCount = 0;
   }
   renderScanMeta();
-  const items = [
-    ["unit_a", app.clouds[0]],
-    ["unit_b", app.clouds[1]],
-  ];
-  if (!rawOnly) items.push(["fused", app.fusedCloud]);
-  const downloads = await Promise.allSettled(items.map(([name, cloud]) => downloadCloudInto(scanId, name, cloud)));
+  const cloudsByName = {
+    unit_a: app.clouds[0],
+    unit_b: app.clouds[1],
+    fused: app.fusedCloud,
+  };
+  const measuredValidationCloud = plan.measuredRequired
+    ? new PointCloud(app.fusedCloud.maxPoints)
+    : null;
+  const pendingNames = plan.requiredCloudNames.filter((name) => !app.finalCloudLoadedNames.has(name));
+  const items = pendingNames.map((name) => [
+    name,
+    name === "measured" ? measuredValidationCloud : cloudsByName[name],
+  ]);
+  const downloads = await Promise.allSettled(items.map(([name, cloud]) => downloadCloudInto(
+    scanId,
+    name,
+    cloud,
+    cloudContext,
+    name === "measured" ? plan.measuredArtifact : null,
+  )));
+  if (!isCloudContextCurrent(cloudContext)) return false;
+  downloads.forEach((result, index) => {
+    if (result.status === "fulfilled" && result.value !== false) {
+      app.finalCloudLoadedNames.add(pendingNames[index]);
+    }
+  });
+  const measuredVerified = plan.measuredRequired
+    && app.finalCloudLoadedNames.has("measured");
+  if (measuredVerified) {
+    app.primaryCloudName = "fused";
+    applyVerifiedMeasurement(payload);
+    renderMeasure();
+  } else if (plan.measuredRequired) {
+    applyUnverifiedMeasurement(payload, "measured_cloud_unverified");
+    renderMeasure();
+  }
   const skipped = downloads.some((r) => r.status === "fulfilled" && r.value === false);
   if (skipped || isCloudRefreshPaused()) {
     app.deferredFinalCloudPayload = payload;
@@ -1104,37 +2471,142 @@ async function downloadFinalClouds(payload) {
     app.finalCloudsLoading = false;
     app.finalCloudsLoaded = false;
     renderScanMeta();
-    return;
+    return false;
   }
-  const failed = downloads.filter((r) => r.status === "rejected");
-  app.scanState = failed.length === downloads.length ? "done" : "done";
+  const failedNames = failedRequiredCloudNames(pendingNames, downloads);
+  if (plan.measuredRequired && !measuredVerified) {
+    // 车辆云未通过身份校验时，只显示明确标注的 fused 场景诊断，绝不沿用尺寸/轴/货箱/overlay。
+    try {
+      if (!app.finalCloudLoadedNames.has("fused")) {
+        const loaded = await downloadCloudInto(scanId, "fused", app.fusedCloud, cloudContext, null);
+        if (loaded && isCloudContextCurrent(cloudContext)) app.finalCloudLoadedNames.add("fused");
+      }
+      if (app.finalCloudLoadedNames.has("fused")) app.primaryCloudName = "fused";
+    } catch (err) {
+      console.warn("融合场景诊断点云下载失败", err);
+    }
+  }
+  if (!isCloudContextCurrent(cloudContext)) return false;
+  const complete = plan.requiredCloudNames.every((name) => app.finalCloudLoadedNames.has(name));
+  app.scanState = "done";
   app.finalCloudsLoading = false;
-  app.finalCloudsLoaded = failed.length !== downloads.length;
-  if (app.finalCloudsLoaded) app.loadedCloudsScanId = scanId; // 记已展示的扫描，供完成时判是否需重载
+  app.finalCloudsLoaded = complete;
+  app.loadedCloudsScanId = complete ? scanId : null;
   app.fusedCount = rawOnly ? 0 : (app.fusedCloud.count || app.fusedCount);
+  if (complete) app.deferredFinalCloudPayload = null;
   renderScanMeta();
-  if (failed.length === downloads.length) {
-    throw failed[0].reason;
-  }
-  if (failed.length > 0) {
-    showToast("部分最终点云下载失败，已显示可用点云");
-    return;
+  if (!complete) {
+    const missing = (failedNames.length ? failedNames : plan.requiredCloudNames.filter((name) => !app.finalCloudLoadedNames.has(name)))
+      .map(finalCloudNameLabel)
+      .join("、");
+    showToast(`最终点云不完整：${missing || "必需点云"}下载失败，将自动重试`);
+    return false;
   }
   if (rawOnly) showToast("当前工位未标定，已完成分镜点云采集，未执行融合");
-}
-
-async function downloadCloudInto(scanId, name, cloud) {
-  const unit = name === "unit_a" ? 0 : name === "unit_b" ? 1 : 2;
-  return downloadCloudFromPath(`/v1/scans/laser/${scanId}/cloud/${name}`, cloud, unit);
-}
-
-async function downloadCloudFromPath(path, cloud, unit = null) {
-  const buffer = await apiBuffer(path);
-  const parsed = await parsePcdAsync(buffer, cloud.maxPoints);
-  if (isCloudRefreshPaused()) return false;
-  const clipped = clipRegionPointPayload({ unit, points: parsed.points, colors: parsed.colors });
-  cloud.replace(clipped.points, clipped.colors);
   return true;
+}
+
+async function downloadCloudInto(
+  scanId,
+  name,
+  cloud,
+  context = cloudContextSnapshot(),
+  expectedArtifact = null,
+) {
+  const budget = Math.max(1, Math.min(1_000_000, cloud.maxPoints));
+  return downloadCloudFromPath(
+    `/v1/scans/laser/${scanId}/cloud/${name}?max_points=${budget}`,
+    cloud,
+    context,
+    expectedArtifact,
+  );
+}
+
+async function downloadCloudFromPath(
+  path,
+  cloud,
+  context = cloudContextSnapshot(),
+  expectedArtifact = null,
+) {
+  const budget = Math.max(1, Math.min(1_000_000, Number(cloud.maxPoints) || 0));
+  const response = await apiBuffer(path, context.connection);
+  const responseContract = cloudPointResponseContract(
+    response.headers,
+    budget,
+    expectedArtifact,
+    path.includes("/active/cloud/"),
+  );
+  const parsed = await parsePcdAsync(response.buffer, budget);
+  if (parsed.sourcePoints !== responseContract.sourcePoints) {
+    throw new Error(
+      `PCD 源点数 ${parsed.sourcePoints} 与响应头 ${responseContract.sourcePoints} 不一致`,
+    );
+  }
+  if (parsed.renderPoints !== responseContract.renderPoints) {
+    throw new Error(
+      `PCD 返回点数 ${parsed.renderPoints} 与响应头 ${responseContract.renderPoints} 不一致`,
+    );
+  }
+  if (expectedArtifact) {
+    if (parsed.coordinateSchema !== expectedArtifact.coordinateSchema
+        || parsed.xyzSha256 !== expectedArtifact.xyzSha256
+        || parsed.finalBToASha256 !== expectedArtifact.finalBToASha256) {
+      throw new Error("PCD 内容身份注释与任务 measured_artifact 不一致");
+    }
+  }
+  if (!isCloudContextCurrent(context) || isCloudRefreshPaused()) return false;
+  // PCD 是服务端按扫描快照裁剪后的权威产物，不能再套当前浏览器区域。
+  cloud.replace(parsed.points, parsed.colors);
+  if (app.manualCloud.enabled && /\/cloud\/unit_[ab](?:\?|$)/.test(path)) rebuildManualCloudPreview();
+  return true;
+}
+
+function cloudPointResponseContract(
+  headers,
+  budget,
+  expectedArtifact = null,
+  allowServerSamplingCap = false,
+) {
+  const sourcePoints = requiredNonNegativeHeaderInt(headers, CLOUD_SOURCE_POINTS_HEADER);
+  const renderPoints = requiredNonNegativeHeaderInt(headers, CLOUD_RENDER_POINTS_HEADER);
+  if (sourcePoints < renderPoints) {
+    throw new Error(`点云响应头非法：源点数 ${sourcePoints} 小于返回点数 ${renderPoints}`);
+  }
+  const expectedRender = Math.min(sourcePoints, budget);
+  if ((allowServerSamplingCap && renderPoints > expectedRender)
+      || (!allowServerSamplingCap && renderPoints !== expectedRender)) {
+    throw new Error(`点云响应头非法：返回点数 ${renderPoints} 与预算派生值 ${expectedRender} 不一致`);
+  }
+  if (!expectedArtifact) return { sourcePoints, renderPoints };
+  const coordinateSchema = requiredHeaderText(headers, CLOUD_COORDINATE_SCHEMA_HEADER);
+  const xyzSha256 = requiredHeaderText(headers, CLOUD_XYZ_SHA256_HEADER);
+  const finalBToASha256 = requiredHeaderText(headers, CLOUD_FINAL_B_TO_A_SHA256_HEADER);
+  if (sourcePoints !== expectedArtifact.sourcePoints
+      || coordinateSchema !== expectedArtifact.coordinateSchema
+      || xyzSha256 !== expectedArtifact.xyzSha256
+      || finalBToASha256 !== expectedArtifact.finalBToASha256) {
+    throw new Error("车辆测量点云响应头与任务 measured_artifact 不一致");
+  }
+  return { sourcePoints, renderPoints, coordinateSchema, xyzSha256, finalBToASha256 };
+}
+
+function requiredNonNegativeHeaderInt(headers, name) {
+  const raw = headers?.get?.(name);
+  if (raw == null || String(raw).trim() === "") {
+    throw new Error(`点云响应缺少 ${name}`);
+  }
+  const value = Number(String(raw).trim());
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${name} 响应头非法：${raw}`);
+  }
+  return value;
+}
+
+function requiredHeaderText(headers, name) {
+  const raw = headers?.get?.(name);
+  const value = raw == null ? "" : String(raw).trim();
+  if (!value) throw new Error(`点云响应缺少 ${name}`);
+  return value;
 }
 
 function stationScanQuery() {
@@ -1144,17 +2616,85 @@ function stationScanQuery() {
   return `unit_a_ip=${encodeURIComponent(camA.ip)}&unit_b_ip=${encodeURIComponent(camB.ip)}`;
 }
 
+function scanContextSnapshot(serial = app.restoreSerial) {
+  return {
+    serial,
+    stationId: app.activeStationId,
+    query: stationScanQuery(),
+    connection: connectionSnapshot(),
+  };
+}
+
+function isScanContextCurrent(context) {
+  return Boolean(
+    context
+    && context.serial === app.restoreSerial
+    && context.stationId === app.activeStationId
+    && context.query === stationScanQuery()
+    && isConnectionCurrent(context.connection),
+  );
+}
+
+function cloudContextSnapshot(context = scanContextSnapshot()) {
+  return {
+    ...context,
+    cloudPhaseSerial: app.cloudPhaseSerial,
+    finalPhaseScanId: app.finalPhaseScanId,
+  };
+}
+
+function isCloudContextCurrent(context) {
+  return isScanContextCurrent(context)
+    && context.cloudPhaseSerial === app.cloudPhaseSerial
+    && context.finalPhaseScanId === app.finalPhaseScanId;
+}
+
+function beginFinalCloudPhase(scanId, context = scanContextSnapshot()) {
+  if (!isScanContextCurrent(context)) return null;
+  if (app.finalPhaseScanId !== scanId) {
+    app.cloudPhaseSerial++;
+    app.finalPhaseScanId = scanId;
+    app.restoringActiveScan = false;
+    app.realtimeBacklog = [];
+  }
+  return cloudContextSnapshot(context);
+}
+
+function invalidateScanContext({ clear = true } = {}) {
+  app.restoreSerial++;
+  app.cloudPhaseSerial++;
+  app.finalPhaseScanId = null;
+  app.scanStatusRequestSerial++;
+  app.scanStatusPolling = false;
+  if (!clear) return scanContextSnapshot();
+  clearActiveScanState();
+  resetClouds({ force: true });
+  renderMeasure();
+  renderScanMeta();
+  return scanContextSnapshot();
+}
+
 function clearActiveScanState() {
   app.activeScanId = null;
   app.activeSessionKey = "";
   app.scanState = "idle";
   app.finalCloudsLoading = false;
   app.finalCloudsLoaded = false;
+  app.loadedCloudsScanId = null;
+  app.finalCloudPayload = null;
+  app.finalCloudPlanKey = "";
+  app.finalCloudLoadedNames = new Set();
+  app.finalPhaseScanId = null;
+  app.primaryCloudName = "fused";
   app.deferredFinalCloudPayload = null;
   app.restoringActiveScan = false;
   app.realtimeBacklog = [];
   app.fusedCount = 0;
   app.fusionUnavailable = false;
+  app.capturingBackground = false;
+  app.measure = null;
+  app.overlay = null;
+  app.overlayDirty = true;
   app.liveAngles = { a: null, b: null };
   app.scanStartedAt = 0;
   app.liveFrames = { a: 0, b: 0 };
@@ -1162,163 +2702,226 @@ function clearActiveScanState() {
   app.camPreview.b.hasFrame = false;
 }
 
-async function restoreActiveScan({ clearInactive = false, silent = false } = {}) {
-  syncConnectionFromInputs();
+async function restoreActiveScan({ clearInactive = false, silent = false, loadLatestWhenInactive = clearInactive } = {}) {
   const query = stationScanQuery();
   if (!query || !app.token) {
     if (clearInactive) {
       clearActiveScanState();
       resetClouds();
     }
-    return;
+    return "unavailable";
   }
   const serial = ++app.restoreSerial;
+  const context = scanContextSnapshot(serial);
   let active;
   try {
-    active = await api(`/v1/scans/laser/active?${query}`);
+    active = await api(`/v1/scans/laser/active?${query}`, {}, context.connection);
   } catch (err) {
-    if (!silent) showToast(`恢复扫描失败：${err.message}`);
-    return;
+    if (!silent && isScanContextCurrent(context)) showToast(`恢复扫描失败：${err.message}`);
+    return "error";
   }
-  if (serial !== app.restoreSerial) return;
+  if (!isScanContextCurrent(context)) return "stale";
   if (!active?.active) {
     if (clearInactive) {
       clearActiveScanState();
       resetClouds();
     }
-    return;
+    if (loadLatestWhenInactive && isScanContextCurrent(context)) {
+      await loadLastScan(context);
+    }
+    return "inactive";
   }
 
-  resetClouds();
-  app.activeScanId = Number(active.scan_id || 0) || null;
-  app.activeSessionKey = active.session_key || "";
-  app.scanState = active.live_state || active.status || "capturing";
-  app.fusedCount = Number(active.points || 0);
-  app.fusionUnavailable = isRawScanPayload(active);
+  return restoreActivePayload(active, context, { silent });
+}
+
+async function restoreActivePayload(active, context, { silent = false } = {}) {
+  if (!isScanContextCurrent(context) || !active?.active) return "stale";
+  app.cloudPhaseSerial++;
+  app.finalPhaseScanId = null;
+  clearActiveScanState();
+  resetClouds({ force: true });
+  renderMeasure();
   app.finalCloudsLoading = false;
   app.finalCloudsLoaded = false;
   app.restoringActiveScan = true;
   app.realtimeBacklog = [];
-  renderScanMeta();
+  applyActiveScanState(active);
+
+  const databaseState = String(active.status || "").toLowerCase();
+  if (isCompletedScanState(databaseState)) {
+    app.restoringActiveScan = false;
+    try {
+      await restoreCompletedScanFromRest(active, context);
+    } catch (err) {
+      console.warn("恢复最终点云失败", err);
+      if (!silent) showToast(`恢复最终点云失败：${err.message}`);
+    }
+    if (!isScanContextCurrent(context)) return "stale";
+    restoreCalibrationState();
+    restoreRegionState();
+    if (!silent) showToast(`已恢复扫描 #${app.activeScanId}`);
+    return "active";
+  }
+  if (isExplicitScanTerminalState(databaseState)) {
+    app.restoringActiveScan = false;
+    restoreCalibrationState();
+    restoreRegionState();
+    if (!silent) showToast(`扫描 #${app.activeScanId} 已结束`);
+    return "active";
+  }
 
   let restoredUnits = [];
   try {
-    await connectWs().catch((err) => console.warn("恢复实时连接失败", err));
-    restoredUnits = await downloadLiveClouds(query);
+    await connectWs(context.connection).catch((err) => console.warn("恢复实时连接失败", err));
+    if (!isScanContextCurrent(context)) return "stale";
+    restoredUnits = await downloadLiveClouds(context.query, context);
   } catch (err) {
-    if (!silent) showToast(`恢复点云失败：${err.message}`);
+    if (!silent && isScanContextCurrent(context)) showToast(`恢复点云失败：${err.message}`);
   } finally {
-    app.restoringActiveScan = false;
-    flushRealtimeBacklog(restoredUnits);
+    if (isScanContextCurrent(context)) {
+      app.restoringActiveScan = false;
+      flushRealtimeBacklog(restoredUnits);
+    }
   }
+  if (!isScanContextCurrent(context)) return "stale";
   restoreCalibrationState();
   restoreRegionState();
   if (!silent) showToast(`已恢复扫描 #${app.activeScanId}`);
+  return "active";
 }
 
 // 无进行中扫描时，载入该工位上一次已完成扫描的结果点云（刷新后默认展示）。
 // 直接问服务端要该工位最近一次 done 扫描，不依赖本地记忆——历史扫描、换浏览器都能还原。
-async function loadLastScan() {
-  if (app.activeScanId) return; // 已有进行中/已恢复的扫描，不覆盖
-  const query = stationScanQuery();
-  if (!app.token || !query) return;
+async function loadLastScan(context = scanContextSnapshot()) {
+  if (!isScanContextCurrent(context)) return false;
+  if (app.activeScanId) return false; // 已有进行中/已恢复的扫描，不覆盖
+  const query = context.query;
+  if (!context.connection?.token || !query) return false;
   let scan;
   try {
-    scan = await api(`/v1/scans/laser/latest?${query}`);
+    scan = await api(`/v1/scans/laser/latest?${query}`, {}, context.connection);
   } catch (err) {
     console.warn("查询上次扫描失败，忽略", err);
-    return;
+    return false;
   }
-  if (!scan || scan.found === false || !scan.scan_id) return; // 该工位还没有已完成的扫描
+  if (!isScanContextCurrent(context)) return false;
+  if (!scan || scan.found === false || !scan.scan_id) return false; // 该工位还没有已完成的扫描
   const scanId = Number(scan.scan_id) || 0;
-  if (!scanId) return;
-  app.activeScanId = scanId;
-  app.activeSessionKey = scan.session_key || "";
-  app.scanState = "done";
-  app.fusionUnavailable = isRawScanPayload(scan);
-  app.finalCloudsLoading = false;
-  app.finalCloudsLoaded = false;
-  app.measure = scan; // 历史扫描测量随 /latest 拍平字段到达；始终留以便测不出给原因
-  app.overlay = scan.overlay || null;
-  app.overlayDirty = true;
-  renderMeasure();
-  renderScanMeta();
+  if (!scanId) return false;
   try {
-    await downloadFinalClouds({ job_id: scanId, ...scan });
+    return await restoreCompletedScanFromRest(scan, context);
   } catch (err) {
     console.warn("载入上次扫描点云失败", err);
+    return false;
   }
 }
 
 function applyActiveScanState(active) {
   app.activeScanId = Number(active.scan_id || 0) || app.activeScanId || null;
   app.activeSessionKey = active.session_key || app.activeSessionKey || "";
-  app.scanState = active.live_state || active.status || app.scanState || "capturing";
-  app.fusedCount = Number(active.points || app.fusedCount || 0);
+  app.scanState = activePayloadState(active, app.scanState || "capturing");
+  if (active.points != null) app.fusedCount = Number(active.points) || 0;
   app.fusionUnavailable = isRawScanPayload(active);
   if (!app.scanStartedAt) app.scanStartedAt = Date.now(); // 恢复进行中扫描时也起计时
   app.liveFrames = { a: Number(active.frames_a || 0), b: Number(active.frames_b || 0) };
-  const regionFilter = active.region_filter || active.regionFilter;
-  if (regionFilter?.enabled && Array.isArray(regionFilter.points)) {
-    app.region.points = regionFilter.points.map(sanitizePoint).filter(Boolean);
-    app.region.closed = app.region.points.length >= 3;
-    app.region.clipEnabled = app.region.closed;
-    renderRegionCalibration();
-  }
+  // active.region_filter 是该任务起扫时固化的快照，只用于服务端结果解释；
+  // 当前区域编辑器始终显示服务端最新配置或本地草稿，不能被旧任务轮询反向覆盖。
   renderScanMeta();
+}
+
+function activeScanIdentityChanged(active) {
+  const nextId = Number(active?.scan_id || active?.job_id || 0);
+  const nextSession = String(active?.session_key || "");
+  const currentId = Number(app.activeScanId || 0);
+  const currentSession = String(app.activeSessionKey || "");
+  if (!currentId || !currentSession) return true;
+  return (nextId > 0 && nextId !== currentId)
+    || (nextSession !== "" && nextSession !== currentSession);
 }
 
 async function refreshActiveScanStatus({ silent = true } = {}) {
   if (app.scanStatusPolling) return null;
-  const query = stationScanQuery();
-  if (!query || !app.token) return null;
+  const context = scanContextSnapshot();
+  const query = context.query;
+  if (!query || !context.connection?.token) return null;
+  const requestSerial = ++app.scanStatusRequestSerial;
   app.scanStatusPolling = true;
   try {
-    const active = await api(`/v1/scans/laser/active?${query}`);
+    const active = await api(`/v1/scans/laser/active?${query}`, {}, context.connection);
+    if (!isScanContextCurrent(context)) return null;
     if (active?.active) {
+      if (activeScanIdentityChanged(active)) {
+        return await restoreActivePayload(active, context, { silent });
+      }
+      if (app.finalPhaseScanId === app.activeScanId && !isCompletedScanState(active.status)) {
+        return active;
+      }
       applyActiveScanState(active);
+      if (isCompletedScanState(active.status)) {
+        try {
+          await restoreCompletedScanFromRest(active, context);
+        } catch (err) {
+          console.warn("最终点云下载失败", err);
+          if (!silent) showToast(`最终点云下载失败：${err.message}`);
+        }
+      }
       return active;
     }
 
-    if (app.activeScanId && isServerActiveScanState()) {
-      await refreshCurrentScanAfterInactive();
+    if (app.activeScanId) {
+      await refreshCurrentScanAfterInactive(context);
+    } else if (normalizedScanState() === "starting_unknown") {
+      app.capturingBackground = false;
+      app.scanState = "error";
+      renderScanMeta();
     } else {
       renderScanMeta();
     }
     return active;
   } catch (err) {
-    if (!silent) showToast(`扫描状态刷新失败：${err.message}`);
+    if (!silent && isScanContextCurrent(context)) showToast(`扫描状态刷新失败：${err.message}`);
     return null;
   } finally {
-    app.scanStatusPolling = false;
+    if (requestSerial === app.scanStatusRequestSerial) app.scanStatusPolling = false;
   }
 }
 
-async function refreshCurrentScanAfterInactive() {
+async function refreshCurrentScanAfterInactive(context = scanContextSnapshot()) {
+  if (!isScanContextCurrent(context)) return;
   if (!app.activeScanId) {
     clearActiveScanState();
     renderScanMeta();
     return;
   }
   try {
-    const scan = await api(`/v1/scans/laser/${app.activeScanId}`);
-    app.scanState = scan.status || "done";
+    const scanId = app.activeScanId;
+    const scan = await api(`/v1/scans/laser/${scanId}`, {}, context.connection);
+    if (!isScanContextCurrent(context) || app.activeScanId !== scanId) return;
     app.activeSessionKey = scan.session_key || app.activeSessionKey;
     app.fusionUnavailable = isRawScanPayload(scan);
-    renderScanMeta();
-    if (["done", "completed"].includes(normalizedScanState(app.scanState))) {
-      // 完成即自动展示，无需手动刷新。若当前展示的是上一笔（loadLastScan 载入的），强制重载本笔。
-      if (app.loadedCloudsScanId !== app.activeScanId) {
-        app.finalCloudsLoaded = false;
-        app.finalCloudsLoading = false;
+    if (isCompletedScanState(scan.status)) {
+      try {
+        await restoreCompletedScanFromRest({ ...scan, scan_id: scanId }, context);
+      } catch (err) {
+        console.warn("最终点云下载失败", err);
       }
-      if (!app.finalCloudsLoaded && !app.finalCloudsLoading) {
-        await downloadFinalClouds({ job_id: app.activeScanId });
-      }
+      return;
     }
+    if (["cancelled", "canceled"].includes(String(scan.status || "").toLowerCase())) {
+      invalidateScanContext();
+      return;
+    }
+    app.scanState = scan.status || app.scanState;
+    renderScanMeta();
   } catch (err) {
+    if (!isScanContextCurrent(context)) return;
     console.warn("扫描终态刷新失败", err);
-    clearActiveScanState();
+    if (err?.status === 403 || err?.status === 404) {
+      invalidateScanContext();
+      return;
+    }
+    // 网络抖动、5xx、鉴权暂失均保留 scan_id 与完整 payload，后续轮询继续同一任务。
     renderScanMeta();
   }
 }
@@ -1331,13 +2934,18 @@ function startActiveScanPolling() {
   }, ACTIVE_SCAN_POLL_MS);
 }
 
-async function downloadLiveClouds(query = stationScanQuery()) {
+async function downloadLiveClouds(query = stationScanQuery(), context = scanContextSnapshot()) {
   if (!query) return;
+  if (app.finalPhaseScanId === app.activeScanId && app.activeScanId) return [];
+  const cloudContext = cloudContextSnapshot(context);
+  const budgetA = Math.max(1, Math.min(1_000_000, app.clouds[0].maxPoints));
+  const budgetB = Math.max(1, Math.min(1_000_000, app.clouds[1].maxPoints));
   const items = [
-    { unit: 0, path: `/v1/scans/laser/active/cloud/unit_a?${query}`, cloud: app.clouds[0] },
-    { unit: 1, path: `/v1/scans/laser/active/cloud/unit_b?${query}`, cloud: app.clouds[1] },
+    { unit: 0, path: `/v1/scans/laser/active/cloud/unit_a?${query}&max_points=${budgetA}`, cloud: app.clouds[0] },
+    { unit: 1, path: `/v1/scans/laser/active/cloud/unit_b?${query}&max_points=${budgetB}`, cloud: app.clouds[1] },
   ];
-  const downloads = await Promise.allSettled(items.map((item) => downloadCloudFromPath(item.path, item.cloud, item.unit)));
+  const downloads = await Promise.allSettled(items.map((item) => downloadCloudFromPath(item.path, item.cloud, cloudContext)));
+  if (!isCloudContextCurrent(cloudContext)) return [];
   const restoredUnits = downloads
     .map((r, i) => (r.status === "fulfilled" && r.value !== false ? items[i].unit : null))
     .filter((unit) => unit !== null);
@@ -1357,8 +2965,7 @@ function flushRealtimeBacklog(restoredUnits = []) {
   const needsReplay = new Set(restoredUnits);
   for (const frame of app.realtimeBacklog) {
     if (!needsReplay.has(frame.unit)) continue;
-    const clipped = clipRegionPointPayload(frame);
-    app.clouds[frame.unit].append(clipped.points, clipped.colors);
+    app.clouds[frame.unit].append(frame.points, frame.colors);
   }
   app.realtimeBacklog = [];
   renderScanMeta();
@@ -1369,12 +2976,17 @@ function yieldToBrowser() {
 }
 
 async function parsePcdAsync(buffer, maxPoints) {
+  if (!(buffer instanceof ArrayBuffer)) throw new Error("PCD 响应不是 ArrayBuffer");
+  if (!Number.isSafeInteger(maxPoints) || maxPoints <= 0 || maxPoints > 1_000_000) {
+    throw new Error(`PCD 渲染预算非法：${maxPoints}`);
+  }
   const bytes = new Uint8Array(buffer);
   const decoder = new TextDecoder("utf-8");
   let start = 0;
   let dataOffset = -1;
   const headerLines = [];
   for (let i = 0; i < bytes.length; i++) {
+    if (i >= PCD_HEADER_MAX_BYTES) throw new Error(`PCD 头超过 ${PCD_HEADER_MAX_BYTES} 字节`);
     if (bytes[i] !== 10) continue;
     const line = decoder.decode(bytes.subarray(start, i)).trim();
     headerLines.push(line);
@@ -1386,21 +2998,49 @@ async function parsePcdAsync(buffer, maxPoints) {
     }
   }
   if (dataOffset < 0) throw new Error("PCD 缺少 DATA binary");
-  const fieldsLine = headerLines.find((l) => l.startsWith("FIELDS "));
-  const sizeLine = headerLines.find((l) => l.startsWith("SIZE "));
-  const typeLine = headerLines.find((l) => l.startsWith("TYPE "));
-  const countLine = headerLines.find((l) => l.startsWith("COUNT "));
-  const pointsLine = headerLines.find((l) => l.startsWith("POINTS "));
-  if (!fieldsLine || !sizeLine || !pointsLine) throw new Error("PCD 头不完整");
-  const fields = fieldsLine.slice("FIELDS ".length).trim().split(/\s+/);
-  const sizes = sizeLine.slice("SIZE ".length).trim().split(/\s+/).map((v) => Number(v));
-  const types = typeLine
-    ? typeLine.slice("TYPE ".length).trim().split(/\s+/)
-    : fields.map(() => "F");
-  const counts = countLine
-    ? countLine.slice("COUNT ".length).trim().split(/\s+/).map((v) => Number(v))
-    : fields.map(() => 1);
-  const totalPoints = Number(pointsLine.slice("POINTS ".length).trim());
+  const fields = requiredPcdHeaderTokens(headerLines, "FIELDS");
+  const sizes = requiredPcdHeaderTokens(headerLines, "SIZE").map((v) => strictPositiveInt(v, "SIZE"));
+  const types = requiredPcdHeaderTokens(headerLines, "TYPE").map((v) => String(v).toUpperCase());
+  const counts = requiredPcdHeaderTokens(headerLines, "COUNT").map((v) => strictPositiveInt(v, "COUNT"));
+  const width = strictNonNegativeInt(requiredPcdHeaderScalar(headerLines, "WIDTH"), "WIDTH");
+  const height = strictNonNegativeInt(requiredPcdHeaderScalar(headerLines, "HEIGHT"), "HEIGHT");
+  const totalPoints = strictNonNegativeInt(requiredPcdHeaderScalar(headerLines, "POINTS"), "POINTS");
+  if (fields.length === 0 || new Set(fields).size !== fields.length) {
+    throw new Error("PCD FIELDS 为空或存在重复字段");
+  }
+  if (sizes.length !== fields.length || types.length !== fields.length || counts.length !== fields.length) {
+    throw new Error("PCD FIELDS/SIZE/TYPE/COUNT 数量不一致");
+  }
+  if (types.some((value) => !["F", "I", "U"].includes(value))) {
+    throw new Error(`PCD TYPE 含不支持类型：${types.join(" ")}`);
+  }
+  if (!Number.isSafeInteger(width * height) || width * height !== totalPoints) {
+    throw new Error(`PCD WIDTH×HEIGHT=${width * height} 与 POINTS=${totalPoints} 不一致`);
+  }
+  const sourceComment = optionalUniquePcdSourcePoints(headerLines);
+  const sourcePoints = sourceComment == null ? totalPoints : sourceComment;
+  const coordinateSchema = optionalUniquePcdComment(
+    headerLines,
+    "# GOMOB_COORDINATE_SCHEMA ",
+    "GOMOB_COORDINATE_SCHEMA",
+  );
+  const xyzSha256 = optionalUniquePcdComment(
+    headerLines,
+    "# GOMOB_XYZ_SHA256 ",
+    "GOMOB_XYZ_SHA256",
+  );
+  const finalBToASha256 = optionalUniquePcdComment(
+    headerLines,
+    "# GOMOB_FINAL_B_TO_A_SHA256 ",
+    "GOMOB_FINAL_B_TO_A_SHA256",
+  );
+  if (xyzSha256 && !SHA256_HEX_PATTERN.test(xyzSha256)) throw new Error("PCD GOMOB_XYZ_SHA256 非法");
+  if (finalBToASha256 && !SHA256_HEX_PATTERN.test(finalBToASha256)) {
+    throw new Error("PCD GOMOB_FINAL_B_TO_A_SHA256 非法");
+  }
+  if (sourcePoints < totalPoints) {
+    throw new Error(`PCD 源点数 ${sourcePoints} 小于返回点数 ${totalPoints}`);
+  }
   const ix = fields.indexOf("x");
   const iy = fields.indexOf("y");
   const iz = fields.indexOf("z");
@@ -1408,32 +3048,63 @@ async function parsePcdAsync(buffer, maxPoints) {
   const ir = fields.indexOf("r");
   const ig = fields.indexOf("g");
   const ib = fields.indexOf("b");
-  if (ix < 0 || iy < 0 || iz < 0 || !Number.isFinite(totalPoints)) {
+  if (ix < 0 || iy < 0 || iz < 0) {
     throw new Error("PCD 缺少 x/y/z 字段");
+  }
+  for (const index of [ix, iy, iz]) {
+    if (sizes[index] !== 4 || counts[index] !== 1 || types[index] !== "F") {
+      throw new Error(`PCD ${fields[index]} 必须是 SIZE 4 / TYPE F / COUNT 1`);
+    }
+  }
+  if (irgb >= 0 && (sizes[irgb] !== 4 || counts[irgb] !== 1)) {
+    throw new Error("PCD rgb/rgba 必须是 SIZE 4 / COUNT 1");
+  }
+  const separateColorIndexes = [ir, ig, ib].filter((index) => index >= 0);
+  if (separateColorIndexes.length !== 0 && separateColorIndexes.length !== 3) {
+    throw new Error("PCD 分离颜色字段必须同时包含 r/g/b");
+  }
+  for (const index of separateColorIndexes) {
+    const validSize = types[index] === "F" ? sizes[index] === 4 : [1, 2, 4].includes(sizes[index]);
+    if (!validSize || counts[index] !== 1) {
+      throw new Error(`PCD ${fields[index]} 颜色字段元数据非法`);
+    }
   }
   const offsets = [];
   let rowSize = 0;
   for (let i = 0; i < fields.length; i++) {
     offsets[i] = rowSize;
-    rowSize += (sizes[i] || 4) * (counts[i] || 1);
+    const fieldBytes = sizes[i] * counts[i];
+    if (!Number.isSafeInteger(fieldBytes) || fieldBytes <= 0) {
+      throw new Error(`PCD 字段 ${fields[i]} 记录长度非法`);
+    }
+    rowSize += fieldBytes;
   }
+  if (!Number.isSafeInteger(rowSize) || rowSize <= 0) throw new Error(`PCD 单点记录长度非法：${rowSize}`);
   const bodyBytes = bytes.length - dataOffset;
-  const available = Math.floor(bodyBytes / rowSize);
-  const points = Math.min(totalPoints, available);
-  const take = Math.min(points, maxPoints);
-  const stride = points > maxPoints ? points / maxPoints : 1;
-  const view = new DataView(buffer, dataOffset);
+  const expectedBodyBytes = totalPoints * rowSize;
+  if (!Number.isSafeInteger(expectedBodyBytes) || bodyBytes !== expectedBodyBytes) {
+    throw new Error(`PCD 正文长度 ${bodyBytes} 与 POINTS×记录长度 ${expectedBodyBytes} 不一致`);
+  }
+  const take = Math.min(totalPoints, maxPoints);
+  const stride = totalPoints > maxPoints ? totalPoints / maxPoints : 1;
+  const view = new DataView(buffer, dataOffset, bodyBytes);
   const out = new Float32Array(take * 3);
-  const hasPackedRGB = irgb >= 0 && (sizes[irgb] || 4) >= 4;
+  const hasPackedRGB = irgb >= 0;
   const hasSeparateRGB = ir >= 0 && ig >= 0 && ib >= 0;
   const colors = hasPackedRGB || hasSeparateRGB ? new Uint8Array(take * 3) : null;
   const chunkPoints = 40_000;
   for (let j = 0; j < take; j++) {
     const p = Math.floor(j * stride);
     const base = p * rowSize;
-    out[j * 3] = view.getFloat32(base + offsets[ix], true);
-    out[j * 3 + 1] = view.getFloat32(base + offsets[iy], true);
-    out[j * 3 + 2] = view.getFloat32(base + offsets[iz], true);
+    const x = view.getFloat32(base + offsets[ix], true);
+    const y = view.getFloat32(base + offsets[iy], true);
+    const z = view.getFloat32(base + offsets[iz], true);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+      throw new Error(`PCD 第 ${p} 点坐标不是有限数`);
+    }
+    out[j * 3] = x;
+    out[j * 3 + 1] = y;
+    out[j * 3 + 2] = z;
     if (hasPackedRGB) {
       const raw = view.getUint32(base + offsets[irgb], true);
       colors[j * 3] = (raw >> 16) & 255;
@@ -1448,7 +3119,60 @@ async function parsePcdAsync(buffer, maxPoints) {
       await yieldToBrowser();
     }
   }
-  return { points: out, colors };
+  return {
+    points: out,
+    colors,
+    sourcePoints,
+    renderPoints: totalPoints,
+    coordinateSchema,
+    xyzSha256,
+    finalBToASha256,
+  };
+}
+
+function requiredPcdHeaderTokens(lines, key) {
+  const matches = lines.filter((line) => line.split(/\s+/, 1)[0] === key);
+  if (matches.length !== 1) throw new Error(`PCD ${key} 必须且只能出现一次`);
+  const tokens = matches[0].split(/\s+/).slice(1);
+  if (tokens.length === 0) throw new Error(`PCD ${key} 缺字段`);
+  return tokens;
+}
+
+function requiredPcdHeaderScalar(lines, key) {
+  const tokens = requiredPcdHeaderTokens(lines, key);
+  if (tokens.length !== 1) throw new Error(`PCD ${key} 必须只有一个值`);
+  return tokens[0];
+}
+
+function optionalUniquePcdSourcePoints(lines) {
+  const prefix = "# GOMOB_SOURCE_POINTS ";
+  const matches = lines.filter((line) => line.startsWith(prefix));
+  if (matches.length > 1) throw new Error("PCD GOMOB_SOURCE_POINTS 重复");
+  if (matches.length === 0) return null;
+  return strictNonNegativeInt(matches[0].slice(prefix.length).trim(), "GOMOB_SOURCE_POINTS");
+}
+
+function optionalUniquePcdComment(lines, prefix, label) {
+  const matches = lines.filter((line) => line.startsWith(prefix));
+  if (matches.length > 1) throw new Error(`PCD ${label} 重复`);
+  if (matches.length === 0) return "";
+  const value = matches[0].slice(prefix.length).trim();
+  if (!value) throw new Error(`PCD ${label} 为空`);
+  return value;
+}
+
+function strictPositiveInt(raw, label) {
+  const value = strictNonNegativeInt(raw, label);
+  if (value <= 0) throw new Error(`PCD ${label} 必须为正整数：${raw}`);
+  return value;
+}
+
+function strictNonNegativeInt(raw, label) {
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`PCD ${label} 不是非负安全整数：${raw}`);
+  }
+  return value;
 }
 
 function readColorComponent(view, offset, size = 1, type = "U") {
@@ -1468,108 +3192,251 @@ function readColorComponent(view, offset, size = 1, type = "U") {
 }
 
 async function startScan(opts = {}) {
-  const markAsBackground = Boolean(opts.markAsBackground);
-  const camA = cameraByRole("a");
-  const camB = cameraByRole("b");
-  if (!camA || !camB) {
-    showToast("当前工位需要至少配置镜头 A 和镜头 B");
+  if (scanActionMode() !== "start") {
+    showToast("当前扫描尚未结束或启动结果仍在确认，不能再次起扫");
     return;
   }
-  let siteResult = null;
+  app.scanStartPending = true;
+  renderScanActionButton();
   try {
-    siteResult = ensureStationCalibrationResult();
-  } catch (err) {
-    showToast(`标定结果计算失败：${err.message}`);
-    return;
-  }
-  const rawOnly = !siteResult;
-  const siteJSON = rawOnly ? "" : JSON.stringify(toNativeSiteJson(siteResult));
-  const regionFilter = regionFilterForRequest();
-  if (regionFilter && rawOnly) {
-    showToast("启用区域墙过滤前，请先完成多镜头融合标定");
-    return;
-  }
-  // 采集空工位背景必须能融合（背景=融合云世界系），未标定则拦下。
-  if (markAsBackground && rawOnly) {
-    showToast("采集背景需要先完成多镜头融合标定");
-    return;
-  }
-  if (markAsBackground) {
-    showToast("正在扫描空工位作为背景 · 请确保工位内没有车辆");
-  } else if (rawOnly) {
-    showToast("当前工位未标定，本次只采集分镜点云，无法融合");
-  }
-  app.restoreSerial++;
-  app.restoringActiveScan = false;
-  app.realtimeBacklog = [];
-  resetClouds({ force: true });
-  app.scanState = "starting";
-  app.scanStartedAt = Date.now();
-  app.liveFrames = { a: 0, b: 0 };
-  app.fusionUnavailable = rawOnly;
-  app.finalCloudsLoading = false;
-  app.finalCloudsLoaded = false;
-  renderScanMeta();
-  try {
+    const markAsBackground = Boolean(opts.markAsBackground);
+    const camA = cameraByRole("a");
+    const camB = cameraByRole("b");
+    const targetKey = stationServerConfigKey();
+    if (annotationActive()) {
+      showToast("请先暂停外参或区域标注，再开始扫描");
+      return;
+    }
+    if (!camA || !camB) {
+      showToast("当前工位需要至少配置镜头 A 和镜头 B");
+      return;
+    }
+    try {
+      await waitForStationConfigWrites();
+      await syncStationServerConfiguration();
+      await Promise.all([
+        refreshStationDeviceStatuses({ silent: true }),
+        refreshBackgroundStatus(),
+      ]);
+    } catch (err) {
+      showToast(`起扫前工位配置同步失败：${scanConfigurationErrorMessage(err.message)}`);
+      return;
+    }
+    if (targetKey !== stationServerConfigKey()) {
+      showToast("工位已切换，本次起扫已取消");
+      return;
+    }
+    const blocker = scanSetupBlocker({ background: markAsBackground });
+    if (blocker) {
+      showToast(blocker);
+      return;
+    }
+    if (markAsBackground) {
+      showToast("正在扫描空工位作为背景 · 请确保工位内没有车辆");
+    }
+    const context = invalidateScanContext();
+    app.restoringActiveScan = false;
+    app.realtimeBacklog = [];
+    resetClouds({ force: true });
+    app.scanState = "starting";
+    app.scanStartedAt = Date.now();
+    app.liveFrames = { a: 0, b: 0 };
+    app.fusionUnavailable = false;
+    app.finalCloudsLoading = false;
+    app.finalCloudsLoaded = false;
+    renderScanMeta();
+    try {
     const body = {
       unit_a_ip: camA.ip,
       unit_b_ip: camB.ip,
-      align: rawOnly ? "raw" : "site",
-      site_json: siteJSON,
-      keep_ratio: Number(els.keepRatio.value || 1),
+      align: "site",
     };
-    if (regionFilter) body.region_filter = regionFilter;
     if (markAsBackground) body.mark_as_background = true;
     app.capturingBackground = markAsBackground;
-    const resp = await api("/v1/scans/laser", { method: "POST", body: JSON.stringify(body) });
+    const resp = await api(
+      "/v1/scans/laser",
+      { method: "POST", body: JSON.stringify(body) },
+      context.connection,
+    );
+    if (!isScanContextCurrent(context)) {
+      if (resp?.scan_id) {
+        await api(`/v1/scans/laser/${resp.scan_id}/stop`, { method: "POST" }, context.connection)
+          .catch((err) => console.warn("工位切换后自动取消旧起扫失败", err));
+      }
+      showToast("工位上下文已变化，旧工位起扫已请求取消");
+      return;
+    }
     app.activeScanId = resp.scan_id;
     app.activeSessionKey = resp.session_key;
     app.scanState = resp.status || "capturing";
     renderScanMeta();
     startActiveScanPolling();
-    connectWs().catch((err) => {
+    connectWs(context.connection).catch((err) => {
+      if (!isScanContextCurrent(context)) return;
       console.warn("实时连接失败，扫描状态改由服务端轮询兜底", err);
       showToast("扫描已开始，实时连接未接通，正在用服务端状态兜底");
     });
-  } catch (err) {
-    app.scanState = "error";
+    } catch (err) {
+      if (!isScanContextCurrent(context)) {
+        await stopStaleStartIfActive(context);
+        return;
+      }
+    // POST 可能已被服务端接受但响应丢失；确认前保持 fail-closed，禁止切工位、改连接或再次起扫。
+    app.scanState = "starting_unknown";
     renderScanMeta();
-    if (String(err.message || "").includes("已有进行中的激光扫描")) {
-      await restoreActiveScan({ clearInactive: false, silent: true });
-      showToast("已恢复正在扫描的任务");
+    let active;
+    try {
+      active = await api(`/v1/scans/laser/active?${context.query}`, {}, context.connection);
+    } catch (confirmErr) {
+      if (isDefinitiveStartOwnershipRejection(err, confirmErr)) {
+        app.capturingBackground = false;
+        app.scanState = "error";
+        renderScanMeta();
+        showToast("当前工位正在由其他账号使用，或本账号无权启动该扫描");
+        return;
+      }
+      startActiveScanPolling();
+      showToast(`起扫结果暂无法确认：${confirmErr.message}；已锁定当前工位并持续查询`);
       return;
     }
-    showToast(`起扫失败：${err.message}`);
+    if (!isScanContextCurrent(context)) {
+      if (active?.active && active.scan_id) {
+        await api(`/v1/scans/laser/${active.scan_id}/stop`, { method: "POST" }, context.connection)
+          .catch((stopErr) => console.warn("旧工位未知起扫补偿停止失败", stopErr));
+      }
+      return;
+    }
+    if (active?.active) {
+      const restored = await restoreActivePayload(active, context, { silent: true });
+      if (restored === "active") {
+        startActiveScanPolling();
+        showToast("起扫响应中断，但服务端已接受；已恢复正在扫描的任务");
+      }
+      return;
+    }
+
+      app.capturingBackground = false;
+      app.scanState = "error";
+      renderScanMeta();
+      if (String(err.message || "").includes("已有进行中的激光扫描")) {
+        showToast("服务端存在其他工位或账号的进行中任务，当前工位没有可恢复扫描");
+      } else {
+        showToast(`起扫失败：${scanConfigurationErrorMessage(err.message)}`);
+      }
+    }
+  } finally {
+    app.scanStartPending = false;
+    renderScanActionButton();
   }
 }
 
-function ensureStationCalibrationResult() {
-  if (Array.isArray(app.calibration.result?.matrix)) {
-    return app.calibration.result;
+function isDefinitiveStartOwnershipRejection(startError, confirmError) {
+  return Number(startError?.status || 0) === 403 || Number(confirmError?.status || 0) === 403;
+}
+
+async function stopStaleStartIfActive(context) {
+  try {
+    const active = await api(`/v1/scans/laser/active?${context.query}`, {}, context.connection);
+    if (!active?.active || !active.scan_id) return false;
+    await api(`/v1/scans/laser/${active.scan_id}/stop`, { method: "POST" }, context.connection);
+    return true;
+  } catch (err) {
+    console.warn("旧起扫上下文补偿停止失败", err);
+    return false;
   }
-  if (app.calibration.pendingA || app.calibration.pairs.length < 3) {
-    return null;
+}
+
+function stopResponseAction(response) {
+  const status = String(response?.status || "cancelled").toLowerCase();
+  if (["cancelled", "canceled"].includes(status)) return { action: "clear", status };
+  if (isCompletedScanState(status)) return { action: "restore", status };
+  return { action: "refresh", status };
+}
+
+function scanConfigurationErrorMessage(message) {
+  const raw = String(message || "未知错误");
+  const lower = raw.toLowerCase();
+  if (lower.includes("background_incompatible") || raw.includes("背景") && (raw.includes("不兼容") || raw.includes("失效"))) {
+    return "空工位背景与当前设备/扫描配置不兼容，请在管理台重新采集";
   }
-  const result = solveRigidTransform(
-    app.calibration.pairs.map((p) => p.b),
-    app.calibration.pairs.map((p) => p.a),
-  );
-  app.calibration.result = result;
-  saveCalibrationState();
-  renderCalibration();
-  return result;
+  if (lower.includes("region_missing") || raw.includes("区域标定") || raw.includes("扫描区域")) {
+    return "当前工位尚未保存扫描区域，请先在管理台完成区域标定";
+  }
+  if (raw.includes("工位外参质量未达生产要求")) {
+    if (raw.includes("缺少 rms_error_mm/common_markers 质量证据")) {
+      if (app.calibration.result?.siteQualityOverride) {
+        return "当前外参仍在，但服务端对该 revision 的联调放行未生效，请联系管理员恢复配置，无需重新标定";
+      }
+      return "工位外参仍在，但当前未启用受控联调放行；请联系管理员核对当前 revision，生产使用再补齐标定证据";
+    }
+    return "工位外参已存在，但生产质量证据未满足要求，请重新执行 ArUco 标定";
+  }
+  if (raw.includes("尚未保存外参") || lower.includes("site calibration not found")) {
+    return "当前双单元工位尚未保存外参，请先在管理台完成 A/B 标定";
+  }
+  return raw;
+}
+
+function siteCalibrationBlockedMessage(result) {
+  if (result?.siteQualityState === "local_backup") {
+    return "服务端未加载工位外参；本地历史外参仍保留，请联系管理员恢复服务端记录";
+  }
+  if (result?.siteQualityOverride) {
+    return "当前外参仍在，但该 revision 的联调放行状态异常；请联系管理员恢复配置，无需重新标定";
+  }
+  if (result?.siteQualityState === "missing_evidence") {
+    return "工位外参仍在，但当前未启用受控联调放行；请联系管理员恢复该外参 revision";
+  }
+  return "工位外参仍在，但质量证据未满足起扫要求，请重新执行 ArUco 标定";
+}
+
+function backgroundCompatibilityReasonText(reason) {
+  const messages = {
+    legacy_fused_requires_recapture: "旧版融合背景不再兼容，请重新采集空工位背景",
+    legacy_fused_unverified: "旧背景仍在，但尚未完成兼容验证，请联系管理员",
+    legacy_fused_object_missing: "旧背景对象键缺失，请联系管理员恢复",
+    legacy_fused_object_unavailable: "旧背景对象暂时不可用，请联系管理员恢复",
+    legacy_fused_object_unreadable: "旧背景对象读取失败，请联系管理员恢复",
+    legacy_fused_object_invalid: "旧背景对象格式损坏，请联系管理员恢复",
+    legacy_fused_point_count_mismatch: "旧背景点数校验失败，请联系管理员恢复",
+    legacy_fused_checksum_mismatch: "旧背景完整性校验失败，请联系管理员恢复",
+    unsupported_schema: "背景数据格式已过期，请重新采集空工位背景",
+    station_changed: "背景属于其他双单元工位，请重新采集",
+    site_calibration_changed: "工位外参版本已变化，请重新采集背景",
+    region_calibration_changed: "扫描区域版本已变化，请重新采集背景",
+    raw_object_missing: "背景原始点云缺失，请重新采集",
+    raw_object_unavailable: "背景原始点云不可用，请重新采集",
+    raw_object_unreadable: "背景原始点云读取失败，请重新采集",
+    raw_object_invalid: "背景原始点云格式无效，请重新采集",
+    background_point_count_mismatch: "背景点数校验失败，请重新采集",
+    background_checksum_mismatch: "背景完整性校验失败，请重新采集",
+    device_identity_changed: "扫描设备身份已变化，请重新采集背景",
+    device_calibration_changed: "设备标定参数已变化，请重新采集背景",
+    scan_settings_changed: "设备扫描设置已变化，请重新采集背景",
+    revision_metadata_incomplete: "背景版本元数据不完整，请重新采集",
+    device_profile_unavailable: "暂时无法读取设备配置，不能确认背景兼容性",
+    site_calibration_unavailable: "暂时无法读取工位外参，不能确认背景兼容性",
+  };
+  return messages[String(reason || "")] || "空工位背景与当前设备配置不兼容，请重新采集";
 }
 
 async function stopScan() {
   if (!app.activeScanId) return;
+  const scanId = app.activeScanId;
+  const context = scanContextSnapshot();
   try {
-    const resp = await api(`/v1/scans/laser/${app.activeScanId}/stop`, { method: "POST" });
-    app.scanState = resp.status || "cancelled";
-    app.activeSessionKey = "";
+    const resp = await api(`/v1/scans/laser/${scanId}/stop`, { method: "POST" }, context.connection);
+    if (!isScanContextCurrent(context) || app.activeScanId !== scanId) return;
+    const outcome = stopResponseAction(resp);
+    if (outcome.action === "clear") {
+      invalidateScanContext();
+      return;
+    }
+    app.scanState = outcome.status;
     renderScanMeta();
-    await refreshActiveScanStatus({ silent: true });
+    await refreshCurrentScanAfterInactive(context);
   } catch (err) {
-    showToast(`结束扫描失败：${err.message}`);
+    if (isScanContextCurrent(context)) showToast(`结束扫描失败：${err.message}`);
   }
 }
 
@@ -1581,40 +3448,109 @@ async function toggleScan() {
   await startScan();
 }
 
-// 采集空工位背景：扫描一次空场地存为本工位背景（路 B 背景相减抠车的前提）。
+// 采集空工位背景：扫描一次空场地存为本工位背景，供后续背景相减隔离车辆点云。
 async function captureBackground() {
-  if (scanActionMode() === "stop") {
-    showToast("请先结束当前扫描，再采集空工位背景");
+  if (scanActionMode() !== "start") {
+    showToast("请先结束当前扫描或等待启动状态确认，再采集空工位背景");
     return;
   }
-  if (!window.confirm("采集空工位背景：请先确保工位内【没有车辆/人】，再扫描一次空场地。\n之后每次扫描会自动减掉房间、抠出车再测量。是否开始？")) {
+  if (!window.confirm("采集空工位背景：请先确保工位内【没有车辆/人】，再扫描一次空场地。\n之后每次扫描会通过背景相减隔离车辆点云再测量。是否开始？")) {
     return;
   }
   await startScan({ markAsBackground: true });
+}
+
+function renderEffectiveKeepRatio(value, fallback = "由服务端决定") {
+  if (!els.effectiveKeepRatio) return;
+  els.effectiveKeepRatio.readOnly = true;
+  els.effectiveKeepRatio.disabled = true;
+  const ratio = optionalFiniteNumber(value);
+  if (ratio != null && ratio > 0 && ratio <= 1) {
+    const percent = ratio * 100;
+    const digits = Number.isInteger(percent) ? 0 : 1;
+    els.effectiveKeepRatio.value = `${percent.toFixed(digits)}%`;
+    els.effectiveKeepRatio.title = `服务端当前有效保留率：${ratio}`;
+    return;
+  }
+  els.effectiveKeepRatio.value = fallback;
+  els.effectiveKeepRatio.title = "保留率由服务端扫描配置统一决定，网页端不可覆盖";
+}
+
+function updateBackgroundReadiness(state, label, detail, revision = "") {
+  app.backgroundReadiness = {
+    stationKey: stationServerConfigKey(),
+    state,
+    label,
+    detail,
+    revision: String(revision || ""),
+  };
+  renderStationReadiness();
+  renderScanActionButton();
 }
 
 // 刷新本工位背景采集状态到顶栏小标。
 async function refreshBackgroundStatus() {
   const chip = els.bgStatusChip;
   if (!chip) return;
+  const targetKey = stationServerConfigKey();
+  const connection = connectionSnapshot();
+  const requestSerial = ++app.backgroundRequestSerial;
   try {
-    const r = await api("/v1/scans/laser/background", { method: "GET" });
+    const query = stationConfigQuery();
+    if (!query) {
+      chip.hidden = false;
+      chip.className = "bg-chip bad";
+      chip.textContent = "工位未完整";
+      chip.title = "需要同时配置镜头 A 和镜头 B";
+      renderEffectiveKeepRatio(null, "工位未完整");
+      updateBackgroundReadiness("blocked", "工位不完整", chip.title);
+      return;
+    }
+    const r = await api(`/v1/scans/laser/background?${query}`, { method: "GET" }, connection);
+    if (targetKey !== stationServerConfigKey()
+      || !isConnectionCurrent(connection)
+      || requestSerial !== app.backgroundRequestSerial) return;
+    renderEffectiveKeepRatio(r?.effective_keep_ratio);
     chip.hidden = false;
-    if (r && r.set) {
+    const incompatible = r?.set === true && (r?.background_incompatible === true || r?.compatible === false);
+    const regionMissing = r?.region_missing === true || r?.region_configured === false;
+    if (incompatible) {
+      chip.className = "bg-chip bad";
+      chip.textContent = "背景需重采";
+      chip.title = backgroundCompatibilityReasonText(r?.reason);
+      updateBackgroundReadiness("blocked", "需重采", chip.title, r?.revision);
+    } else if (regionMissing) {
+      chip.className = "bg-chip bad";
+      chip.textContent = "区域未配置";
+      chip.title = "请先完成服务端区域标定";
+      updateBackgroundReadiness("blocked", "区域未配置", chip.title, r?.revision);
+    } else if (r && r.set) {
+      chip.className = "bg-chip ok";
       chip.textContent = "背景已采集";
-      chip.classList.add("ok");
+      chip.title = `当前工位已有可用空工位背景${r?.revision ? ` · revision ${r.revision}` : ""}`;
+      updateBackgroundReadiness("ready", "可用", chip.title, r?.revision);
     } else {
+      chip.className = "bg-chip warn";
       chip.textContent = "未采集背景";
-      chip.classList.remove("ok");
+      chip.title = "扫描空工位一次后可自动减掉静态背景";
+      updateBackgroundReadiness("blocked", "未采集", chip.title);
     }
   } catch (err) {
-    chip.hidden = true;
+    if (targetKey !== stationServerConfigKey()
+      || !isConnectionCurrent(connection)
+      || requestSerial !== app.backgroundRequestSerial) return;
+    chip.hidden = false;
+    chip.className = "bg-chip warn";
+    chip.textContent = "背景状态未知";
+    chip.title = err.message;
+    renderEffectiveKeepRatio(null, "读取失败");
+    updateBackgroundReadiness("unknown", "读取失败", err.message);
   }
 }
 
 function resetClouds({ force = false } = {}) {
   if (annotationActive() && !force) {
-    app.deferredFinalCloudPayload = app.activeScanId ? { job_id: app.activeScanId } : app.deferredFinalCloudPayload;
+    app.deferredFinalCloudPayload = app.finalCloudPayload || app.deferredFinalCloudPayload;
     renderScanMeta();
     renderCalibration();
     renderRegionCalibration();
@@ -1624,8 +3560,18 @@ function resetClouds({ force = false } = {}) {
   app.clouds[0].reset(budget);
   app.clouds[1].reset(budget);
   app.fusedCloud.reset(budget);
+  app.manualCloud.previewCloud.reset(budget);
+  app.manualCloud.enabled = false;
+  if (els.manualCloudPanel) els.manualCloudPanel.hidden = true;
   app.fusedCount = 0;
   app.fusionUnavailable = false;
+  app.finalCloudsLoading = false;
+  app.finalCloudsLoaded = false;
+  app.loadedCloudsScanId = null;
+  app.finalCloudPayload = null;
+  app.finalCloudPlanKey = "";
+  app.finalCloudLoadedNames = new Set();
+  app.primaryCloudName = "fused";
   app.deferredFinalCloudPayload = null;
   app.liveAngles = { a: null, b: null };
   app.measure = null; // 清掉上一笔测量，避免新扫描时残留旧数字
@@ -1641,19 +3587,42 @@ function resetClouds({ force = false } = {}) {
 
 async function refreshDevice({ silent = false } = {}) {
   const cam = selectedCamera();
-  if (!cam) return;
-  const [statusResult, infoResult] = await Promise.allSettled([
-    api(`/v1/scans/laser/device-status?ip=${encodeURIComponent(cam.ip)}`),
-    api(`/v1/scans/laser/device-info?ip=${encodeURIComponent(cam.ip)}`),
-  ]);
-  const status = statusResult.status === "fulfilled" ? normalizeDeviceStatus(statusResult.value, cam) : null;
-  const info = infoResult.status === "fulfilled" ? infoResult.value : null;
-  if (info && (cam.role === "a" || cam.role === "b")) app.deviceInfos[cam.role] = info;
-  if (status && (cam.role === "a" || cam.role === "b")) {
-    app.deviceStatuses[cam.role] = status;
-    renderScanMeta();
+  const requestSerial = ++app.deviceRefreshSerial;
+  clearDeviceSettings();
+  if (!cam) {
+    els.deviceStatus.innerHTML = "<span>状态</span><strong>当前工位没有可选设备</strong>";
+    return;
   }
-  if (info) fillSettings(controlFromInfo(info));
+  const cameraId = cam.id;
+  const targetKey = stationServerConfigKey();
+  const connection = connectionSnapshot();
+  const managedRole = (cam.role === "a" || cam.role === "b") && cameraByRole(cam.role)?.id === cam.id;
+  els.deviceStatus.innerHTML = "<span>状态</span><strong>正在读取设备状态与参数</strong>";
+  const [statusResult, infoResult] = await Promise.allSettled([
+    managedRole
+      ? refreshStationDeviceStatuses({ silent: true })
+      : withTimeout(
+        api(`/v1/scans/laser/device-status?ip=${encodeURIComponent(cam.ip)}`, {}, connection),
+        5000,
+        `${cam.ip} 状态读取超时`,
+      ),
+    api(`/v1/scans/laser/device-info?ip=${encodeURIComponent(cam.ip)}`, {}, connection),
+  ]);
+  if (requestSerial !== app.deviceRefreshSerial
+    || cameraId !== selectedCamera()?.id
+    || targetKey !== stationServerConfigKey()
+    || !isConnectionCurrent(connection)) return;
+  const status = statusResult.status === "fulfilled"
+    ? (managedRole
+      ? (app.deviceStatuses[cam.role]?.ip === cam.ip ? app.deviceStatuses[cam.role] : null)
+      : normalizeDeviceStatus(statusResult.value, cam))
+    : null;
+  const info = infoResult.status === "fulfilled" ? infoResult.value : null;
+  if (managedRole) {
+    app.deviceInfos[cam.role] = info;
+  }
+  renderScanMeta();
+  if (info) fillSettings(controlFromInfo(info), cameraId);
   renderDeviceStatus(status || {}, info || {});
   if (!status && !info) {
     const err = infoResult.reason || statusResult.reason;
@@ -1665,35 +3634,59 @@ async function refreshDevice({ silent = false } = {}) {
   }
 }
 
-async function refreshStationDeviceStatuses({ silent = true } = {}) {
-  if (app.statusPolling) return;
+function refreshStationDeviceStatuses({ silent = true } = {}) {
+  const targetKey = stationServerConfigKey();
+  const connection = connectionSnapshot();
+  const pollingKey = `${connection.serial}|${connection.base}|${targetKey}`;
+  if (app.statusPollingKey === pollingKey && app.statusPollingPromise) return app.statusPollingPromise;
   const cameras = [
     ["a", cameraByRole("a")],
     ["b", cameraByRole("b")],
   ].filter(([, cam]) => cam?.ip);
-  if (!cameras.length) return;
-  app.statusPolling = true;
-  try {
+  if (!cameras.length) {
+    app.deviceStatuses = { a: null, b: null };
+    renderScanMeta();
+    return Promise.resolve();
+  }
+  const requestSerial = ++app.statusRequestSerial;
+  const run = (async () => {
     const results = await Promise.allSettled(cameras.map(([, cam]) =>
-      api(`/v1/scans/laser/device-status?ip=${encodeURIComponent(cam.ip)}`),
+      withTimeout(
+        api(`/v1/scans/laser/device-status?ip=${encodeURIComponent(cam.ip)}`, {}, connection),
+        5000,
+        `${cam.ip} 状态读取超时`,
+      ),
     ));
+    if (requestSerial !== app.statusRequestSerial
+      || targetKey !== stationServerConfigKey()
+      || !isConnectionCurrent(connection)) return;
     results.forEach((result, index) => {
       const [role, cam] = cameras[index];
       if (result.status === "fulfilled") {
-        app.deviceStatuses[role] = normalizeDeviceStatus(result.value, cam);
-      } else if (!silent) {
-        showToast(`${role.toUpperCase()} 状态刷新失败：${result.reason?.message || "不可达"}`);
+        const status = normalizeDeviceStatus(result.value, cam);
+        app.deviceStatuses[role] = status.ip === cam.ip ? status : null;
+      } else {
+        app.deviceStatuses[role] = null;
+        if (!silent) showToast(`${role.toUpperCase()} 状态刷新失败：${result.reason?.message || "不可达"}`);
       }
     });
     renderScanMeta();
     if (selectedCamera()) {
       const selectedStatus = app.deviceStatuses[selectedCamera().role];
       const selectedInfo = app.deviceInfos[selectedCamera().role] || {};
-      if (selectedStatus) renderDeviceStatus(selectedStatus, selectedInfo);
+      if (selectedStatus?.ip === selectedCamera().ip) renderDeviceStatus(selectedStatus, selectedInfo);
     }
-  } finally {
-    app.statusPolling = false;
-  }
+  })();
+  app.statusPollingKey = pollingKey;
+  app.statusPollingPromise = run;
+  const clear = () => {
+    if (app.statusPollingPromise === run) {
+      app.statusPollingKey = "";
+      app.statusPollingPromise = null;
+    }
+  };
+  run.then(clear, clear);
+  return run;
 }
 
 function startDeviceStatusPolling() {
@@ -1871,10 +3864,40 @@ function updateScanAngleHint() {
   }
   els.scanAngleHint.textContent = warning || `结束角：${fmt2(stopAngleFromScan(start, sweep))}°`;
   els.scanAngleHint.classList.toggle("bad", Boolean(warning));
-  els.applySettings.disabled = Boolean(warning);
+  els.applySettings.disabled = Boolean(warning) || app.deviceSettingsCameraId !== selectedCamera()?.id;
 }
 
-function fillSettings(c) {
+function deviceSettingInputs() {
+  return [
+    els.scanSpeed,
+    els.zeroSpeed,
+    els.scanStart,
+    els.scanAngle,
+    els.scanStop,
+    els.watchingAngle,
+    els.ghost,
+    els.cameraFps,
+    els.zoneMin,
+    els.zoneMax,
+  ].filter(Boolean);
+}
+
+function clearDeviceSettings() {
+  app.deviceSettingsCameraId = "";
+  for (const input of deviceSettingInputs()) {
+    input.value = "";
+    input.disabled = true;
+  }
+  els.applySettings.disabled = true;
+  els.scanAngleHint.textContent = "读取当前设备扫描参数后才可下发";
+  els.scanAngleHint.classList.remove("bad");
+}
+
+function fillSettings(c, cameraId = selectedCamera()?.id || "") {
+  if (!cameraId || cameraId !== selectedCamera()?.id) return false;
+  app.deviceSettingsCameraId = cameraId;
+  for (const input of deviceSettingInputs()) input.disabled = false;
+  els.scanStop.readOnly = true;
   els.scanSpeed.value = c.scan_speed ?? c.scanSpeed ?? "";
   els.zeroSpeed.value = c.zero_speed ?? c.zeroSpeed ?? "";
   const start = c.scan_start_angle ?? c.scanStartAngle ?? "";
@@ -1890,11 +3913,18 @@ function fillSettings(c) {
   els.zoneMin.value = zone[0] ?? "";
   els.zoneMax.value = zone[1] ?? "";
   updateScanAngleHint();
+  return true;
 }
 
 async function applySettings() {
   const cam = selectedCamera();
   if (!cam) return;
+  if (app.deviceSettingsCameraId !== cam.id) {
+    clearDeviceSettings();
+    showToast("当前设备参数尚未读取完成，请刷新后再下发");
+    refreshDevice({ silent: true });
+    return;
+  }
   const startAngle = parseNumberInput(els.scanStart.value);
   const sweepAngle = parseNumberInput(els.scanAngle.value);
   const warning = scanAngleWarning(startAngle, sweepAngle);
@@ -1916,15 +3946,28 @@ async function applySettings() {
     lidar_filter_zone: [num(els.zoneMin.value), num(els.zoneMax.value)],
     camera_fps: num(els.cameraFps.value),
   };
+  const cameraId = cam.id;
+  const targetKey = stationServerConfigKey();
+  const connection = connectionSnapshot();
+  const configKey = stationServiceConfigKey();
+  app.deviceRefreshSerial++;
+  els.applySettings.disabled = true;
   try {
-    await api(`/v1/scans/laser/device-scan-settings?ip=${encodeURIComponent(cam.ip)}`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    showToast("配置已下发");
-    await refreshDevice();
+    await enqueueStationConfigWrite(() => api(
+      `/v1/scans/laser/device-scan-settings?ip=${encodeURIComponent(cam.ip)}`,
+      { method: "POST", body: JSON.stringify(body) },
+      connection,
+    ), configKey);
+    if (targetKey !== stationServerConfigKey() || !isConnectionCurrent(connection)) return;
+    await refreshBackgroundStatus();
+    showToast(`${cam.name || cam.ip} 配置已下发`);
+    if (cameraId === selectedCamera()?.id) await refreshDevice();
   } catch (err) {
-    showToast(`下发失败：${err.message}`);
+    if (targetKey === stationServerConfigKey() && isConnectionCurrent(connection)) {
+      showToast(`下发失败：${err.message}`);
+      await refreshBackgroundStatus();
+      if (cameraId === selectedCamera()?.id) await refreshDevice({ silent: true });
+    }
   }
 }
 
@@ -2296,7 +4339,8 @@ function drawClouds2d() {
 
 function cloudsNeedDraw() {
   return app.clouds.some((cloud) => cloud.dirty || cloud.colorDirty) ||
-    app.fusedCloud.dirty || app.fusedCloud.colorDirty;
+    app.fusedCloud.dirty || app.fusedCloud.colorDirty ||
+    (app.manualCloud.enabled && (app.manualCloud.previewCloud.dirty || app.manualCloud.previewCloud.colorDirty));
 }
 
 function canvasSizeChanged() {
@@ -2326,7 +4370,9 @@ function resizeCanvas() {
 function buildRenderPanes(rect) {
   const full = { x: 0, y: 0, w: rect.width, h: rect.height };
   if (app.cloudMode === "fused") {
-    return [makePane("fused", null, "融合", app.fusedCloud, 2, full)];
+    const cloud = app.manualCloud.enabled ? app.manualCloud.previewCloud : app.fusedCloud;
+    const label = app.manualCloud.enabled ? "手动融合预览" : primaryCloudLabel();
+    return [makePane("fused", null, label, cloud, 2, full)];
   }
   const gap = rect.width >= 720 ? 8 : 4;
   const w = Math.max(1, (rect.width - gap) / 2);
@@ -2428,7 +4474,7 @@ function viewForPaneKey(key) {
 
 function cloudForPaneKey(key) {
   if (key === "b") return app.clouds[1];
-  if (key === "fused") return app.fusedCloud;
+  if (key === "fused") return app.manualCloud.enabled ? app.manualCloud.previewCloud : app.fusedCloud;
   return app.clouds[0];
 }
 
@@ -2477,7 +4523,9 @@ function setViewPreset(name, resetPan = false) {
 // 高亮当前视角按钮（顶视/侧视/自由），让"固化"状态可见。
 function updateViewButtons() {
   document.querySelectorAll("[data-view]").forEach((btn) => {
-    btn.classList.toggle("active", btn.getAttribute("data-view") === app.viewPreset);
+    const active = app.controlMode !== "roam" && btn.getAttribute("data-view") === app.viewPreset;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-pressed", active ? "true" : "false");
   });
 }
 
@@ -2513,8 +4561,11 @@ function setControlMode(mode) {
   if (enteringRoam) prepareRoamViews(true);
   markRenderDirty();
   document.querySelectorAll("[data-control-mode]").forEach((btn) => {
-    btn.classList.toggle("active", btn.getAttribute("data-control-mode") === app.controlMode);
+    const active = btn.getAttribute("data-control-mode") === app.controlMode;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-pressed", active ? "true" : "false");
   });
+  updateViewButtons();
   renderScanMeta();
 }
 
@@ -2713,6 +4764,7 @@ function handleRegionCanvasClick(ev) {
   }
   const regionPoint = pointToRegionFrame(pane, picked);
   if (!regionPoint) return;
+  markRegionDraftEdited();
   app.region.points.push(regionPoint);
   app.region.closed = false;
   app.region.clipEnabled = false;
@@ -2723,7 +4775,7 @@ function handleRegionCanvasClick(ev) {
 
 function pointToRegionFrame(pane, picked) {
   if (pane.unit === 1 || pane.key === "b") {
-    const matrix = Array.isArray(app.calibration.result?.matrix) ? app.calibration.result.matrix : null;
+    const matrix = isOfficialSiteCalibrationResult(app.calibration.result) ? app.calibration.result.matrix : null;
     if (!matrix) {
       showToast("B 点云区域标定需要先完成多镜头融合标定，或改在 A/融合点云标注");
       return null;
@@ -3139,7 +5191,7 @@ function renderOverlayDimensions(ov, svg, pane, line, layer) {
 
 function regionPointsForPane(pane) {
   if (pane.unit === 1 || pane.key === "b") {
-    const matrix = Array.isArray(app.calibration.result?.matrix) ? app.calibration.result.matrix : null;
+    const matrix = isOfficialSiteCalibrationResult(app.calibration.result) ? app.calibration.result.matrix : null;
     const inv = matrix ? invertRigidMatrix4(matrix) : null;
     return inv ? app.region.points.map((p) => transformPoint4(inv, p)) : [];
   }
@@ -3381,7 +5433,7 @@ function renderCalibration() {
   const n = app.calibration.pairs.length;
   els.calibHint.textContent = app.calibration.enabled
     ? `正在标注：在 ${unitText} 点同一真实特征的第 ${n + 1} 个对应点。已 ${n} 对，建议 ≥4 对且散开不共线。`
-    : "不用标记板：点「开始标注」，在 A、B 点云里依次点同一个真实特征（车角、轮子、后视镜…）。点 4+ 对、尽量散开不共线；点完「计算外参」。粗点即可，扫描时会自动 ICP 精修到毫米级。两台固定不动，标一次永久复用。";
+    : "点云手动点对只用于诊断粗配准，不会覆盖服务端权威外参；正式融合请使用一键自动 ArUco 标定。";
   els.startCalib.textContent = app.calibration.enabled ? "暂停标注" : "开始标注";
   els.calibToolbar.hidden = !app.calibration.enabled;
   const canUndo = Boolean(app.calibration.pendingA || app.calibration.pairs.length);
@@ -3404,8 +5456,10 @@ function renderCalibration() {
   if (app.calibration.result) {
     els.calibResult.textContent = calibrationResultText(app.calibration.result);
   } else {
-    els.calibResult.textContent = "点 4+ 对散开的对应点后算 B→A（最少 3 对、不共线）。粗略即可，扫描时自动 ICP 精修。";
+    els.calibResult.textContent = "正式工位外参由服务端统一保存；点云手动点对结果仅作诊断。";
   }
+  renderStationReadiness();
+  renderScanActionButton();
 }
 
 function undoCalibrationPoint() {
@@ -3439,18 +5493,21 @@ function renderRegionCalibration() {
   if (!els.regionHint) return;
   const count = app.region.points.length;
   if (app.region.enabled) {
-    els.regionHint.textContent = `正在区域标定：已标 ${count} 个边界点，完成后会自动闭合为虚拟墙。`;
+    const active = app.region.serverSet ? "服务端仍使用上次已保存区域；" : "";
+    els.regionHint.textContent = `${active}正在区域标定：已标 ${count} 个边界点，完成后会闭合并保存到服务端。`;
   } else if (app.region.closed) {
-    els.regionHint.textContent = `区域墙已闭合，共 ${count} 个边界点；${app.region.clipEnabled ? "扫描会只保留墙内点云。" : "墙内过滤未开启。"}`;
+    const authority = app.region.serverSet ? "服务端已保存" : "等待保存到服务端";
+    els.regionHint.textContent = `区域墙已闭合，共 ${count} 个边界点；${app.region.clipEnabled ? "扫描会只保留墙内点云。" : "墙内过滤未开启。"} ${authority}。`;
   } else {
     els.regionHint.textContent = count > 0
       ? `已标 ${count} 个边界点，至少 3 点后可完成闭合。`
-      : "开始后在点云窗口依次标注区域边界点，完成后自动闭合为虚拟墙。";
+      : "服务端尚未配置扫描区域。开始后在点云窗口依次标注边界，完成后会保存为所有客户端共用的虚拟墙。";
   }
   els.startRegion.textContent = app.region.enabled ? "暂停区域标定" : "开始区域标定";
   els.finishRegion.disabled = count < 3;
   els.undoRegion.disabled = count === 0;
   els.clearRegion.disabled = count === 0;
+  els.discardRegionDraft.disabled = !app.regionDirty || app.regionDiscardPending;
   els.toggleRegionClip.disabled = !app.region.closed;
   els.toggleRegionClip.textContent = app.region.clipEnabled ? "关闭墙内过滤" : "只显示墙内点云";
   els.regionPoints.innerHTML = "";
@@ -3460,6 +5517,13 @@ function renderRegionCalibration() {
     row.innerHTML = `<strong>R${i + 1}</strong><code>${fmtPoint(p)}</code>`;
     els.regionPoints.append(row);
   });
+  renderStationReadiness();
+  renderScanActionButton();
+}
+
+function markRegionDraftEdited() {
+  app.regionEditSerial++;
+  app.regionDirty = true;
 }
 
 function undoRegionPoint() {
@@ -3468,6 +5532,7 @@ function undoRegionPoint() {
     renderRegionCalibration();
     return;
   }
+  markRegionDraftEdited();
   app.region.points.pop();
   app.region.closed = false;
   app.region.clipEnabled = false;
@@ -3477,12 +5542,50 @@ function undoRegionPoint() {
 }
 
 function clearRegionCalibration() {
+  markRegionDraftEdited();
   app.region.points = [];
   app.region.closed = false;
   app.region.clipEnabled = false;
+  app.region.enabled = false;
+  app.region.serverSet = false;
+  app.region.source = "";
+  app.region.updatedAt = "";
   saveRegionState();
   renderRegionCalibration();
   renderMarkers();
+  enqueueStationConfigWrite(() => deleteRegionCalibration())
+    .then((deleted) => {
+      if (!deleted) return;
+      showToast("服务端区域标定已清空");
+      refreshBackgroundStatus();
+    })
+    .catch((err) => {
+      recoverRegionCalibrationAfterWriteFailure("清空服务端区域", err);
+    });
+}
+
+function discardRegionDraft() {
+  if (app.regionDiscardPending) return;
+  if (!app.regionDirty) {
+    showToast("当前没有未保存的区域草稿");
+    return;
+  }
+  app.region.enabled = false;
+  app.regionDiscardPending = true;
+  renderRegionCalibration();
+  enqueueStationConfigWrite(() => syncStationRegionCalibration({ discardDraft: true }))
+    .then(() => {
+      if (app.regionDirty) return;
+      showToast(app.region.serverSet ? "已放弃草稿并恢复服务端区域" : "已放弃草稿；服务端当前没有扫描区域");
+      refreshBackgroundStatus();
+    })
+    .catch((err) => {
+      showToast(`放弃草稿失败：${err.message}；本地草稿仍保留`);
+    })
+    .finally(() => {
+      app.regionDiscardPending = false;
+      renderRegionCalibration();
+    });
 }
 
 function finishRegionCalibration() {
@@ -3494,15 +5597,25 @@ function finishRegionCalibration() {
     showToast("区域标定点不能共线");
     return;
   }
+  markRegionDraftEdited();
   app.region.closed = true;
   app.region.enabled = false;
   app.region.clipEnabled = true;
+  app.region.serverSet = false;
   saveRegionState();
   resumeDeferredCloudRefresh();
   applyRegionClipToLoadedClouds();
   renderRegionCalibration();
   renderScanMeta();
   renderMarkers();
+  const payloadToSave = currentRegionPayload();
+  enqueueStationConfigWrite(() => persistRegionCalibration("web_region_editor", payloadToSave))
+    .then((saved) => {
+      if (!saved) return;
+      showToast("区域标定已保存到服务端");
+      refreshBackgroundStatus();
+    })
+    .catch((err) => recoverRegionCalibrationAfterWriteFailure("区域标定保存", err));
 }
 
 function toggleRegionClip() {
@@ -3510,16 +5623,31 @@ function toggleRegionClip() {
     showToast("请先完成区域闭合");
     return;
   }
+  markRegionDraftEdited();
   app.region.clipEnabled = !app.region.clipEnabled;
+  app.region.serverSet = false;
+  const enabledToSave = app.region.clipEnabled;
   if (app.region.clipEnabled) applyRegionClipToLoadedClouds();
   saveRegionState();
   renderRegionCalibration();
   renderScanMeta();
   renderMarkers();
+  const payloadToSave = currentRegionPayload();
+  enqueueStationConfigWrite(() => persistRegionCalibration("web_region_editor", payloadToSave))
+    .then((saved) => {
+      if (!saved) return;
+      showToast(enabledToSave ? "服务端区域过滤已开启" : "服务端区域过滤已关闭");
+      refreshBackgroundStatus();
+    })
+    .catch((err) => recoverRegionCalibrationAfterWriteFailure("区域过滤状态保存", err));
 }
 
 function applyRegionClipToLoadedClouds() {
   if (!app.region.closed || app.region.points.length < 3) return;
+  if (hasCanonicalFinalCloud()) {
+    showToast("当前完成点云保持该任务的区域版本不变；新区域从下一次扫描生效");
+    return false;
+  }
   const matrix = Array.isArray(app.calibration.result?.matrix) ? app.calibration.result.matrix : null;
   app.clouds[0].filter((x, y) => pointInRegionXY(x, y, app.region.points));
   if (matrix) {
@@ -3533,6 +5661,7 @@ function applyRegionClipToLoadedClouds() {
   app.fusedCloud.filter((x, y) => pointInRegionXY(x, y, app.region.points));
   app.fusedCount = app.fusedCloud.count;
   markRoamFitDirty();
+  return true;
 }
 
 function regionClipActive() {
@@ -3563,14 +5692,276 @@ function clipRegionPointPayload(frame) {
   };
 }
 
+function readManualCloudInputs() {
+  const read = (el) => {
+    const n = parseNumberInput(el?.value);
+    return n == null ? 0 : n;
+  };
+  app.manualCloud.transform = {
+    tx: read(els.manualCloudTx),
+    ty: read(els.manualCloudTy),
+    tz: read(els.manualCloudTz),
+    rx: read(els.manualCloudRx),
+    ry: read(els.manualCloudRy),
+    rz: read(els.manualCloudRz),
+  };
+  return app.manualCloud.transform;
+}
+
+function formatManualCloudNumber(value) {
+  return Number(value || 0).toFixed(3).replace(/\.?0+$/, "");
+}
+
+function writeManualCloudInputs(transform = app.manualCloud.transform) {
+  const set = (el, value) => { if (el) el.value = formatManualCloudNumber(value); };
+  set(els.manualCloudTx, transform.tx);
+  set(els.manualCloudTy, transform.ty);
+  set(els.manualCloudTz, transform.tz);
+  set(els.manualCloudRx, transform.rx);
+  set(els.manualCloudRy, transform.ry);
+  set(els.manualCloudRz, transform.rz);
+}
+
+function manualCloudActive() {
+  return app.manualCloud.enabled && app.cloudMode === "fused";
+}
+
+function setManualCloudMode(mode) {
+  app.manualCloud.mode = ["translate", "rotate", "lift"].includes(mode) ? mode : "translate";
+  document.querySelectorAll("[data-manual-cloud-mode]").forEach((btn) => {
+    const active = btn.getAttribute("data-manual-cloud-mode") === app.manualCloud.mode;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+}
+
+function manualCloudMatrix() {
+  const t = readManualCloudInputs();
+  const deg = Math.PI / 180;
+  const rx = t.rx * deg, ry = t.ry * deg, rz = t.rz * deg;
+  const sx = Math.sin(rx), cx = Math.cos(rx);
+  const sy = Math.sin(ry), cy = Math.cos(ry);
+  const sz = Math.sin(rz), cz = Math.cos(rz);
+  return [
+    cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx, t.tx,
+    sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx, t.ty,
+    -sy, cy * sx, cy * cx, t.tz,
+    0, 0, 0, 1,
+  ];
+}
+
+function manualCloudTransformFromMatrix(matrix) {
+  if (!Array.isArray(matrix) || matrix.length < 16) {
+    return { tx: 0, ty: 0, tz: 0, rx: 0, ry: 0, rz: 0 };
+  }
+  const clamp = (v) => Math.max(-1, Math.min(1, v));
+  const ry = Math.asin(clamp(-Number(matrix[8] || 0)));
+  const cy = Math.cos(ry);
+  let rx = 0;
+  let rz = 0;
+  if (Math.abs(cy) > 1e-6) {
+    rx = Math.atan2(Number(matrix[9] || 0), Number(matrix[10] || 0));
+    rz = Math.atan2(Number(matrix[4] || 0), Number(matrix[0] || 0));
+  } else {
+    rz = Math.atan2(-Number(matrix[1] || 0), Number(matrix[5] || 0));
+  }
+  const rad = 180 / Math.PI;
+  return {
+    tx: Number(matrix[3] || 0),
+    ty: Number(matrix[7] || 0),
+    tz: Number(matrix[11] || 0),
+    rx: rx * rad,
+    ry: ry * rad,
+    rz: rz * rad,
+  };
+}
+
+function rebuildManualCloudPreview() {
+  const preview = app.manualCloud.previewCloud;
+  const maxPoints = Math.max(1, preview.maxPoints || 1_200_000);
+  const a = app.clouds[0];
+  const b = app.clouds[1];
+  const total = a.count + b.count;
+  if (!total) {
+    preview.reset(maxPoints);
+    if (els.manualCloudStatus) els.manualCloudStatus.textContent = "等待 A/B 点云";
+    markRenderDirty();
+    renderScanMeta();
+    return;
+  }
+  const points = new Float32Array(maxPoints * 3);
+  const colors = new Uint8Array(maxPoints * 3);
+  const matrix = manualCloudMatrix();
+  const colorA = [48, 205, 224];
+  const colorB = [255, 145, 58];
+  let budgetA = a.count ? Math.max(1, Math.round(maxPoints * a.count / total)) : 0;
+  let budgetB = b.count ? Math.max(1, maxPoints - budgetA) : 0;
+  if (!a.count) budgetB = maxPoints;
+  if (!b.count) budgetA = maxPoints;
+  const strideA = budgetA ? Math.max(1, Math.ceil(a.count / budgetA)) : 1;
+  const strideB = budgetB ? Math.max(1, Math.ceil(b.count / budgetB)) : 1;
+  let dst = 0;
+  const put = (cloud, src, x, y, z, fallbackColor) => {
+    if (dst >= points.length || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+    points[dst] = x;
+    points[dst + 1] = y;
+    points[dst + 2] = z;
+    if (cloud.hasColor && cloud.colors.length >= src + 3) {
+      colors[dst] = cloud.colors[src];
+      colors[dst + 1] = cloud.colors[src + 1];
+      colors[dst + 2] = cloud.colors[src + 2];
+    } else {
+      colors[dst] = fallbackColor[0];
+      colors[dst + 1] = fallbackColor[1];
+      colors[dst + 2] = fallbackColor[2];
+    }
+    dst += 3;
+  };
+  for (let i = 0; i < a.count && dst < points.length; i += strideA) {
+    const j = i * 3;
+    put(a, j, a.data[j], a.data[j + 1], a.data[j + 2], colorA);
+  }
+  for (let i = 0; i < b.count && dst < points.length; i += strideB) {
+    const j = i * 3;
+    const x = b.data[j], y = b.data[j + 1], z = b.data[j + 2];
+    put(
+      b,
+      j,
+      matrix[0] * x + matrix[1] * y + matrix[2] * z + matrix[3],
+      matrix[4] * x + matrix[5] * y + matrix[6] * z + matrix[7],
+      matrix[8] * x + matrix[9] * y + matrix[10] * z + matrix[11],
+      colorB,
+    );
+  }
+  preview.replace(points.subarray(0, dst), colors.subarray(0, dst));
+  if (els.manualCloudStatus) {
+    els.manualCloudStatus.textContent = `A ${a.count.toLocaleString()} 点固定 · B ${b.count.toLocaleString()} 点可拖动`;
+  }
+  markRoamFitDirty();
+  markRenderDirty();
+  renderScanMeta();
+}
+
+function openManualCloudAlign() {
+  if (!app.clouds[0].count || !app.clouds[1].count) {
+    showToast("先完成或载入一次双镜头点云，再做手动融合");
+    return;
+  }
+  app.manualCloud.previousCloudMode = app.cloudMode;
+  app.manualCloud.previousControlMode = app.controlMode;
+  app.manualCloud.previousViewPreset = app.viewPreset;
+  app.manualCloud.transform = Array.isArray(app.calibration.result?.matrix)
+    ? manualCloudTransformFromMatrix(app.calibration.result.matrix)
+    : { tx: 0, ty: 0, tz: 0, rx: 0, ry: 0, rz: 0 };
+  writeManualCloudInputs();
+  app.manualCloud.enabled = true;
+  setManualCloudMode("translate");
+  if (els.manualCloudPanel) els.manualCloudPanel.hidden = false;
+  setControlMode("orbit");
+  setCloudMode("fused");
+  setViewPreset("top", true);
+  rebuildManualCloudPreview();
+  if (els.manualCloudResult) {
+    els.manualCloudResult.textContent = "预览使用原始 RGB 颜色。手动调整只保存为诊断结果，不会覆盖服务端正式工位外参。";
+  }
+  showToast("已进入点云手动融合：A 固定，直接拖动 B");
+}
+
+function closeManualCloudAlign() {
+  app.manualCloud.enabled = false;
+  if (els.manualCloudPanel) els.manualCloudPanel.hidden = true;
+  const nextMode = app.manualCloud.previousCloudMode || "split";
+  setControlMode(app.manualCloud.previousControlMode || "orbit");
+  setCloudMode(nextMode);
+  setViewPreset(app.manualCloud.previousViewPreset || "free", false);
+  markRenderDirty();
+  renderScanMeta();
+}
+
+function saveManualCloudAlign() {
+  const matrix = manualCloudMatrix();
+  const result = {
+    matrix,
+    source: "manual_cloud_adjust",
+    meanError: null,
+    maxError: null,
+    rms_m: null,
+    n_common: null,
+    note: "manual point cloud adjustment",
+    savedAt: new Date().toISOString(),
+  };
+  app.calibration.result = result;
+  saveCalibrationState({ persistServer: false });
+  renderCalibration();
+  if (els.manualCloudResult) els.manualCloudResult.textContent = calibrationResultText(result);
+  showToast("点云手动调整已保存为诊断结果；正式起扫仍使用服务端权威外参");
+}
+
+function loadCurrentManualCloudTransform() {
+  app.manualCloud.transform = Array.isArray(app.calibration.result?.matrix)
+    ? manualCloudTransformFromMatrix(app.calibration.result.matrix)
+    : { tx: 0, ty: 0, tz: 0, rx: 0, ry: 0, rz: 0 };
+  writeManualCloudInputs();
+  rebuildManualCloudPreview();
+}
+
+function resetManualCloudTransform() {
+  app.manualCloud.transform = { tx: 0, ty: 0, tz: 0, rx: 0, ry: 0, rz: 0 };
+  writeManualCloudInputs();
+  rebuildManualCloudPreview();
+}
+
+function manualCloudUnitsPerPixel(pane) {
+  const rect = els.canvas.getBoundingClientRect();
+  const view = viewForPaneKey("fused");
+  const height = pane?.h || rect.height;
+  const panDistance = Math.max(view.distance, VIEW_MIN_PAN_DISTANCE);
+  return (2 * panDistance * Math.tan(Math.PI / 8)) / Math.max(1, height);
+}
+
+function handleManualCloudDrag(dx, dy, pane, ev) {
+  if (!manualCloudActive() || !pane || pane.key !== "fused") return false;
+  if (ev.ctrlKey || ev.metaKey || ev.altKey) return false;
+  if (app.dragButton !== 0 && app.dragButton !== 2) return false;
+  readManualCloudInputs();
+  const t = app.manualCloud.transform;
+  const units = manualCloudUnitsPerPixel(pane);
+  const rotate = app.dragButton === 2 || app.manualCloud.mode === "rotate";
+  const lift = !rotate && (app.manualCloud.mode === "lift" || ev.shiftKey);
+  if (rotate) {
+    t.rz += dx * 0.25;
+    t.rx += -dy * 0.25;
+  } else if (lift) {
+    t.tz += -dy * units;
+  } else {
+    const view = viewForPaneKey("fused");
+    const { right, up } = orbitBasis(view);
+    const delta = add3(scale3(right, dx * units), scale3(up, -dy * units));
+    t.tx += delta[0];
+    t.ty += delta[1];
+    t.tz += delta[2];
+  }
+  writeManualCloudInputs();
+  rebuildManualCloudPreview();
+  return true;
+}
+
 function pointPassesRegion(unit, x, y, z) {
   if (unit === 1) {
-    const matrix = Array.isArray(app.calibration.result?.matrix) ? app.calibration.result.matrix : null;
+    const matrix = isOfficialSiteCalibrationResult(app.calibration.result) ? app.calibration.result.matrix : null;
     if (!matrix) return true;
     const p = transformPoint4(matrix, [x, y, z]);
     return pointInRegionXY(p[0], p[1], app.region.points);
   }
   return pointInRegionXY(x, y, app.region.points);
+}
+
+function hasCanonicalFinalCloud() {
+  const scanId = Number(app.activeScanId || 0);
+  if (!scanId) return false;
+  return app.finalPhaseScanId === scanId
+    || app.loadedCloudsScanId === scanId
+    || isCompletedScanState(app.scanState);
 }
 
 function pointInRegionXY(x, y, points) {
@@ -3619,10 +6010,36 @@ function nativeBToAToDisplay(native) {
   return disp;
 }
 
-// 一键自动标定：调后端 site-calib（两镜头 sweep+采图→ArUco 自标定 B→A），结果写入 calibration.result。
+async function refreshCalibrationAuthorityAfterSave() {
+  let readbackError = null;
+  try {
+    await syncStationCalibration();
+  } catch (err) {
+    readbackError = err;
+    console.warn("外参已保存，但权威状态回读失败", err);
+  }
+  await refreshBackgroundStatus();
+  return readbackError;
+}
+
+// 自动标定：调后端 site-calib（两镜头 sweep+采图→ArUco 自标定 B→A），结果写入 calibration.result。
 async function runAutoCalibration() {
+  const topologyIssue = stationTopologyIssue();
+  if (topologyIssue) {
+    showToast(topologyIssue);
+    return;
+  }
+  if (app.stationCalibrationPending || app.framingRunning) {
+    showToast("已有工位外参标定正在进行");
+    return;
+  }
+  const operationSerial = ++app.calibrationOperationSerial;
+  app.stationCalibrationPending = true;
+  renderScanActionButton();
   const camA = cameraByRole("a");
   const camB = cameraByRole("b");
+  const targetKey = stationServerConfigKey();
+  const connection = connectionSnapshot();
   const lenMm = Number(els.markerLenMm?.value || 150);
   const markerLen = (lenMm > 0 ? lenMm : 150) / 1000;
   const q = new URLSearchParams();
@@ -3632,28 +6049,42 @@ async function runAutoCalibration() {
 
   const setBusy = (busy, msg) => {
     els.autoCalibBtn.disabled = busy;
-    els.autoCalibBtn.textContent = busy ? "标定中…" : "⚡ 一键自动标定";
+    els.autoCalibBtn.textContent = busy ? "标定中…" : "开始自动标定";
     if (msg) els.autoCalibHint.textContent = msg;
   };
   setBusy(true, "采图中…两镜头各扫一圈，请勿遮挡标记（约 30–90 秒）");
   els.autoCalibResult.hidden = true;
   try {
-    const resp = await api(`/v1/scans/laser/site-calib?${q.toString()}`, { method: "POST" });
+    const resp = await api(`/v1/scans/laser/site-calib?${q.toString()}`, { method: "POST" }, connection);
     const ncommon = resp.n_common ?? 0;
     const rmsMm = ((resp.rms_m ?? 0) * 1000).toFixed(1);
     if (resp.ok && Array.isArray(resp.b_to_a) && resp.b_to_a.length === 16) {
+      if (targetKey !== stationServerConfigKey() || !isConnectionCurrent(connection)) {
+        showToast("工位或连接已变化，本次标定结果未保存");
+        return;
+      }
       app.calibration.result = {
         matrix: nativeBToAToDisplay(resp.b_to_a),
         source: "aruco",
         rms_m: resp.rms_m,
         n_common: ncommon,
       };
-      saveCalibrationState();
+      saveCalibrationState({ persistServer: false });
+      const resultToSave = app.calibration.result;
+      const saved = await enqueueStationConfigWrite(() => persistStationCalibration(resultToSave, connection));
+      if (!saved) throw new Error("工位或连接已变化，标定结果未保存");
+      const readbackError = await refreshCalibrationAuthorityAfterSave();
       renderCalibration();
       els.autoCalibResult.hidden = false;
-      els.autoCalibResult.textContent = `✓ 标定成功\n公共标记 ${ncommon} 个，RMS ${rmsMm} mm\nB→A 已写入，可直接起扫融合。`;
-      els.autoCalibHint.textContent = "标定完成。换车位 / 移动镜头后需重标。";
-      showToast(`自动标定成功：公共 ${ncommon}，RMS ${rmsMm}mm`);
+      if (readbackError) {
+        els.autoCalibResult.textContent = `✓ 外参已写入\n公共标记 ${ncommon} 个，RMS ${rmsMm} mm\n权威状态回读失败：${readbackError.message}\n请稍后用“检查并开始”重新读取工位状态。`;
+        els.autoCalibHint.textContent = "外参已保存，但状态回读失败；恢复连接后重新检查区域与空工位背景。";
+        showToast("自动标定已保存，但工位状态回读失败");
+      } else {
+        els.autoCalibResult.textContent = `✓ 标定成功\n公共标记 ${ncommon} 个，RMS ${rmsMm} mm\n外参已写入，请继续确认区域与空工位背景。`;
+        els.autoCalibHint.textContent = "外参已保存。请继续确认扫描区域与空工位背景；换车位或移动镜头后需重标。";
+        showToast(`自动标定成功：公共 ${ncommon}，RMS ${rmsMm}mm`);
+      }
     } else {
       els.autoCalibResult.hidden = false;
       els.autoCalibResult.textContent =
@@ -3669,6 +6100,10 @@ async function runAutoCalibration() {
     showToast(`自动标定失败：${err.message}`);
   } finally {
     setBusy(false);
+    if (operationSerial === app.calibrationOperationSerial) {
+      app.stationCalibrationPending = false;
+      renderScanActionButton();
+    }
   }
 }
 
@@ -3679,6 +6114,7 @@ function enableDragScroll(el) {
   let down = false, moved = false, startX = 0, startLeft = 0;
   el.addEventListener("pointerdown", (e) => {
     if (e.pointerType === "touch") return; // 触屏交给浏览器原生横滑（带惯性）
+    if (e.target?.closest?.(".framing-thumb")) return; // 缩略图点击必须原生落到 img，用于切帧
     down = true;
     moved = false;
     startX = e.clientX;
@@ -3732,7 +6168,32 @@ function renderScanPreview(payload) {
 // 仅在该单元有独立分镜（分镜模式）时显示；融合模式无单相机窗口则隐藏。
 // 每帧都被渲染循环调用，故只在值真正变化时写 DOM，避免拖动时无谓 reflow 拖慢平移。
 function layoutCamPreviews(panes) {
-  panes = panes && panes.length ? panes : [];
+  const sourcePanes = panes && panes.length ? panes : [];
+  if (app.cloudMode === "split") {
+    const rect = els.canvas.getBoundingClientRect();
+    const gap = rect.width >= 720 ? 8 : 4;
+    const paneWidth = Math.max(1, (rect.width - gap) / 2);
+    panes = [
+      {
+        ...(sourcePanes.find((pane) => pane.unit === 0) || {}),
+        key: "a", unit: 0, label: "镜头 A", cloud: app.clouds[0],
+        x: 0, y: 0, w: paneWidth, h: rect.height,
+      },
+      {
+        ...(sourcePanes.find((pane) => pane.unit === 1) || {}),
+        key: "b", unit: 1, label: "镜头 B", cloud: app.clouds[1],
+        x: paneWidth + gap, y: 0, w: paneWidth, h: rect.height,
+      },
+    ];
+  } else {
+    panes = [];
+  }
+  const viewer = document.querySelector(".viewer-badge");
+  const toolbar = document.querySelector(".viewport-toolbar");
+  const chromeBottom = Math.max(
+    viewer ? viewer.offsetTop + viewer.offsetHeight : 0,
+    toolbar ? toolbar.offsetTop + toolbar.offsetHeight : 0,
+  ) + 12;
   for (const role of ["a", "b"]) {
     const R = role.toUpperCase();
     const card = els[`camPreview${R}`];
@@ -3744,11 +6205,13 @@ function layoutCamPreviews(panes) {
       continue;
     }
     if (card.hidden) card.hidden = false;
-    // 只贴位置（左上角），尺寸交给 CSS 默认 + 用户手动 resize；仅在变化时写。
+    // 避开视口标题和工具栏；宽度只设上限，仍保留用户手动缩小能力。
     const left = `${Math.round(pane.x + 12)}px`;
-    const top = `${Math.round(pane.y + 70)}px`;
+    const top = `${Math.round(Math.max(pane.y + 70, chromeBottom))}px`;
+    const maxWidth = `${Math.max(120, Math.floor(pane.w - 24))}px`;
     if (card.style.left !== left) card.style.left = left;
     if (card.style.top !== top) card.style.top = top;
+    if (card.style.maxWidth !== maxWidth) card.style.maxWidth = maxWidth;
     const status = els[`camStatus${R}`];
     if (status) {
       const label = paneFrameLabel(pane);
@@ -3768,23 +6231,95 @@ function layoutCamPreviews(panes) {
 }
 
 // ===== 实时取景标定（全屏，看相机 RGB 图对标记）=====
-function openFramingPage() {
+function framingContextSnapshot() {
+  return {
+    generation: app.framingGeneration,
+    stationKey: stationServerConfigKey(),
+    connection: connectionSnapshot(),
+    sessionKey: app.framingSessionKey,
+  };
+}
+
+function isFramingContextCurrent(context) {
+  return Boolean(context)
+    && !els.framingOverlay.hidden
+    && context.generation === app.framingGeneration
+    && context.stationKey === stationServerConfigKey()
+    && context.sessionKey === app.framingSessionKey
+    && isConnectionCurrent(context.connection);
+}
+
+async function openFramingPage(opts = {}) {
+  if (app.framingRunning) {
+    showToast("取景标定仍在运行，请等待停止后再打开");
+    return;
+  }
+  app.framingGeneration++;
+  app.framingSessionKey = "";
+  app.framingStopping = false;
+  app.framingStopRequestPending = false;
+  app.framingControlsReady = false;
+  app.framingAbortController = null;
+  app.framingRequestSent = false;
+  app.framingStopRequestPending = false;
+  const context = framingContextSnapshot();
+  app.framingReturnFocus = opts.trigger || document.activeElement || null;
   els.framingOverlay.hidden = false;
+  activatePageModal(els.framingOverlay);
   els.framingResult.hidden = true;
   resetFramingPanes();
-  els.framingStatus.textContent = "设好扫描角后点「扫描取景」，两镜头各扫一段。";
+  app.framing.manual.enabled = Boolean(opts.manual);
+  if (opts.manual) {
+    els.framingStatus.textContent = "手动点对模式：先扫描取景，再在 A/B RGB 图上点同一个物理点。";
+  } else {
+    els.framingStatus.textContent = "设好扫描角后点「扫描取景」，两镜头各扫一段。";
+  }
+  renderFramingManual();
   const lenMm = Number(els.markerLenMm?.value);
   if (lenMm > 0) els.framingMarkerLen.value = lenMm;
-  prefillFramingControls();
+  els.runFraming.disabled = true;
+  els.framingStatus.textContent = "正在读取设备扫描参数…";
   // 取景帧经 ws laser.frame 推送：进页即预连实时通道，避免扫描时通道未建导致看不到胶片
-  connectWs().catch((err) => console.warn("取景实时预连失败（扫描时会再试）", err));
+  connectWs(context.connection).catch((err) => {
+    if (isFramingContextCurrent(context)) console.warn("取景实时预连失败（扫描时会再试）", err);
+  });
+  requestAnimationFrame(() => els.closeFraming?.focus());
+  const fallbackCount = await prefillFramingControls(context);
+  if (!isFramingContextCurrent(context)) return;
+  app.framingControlsReady = true;
+  els.runFraming.disabled = false;
+  if (opts.manual) {
+    els.framingStatus.textContent = fallbackCount
+      ? "部分设备参数读取失败，已填入安全扫程；请确认后扫描取景，再在 A/B RGB 图上点同一物理点。"
+      : "手动点对模式：先扫描取景，再在 A/B RGB 图上点同一个物理点。";
+  } else {
+    els.framingStatus.textContent = fallbackCount
+      ? "部分设备参数读取失败，已填入安全扫程；请确认起止角后再扫描取景。"
+      : "设备扫描参数已读取。确认起止角后点「扫描取景」。";
+  }
 }
 
 function closeFramingPage() {
+  if (els.framingOverlay.hidden) return;
+  if (app.framingRunning || app.framingStopping) {
+    showToast("取景标定正在运行，已请求停止；完成解算后可关闭");
+    stopFraming();
+    return;
+  }
+  app.framingGeneration++;
+  app.framingSessionKey = "";
+  app.framingControlsReady = false;
+  app.framingAbortController = null;
+  app.framingRequestSent = false;
   els.framingOverlay.hidden = true;
+  releasePageModal(els.framingOverlay);
+  const returnFocus = app.framingReturnFocus;
+  app.framingReturnFocus = null;
+  requestAnimationFrame(() => returnFocus?.focus?.());
 }
 
 function resetFramingPanes() {
+  const manualEnabled = Boolean(app.framing?.manual?.enabled);
   for (const role of ["A", "B"]) {
     const c = els[`framingCanvas${role}`];
     c.getContext("2d").clearRect(0, 0, c.width, c.height);
@@ -3792,59 +6327,130 @@ function resetFramingPanes() {
     els[`framingCount${role}`].textContent = "—";
   }
   app.framing = {
-    a: { frames: 0, ids: new Set(), shots: [], selected: null },
-    b: { frames: 0, ids: new Set(), shots: [], selected: null },
+    a: { frames: 0, ids: new Set(), shots: [], selected: null, view: createFramingView() },
+    b: { frames: 0, ids: new Set(), shots: [], selected: null, view: createFramingView() },
+    manual: { enabled: manualEnabled, nextRole: "A", pendingA: null, pairs: [] },
+  };
+  renderFramingManual();
+}
+
+function createFramingView() {
+  return {
+    zoom: 1,
+    rotation: 0,
+    panX: 0,
+    panY: 0,
+    drag: null,
+    suppressClick: false,
+    last: null,
   };
 }
 
 // 用设备当前扫描角/速度预填控件（取不到用默认线性扫程）。
-async function prefillFramingControls() {
+async function prefillFramingControls(context = framingContextSnapshot()) {
+  if (!isFramingContextCurrent(context)) return 2;
+  els.framingAStart.value = 0;
+  els.framingAStop.value = 90;
+  els.framingBStart.value = -170;
+  els.framingBStop.value = -10;
+  if (!parseNumberInput(els.framingSpeed.value)) els.framingSpeed.value = 1;
+  let fallbackCount = 0;
   const fill = async (role, startEl, stopEl, defStart, defStop) => {
+    if (!isFramingContextCurrent(context)) return false;
     const cam = cameraByRole(role);
     let c = {};
     if (cam?.ip) {
       try {
-        c = controlFromInfo(await api(`/v1/scans/laser/device-info?ip=${encodeURIComponent(cam.ip)}`));
+        c = controlFromInfo(await api(
+          `/v1/scans/laser/device-info?ip=${encodeURIComponent(cam.ip)}`,
+          {},
+          context.connection,
+        ));
       } catch {
-        /* 取不到用默认 */
+        fallbackCount++;
       }
+    } else {
+      fallbackCount++;
     }
+    if (!isFramingContextCurrent(context)) return false;
     startEl.value = c.scan_start_angle ?? c.scanStartAngle ?? defStart;
     stopEl.value = c.scan_stop_angle ?? c.scanStopAngle ?? defStop;
     const sp = c.scan_speed ?? c.scanSpeed;
     if (Number(sp) > 0) els.framingSpeed.value = sp;
+    return true;
   };
-  await fill("a", els.framingAStart, els.framingAStop, 0, 90);
-  await fill("b", els.framingBStart, els.framingBStop, -170, -10);
+  await Promise.all([
+    fill("a", els.framingAStart, els.framingAStop, 0, 90),
+    fill("b", els.framingBStart, els.framingBStop, -170, -10),
+  ]);
+  return fallbackCount;
+}
+
+function framingSweepWarning(role, start, stop) {
+  if (start == null || stop == null) return `镜头 ${role} 的起止角必须填写有限数字`;
+  const warning = scanAngleWarning(start, signedScanAngleDeg(start, stop));
+  return warning ? `镜头 ${role}：${warning}` : "";
 }
 
 // 扫描取景并解算：POST site-framing（角度/速度=云台控制），帧经 ws laser.frame 边扫边渲染，结果回写标定。
 async function runFraming() {
+  const topologyIssue = stationTopologyIssue();
+  if (topologyIssue) {
+    showToast(topologyIssue);
+    return;
+  }
+  if (app.framingRunning || app.framingStopping || app.stationCalibrationPending) {
+    showToast("已有工位外参标定正在进行");
+    return;
+  }
+  if (!app.framingControlsReady) {
+    showToast("设备扫描参数仍在读取，请稍候");
+    return;
+  }
+  const aS = parseNumberInput(els.framingAStart.value);
+  const aE = parseNumberInput(els.framingAStop.value);
+  const bS = parseNumberInput(els.framingBStart.value);
+  const bE = parseNumberInput(els.framingBStop.value);
+  const sweepWarning = framingSweepWarning("A", aS, aE) || framingSweepWarning("B", bS, bE);
+  if (sweepWarning) {
+    showToast(sweepWarning);
+    return;
+  }
+  const speed = parseNumberInput(els.framingSpeed.value);
+  if (speed == null || speed <= 0) {
+    showToast("取景扫描速度必须是正数");
+    return;
+  }
+  const lenMm = parseNumberInput(els.framingMarkerLen.value);
+  if (lenMm == null || lenMm <= 0) {
+    showToast("标记边长必须是正数");
+    return;
+  }
+  app.framingGeneration++;
+  app.framingSessionKey = `site-framing-${Date.now().toString(36)}-${app.framingGeneration}`;
+  const context = framingContextSnapshot();
+  if (!isFramingContextCurrent(context)) return;
+  const operationSerial = ++app.calibrationOperationSerial;
+  const abortController = new AbortController();
+  app.framingAbortController = abortController;
+  app.framingRequestSent = false;
+  app.framingRunning = true;
+  app.stationCalibrationPending = true;
+  renderScanActionButton();
   const camA = cameraByRole("a");
   const camB = cameraByRole("b");
-  const lenMm = Number(els.framingMarkerLen.value || 150);
-  const markerLen = (lenMm > 0 ? lenMm : 150) / 1000;
+  const markerLen = lenMm / 1000;
   const q = new URLSearchParams();
   if (camA?.ip) q.set("unit_a_ip", camA.ip);
   if (camB?.ip) q.set("unit_b_ip", camB.ip);
   q.set("marker_len", String(markerLen));
   q.set("preview_width", "1280");
-  const num = (el) => {
-    const n = Number(el.value);
-    return Number.isFinite(n) ? n : null;
-  };
-  const aS = num(els.framingAStart), aE = num(els.framingAStop);
-  const bS = num(els.framingBStart), bE = num(els.framingBStop);
-  if (aS != null && aE != null) {
-    q.set("a_start", String(aS));
-    q.set("a_stop", String(aE));
-  }
-  if (bS != null && bE != null) {
-    q.set("b_start", String(bS));
-    q.set("b_stop", String(bE));
-  }
-  const sp = num(els.framingSpeed);
-  if (sp != null && sp > 0) q.set("speed", String(sp));
+  q.set("session_key", context.sessionKey);
+  q.set("a_start", String(aS));
+  q.set("a_stop", String(aE));
+  q.set("b_start", String(bS));
+  q.set("b_stop", String(bE));
+  q.set("speed", String(speed));
 
   resetFramingPanes();
   els.framingResult.hidden = true;
@@ -3854,26 +6460,51 @@ async function runFraming() {
   els.framingStatus.textContent = "云台转动中，相机逐帧推送…（约 30–90 秒，勿遮挡标记）。可随时「停止」用已采集帧解算。";
   try {
     // 帧经 laser.frame ws 推送：扫描前必须确保实时通道已连，否则看不到胶片（解算仍会照常返回）
-    await connectWs().catch((err) => {
+    await connectWs(context.connection).catch((err) => {
       console.warn("实时连接失败，胶片预览不可用", err);
-      els.framingStatus.textContent = "⚠ 实时通道未连，看不到胶片；解算仍在进行。可点顶部「连接」后重试。";
+      if (isFramingContextCurrent(context)) {
+        els.framingStatus.textContent = "实时通道未连接，看不到胶片；解算仍在进行。可在「工位 → 高级连接诊断」中重连实时通道后重试。";
+      }
     });
-    const resp = await api(`/v1/scans/laser/site-framing?${q.toString()}`, { method: "POST" });
+    if (app.framingStopping || !isFramingContextCurrent(context)) {
+      els.framingStatus.textContent = "取景已停止，未发起新的标定扫描。";
+      return;
+    }
+    app.framingRequestSent = true;
+    const resp = await api(`/v1/scans/laser/site-framing?${q.toString()}`, {
+      method: "POST",
+      signal: abortController.signal,
+    }, context.connection);
+    if (!isFramingContextCurrent(context)) return;
     const ncommon = resp.n_common ?? 0;
     const rmsMm = ((resp.rms_m ?? 0) * 1000).toFixed(1);
     if (resp.ok && Array.isArray(resp.b_to_a) && resp.b_to_a.length === 16) {
+      if (!isFramingContextCurrent(context)) {
+        showToast("工位或连接已变化，本次标定结果未保存");
+        return;
+      }
       app.calibration.result = {
         matrix: nativeBToAToDisplay(resp.b_to_a),
         source: "aruco",
         rms_m: resp.rms_m,
         n_common: ncommon,
       };
-      saveCalibrationState();
+      saveCalibrationState({ persistServer: false });
+      const resultToSave = app.calibration.result;
+      const saved = await enqueueStationConfigWrite(() => persistStationCalibration(resultToSave, context.connection));
+      if (!saved) throw new Error("工位或连接已变化，标定结果未保存");
+      const readbackError = await refreshCalibrationAuthorityAfterSave();
       renderCalibration();
       els.framingResult.hidden = false;
-      els.framingResult.textContent = `✓ 标定成功\n公共标记 ${ncommon} 个，RMS ${rmsMm} mm\nB→A 已写入，可直接起扫融合。`;
-      els.framingStatus.textContent = "标定完成。换车位 / 移动镜头后需重标。";
-      showToast(`取景标定成功：公共 ${ncommon}，RMS ${rmsMm}mm`);
+      if (readbackError) {
+        els.framingResult.textContent = `✓ 外参已写入\n公共标记 ${ncommon} 个，RMS ${rmsMm} mm\n权威状态回读失败：${readbackError.message}\n请稍后用“检查并开始”重新读取工位状态。`;
+        els.framingStatus.textContent = "外参已保存，但状态回读失败；恢复连接后重新检查区域与空工位背景。";
+        showToast("取景标定已保存，但工位状态回读失败");
+      } else {
+        els.framingResult.textContent = `✓ 标定成功\n公共标记 ${ncommon} 个，RMS ${rmsMm} mm\n外参已写入，请继续确认区域与空工位背景。`;
+        els.framingStatus.textContent = "外参已保存。请继续确认扫描区域与空工位背景；换车位或移动镜头后需重标。";
+        showToast(`取景标定成功：公共 ${ncommon}，RMS ${rmsMm}mm`);
+      }
     } else {
       els.framingResult.hidden = false;
       els.framingResult.textContent =
@@ -3883,32 +6514,563 @@ async function runFraming() {
       showToast("取景标定未达标，见结果区");
     }
   } catch (err) {
+    if (!isFramingContextCurrent(context)) return;
+    if (app.framingStopping || err?.name === "AbortError") {
+      els.framingResult.hidden = true;
+      els.framingStatus.textContent = "客户端请求已中断，正在等待服务端确认会话取消、外参提交状态与 A/B READY。";
+      return;
+    }
+    if (err?.body?.cleanup_pending === true) {
+      app.framingStopping = true;
+      app.framingStopRequestPending = false;
+      app.stationCalibrationPending = true;
+      els.framingResult.hidden = false;
+      els.framingResult.textContent = `✗ 取景异常：${err.message}`;
+      els.framingStatus.textContent = "服务端正在强制停止设备并等待 A/B READY；请点击“停止”确认清理终态。";
+      if (els.framingStop) {
+        els.framingStop.hidden = false;
+        els.framingStop.disabled = false;
+      }
+      renderScanActionButton();
+      return;
+    }
     els.framingResult.hidden = false;
     els.framingResult.textContent = `✗ 出错：${err.message}`;
     els.framingStatus.textContent = "出错，重试或检查设备 / 标记。";
     showToast(`取景标定失败：${err.message}`);
   } finally {
-    els.runFraming.hidden = false;
-    els.runFraming.disabled = false;
-    if (els.framingStop) els.framingStop.hidden = true;
+    if (operationSerial === app.calibrationOperationSerial) {
+      if (app.framingAbortController === abortController) app.framingAbortController = null;
+      if (!app.framingStopping) {
+        els.runFraming.hidden = false;
+        els.runFraming.disabled = false;
+        if (els.framingStop) els.framingStop.hidden = true;
+        app.framingRunning = false;
+        app.stationCalibrationPending = false;
+        app.framingRequestSent = false;
+        renderScanActionButton();
+      }
+    }
   }
 }
 
 // 停止取景：向两单元发 SCAN_STOP，设备回 READY 后 framing-stream 自然收尾，
 // 解算器用已采集的帧出结果（够 4 个公共标记即标定成功）——与点云扫描「停止」同范式。
 async function stopFraming() {
+  if (app.framingStopRequestPending) return;
+  if (!app.framingRunning && !app.framingStopping) return;
+  app.framingStopRequestPending = true;
   if (els.framingStop) els.framingStop.disabled = true;
   app.framingStopping = true;
-  els.framingStatus.textContent = "停止中…正用已采集的帧解算（够 4 个公共标记即出结果）。";
-  const cams = [cameraByRole("a"), cameraByRole("b")].filter((c) => c?.ip);
-  await Promise.allSettled(
-    cams.map((cam) =>
-      api(`/v1/scans/laser/device-command?ip=${encodeURIComponent(cam.ip)}`, {
-        method: "POST",
-        body: JSON.stringify({ cmd: "SCAN_STOP" }),
-      })
-    )
-  );
+  els.framingStatus.textContent = "停止中…正在取消服务端取景会话并停止两台设备。";
+  app.framingAbortController?.abort();
+  const context = framingContextSnapshot();
+  const requestSent = app.framingRequestSent;
+  const cancelPath = context.sessionKey
+    ? `/v1/scans/laser/site-framing?session_key=${encodeURIComponent(context.sessionKey)}`
+    : "";
+  let cancelResponse = null;
+  let cancelFailure = null;
+  if (!requestSent) {
+    // 仍在等待 WS，服务端 POST 尚未发出；先推进 generation，确保旧 run 醒来后不能继续起扫。
+    app.framingGeneration++;
+    app.framingSessionKey = "";
+    cancelResponse = {
+      active: false,
+      cancel_won: true,
+      server_persisted: false,
+      devices_ready: true,
+    };
+  } else if (cancelPath) {
+    try {
+      cancelResponse = await api(cancelPath, { method: "DELETE" }, context.connection);
+    } catch (err) {
+      cancelFailure = err;
+    }
+  }
+
+  const keepLocked = (message) => {
+    app.framingStopping = true;
+    app.framingStopRequestPending = false;
+    app.framingRunning = true;
+    app.stationCalibrationPending = true;
+    els.runFraming.hidden = true;
+    if (els.framingStop) {
+      els.framingStop.hidden = false;
+      els.framingStop.disabled = false;
+    }
+    renderScanActionButton();
+    els.framingStatus.textContent = message;
+  };
+  const unlock = (message) => {
+    app.framingStopping = false;
+    app.framingStopRequestPending = false;
+    app.framingRunning = false;
+    app.framingRequestSent = false;
+    app.stationCalibrationPending = false;
+    els.runFraming.hidden = false;
+    els.runFraming.disabled = !app.framingControlsReady;
+    if (els.framingStop) {
+      els.framingStop.hidden = true;
+      els.framingStop.disabled = false;
+    }
+    renderScanActionButton();
+    els.framingStatus.textContent = message;
+  };
+
+  if (cancelResponse?.active === true) {
+    keepLocked(cancelResponse.commit_started === true
+      ? "取景结果已进入提交阶段，服务端仍在收尾；请稍候后再次点停止，以回读最终权威状态。"
+      : "取消已被服务端接受，但取景进程或设备仍在清理；请稍候后再次点停止确认。"
+    );
+    return;
+  }
+  if (cancelFailure?.body?.commit_started === true) {
+    els.framingStatus.textContent = cancelFailure.body.server_persisted === true
+      ? "停止到达时外参已提交；正在回读服务端权威状态。"
+      : "停止到达时外参已进入提交阶段；正在回读服务端权威状态。";
+    await Promise.allSettled([syncStationCalibration(), refreshBackgroundStatus()]);
+    renderCalibration();
+    renderStationReadiness();
+    if (cancelFailure.body.devices_ready !== true) {
+      keepLocked("外参提交状态已回读，但至少一台设备尚未确认回到 READY；请检查设备后再次停止。 ");
+      return;
+    }
+    unlock(cancelFailure.body.server_persisted === true
+      ? "停止到达时外参已保存；服务端权威状态与设备 READY 已重新确认。"
+      : "本次外参提交未确认成功；服务端权威状态与设备 READY 已重新确认。"
+    );
+    showToast(cancelFailure.body.server_persisted === true
+      ? "本次外参已保存，权威状态已重新读取"
+      : "本次外参提交状态已重新读取，请以就绪链为准");
+    return;
+  }
+  if (cancelFailure) {
+    keepLocked(`停止请求未获完整确认：${cancelFailure.message}。取景操作保持锁定，请再次停止或检查 A/B 是否均为 READY。`);
+    showToast("取景停止未获服务端确认，请检查设备状态");
+    return;
+  }
+  const safelyStopped = cancelResponse?.active === false
+    && cancelResponse?.cancel_won === true
+    && cancelResponse?.server_persisted === false
+    && cancelResponse?.devices_ready === true;
+  if (!safelyStopped) {
+    keepLocked("服务端尚未同时确认会话取消、外参未保存与 A/B READY；取景操作保持锁定。请再次停止。 ");
+    return;
+  }
+  unlock("取景扫描已停止，A/B 已回到 READY，未保存新的工位外参。");
+}
+
+function selectedFramingShot(role) {
+  const st = app.framing?.[role.toLowerCase()];
+  if (!st || st.selected == null) return null;
+  const shot = st.shots[st.selected];
+  return shot ? { st, shot, index: st.selected } : null;
+}
+
+const FRAMING_ZOOM_MIN = 0.25;
+const FRAMING_ZOOM_MAX = 24;
+const FRAMING_ROTATE_STEP = 5 * Math.PI / 180;
+
+function framingView(role) {
+  const st = app.framing?.[role.toLowerCase()];
+  if (!st) return null;
+  if (!st.view) st.view = createFramingView();
+  return st.view;
+}
+
+function framingCanvasLocalPoint(canvas, ev) {
+  const rect = canvas.getBoundingClientRect();
+  return { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+}
+
+function framingCanvasSize(canvas, shot, img) {
+  const rect = canvas.getBoundingClientRect();
+  const stage = canvas.parentElement?.getBoundingClientRect();
+  const cssW = Math.max(1, Math.round(rect.width || stage?.width || shot?.w || img?.width || 1));
+  const cssH = Math.max(1, Math.round(rect.height || stage?.height || shot?.h || img?.height || 1));
+  return { cssW, cssH, dpr: window.devicePixelRatio || 1 };
+}
+
+function framingImageSize(shot, img) {
+  return {
+    w: Math.max(1, Number(shot?.w) || img?.naturalWidth || img?.width || 1),
+    h: Math.max(1, Number(shot?.h) || img?.naturalHeight || img?.height || 1),
+  };
+}
+
+function updateFramingViewGeometry(role, shot, img) {
+  const canvas = els[`framingCanvas${role}`];
+  const view = framingView(role);
+  if (!canvas || !view) return null;
+  const { cssW, cssH, dpr } = framingCanvasSize(canvas, shot, img);
+  const iwih = framingImageSize(shot, img);
+  const pixelW = Math.max(1, Math.round(cssW * dpr));
+  const pixelH = Math.max(1, Math.round(cssH * dpr));
+  if (canvas.width !== pixelW || canvas.height !== pixelH) {
+    canvas.width = pixelW;
+    canvas.height = pixelH;
+  }
+  view.last = {
+    cssW,
+    cssH,
+    imgW: iwih.w,
+    imgH: iwih.h,
+    baseScale: Math.min(cssW / iwih.w, cssH / iwih.h),
+  };
+  return { canvas, view, cssW, cssH, dpr, imgW: iwih.w, imgH: iwih.h };
+}
+
+function framingTransform(view) {
+  const g = view?.last;
+  if (!g) return null;
+  const scale = g.baseScale * view.zoom;
+  return {
+    ...g,
+    scale,
+    cx: g.cssW / 2 + view.panX,
+    cy: g.cssH / 2 + view.panY,
+    cos: Math.cos(view.rotation),
+    sin: Math.sin(view.rotation),
+  };
+}
+
+function framingImageToCanvas(role, x, y) {
+  const t = framingTransform(framingView(role));
+  if (!t || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const dx = x - t.imgW / 2;
+  const dy = y - t.imgH / 2;
+  return {
+    x: t.cx + t.scale * (t.cos * dx - t.sin * dy),
+    y: t.cy + t.scale * (t.sin * dx + t.cos * dy),
+  };
+}
+
+function framingCanvasToImage(role, x, y) {
+  const t = framingTransform(framingView(role));
+  if (!t) return null;
+  const dx = (x - t.cx) / t.scale;
+  const dy = (y - t.cy) / t.scale;
+  const ix = t.cos * dx + t.sin * dy + t.imgW / 2;
+  const iy = -t.sin * dx + t.cos * dy + t.imgH / 2;
+  if (ix < 0 || iy < 0 || ix > t.imgW || iy > t.imgH) return null;
+  return { x: ix, y: iy, u: ix / t.imgW, v: iy / t.imgH, w: t.imgW, h: t.imgH };
+}
+
+function clampFramingZoom(z) {
+  return Math.max(FRAMING_ZOOM_MIN, Math.min(FRAMING_ZOOM_MAX, z));
+}
+
+function handleFramingCanvasClick(role, ev) {
+  const view = framingView(role);
+  if (view?.suppressClick) {
+    view.suppressClick = false;
+    return;
+  }
+  const manual = app.framing?.manual;
+  if (!manual?.enabled || ev.button !== 0) return;
+  const canvas = els[`framingCanvas${role}`];
+  const selected = selectedFramingShot(role);
+  if (!canvas || !selected) {
+    showToast(`请先让 ${role} 镜头收到取景帧`);
+    return;
+  }
+  if (manual.nextRole !== role) {
+    showToast(`请先点 ${manual.nextRole} 镜头的对应点`);
+    return;
+  }
+  const lp = framingCanvasLocalPoint(canvas, ev);
+  const p = framingCanvasToImage(role, lp.x, lp.y);
+  if (!p) return;
+  const obs = {
+    role,
+    shotIndex: selected.index,
+    heading: selected.shot.heading,
+    x: p.x,
+    y: p.y,
+    u: p.u,
+    v: p.v,
+    w: p.w,
+    h: p.h,
+  };
+  if (role === "A") {
+    manual.pendingA = obs;
+    manual.nextRole = "B";
+  } else {
+    if (!manual.pendingA) {
+      manual.nextRole = "A";
+      renderFramingManual();
+      showToast("请先点 A 镜头的对应点");
+      return;
+    }
+    manual.pairs.push({
+      label: `P${manual.pairs.length + 1}`,
+      a: manual.pendingA,
+      b: obs,
+    });
+    manual.pendingA = null;
+    manual.nextRole = "A";
+  }
+  renderFramingManual();
+  redrawFramingSelected("A");
+  redrawFramingSelected("B");
+}
+
+function toggleFramingManual() {
+  if (!app.framing) resetFramingPanes();
+  app.framing.manual.enabled = !app.framing.manual.enabled;
+  app.framing.manual.nextRole = app.framing.manual.pendingA ? "B" : "A";
+  renderFramingManual();
+  redrawFramingSelected("A");
+  redrawFramingSelected("B");
+}
+
+function undoFramingManualPoint() {
+  const manual = app.framing?.manual;
+  if (!manual) return;
+  if (manual.pendingA) {
+    manual.pendingA = null;
+    manual.nextRole = "A";
+  } else if (manual.pairs.length) {
+    const last = manual.pairs.pop();
+    manual.pendingA = last.a;
+    manual.nextRole = "B";
+  } else {
+    showToast("没有可撤销的手动点");
+  }
+  renderFramingManual();
+  redrawFramingSelected("A");
+  redrawFramingSelected("B");
+}
+
+function clearFramingManualPoints() {
+  const manual = app.framing?.manual;
+  if (!manual) return;
+  manual.pendingA = null;
+  manual.pairs = [];
+  manual.nextRole = "A";
+  renderFramingManual();
+  redrawFramingSelected("A");
+  redrawFramingSelected("B");
+}
+
+async function solveFramingManualPoints() {
+  const manual = app.framing?.manual;
+  if (!manual) return;
+  if (manual.pendingA) {
+    showToast("还有 A 点未配 B 点，先完成这一组或撤销");
+    return;
+  }
+  if (manual.pairs.length < 4) {
+    showToast("手动 RGB 点对至少需要 4 组，并尽量分散");
+    return;
+  }
+  const camA = cameraByRole("a");
+  const camB = cameraByRole("b");
+  const body = {
+    unit_a_ip: camA?.ip || "",
+    unit_b_ip: camB?.ip || "",
+    pairs: manual.pairs.map((pair) => ({
+      label: pair.label,
+      a: pair.a,
+      b: pair.b,
+    })),
+  };
+  els.framingManualSolve.disabled = true;
+  els.framingResult.hidden = false;
+  els.framingResult.textContent = "手动 RGB 点对解算中…";
+  try {
+    const resp = await api("/v1/scans/laser/site-framing/manual", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    const ncommon = resp.n_common ?? manual.pairs.length;
+    const rmsMm = ((resp.rms_m ?? resp.rms ?? 0) * 1000).toFixed(1);
+    if (resp.ok && Array.isArray(resp.b_to_a) && resp.b_to_a.length === 16) {
+      app.calibration.result = {
+        matrix: nativeBToAToDisplay(resp.b_to_a),
+        source: "manual_rgb",
+        rms_m: resp.rms_m,
+        n_common: ncommon,
+        meanError: Number(resp.rms_m || 0) * 1000,
+        maxError: Number(resp.max_error_m || resp.rms_m || 0) * 1000,
+      };
+      saveCalibrationState({ persistServer: false });
+      renderCalibration();
+      els.framingResult.textContent = `✓ 手动点对诊断完成\n点对 ${ncommon} 组，RMS ${rmsMm} mm\n该结果不会覆盖服务端正式工位外参。`;
+      els.framingStatus.textContent = "手动点对诊断完成；正式融合仍使用服务端权威 ArUco 标定。";
+      showToast(`手动 RGB 点对诊断完成：${ncommon} 组，RMS ${rmsMm}mm`);
+    } else {
+      els.framingResult.textContent =
+        `✗ 手动标定未达标：点对 ${ncommon} 组，RMS ${rmsMm} mm\n${resp.log || resp.message || ""}`;
+      showToast("手动标定未达标，见结果区");
+    }
+  } catch (err) {
+    els.framingResult.textContent =
+      `✗ 手动 RGB 点对解算失败：${err.message}\n` +
+      "当前点对已保留在页面。若提示欠约束，需要已知尺度靶点角点或同一点多航向观测后才能求解并保存。";
+    showToast(`手动解算失败：${err.message}`);
+  } finally {
+    renderFramingManual();
+  }
+}
+
+function redrawFramingSelected(role) {
+  const selected = selectedFramingShot(role);
+  if (selected) drawFramingShot(role, selected.shot);
+}
+
+function adjustFramingZoom(role, factor, anchor = null) {
+  const view = framingView(role);
+  if (!view?.last) return;
+  const point = anchor || { x: view.last.cssW / 2, y: view.last.cssH / 2 };
+  const imagePoint = framingCanvasToImage(role, point.x, point.y);
+  view.zoom = clampFramingZoom(view.zoom * factor);
+  if (imagePoint) {
+    const after = framingImageToCanvas(role, imagePoint.x, imagePoint.y);
+    if (after) {
+      view.panX += point.x - after.x;
+      view.panY += point.y - after.y;
+    }
+  }
+  redrawFramingSelected(role);
+}
+
+function rotateFramingView(role, delta) {
+  const view = framingView(role);
+  if (!view) return;
+  view.rotation += delta;
+  redrawFramingSelected(role);
+}
+
+function resetFramingView(role) {
+  const view = framingView(role);
+  if (!view) return;
+  view.zoom = 1;
+  view.rotation = 0;
+  view.panX = 0;
+  view.panY = 0;
+  view.suppressClick = false;
+  redrawFramingSelected(role);
+}
+
+function handleFramingWheel(role, ev) {
+  const view = framingView(role);
+  if (!view?.last) return;
+  ev.preventDefault();
+  const canvas = els[`framingCanvas${role}`];
+  const p = framingCanvasLocalPoint(canvas, ev);
+  if (ev.altKey) {
+    rotateFramingView(role, ev.deltaY > 0 ? FRAMING_ROTATE_STEP : -FRAMING_ROTATE_STEP);
+    return;
+  }
+  const factor = Math.exp(-ev.deltaY * 0.0015);
+  adjustFramingZoom(role, factor, p);
+}
+
+function handleFramingPointerDown(role, ev) {
+  if (ev.button !== 0) return;
+  const view = framingView(role);
+  const selected = selectedFramingShot(role);
+  if (!view || !selected) return;
+  view.drag = {
+    pointerId: ev.pointerId,
+    x: ev.clientX,
+    y: ev.clientY,
+    moved: false,
+  };
+  els[`framingCanvas${role}`]?.setPointerCapture?.(ev.pointerId);
+}
+
+function handleFramingPointerMove(role, ev) {
+  const view = framingView(role);
+  if (!view?.drag || view.drag.pointerId !== ev.pointerId) return;
+  const dx = ev.clientX - view.drag.x;
+  const dy = ev.clientY - view.drag.y;
+  if (Math.abs(dx) + Math.abs(dy) > 2) {
+    view.drag.moved = true;
+    view.suppressClick = true;
+  }
+  view.drag.x = ev.clientX;
+  view.drag.y = ev.clientY;
+  view.panX += dx;
+  view.panY += dy;
+  redrawFramingSelected(role);
+}
+
+function handleFramingPointerEnd(role, ev) {
+  const view = framingView(role);
+  if (!view?.drag || view.drag.pointerId !== ev.pointerId) return;
+  view.suppressClick = Boolean(view.drag.moved);
+  view.drag = null;
+  els[`framingCanvas${role}`]?.releasePointerCapture?.(ev.pointerId);
+}
+
+function drawFramingManualPoints(ctx, role, shot) {
+  const manual = app.framing?.manual;
+  const selected = selectedFramingShot(role);
+  if (!manual || !selected || selected.shot !== shot) return;
+  const points = [];
+  for (const pair of manual.pairs) {
+    const obs = role === "A" ? pair.a : pair.b;
+    if (obs?.shotIndex === selected.index) points.push({ label: `${pair.label}${role}`, obs, paired: true });
+  }
+  if (role === "A" && manual.pendingA?.shotIndex === selected.index) {
+    points.push({ label: "待配A", obs: manual.pendingA, paired: false });
+  }
+  if (!points.length) return;
+  const t = framingTransform(framingView(role));
+  if (!t) return;
+  const w = t.cssW;
+  const r = Math.max(5, Math.round(w / 220));
+  ctx.save();
+  ctx.lineWidth = Math.max(2, Math.round(w / 520));
+  ctx.font = `${Math.max(14, Math.round(w / 72))}px sans-serif`;
+  for (const p of points) {
+    const sp = framingImageToCanvas(role, p.obs.x, p.obs.y);
+    if (!sp) continue;
+    ctx.beginPath();
+    ctx.arc(sp.x, sp.y, r, 0, Math.PI * 2);
+    ctx.fillStyle = p.paired ? "rgba(255, 204, 102, 0.22)" : "rgba(82, 167, 255, 0.22)";
+    ctx.strokeStyle = p.paired ? "#ffcc66" : "#52a7ff";
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.fillText(p.label, sp.x + r + 3, Math.max(14, sp.y - r - 2));
+  }
+  ctx.restore();
+}
+
+function framingPointSummary(obs) {
+  if (!obs) return "—";
+  return `${obs.role} 帧${obs.shotIndex + 1} h=${obs.heading.toFixed(1)}° x=${obs.x.toFixed(1)} y=${obs.y.toFixed(1)}`;
+}
+
+function renderFramingManual() {
+  const manual = app.framing?.manual;
+  if (!manual || !els.framingManualStatus) return;
+  const pairCount = manual.pairs.length;
+  const pendingText = manual.pendingA ? `，待配 ${framingPointSummary(manual.pendingA)}` : "";
+  els.framingManualStatus.textContent = manual.enabled
+    ? `开启 · 下一点 ${manual.nextRole} · 已 ${pairCount} 对${pendingText} · 待后端求解`
+    : "关闭";
+  els.framingManualToggle.textContent = manual.enabled ? "关闭手动标点" : "开始手动标点";
+  els.framingManualUndo.disabled = !manual.pendingA && !manual.pairs.length;
+  els.framingManualClear.disabled = !manual.pendingA && !manual.pairs.length;
+  els.framingManualSolve.disabled = Boolean(manual.pendingA) || manual.pairs.length < 4;
+  els.framingManualPairs.innerHTML = "";
+  for (const pair of manual.pairs) {
+    const row = document.createElement("div");
+    row.className = "framing-manual-row";
+    row.innerHTML = `<strong>${escapeHtml(pair.label)}</strong><code>${escapeHtml(framingPointSummary(pair.a))}\n${escapeHtml(framingPointSummary(pair.b))}</code>`;
+    els.framingManualPairs.append(row);
+  }
+  if (manual.pendingA) {
+    const row = document.createElement("div");
+    row.className = "framing-manual-row";
+    row.innerHTML = `<strong>待配</strong><code>${escapeHtml(framingPointSummary(manual.pendingA))}\nB 请选择</code>`;
+    els.framingManualPairs.append(row);
+  }
 }
 
 // 渲染一帧取景：画到对应镜头画布 + 叠 ArUco 绿框 + 入胶片缩略图 + 更新计数。
@@ -3916,29 +7078,61 @@ async function stopFraming() {
 function drawFramingShot(role, shot) {
   const canvas = els[`framingCanvas${role}`];
   if (!canvas || !shot?.jpeg_b64) return;
+  if (shot._img?.complete) {
+    renderFramingCanvas(role, shot, shot._img);
+    return;
+  }
   const img = new Image();
   img.onload = () => {
-    const w = shot.w || img.width, h = shot.h || img.height;
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(img, 0, 0, w, h);
-    ctx.lineWidth = Math.max(2, Math.round(w / 400));
-    ctx.strokeStyle = "#27e08a";
-    ctx.fillStyle = "#27e08a";
-    ctx.font = `${Math.max(14, Math.round(w / 60))}px sans-serif`;
-    for (const m of shot.markers || []) {
-      const px = m.px || [];
-      if (px.length < 4) continue;
-      ctx.beginPath();
-      ctx.moveTo(px[0][0], px[0][1]);
-      for (let i = 1; i < 4; i++) ctx.lineTo(px[i][0], px[i][1]);
-      ctx.closePath();
-      ctx.stroke();
-      ctx.fillText(`#${m.id}`, px[0][0], Math.max(12, px[0][1] - 4));
-    }
+    shot._img = img;
+    renderFramingCanvas(role, shot, img);
   };
   img.src = `data:image/jpeg;base64,${shot.jpeg_b64}`;
+}
+
+function renderFramingCanvas(role, shot, img) {
+  const g = updateFramingViewGeometry(role, shot, img);
+  if (!g) return;
+  const ctx = g.canvas.getContext("2d");
+  ctx.setTransform(g.dpr, 0, 0, g.dpr, 0, 0);
+  ctx.clearRect(0, 0, g.cssW, g.cssH);
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, g.cssW, g.cssH);
+
+  const t = framingTransform(g.view);
+  ctx.save();
+  ctx.translate(t.cx, t.cy);
+  ctx.rotate(g.view.rotation);
+  ctx.scale(t.scale, t.scale);
+  ctx.drawImage(img, -g.imgW / 2, -g.imgH / 2, g.imgW, g.imgH);
+  ctx.restore();
+
+  drawFramingMarkers(ctx, role, shot);
+  drawFramingManualPoints(ctx, role, shot);
+}
+
+function drawFramingMarkers(ctx, role, shot) {
+  const t = framingTransform(framingView(role));
+  if (!t) return;
+  const w = t.cssW;
+  ctx.save();
+  ctx.lineWidth = Math.max(2, Math.round(w / 400));
+  ctx.strokeStyle = "#27e08a";
+  ctx.fillStyle = "#27e08a";
+  ctx.font = `${Math.max(14, Math.round(w / 60))}px sans-serif`;
+  for (const m of shot.markers || []) {
+    const px = m.px || [];
+    if (px.length < 4) continue;
+    const pts = px.map((p) => framingImageToCanvas(role, p[0], p[1])).filter(Boolean);
+    if (pts.length < 4) continue;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < 4; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.fillText(`#${m.id}`, pts[0].x, Math.max(12, pts[0].y - 4));
+  }
+  ctx.restore();
 }
 
 // 点胶片缩略图：把主显示区切到该帧并 pin 住（不再跟随最新），高亮当前选中。
@@ -3949,6 +7143,7 @@ function selectFramingShot(role, index) {
   drawFramingShot(role, st.shots[index]);
   const strip = els[`framingStrip${role}`];
   [...strip.children].forEach((el, i) => el.classList.toggle("active", i === index));
+  renderFramingManual();
 }
 
 // 收到一帧取景：存帧 + 入胶片缩略条；未手动 pin 时主区跟随最新，已 pin 则保持不跳。
@@ -4011,6 +7206,7 @@ function solveCalibration() {
       app.calibration.pairs.map((p) => p.b),
       app.calibration.pairs.map((p) => p.a),
     );
+    result.source = "point_cloud_legacy";
     app.calibration.result = result;
     saveCalibrationState();
     els.calibResult.textContent = calibrationResultText(result);
@@ -4022,9 +7218,40 @@ function solveCalibration() {
 function calibrationResultText(result) {
   if (!Array.isArray(result?.matrix)) return "标定结果格式异常，请重新计算。";
   const nativeSite = toNativeSiteJson(result);
+  const source = result.source || "point_cloud_legacy";
+  let status = isOfficialSiteCalibrationResult(result) ? "服务端权威，可用于融合" : "历史诊断，不用于融合";
+  if (result.serverPersisted === false && result.siteQualityState === "local_backup") {
+    status = "本地恢复备份，未删除；等待恢复服务端记录";
+  } else if (result.siteQualityOverride && result.scanEligible !== false) {
+    status = "服务端权威，当前 revision 已受控放行，可用于联调融合；不作为生产质量证据";
+  } else if (result.siteQualityVerified) {
+    status = "服务端权威，生产质量已验证，可用于融合";
+  } else if (result.scanEligible === false) {
+    status = "服务端权威，外参仍在但当前不可起扫";
+  } else if (result.siteQualityState === "unknown") {
+    status = "服务端权威外参已加载；质量状态待服务端起扫接口确认";
+  }
+  const metrics = [];
+  const rmsM = optionalFiniteNumber(result.rms_m);
+  const common = optionalFiniteNumber(result.n_common);
+  const mean = optionalFiniteNumber(result.meanError);
+  const max = optionalFiniteNumber(result.maxError);
+  if (rmsM != null) metrics.push(`RMS: ${(rmsM * 1000).toFixed(2)} mm`);
+  if (common != null) metrics.push(`公共标记: ${Math.trunc(common)} 个`);
+  if (mean != null) metrics.push(`平均残差: ${mean.toFixed(2)} mm`);
+  if (max != null) metrics.push(`最大残差: ${max.toFixed(2)} mm`);
+  if (!metrics.length) {
+    if (result.siteQualityOverride) {
+      metrics.push("历史质量指标: 未记录（当前 revision 已受控放行）");
+    } else if (result.siteQualityState === "unknown") {
+      metrics.push("质量状态: 查询接口未返回完整质量契约，起扫以服务端判定为准");
+    } else {
+      metrics.push("质量指标: 未记录");
+    }
+  }
   return [
-    `平均残差: ${Number(result.meanError || 0).toFixed(2)} mm`,
-    `最大残差: ${Number(result.maxError || 0).toFixed(2)} mm`,
+    `来源: ${source}（${status}）`,
+    ...metrics,
     "",
     "Web/端侧 BToA(mm):",
     JSON.stringify({ b_to_a_mm: result.matrix }, null, 2),
@@ -4262,29 +7489,141 @@ function normalize3(v) {
   return [v[0] / l, v[1] / l, v[2] / l];
 }
 
-function openDrawer(panel = "station") {
+function modalFocusableElements(modal) {
+  if (!modal?.querySelectorAll) return [];
+  return [...modal.querySelectorAll(
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
+  )].filter((el) => {
+    if (el.getClientRects().length === 0) return false;
+    const closedDetails = el.closest?.("details:not([open])");
+    return !closedDetails || el.tagName === "SUMMARY";
+  });
+}
+
+function activatePageModal(modal, exclusions = []) {
+  if (!modal || modal.__inertSiblings || !document.body?.children) return;
+  modal.__previousModalInert = Boolean(modal.inert);
+  modal.inert = false;
+  const excluded = new Set([modal, els.toast, ...exclusions]);
+  modal.__inertSiblings = [...document.body.children]
+    .filter((child) => !excluded.has(child))
+    .map((child) => [child, Boolean(child.inert)]);
+  for (const [child] of modal.__inertSiblings) child.inert = true;
+}
+
+function releasePageModal(modal) {
+  for (const [child, wasInert] of modal?.__inertSiblings || []) child.inert = wasInert;
+  if (modal) {
+    modal.inert = Boolean(modal.__previousModalInert);
+    delete modal.__previousModalInert;
+    delete modal.__inertSiblings;
+  }
+}
+
+function trapModalFocus(modal, ev) {
+  if (ev.key !== "Tab") return false;
+  const focusable = modalFocusableElements(modal);
+  if (!focusable.length) {
+    ev.preventDefault();
+    modal.focus?.();
+    return true;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (ev.shiftKey && document.activeElement === first) {
+    ev.preventDefault();
+    last.focus();
+    return true;
+  }
+  if (!ev.shiftKey && document.activeElement === last) {
+    ev.preventDefault();
+    first.focus();
+    return true;
+  }
+  return false;
+}
+
+function openDrawer(panel = "station", trigger = null) {
+  app.drawerReturnFocus = trigger || document.activeElement || null;
   setDrawerPanel(panel);
+  activatePageModal(els.drawer, [els.drawerBackdrop]);
   els.drawer.classList.add("open");
   els.drawer.setAttribute("aria-hidden", "false");
   els.drawerBackdrop.hidden = false;
+  syncWorkspaceNavigation(panel, true);
+  requestAnimationFrame(() => {
+    document.querySelector(`[data-drawer-tab="${panel}"]`)?.focus();
+  });
 }
 
 function closeDrawer() {
+  const wasOpen = els.drawer.classList.contains("open");
   els.drawer.classList.remove("open");
   els.drawer.setAttribute("aria-hidden", "true");
   els.drawerBackdrop.hidden = true;
+  releasePageModal(els.drawer);
+  syncWorkspaceNavigation("", false);
+  if (wasOpen && app.drawerReturnFocus?.focus) {
+    const target = app.drawerReturnFocus;
+    requestAnimationFrame(() => target.focus());
+  }
+  app.drawerReturnFocus = null;
+}
+
+function trapDrawerFocus(ev) {
+  if (ev.key !== "Tab" || !els.drawer.classList.contains("open") || !els.drawer.querySelectorAll) return;
+  const focusable = modalFocusableElements(els.drawer);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (ev.shiftKey && document.activeElement === first) {
+    ev.preventDefault();
+    last.focus();
+  } else if (!ev.shiftKey && document.activeElement === last) {
+    ev.preventDefault();
+    first.focus();
+  }
+}
+
+function syncWorkspaceNavigation(panel, active) {
+  document.querySelectorAll(".workspace-nav-button").forEach((btn) => {
+    const selected = active && btn.getAttribute("data-open-panel") === panel;
+    btn.classList.toggle("active", selected);
+    btn.setAttribute("aria-current", selected ? "page" : "false");
+  });
 }
 
 function setDrawerPanel(panel) {
   document.querySelectorAll("[data-drawer-tab]").forEach((btn) => {
-    btn.classList.toggle("active", btn.getAttribute("data-drawer-tab") === panel);
+    const active = btn.getAttribute("data-drawer-tab") === panel;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-selected", active ? "true" : "false");
+    btn.tabIndex = active ? 0 : -1;
   });
   document.querySelectorAll("[data-drawer-panel]").forEach((el) => {
-    el.classList.toggle("active", el.getAttribute("data-drawer-panel") === panel);
+    const active = el.getAttribute("data-drawer-panel") === panel;
+    el.classList.toggle("active", active);
+    el.setAttribute("aria-hidden", active ? "false" : "true");
   });
+  if (els.drawer.classList.contains("open")) syncWorkspaceNavigation(panel, true);
   if (panel === "device") {
     refreshDevice({ silent: true });
   }
+}
+
+function focusCalibrationReadinessTarget(readiness) {
+  const targetId = {
+    site: "calibrationStepSite",
+    region: "calibrationStepRegion",
+    background: "calibrationStepBackground",
+  }[readiness];
+  if (!targetId) return;
+  requestAnimationFrame(() => {
+    const target = document.getElementById(targetId);
+    if (!target) return;
+    target.focus?.({ preventScroll: true });
+    target.scrollIntoView?.({ block: "start", behavior: "smooth" });
+  });
 }
 
 function setCloudMode(mode) {
@@ -4292,24 +7631,543 @@ function setCloudMode(mode) {
   app.cloudMode = mode;
   if (mode === "fused") {
     app.activeViewKey = "fused";
-    if (app.fusionUnavailable) showToast("当前工位未标定，无法显示融合点云");
+    if (app.fusionUnavailable && !app.manualCloud.enabled) showToast("当前工位未标定，无法显示融合点云");
   } else if (app.activeViewKey === "fused") {
     app.activeViewKey = "a";
   }
   if (app.controlMode === "roam") prepareRoamViews(true);
   markRenderDirty();
   document.querySelectorAll("[data-cloud-mode]").forEach((btn) => {
-    btn.classList.toggle("active", btn.getAttribute("data-cloud-mode") === mode);
+    const active = btn.getAttribute("data-cloud-mode") === mode;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-pressed", active ? "true" : "false");
   });
   renderScanMeta();
 }
 
+async function openFeedback() {
+  if (document.querySelector(".feedback-mask")) return;
+  if (els.feedback) els.feedback.disabled = true;
+  try {
+    showToast("正在截取当前页面");
+    const shot = await captureFeedbackShot();
+    openFeedbackAnnotator(shot);
+  } catch (err) {
+    showToast(`截图失败：${err.message || err}`);
+  } finally {
+    if (els.feedback) els.feedback.disabled = false;
+  }
+}
+
+async function captureFeedbackShot() {
+  const restoreSensitive = maskSensitiveFeedbackFields();
+  try {
+    if (navigator.mediaDevices?.getDisplayMedia) {
+      showToast("请选择当前浏览器标签页或窗口完成截图");
+      try {
+        const screenShot = captureScreenShot();
+        return navigator.webdriver ? await withTimeout(screenShot, 4000, "屏幕捕获未完成") : await screenShot;
+      } catch (err) {
+        console.warn("屏幕捕获失败，改用页面截图", err);
+        showToast("屏幕捕获未完成，改用页面截图");
+      }
+    }
+    try {
+      return await captureModernShot();
+    } catch (err) {
+      console.warn("页面截图失败", err);
+      throw new Error(`页面截图失败：${err.message || err}`);
+    }
+  } finally {
+    restoreSensitive();
+  }
+}
+
+function maskSensitiveFeedbackFields() {
+  const fields = new Set([
+    els.token,
+    ...document.querySelectorAll('input[type="password"], [data-sensitive="true"]'),
+  ]);
+  const restores = [];
+  for (const field of fields) {
+    if (!field || typeof field.value !== "string") continue;
+    const value = field.value;
+    field.value = value ? "••••••••••••" : "";
+    restores.push(() => { field.value = value; });
+  }
+  return () => restores.forEach((restore) => restore());
+}
+
+function withTimeout(promise, ms, message) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+async function captureModernShot() {
+  const restoreGlass = neutralizeFeedbackGlass();
+  const restoreCanvas = installFeedbackCanvasSnapshot();
+  try {
+    const sx = window.scrollX;
+    const sy = window.scrollY;
+    const bg = getComputedStyle(document.body).backgroundColor || "#eef1ef";
+    const canvas = await domToCanvas(document.body, {
+      backgroundColor: bg,
+      scale: 1,
+      width: window.innerWidth,
+      height: window.innerHeight,
+      style: {
+        transform: `translate(${-sx}px, ${-sy}px)`,
+        transformOrigin: "top left",
+      },
+      filter: (node) => {
+        const el = node;
+        if (!el || !el.classList) return true;
+        if (el.classList.contains("feedback-mask")) return false;
+        if (el.id === "toast") return false;
+        return true;
+      },
+    });
+    return canvas.toDataURL("image/png");
+  } finally {
+    restoreCanvas();
+    restoreGlass();
+    markRenderDirty();
+  }
+}
+
+function installFeedbackCanvasSnapshot() {
+  const dataURL = captureCloudCanvasSnapshot();
+  if (!dataURL) return () => {};
+  const img = document.createElement("img");
+  img.className = "feedback-canvas-snapshot";
+  img.src = dataURL;
+  img.alt = "";
+  const prevVisibility = els.canvas.style.visibility;
+  els.canvas.style.visibility = "hidden";
+  els.canvas.insertAdjacentElement("afterend", img);
+  return () => {
+    img.remove();
+    els.canvas.style.visibility = prevVisibility;
+  };
+}
+
+function captureCloudCanvasSnapshot() {
+  const canvas = els.canvas;
+  if (!canvas) return "";
+  try {
+    if (app.gl) {
+      drawClouds();
+      return readWebglCanvasPNG(app.gl, canvas);
+    }
+    if (app.ctx2d) {
+      drawClouds2d();
+      return canvas.toDataURL("image/png");
+    }
+    return canvas.toDataURL("image/png");
+  } catch (err) {
+    console.warn("点云画布快照失败", err);
+    try {
+      return canvas.toDataURL("image/png");
+    } catch {
+      return "";
+    }
+  }
+}
+
+function readWebglCanvasPNG(gl, sourceCanvas) {
+  const width = sourceCanvas.width;
+  const height = sourceCanvas.height;
+  if (!width || !height) return sourceCanvas.toDataURL("image/png");
+  const pixels = new Uint8Array(width * height * 4);
+  gl.finish();
+  gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+  const flipped = new Uint8ClampedArray(width * height * 4);
+  const stride = width * 4;
+  for (let y = 0; y < height; y++) {
+    const src = (height - 1 - y) * stride;
+    const dst = y * stride;
+    flipped.set(pixels.subarray(src, src + stride), dst);
+  }
+  const out = document.createElement("canvas");
+  out.width = width;
+  out.height = height;
+  const ctx = out.getContext("2d");
+  ctx.putImageData(new ImageData(flipped, width, height), 0, 0);
+  return out.toDataURL("image/png");
+}
+
+function neutralizeFeedbackGlass() {
+  const restores = [];
+  document.body.querySelectorAll("*").forEach((el) => {
+    const cs = getComputedStyle(el);
+    const bf = cs.backdropFilter || cs.webkitBackdropFilter;
+    if (!bf || bf === "none") return;
+    const prevStyle = el.getAttribute("style");
+    el.style.setProperty("backdrop-filter", "none", "important");
+    el.style.setProperty("-webkit-backdrop-filter", "none", "important");
+    const darkSurface = el.closest?.(".cloud-workspace, .framing-overlay, .feedback-mask");
+    const solid = opaqueFeedbackColor(cs.backgroundColor, darkSurface ? [11, 14, 19] : [246, 247, 249]);
+    if (solid) el.style.setProperty("background-color", solid, "important");
+    restores.push(() => {
+      if (prevStyle === null) el.removeAttribute("style");
+      else el.setAttribute("style", prevStyle);
+    });
+  });
+  return () => restores.forEach((fn) => fn());
+}
+
+function opaqueFeedbackColor(color, bg = [246, 247, 249]) {
+  const m = color && color.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?\s*\)/i);
+  if (!m) return null;
+  const r = Number(m[1]);
+  const g = Number(m[2]);
+  const b = Number(m[3]);
+  const a = m[4] !== undefined ? Number(m[4]) : 1;
+  if (a >= 0.999) return null;
+  const mix = (c, base) => Math.round(c * a + base * (1 - a));
+  return `rgb(${mix(r, bg[0])}, ${mix(g, bg[1])}, ${mix(b, bg[2])})`;
+}
+
+async function captureScreenShot() {
+  const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+  try {
+    const video = document.createElement("video");
+    video.srcObject = stream;
+    video.muted = true;
+    await video.play();
+    await new Promise((resolve) => {
+      if (video.videoWidth && video.videoHeight) resolve();
+      else video.onloadedmetadata = resolve;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth || window.innerWidth;
+    canvas.height = video.videoHeight || window.innerHeight;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/png");
+  } finally {
+    stream.getTracks().forEach((track) => track.stop());
+  }
+}
+
+function openFeedbackAnnotator(shot) {
+  const returnFocus = els.feedback || document.activeElement || null;
+  const previousBodyOverflow = document.body.style.overflow;
+  const state = {
+    shot,
+    boxes: [],
+    activeId: "",
+    drawing: null,
+    submitted: null,
+  };
+  const mask = document.createElement("div");
+  mask.className = "feedback-mask";
+  mask.setAttribute("role", "dialog");
+  mask.setAttribute("aria-modal", "true");
+  mask.setAttribute("aria-labelledby", "feedbackDialogTitle");
+  mask.tabIndex = -1;
+  mask.innerHTML = `
+    <div class="feedback-stage-wrap">
+      <div class="feedback-stage">
+        <img class="feedback-shot" alt="当前页面截图" draggable="false" />
+      </div>
+      <div class="feedback-stage-hint">在截图上按住拖拽画框标注问题区域</div>
+    </div>
+    <aside class="feedback-panel">
+      <div class="feedback-panel-head">
+        <strong id="feedbackDialogTitle">问题反馈</strong>
+        <button type="button" class="feedback-close" title="关闭" aria-label="关闭问题反馈">×</button>
+      </div>
+      <div class="feedback-panel-body">
+        <label>标题<input id="feedbackTitleInput" maxlength="120" value="3D 扫描工位问题" /></label>
+        <div class="feedback-field-row">
+          <label>严重度<select id="feedbackSeverityInput"><option value="high">高</option><option value="medium" selected>中</option><option value="low">低</option></select></label>
+          <label>分类<select id="feedbackCategoryInput"><option value="function">功能</option><option value="data">数据</option><option value="ui" selected>界面</option><option value="perf">性能</option><option value="other">其他</option></select></label>
+        </div>
+        <div class="feedback-boxes">
+          <div class="feedback-boxes-title">问题说明 · <span data-feedback-count>0</span> 处</div>
+          <div class="feedback-boxes-list"></div>
+        </div>
+        <div class="feedback-done" hidden>
+          <strong>问题反馈已提交</strong>
+          <span data-feedback-done-text></span>
+        </div>
+      </div>
+      <div class="feedback-panel-foot">
+        <button type="button" data-feedback-cancel>取消</button>
+        <button type="button" class="primary" data-feedback-submit>提交</button>
+        <button type="button" data-feedback-download hidden>下载标注截图</button>
+      </div>
+    </aside>
+  `;
+  const stage = mask.querySelector(".feedback-stage");
+  const img = mask.querySelector(".feedback-shot");
+  const list = mask.querySelector(".feedback-boxes-list");
+  const count = mask.querySelector("[data-feedback-count]");
+  const titleInput = mask.querySelector("#feedbackTitleInput");
+  const severityInput = mask.querySelector("#feedbackSeverityInput");
+  const categoryInput = mask.querySelector("#feedbackCategoryInput");
+  const submitBtn = mask.querySelector("[data-feedback-submit]");
+  const cancelBtn = mask.querySelector("[data-feedback-cancel]");
+  const closeBtn = mask.querySelector(".feedback-close");
+  const downloadBtn = mask.querySelector("[data-feedback-download]");
+  const done = mask.querySelector(".feedback-done");
+  const doneText = mask.querySelector("[data-feedback-done-text]");
+
+  img.src = shot;
+  const close = () => {
+    document.removeEventListener("keydown", onKey);
+    releasePageModal(mask);
+    document.body.style.overflow = previousBodyOverflow;
+    mask.remove();
+    requestAnimationFrame(() => returnFocus?.focus?.());
+  };
+  const render = () => renderFeedbackBoxes(state, stage, list, count);
+  const setActive = (id) => {
+    state.activeId = id;
+    render();
+  };
+  stage.addEventListener("pointerdown", (ev) => {
+    if (state.submitted || ev.button !== 0) return;
+    ev.preventDefault();
+    const p = feedbackPoint(stage, ev);
+    const id = makeId("fb");
+    state.drawing = { id, startX: p.x, startY: p.y };
+    state.boxes.push({ id, x: p.x, y: p.y, w: 0, h: 0, note: "" });
+    setActive(id);
+    stage.setPointerCapture?.(ev.pointerId);
+  });
+  stage.addEventListener("pointermove", (ev) => {
+    if (!state.drawing) return;
+    const p = feedbackPoint(stage, ev);
+    const d = state.drawing;
+    const box = state.boxes.find((b) => b.id === d.id);
+    if (!box) return;
+    box.x = Math.min(d.startX, p.x);
+    box.y = Math.min(d.startY, p.y);
+    box.w = Math.abs(p.x - d.startX);
+    box.h = Math.abs(p.y - d.startY);
+    render();
+  });
+  const finishDraw = (ev) => {
+    if (!state.drawing) return;
+    const id = state.drawing.id;
+    state.drawing = null;
+    stage.releasePointerCapture?.(ev.pointerId);
+    const box = state.boxes.find((b) => b.id === id);
+    if (box && (box.w < 0.01 || box.h < 0.01)) {
+      state.boxes = state.boxes.filter((b) => b.id !== id);
+      state.activeId = "";
+    }
+    render();
+  };
+  stage.addEventListener("pointerup", finishDraw);
+  stage.addEventListener("pointercancel", finishDraw);
+  list.addEventListener("input", (ev) => {
+    const input = ev.target.closest("[data-feedback-note]");
+    if (!input) return;
+    const box = state.boxes.find((b) => b.id === input.getAttribute("data-feedback-note"));
+    if (box) box.note = input.value;
+  });
+  list.addEventListener("focusin", (ev) => {
+    const input = ev.target.closest("[data-feedback-note]");
+    if (input) state.activeId = input.getAttribute("data-feedback-note");
+  });
+  list.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("[data-feedback-delete]");
+    if (!btn) return;
+    const id = btn.getAttribute("data-feedback-delete");
+    state.boxes = state.boxes.filter((b) => b.id !== id);
+    if (state.activeId === id) state.activeId = "";
+    render();
+  });
+  const submit = async () => {
+    if (state.submitted) return;
+    const title = titleInput.value.trim();
+    if (!title) return showToast("请填写反馈标题");
+    if (!state.boxes.length) return showToast("请先在截图上画框标注问题区域");
+    const cleanBoxes = state.boxes.map((b) => ({ x: b.x, y: b.y, w: b.w, h: b.h, note: (b.note || "").trim() }));
+    const annotated = await makeAnnotatedFeedbackPNG(shot, cleanBoxes);
+    submitBtn.disabled = true;
+    submitBtn.textContent = "提交中";
+    try {
+      const res = await fetch("/station/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title,
+          severity: severityInput.value,
+          category: categoryInput.value,
+          pageUrl: window.location.href,
+          userAgent: navigator.userAgent,
+          imageDataUrl: shot,
+          annotatedDataUrl: annotated,
+          boxes: cleanBoxes,
+        }),
+      });
+      const text = await res.text();
+      let body = null;
+      try { body = text ? JSON.parse(text) : null; } catch { body = null; }
+      if (!res.ok) throw new Error(body?.message || body?.error || text || `${res.status}`);
+      state.submitted = { annotated, id: body?.id || "" };
+      done.hidden = false;
+      doneText.textContent = body?.id ? `编号 ${body.id}，已写入服务端反馈目录。` : "已写入服务端反馈目录。";
+      submitBtn.hidden = true;
+      cancelBtn.textContent = "关闭";
+      downloadBtn.hidden = false;
+      showToast("问题反馈已提交");
+    } catch (err) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = "提交";
+      showToast(`提交失败：${err.message || err}`);
+    }
+  };
+  submitBtn.addEventListener("click", submit);
+  cancelBtn.addEventListener("click", close);
+  closeBtn.addEventListener("click", close);
+  downloadBtn.addEventListener("click", () => {
+    if (!state.submitted) return;
+    downloadDataURL(state.submitted.annotated, `${safeDownloadName(titleInput.value)}.png`);
+  });
+  mask.addEventListener("mousedown", (ev) => {
+    if (ev.target === mask) close();
+  });
+  const onKey = (ev) => {
+    if (ev.key === "Tab") {
+      trapModalFocus(mask, ev);
+      return;
+    }
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      close();
+    }
+  };
+  document.addEventListener("keydown", onKey);
+  document.body.style.overflow = "hidden";
+  document.body.append(mask);
+  activatePageModal(mask);
+  render();
+  requestAnimationFrame(() => titleInput.focus());
+}
+
+function renderFeedbackBoxes(state, stage, list, count) {
+  stage.querySelectorAll(".feedback-box").forEach((el) => el.remove());
+  state.boxes.forEach((box, index) => {
+    const el = document.createElement("div");
+    el.className = `feedback-box${state.activeId === box.id ? " active" : ""}`;
+    el.style.left = `${box.x * 100}%`;
+    el.style.top = `${box.y * 100}%`;
+    el.style.width = `${box.w * 100}%`;
+    el.style.height = `${box.h * 100}%`;
+    el.innerHTML = `<span>${index + 1}</span>`;
+    stage.append(el);
+  });
+  count.textContent = String(state.boxes.length);
+  if (!state.boxes.length) {
+    list.innerHTML = `<div class="feedback-boxes-empty">按住截图拖拽画框，再填写每处说明。</div>`;
+    return;
+  }
+  list.innerHTML = state.boxes.map((box, index) => `
+    <div class="feedback-box-row${state.activeId === box.id ? " active" : ""}">
+      <span>${index + 1}</span>
+      <input data-feedback-note="${box.id}" value="${escapeHtml(box.note || "")}" placeholder="这处哪里不对" />
+      <button type="button" data-feedback-delete="${box.id}" title="删除">×</button>
+    </div>
+  `).join("");
+}
+
+function feedbackPoint(stage, ev) {
+  const rect = stage.getBoundingClientRect();
+  return {
+    x: Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width)),
+    y: Math.max(0, Math.min(1, (ev.clientY - rect.top) / rect.height)),
+  };
+}
+
+async function makeAnnotatedFeedbackPNG(shot, boxes) {
+  const img = await loadImage(shot);
+  const canvas = document.createElement("canvas");
+  canvas.width = img.naturalWidth || img.width;
+  canvas.height = img.naturalHeight || img.height;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  ctx.lineWidth = Math.max(3, Math.round(canvas.width / 420));
+  ctx.font = `${Math.max(18, Math.round(canvas.width / 70))}px sans-serif`;
+  boxes.forEach((box, index) => {
+    const x = box.x * canvas.width;
+    const y = box.y * canvas.height;
+    const w = box.w * canvas.width;
+    const h = box.h * canvas.height;
+    const label = `${index + 1}${box.note ? ` ${box.note}` : ""}`;
+    ctx.strokeStyle = "#ff3b30";
+    ctx.fillStyle = "rgba(255, 59, 48, 0.16)";
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeRect(x, y, w, h);
+    const textWidth = Math.min(ctx.measureText(label).width + 18, canvas.width - x - 8);
+    const labelHeight = Math.max(26, Math.round(canvas.width / 50));
+    ctx.fillStyle = "#ff3b30";
+    ctx.fillRect(x, Math.max(0, y - labelHeight), textWidth, labelHeight);
+    ctx.fillStyle = "#fff";
+    ctx.fillText(label, x + 8, Math.max(18, y - 8));
+  });
+  return canvas.toDataURL("image/png");
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("截图图片加载失败"));
+    img.src = src;
+  });
+}
+
+function downloadDataURL(dataURL, name) {
+  const a = document.createElement("a");
+  a.href = dataURL;
+  a.download = name;
+  document.body.append(a);
+  a.click();
+  a.remove();
+}
+
+function safeDownloadName(raw) {
+  return (raw || "feedback").replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 60) || "feedback";
+}
+
 function bindEvents() {
   document.querySelectorAll("[data-open-panel]").forEach((btn) => {
-    btn.addEventListener("click", () => openDrawer(btn.getAttribute("data-open-panel") || "station"));
+    btn.addEventListener("click", () => {
+      const role = btn.getAttribute("data-device-role");
+      const cam = role ? cameraByRole(role) : null;
+      if (cam) {
+        app.selectedCameraId = cam.id;
+        els.deviceSelect.value = cam.id;
+        saveState();
+      }
+      openDrawer(btn.getAttribute("data-open-panel") || "station", btn);
+      focusCalibrationReadinessTarget(btn.getAttribute("data-readiness"));
+    });
   });
-  document.querySelectorAll("[data-drawer-tab]").forEach((btn) => {
+  const drawerTabs = [...document.querySelectorAll("[data-drawer-tab]")];
+  drawerTabs.forEach((btn, index) => {
     btn.addEventListener("click", () => setDrawerPanel(btn.getAttribute("data-drawer-tab") || "station"));
+    btn.addEventListener("keydown", (ev) => {
+      let nextIndex = index;
+      if (ev.key === "ArrowRight") nextIndex = (index + 1) % drawerTabs.length;
+      else if (ev.key === "ArrowLeft") nextIndex = (index - 1 + drawerTabs.length) % drawerTabs.length;
+      else if (ev.key === "Home") nextIndex = 0;
+      else if (ev.key === "End") nextIndex = drawerTabs.length - 1;
+      else return;
+      ev.preventDefault();
+      const next = drawerTabs[nextIndex];
+      setDrawerPanel(next.getAttribute("data-drawer-tab") || "station");
+      next.focus();
+    });
   });
   document.querySelectorAll("[data-cloud-mode]").forEach((btn) => {
     btn.addEventListener("click", () => setCloudMode(btn.getAttribute("data-cloud-mode") || "split"));
@@ -4320,6 +8178,16 @@ function bindEvents() {
   els.closeConfig.addEventListener("click", closeDrawer);
   els.drawerBackdrop.addEventListener("click", closeDrawer);
   window.addEventListener("keydown", (ev) => {
+    if (ev.defaultPrevented || document.querySelector(".feedback-mask")) return;
+    if (!els.framingOverlay.hidden) {
+      trapModalFocus(els.framingOverlay, ev);
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        closeFramingPage();
+      }
+      return;
+    }
+    trapDrawerFocus(ev);
     if (ev.key === "Escape") closeDrawer();
     handleCalibrationKey(ev);
     handleRoamKey(ev, true);
@@ -4327,27 +8195,56 @@ function bindEvents() {
   window.addEventListener("keyup", (ev) => handleRoamKey(ev, false));
   window.addEventListener("blur", () => app.keys.clear());
   els.saveConnection.addEventListener("click", () => {
-    syncConnectionFromInputs(true);
-    showToast("连接配置已保存");
+    if (connectionInputsDiffer() && blockStationTopologyChange()) {
+      els.endpoint.value = app.endpoint;
+      els.token.value = app.token;
+      return;
+    }
+    try {
+      syncConnectionFromInputs(true);
+      showToast("连接配置已保存");
+    } catch (err) {
+      showToast(`连接配置无效：${err.message}`);
+    }
   });
   els.connectWs.addEventListener("click", () => {
-    connectWs().catch((err) => showToast(err.message));
+    if (connectionInputsDiffer() && blockStationTopologyChange()) {
+      els.endpoint.value = app.endpoint;
+      els.token.value = app.token;
+      return;
+    }
+    try {
+      syncConnectionFromInputs(true);
+      connectWs(connectionSnapshot()).catch((err) => showToast(err.message));
+    } catch (err) {
+      showToast(`连接配置无效：${err.message}`);
+    }
   });
-  els.stationSelect.addEventListener("change", () => {
+  els.stationSelect.addEventListener("change", async () => {
+    if (blockStationTopologyChange()) {
+      els.stationSelect.value = app.activeStationId;
+      return;
+    }
     app.activeStationId = els.stationSelect.value;
+    const targetStationId = app.activeStationId;
+    invalidateScanContext();
     app.selectedCameraId = station().cameras[0]?.id || "";
-    app.deviceStatuses = { a: null, b: null };
-    app.deviceInfos = { a: null, b: null };
+    invalidateStationConfigurationContext("工位已切换，等待重新读取服务端配置");
     app.liveAngles = { a: null, b: null };
     saveState();
     renderStations();
     refreshStationDeviceStatuses({ silent: true }).catch((err) => console.warn("设备状态刷新失败", err));
-    restoreActiveScan({ clearInactive: true })
-      .catch((err) => showToast(`恢复扫描失败：${err.message}`))
-      .finally(() => {
-        restoreCalibrationState();
-        restoreRegionState();
-      });
+    restoreCalibrationState();
+    restoreRegionState();
+    try {
+      await syncStationServerConfiguration();
+    } catch (err) {
+      showToast(`工位配置同步失败：${err.message}`);
+    }
+    if (targetStationId !== app.activeStationId) return;
+    await refreshBackgroundStatus();
+    await restoreActiveScan({ clearInactive: true })
+      .catch((err) => showToast(`恢复扫描失败：${err.message}`));
   });
   els.stationName.addEventListener("change", () => {
     station().name = els.stationName.value.trim() || "未命名工位";
@@ -4355,47 +8252,88 @@ function bindEvents() {
     renderStations();
   });
   els.addStation.addEventListener("click", () => {
+    if (blockStationTopologyChange()) return;
     const id = makeId("station");
     app.stations.push({ id, name: `扫描工位 ${app.stations.length + 1}`, cameras: [] });
     app.activeStationId = id;
     app.selectedCameraId = "";
+    invalidateStationConfigurationContext("新工位尚未同步服务端配置");
+    invalidateScanContext();
     saveState();
     renderStations();
     restoreCalibrationState();
     restoreRegionState();
+    syncStationServerConfiguration()
+      .then(async () => {
+        await refreshBackgroundStatus();
+        await restoreActiveScan({ clearInactive: true, silent: true });
+      })
+      .catch((err) => showToast(`工位配置同步失败：${err.message}`));
   });
   els.deleteStation.addEventListener("click", () => {
+    if (blockStationTopologyChange()) return;
     if (app.stations.length <= 1) return showToast("至少保留一个工位");
     app.stations = app.stations.filter((s) => s.id !== app.activeStationId);
     app.activeStationId = app.stations[0].id;
     app.selectedCameraId = app.stations[0].cameras[0]?.id || "";
+    invalidateStationConfigurationContext("工位已切换，等待重新读取服务端配置");
+    invalidateScanContext();
     saveState();
     renderStations();
     restoreCalibrationState();
     restoreRegionState();
+    syncStationServerConfiguration()
+      .then(async () => {
+        await refreshBackgroundStatus();
+        await restoreActiveScan({ clearInactive: true, silent: true });
+      })
+      .catch((err) => showToast(`工位配置同步失败：${err.message}`));
   });
   els.addCamera.addEventListener("click", () => {
+    if (blockStationTopologyChange()) return;
     const ip = els.cameraIp.value.trim();
     if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return showToast("请输入相机 IP");
+    const role = els.cameraRole.value;
+    if ((role === "a" || role === "b") && camerasByRole(role).length > 0) {
+      return showToast(`当前工位已配置设备 ${role.toUpperCase()}；每个角色只能有一台设备`);
+    }
     station().cameras.push({
       id: makeId("cam"),
       name: els.cameraName.value.trim() || `相机 ${station().cameras.length + 1}`,
       ip,
-      role: els.cameraRole.value,
+      role,
     });
+    invalidateStationConfigurationContext("扫描单元拓扑已变化，等待重新读取工位配置");
+    invalidateScanContext();
     els.cameraName.value = "";
     els.cameraIp.value = "";
     saveState();
     renderStations();
+    restoreCalibrationState();
+    restoreRegionState();
+    syncStationServerConfiguration()
+      .then(async () => {
+        await refreshBackgroundStatus();
+        await restoreActiveScan({ clearInactive: true, silent: true });
+      })
+      .catch((err) => showToast(`工位配置同步失败：${err.message}`));
   });
   els.deviceSelect.addEventListener("change", () => {
+    app.deviceRefreshSerial++;
+    clearDeviceSettings();
     app.selectedCameraId = els.deviceSelect.value;
     saveState();
     renderStations();
     refreshDevice({ silent: true });
   });
   els.startScan.addEventListener("click", toggleScan);
-  if (els.captureBg) els.captureBg.addEventListener("click", captureBackground);
+  if (els.captureBgDrawer) {
+    els.captureBgDrawer.addEventListener("click", () => {
+      closeDrawer();
+      captureBackground();
+    });
+  }
+  if (els.feedback) els.feedback.addEventListener("click", openFeedback);
   els.refreshDevice.addEventListener("click", refreshDevice);
   els.applySettings.addEventListener("click", applySettings);
   els.scanStart.addEventListener("input", updateScanAngleHint);
@@ -4418,10 +8356,6 @@ function bindEvents() {
     app.pointBudget = Number(els.pointBudget.value) || 1_200_000;
     saveState(); // 持久化容量/镜头，刷新后保留
     if (!resetClouds()) showToast("标注中点云已冻结，暂停标注后再调整点数上限");
-  });
-  els.keepRatio.addEventListener("change", () => {
-    app.keepRatio = Number(els.keepRatio.value) || 1;
-    saveState(); // 持久化保留率
   });
   els.pointSize.addEventListener("input", () => {
     markRenderDirty();
@@ -4447,10 +8381,55 @@ function bindEvents() {
   els.clearCalibView.addEventListener("click", clearCalibrationPoints);
   els.solveCalib.addEventListener("click", solveCalibration);
   els.autoCalibBtn.addEventListener("click", runAutoCalibration);
-  els.openFraming?.addEventListener("click", openFramingPage);
+  els.openFraming?.addEventListener("click", (ev) => openFramingPage({ trigger: ev.currentTarget }));
+  els.openFramingManual?.addEventListener("click", (ev) => openFramingPage({ manual: true, trigger: ev.currentTarget }));
   els.closeFraming?.addEventListener("click", closeFramingPage);
   els.runFraming?.addEventListener("click", runFraming);
   els.framingStop?.addEventListener("click", stopFraming);
+  els.framingManualToggle?.addEventListener("click", toggleFramingManual);
+  els.framingManualUndo?.addEventListener("click", undoFramingManualPoint);
+  els.framingManualClear?.addEventListener("click", clearFramingManualPoints);
+  els.framingManualSolve?.addEventListener("click", solveFramingManualPoints);
+  els.openManualCloudAlign?.addEventListener("click", openManualCloudAlign);
+  els.manualCloudLoadCurrent?.addEventListener("click", loadCurrentManualCloudTransform);
+  els.manualCloudReset?.addEventListener("click", resetManualCloudTransform);
+  els.manualCloudClose?.addEventListener("click", closeManualCloudAlign);
+  els.manualCloudSave?.addEventListener("click", saveManualCloudAlign);
+  for (const input of [
+    els.manualCloudTx,
+    els.manualCloudTy,
+    els.manualCloudTz,
+    els.manualCloudRx,
+    els.manualCloudRy,
+    els.manualCloudRz,
+  ]) {
+    input?.addEventListener("input", () => {
+      if (!app.manualCloud.enabled) return;
+      readManualCloudInputs();
+      rebuildManualCloudPreview();
+    });
+  }
+  document.querySelectorAll("[data-manual-cloud-mode]").forEach((btn) => {
+    btn.addEventListener("click", () => setManualCloudMode(btn.getAttribute("data-manual-cloud-mode")));
+  });
+  for (const role of ["A", "B"]) {
+    els[`framingZoomOut${role}`]?.addEventListener("click", () => adjustFramingZoom(role, 1 / 1.25));
+    els[`framingZoomIn${role}`]?.addEventListener("click", () => adjustFramingZoom(role, 1.25));
+    els[`framingRotateLeft${role}`]?.addEventListener("click", () => rotateFramingView(role, -FRAMING_ROTATE_STEP));
+    els[`framingRotateRight${role}`]?.addEventListener("click", () => rotateFramingView(role, FRAMING_ROTATE_STEP));
+    els[`framingResetView${role}`]?.addEventListener("click", () => resetFramingView(role));
+    els[`framingCanvas${role}`]?.addEventListener("wheel", (ev) => handleFramingWheel(role, ev), { passive: false });
+    els[`framingCanvas${role}`]?.addEventListener("pointerdown", (ev) => handleFramingPointerDown(role, ev));
+    els[`framingCanvas${role}`]?.addEventListener("pointermove", (ev) => handleFramingPointerMove(role, ev));
+    els[`framingCanvas${role}`]?.addEventListener("pointerup", (ev) => handleFramingPointerEnd(role, ev));
+    els[`framingCanvas${role}`]?.addEventListener("pointercancel", (ev) => handleFramingPointerEnd(role, ev));
+    els[`framingCanvas${role}`]?.addEventListener("click", (ev) => handleFramingCanvasClick(role, ev));
+  }
+  window.addEventListener("resize", () => {
+    if (els.framingOverlay?.hidden) return;
+    redrawFramingSelected("A");
+    redrawFramingSelected("B");
+  });
   enableDragScroll(els.framingStripA);
   enableDragScroll(els.framingStripB);
   for (const role of ["a", "b"]) {
@@ -4462,6 +8441,7 @@ function bindEvents() {
   els.startRegion.addEventListener("click", () => {
     app.region.enabled = !app.region.enabled;
     if (app.region.enabled) {
+      markRegionDraftEdited();
       app.calibration.enabled = false;
       app.region.points = []; // 开始即清空上一次的描点/多边形，从空白重画
       app.region.closed = false;
@@ -4486,12 +8466,43 @@ function bindEvents() {
   els.finishRegion.addEventListener("click", finishRegionCalibration);
   els.undoRegion.addEventListener("click", undoRegionPoint);
   els.clearRegion.addEventListener("click", clearRegionCalibration);
+  els.discardRegionDraft.addEventListener("click", discardRegionDraft);
   els.toggleRegionClip.addEventListener("click", toggleRegionClip);
+  const cloudTouchPointers = new Map();
+  let cloudPinch = null;
+  const beginCloudPinch = () => {
+    const points = [...cloudTouchPointers.values()].slice(0, 2);
+    if (points.length < 2) return;
+    const span = Math.max(1, Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y));
+    const clientX = (points[0].x + points[1].x) / 2;
+    const clientY = (points[0].y + points[1].y) / 2;
+    const [x, y, w, h] = canvasPoint({ clientX, clientY });
+    const pane = paneAtPoint(x, y, w, h);
+    const key = pane?.key || app.activeViewKey;
+    app.activeViewKey = key;
+    cloudPinch = {
+      span,
+      distance: viewForPaneKey(key).distance,
+      key,
+    };
+    app.dragging = false;
+    app.clickCandidate = null;
+    app.suppressNextClick = true;
+    window.setTimeout(() => { app.suppressNextClick = false; }, 300);
+  };
   els.canvas.addEventListener("click", handleCanvasClick);
   els.canvas.addEventListener("contextmenu", (ev) => ev.preventDefault());
   els.canvas.addEventListener("pointerdown", (ev) => {
     ev.preventDefault();
     markInteraction();
+    if (ev.pointerType === "touch") {
+      cloudTouchPointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      els.canvas.setPointerCapture(ev.pointerId);
+      if (cloudTouchPointers.size >= 2) {
+        beginCloudPinch();
+        return;
+      }
+    }
     const [x, y, w, h] = canvasPoint(ev);
     const pane = paneAtPoint(x, y, w, h);
     if (pane) {
@@ -4511,6 +8522,24 @@ function bindEvents() {
     els.canvas.setPointerCapture(ev.pointerId);
   });
   els.canvas.addEventListener("pointermove", (ev) => {
+    if (ev.pointerType === "touch" && cloudTouchPointers.has(ev.pointerId)) {
+      cloudTouchPointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      if (cloudPinch && cloudTouchPointers.size >= 2) {
+        ev.preventDefault();
+        markInteraction();
+        const points = [...cloudTouchPointers.values()].slice(0, 2);
+        const span = Math.max(1, Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y));
+        if (app.controlMode !== "roam") {
+          const view = viewForPaneKey(cloudPinch.key);
+          view.distance = Math.max(
+            VIEW_MIN_DISTANCE,
+            Math.min(VIEW_MAX_DISTANCE, cloudPinch.distance * cloudPinch.span / span),
+          );
+          app.renderDirty = true;
+        }
+        return;
+      }
+    }
     if (!app.dragging) return;
     markInteraction();
     if (app.clickCandidate) {
@@ -4524,6 +8553,7 @@ function bindEvents() {
     const dy = ev.clientY - app.lastPointer[1];
     app.lastPointer = [ev.clientX, ev.clientY];
     const pane = app.renderPanes.find((p) => p.key === app.dragPaneKey) || null;
+    if (handleManualCloudDrag(dx, dy, pane, ev)) return;
     const view = viewForPaneKey(app.dragPaneKey);
     if (app.controlMode === "roam") {
       if (app.dragButton !== 0) return;
@@ -4541,6 +8571,17 @@ function bindEvents() {
     app.renderDirty = true;
   });
   const stopDrag = (ev) => {
+    if (ev?.pointerType === "touch") {
+      cloudTouchPointers.delete(ev.pointerId);
+      if (cloudPinch) {
+        cloudPinch = null;
+        app.clickCandidate = null;
+        app.dragging = false;
+        app.dragButton = 0;
+        app.dragPaneKey = "";
+        return;
+      }
+    }
     if (app.clickCandidate && ev?.type === "pointerup") {
       const totalDx = ev.clientX - app.clickCandidate.x;
       const totalDy = ev.clientY - app.clickCandidate.y;
@@ -4601,8 +8642,9 @@ async function init() {
   els.endpoint.value = app.endpoint;
   els.token.value = app.token;
   if (app.pointBudget) els.pointBudget.value = String(app.pointBudget);
-  if (app.keepRatio) els.keepRatio.value = String(app.keepRatio);
+  renderEffectiveKeepRatio(null, "读取中…");
   renderStations();
+  clearDeviceSettings();
   restoreCalibrationState();
   restoreRegionState();
   renderScanMeta();
@@ -4614,18 +8656,85 @@ async function init() {
   await bootstrapStationSession();
   renderStations();
   renderScanMeta();
-  await refreshStationDeviceStatuses({ silent: true });
-  await restoreActiveScan({ silent: true });
-  await loadLastScan(); // 无进行中扫描时，默认载入上次扫描结果
-  refreshBackgroundStatus(); // 顶栏显示本工位是否已采集空工位背景
   restoreCalibrationState();
   restoreRegionState();
+  await syncStationServerConfiguration().catch((err) => {
+    console.warn("工位配置同步失败", err);
+    showToast(`工位配置同步失败：${err.message}`);
+  });
+  await refreshStationDeviceStatuses({ silent: true });
+  await restoreActiveScan({ clearInactive: true, silent: true, loadLatestWhenInactive: true });
+  refreshBackgroundStatus(); // 顶栏显示本工位是否已采集空工位背景
   startDeviceStatusPolling();
   startActiveScanPolling();
   setInterval(() => { if (!isScanTerminalState()) updateScanBanner(); }, 1000); // 已用时每秒刷新
 }
 
-init().catch((err) => {
-  console.warn("初始化失败", err);
-  showToast(`初始化失败：${err.message}`);
-});
+if (globalThis.__LASER_STATION_TEST__) {
+  globalThis.__LASER_STATION_TEST_HOOKS__ = {
+    app,
+    els,
+    PointCloud,
+    normalizeStationCameraRoles,
+    stationTopologyIssue,
+    connectionSnapshot,
+    applyConnection,
+    scanContextSnapshot,
+    isScanContextCurrent,
+    cloudContextSnapshot,
+    isCloudContextCurrent,
+    invalidateScanContext,
+    clearActiveScanState,
+    applyActiveScanState,
+    applyCompletedScanPayload,
+    finalCloudPlan,
+    activeScanIdentityChanged,
+    stopResponseAction,
+    handleRealtime,
+    scanActionMode,
+    scanSetupBlocker,
+    restoreActivePayload,
+    restoreActiveScan,
+    refreshActiveScanStatus,
+    stopStaleStartIfActive,
+    api,
+    connectWs,
+    startScan,
+    calibrationResultFromServer,
+    calibrationResultText,
+    syncStationCalibration,
+    syncStationRegionCalibration,
+    updateAuthorityReadiness,
+    renderStationReadiness,
+    deviceReadiness,
+    siteReadiness,
+    regionReadiness,
+    backgroundReadiness,
+    updateBackgroundReadiness,
+    refreshDevice,
+    refreshStationDeviceStatuses,
+    openFramingPage,
+    prefillFramingControls,
+    framingSweepWarning,
+    runFraming,
+    stopFraming,
+    clearDeviceSettings,
+    siteQualityResultMode,
+    siteQualityResultText,
+    isDefinitiveStartOwnershipRejection,
+    scanConfigurationErrorMessage,
+    siteCalibrationBlockedMessage,
+    backgroundCompatibilityReasonText,
+    maskSensitiveFeedbackFields,
+    parsePcdAsync,
+    downloadCloudFromPath,
+    downloadFinalClouds,
+    applyRegionClipToLoadedClouds,
+    hasCanonicalFinalCloud,
+  };
+} else {
+  init().catch((err) => {
+    console.warn("初始化失败", err);
+    showToast(`初始化失败：${err.message}`);
+  });
+}

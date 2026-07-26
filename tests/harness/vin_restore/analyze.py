@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # 还原重合度可判定分析（几何残余为主指标）。
-# 「重合」= 同一 VIN 多角度还原图在 canonical 帧里几何对齐误差小。用 EUCLIDEAN ECC（平移+旋转+缩放）
-# 测把 B 对到 A 需要的残余位移/旋转——残余小 = 已重合（不靠后处理硬掰）。在结构灰度图(_canon)上测，
-# 避开 picshadow 高频对光度差异的过度敏感。
+# 「重合」= 同一 VIN 多角度还原图在签名图里几何对齐误差小。用 EUCLIDEAN ECC（平移+旋转+缩放）
+# 测把 B 对到 A 需要的残余位移/旋转——残余小 = 已重合（不靠后处理硬掰）。
 import os, sys, glob, itertools
 import numpy as np
 import cv2
@@ -41,7 +40,7 @@ def ecc_residual(ref, mov):
 
 def main():
     d = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("OUTPUT_DIR", ".dev/vin_restore")
-    pat = sys.argv[2] if len(sys.argv) > 2 else "cap_*_canon.png"
+    pat = sys.argv[2] if len(sys.argv) > 2 else "cap_*_sig.png"
     files = sorted(glob.glob(os.path.join(d, pat)))
     if len(files) < 2:
         print("需要至少 2 张", pat); return 1
@@ -50,21 +49,25 @@ def main():
     names = list(imgs)
     n = len(names)
 
-    # 分组：在重模糊图上 ECC 对齐后 NCC>0.55 视为同 VIN（抗二值高频 + 残余位移）。
+    # 分组：重模糊图抗二值高频，细节图防跨批次误并。
+    # 动态高度后不同批次同 VIN 可能粗看相似，但细节 ECC 位移很大；这类应拆组再评估各自重合度。
     aln = np.zeros((n, n))
+    merge = np.zeros((n, n), dtype=bool)
     for i, j in itertools.combinations(range(n), 2):
+        sh, _, cd = ecc_residual(imgs[names[i]], imgs[names[j]])
         _, _, c = ecc_residual(grp[names[i]], grp[names[j]])
         aln[i, j] = aln[j, i] = c
+        merge[i, j] = merge[j, i] = c > 0.55 and cd > 0.50 and sh <= W * 0.02
     seen, groups = set(), []
     for i in range(n):
         if i in seen: continue
         g = [i]; seen.add(i)
         for j in range(n):
-            if j not in seen and aln[i, j] > 0.55:
+            if j not in seen and merge[i, j]:
                 g.append(j); seen.add(j)
         groups.append(g)
 
-    print("分组（ECC 对齐后 NCC>0.55 同 VIN）：")
+    print("分组（粗匹配 NCC>0.55 且细节位移≤2%宽）：")
     SHIFT_PCT = 100.0 / W           # 残余位移 → 占宽百分比
     worst_align = 1.0; worst_shift = 0.0
     for gi, g in enumerate(groups):

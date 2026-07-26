@@ -6,6 +6,9 @@
 // 不构成「静默假 fallback」。
 package laser
 
+// NativeScanAvailable 表示当前二进制是否真实链接了激光 native 采集实现。
+func NativeScanAvailable() bool { return false }
+
 // LiveScan 桩：直接返回 ErrCgoDisabled。
 func LiveScan(ipA, ipB, align, siteJSON string, keepRatio float32, cb ScanCallbacks) (ScanResult, error) {
 	return ScanResult{Error: ErrCgoDisabled.Error()}, ErrCgoDisabled

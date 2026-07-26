@@ -8,7 +8,9 @@ import cv2
 from obb import ObbDetector, _poly
 from restore import load_capture, backproject_roi, ransac_plane, plane_basis
 
-OUT_W, OUT_H = 1200, 260          # 输出窗（VIN 横条）
+OUT_W = 1200                      # 输出窗宽度固定，高度按原厂 metric 画布比例动态算
+MIN_OUT_H, MAX_OUT_H = 96, 260
+MARGIN_X_MM, MARGIN_Y_MM = 10.0, 5.0
 MODEL = ".dev/vin_models/yolo-obb.onnx"
 
 
@@ -88,6 +90,107 @@ def picshadow_crop(binimg, pad=5):
     return binimg[y0:y1, x0:x1]
 
 
+def signature_content_rect(binimg):
+    """内部签名投影裁切：最长墨迹行带 + 左右累计黑像素定界，返回带彩色上下文边距的 rect。"""
+    rows, cols = binimg.shape[:2]
+    black = (binimg < 128)
+    rowcnt = black.sum(1)
+    row_thresh = max(1, cols // 1000)
+    best = (-1, 0, -1)
+    in_run = False
+    rs = 0
+    for y in range(rows):
+        has = rowcnt[y] >= row_thresh
+        if has and not in_run:
+            rs = y
+            in_run = True
+        if (not has or y == rows - 1) and in_run:
+            re_ = y if has and y == rows - 1 else y - 1
+            if re_ - rs > best[0]:
+                best = (re_ - rs, rs, re_)
+            in_run = False
+    _, top, bottom = best
+    if bottom < top:
+        return None
+    band = black[top:bottom + 1]
+    colcnt = band.sum(0)
+    if int(colcnt.sum()) < 80:
+        return None
+    acc, left = 0, cols - 1
+    for x in range(cols):
+        if colcnt[x]:
+            acc += int(colcnt[x])
+            if acc > 10:
+                left = x
+                break
+    acc, right = 0, 0
+    for x in range(cols - 1, -1, -1):
+        if colcnt[x]:
+            acc += int(colcnt[x])
+            if acc > 10:
+                right = x
+                break
+    if right <= left:
+        return None
+    cw, ch = right - left + 1, bottom - top + 1
+    pad_x = max(16, int(round(cw * 0.06)))
+    pad_y = max(8, int(round(ch * 0.55)))
+    x0, x1 = max(0, left - pad_x), min(cols, right + pad_x + 1)
+    y0, y1 = max(0, top - pad_y), min(rows, bottom + pad_y + 1)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return x0, y0, x1, y1
+
+
+def signature_skew_deg(binimg, rect):
+    """用黑像素 PCA 估字符主轴角，角度为图像坐标系下相对水平的残余倾斜。"""
+    x0, y0, x1, y1 = rect
+    ys, xs = np.where(binimg[y0:y1, x0:x1] < 128)
+    if len(xs) < 80:
+        return None
+    xs = xs.astype(np.float64) + x0
+    ys = ys.astype(np.float64) + y0
+    xs -= xs.mean()
+    ys -= ys.mean()
+    cxx = float((xs * xs).sum())
+    cyy = float((ys * ys).sum())
+    cxy = float((xs * ys).sum())
+    if cxx + cyy < 1e-6:
+        return None
+    angle = 0.5 * math.degrees(math.atan2(2 * cxy, cxx - cyy))
+    while angle >= 45:
+        angle -= 90
+    while angle < -45:
+        angle += 90
+    return angle
+
+
+def align_color_by_signature(bgr, sig):
+    """黑白签名只作内部校正信号；返回旋正、裁切、统一宽度后的彩色正射图。"""
+    rect = signature_content_rect(sig)
+    if rect is None:
+        return bgr
+    angle = signature_skew_deg(sig, rect)
+    if angle is None or abs(angle) > 25:
+        return bgr
+    h, w = sig.shape[:2]
+    rot_bgr, rot_sig = bgr, sig
+    if abs(angle) >= 0.25:
+        M = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1.0)
+        rot_bgr = cv2.warpAffine(bgr, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        rot_sig = cv2.warpAffine(sig, M, (w, h), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=255)
+    rect = signature_content_rect(rot_sig)
+    if rect is None:
+        return bgr
+    x0, y0, x1, y1 = rect
+    if x1 - x0 < w // 3 or y1 - y0 < 6:
+        return bgr
+    crop = rot_bgr[y0:y1, x0:x1]
+    out_h = int(round((y1 - y0) * OUT_W / max(1, (x1 - x0))))
+    out_h = max(MIN_OUT_H, min(MAX_OUT_H, out_h))
+    return cv2.resize(crop, (OUT_W, out_h), interpolation=cv2.INTER_LINEAR)
+
+
 def ray_plane_inplane(u, v, K_color, plane, right, up):
     """彩色像素 (u,v) → 过相机原点射线 ∩ 平面 → depth 系 3D → 平面内 2D (a,b)（相对 centroid）。"""
     fx, fy, cx, cy = K_color
@@ -142,14 +245,25 @@ def restore_obb(capdir, det, px=None):
                 inlier=plane["inlier_ratio"], rms=plane["rms"], medz=plane["med_z"]), None
 
 
-def render(frame, out_w=OUT_W, out_h=OUT_H, mx=0.08, my=0.22):
-    """原厂式 PerspectiveTrans：OBB 四角(平面内) → 固定输出矩形单应，钉死四角 →
+def output_size(frame, out_w=OUT_W):
+    """对齐原厂 metric 画布：四角外扩左右 10mm、上下 5mm；宽度归一到 out_w。"""
+    w = max(float(frame["width_mm"]), 1.0)
+    h = max(float(frame["height_mm"]), 1.0)
+    scale = out_w / (w + 2 * MARGIN_X_MM)
+    out_h = int(round((h + 2 * MARGIN_Y_MM) * scale))
+    out_h = max(MIN_OUT_H, min(MAX_OUT_H, out_h))
+    return out_w, out_h, scale
+
+
+def render(frame, out_w=OUT_W):
+    """原厂式 PerspectiveTrans：OBB 四角(平面内) → 动态高度输出矩形单应，钉死四角 →
        吸收残余旋转/尺度/keystone，多张直接重合。输出像素 → 单应 → 平面内(a,b) → 3D → 彩色采样。"""
     plane = frame["plane"]; right = frame["right"]; up = frame["up"]; Kc = frame["Kc"]
     C = plane["centroid"]; ab = frame["ab"]
     fxc, fyc, cxc, cyc = Kc
-    px0, py0 = mx * out_w, my * out_h
-    px1, py1 = (1 - mx) * out_w, (1 - my) * out_h
+    out_w, out_h, scale = output_size(frame, out_w)
+    px0, py0 = MARGIN_X_MM * scale, MARGIN_Y_MM * scale
+    px1, py1 = out_w - px0, out_h - py0
     out_corners = np.array([[px0, py0], [px1, py0], [px1, py1], [px0, py1]], np.float32)  # TL,TR,BR,BL
     # 把 OBB 在平面内的 4 角(透视梯形/平行四边形)重建成**真矩形**(垂直边)：用平均长轴定向 + 垂直轴，
     # 这样输出↔平面是保角相似(旋转+各向异性缩放)而非含 shear 的一般单应 → 字符正(不再斜体状)。
@@ -202,7 +316,9 @@ def main():
         # 主锚定 = render 的 OBB 单应框（YOLO "number" 区→固定矩形，已排除首尾星号）→ 去阴影二值化（OCR级+去反光）。
         # 不再 picshadow 重裁：picshadow 按墨迹裁会把含/不含星号的差异引回来 → 框宽抖动。picshadow_crop 仅留作 Go 端口参照
         # （原厂在 number 框内裁，星号本就在框外）。
-        r = render(f)
+        r0 = render(f)
+        sig0 = signature_binarize(r0)
+        r = align_color_by_signature(r0, sig0)
         sig = signature_binarize(r)
         cv2.imwrite(os.path.join(outdir, name + "_obb.png"), r)
         # 质量闸：归一后墨水占比过高 = 噪声/坏采集（框偏/糊/低对比无法提字），判废不进重合分析。

@@ -92,6 +92,20 @@ func (s *MinIOCloudStore) PutCloud(ctx context.Context, sessionKey, name string,
 	return s.put(ctx, sessionKey, name, pcd)
 }
 
+// PutMeasuredCloud 写入带内容身份注释的 canonical 车辆测量 PCD。
+func (s *MinIOCloudStore) PutMeasuredCloud(
+	ctx context.Context,
+	sessionKey, name string,
+	xyzMM []float32,
+	artifact MeasuredCloudArtifact,
+) (string, error) {
+	pcd, err := EncodeMeasuredPCDBinary(xyzMM, artifact)
+	if err != nil {
+		return "", err
+	}
+	return s.put(ctx, sessionKey, name, pcd)
+}
+
 // PutCloudXYZI 编码 XYZI PCD（intensity=每点 h_angle°）并上传。供单元云带采集角，端侧"圈ROI→反算扫描角"用。
 func (s *MinIOCloudStore) PutCloudXYZI(ctx context.Context, sessionKey, name string, xyzMM, attr []float32) (string, error) {
 	pcd, err := EncodePCDBinaryXYZI(xyzMM, attr)

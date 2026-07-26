@@ -176,6 +176,27 @@ Java_io_gomob_nativebridge_NativeBridge_cameraPollColor(
   return out;
 }
 
+// 取最新 color 帧并透传原生回调元数据。outInfo(>=4)=[width,height,serial,host_ns]。
+// VIN 双 USB 相机同步必须比较两路 native 回调时钟，不能用 Kotlin 拉帧/解码完成时刻。
+JNIEXPORT jbyteArray JNICALL
+Java_io_gomob_nativebridge_NativeBridge_cameraPollColorWithInfo(
+        JNIEnv* env, jobject /*thiz*/, jlong handle, jlongArray outInfo) {
+  auto* s = reinterpret_cast<ICameraSession*>(handle);
+  if (!s) return nullptr;
+  std::vector<uint8_t> color;
+  int64_t meta[4] = {0, 0, 0, 0};
+  if (!s->snapshot_color(&color, meta) || color.empty()) return nullptr;
+  if (outInfo && env->GetArrayLength(outInfo) >= 4) {
+    jlong m[4] = {meta[0], meta[1], meta[2], meta[3]};
+    env->SetLongArrayRegion(outInfo, 0, 4, m);
+  }
+  jbyteArray out = env->NewByteArray(static_cast<jsize>(color.size()));
+  if (!out) return nullptr;
+  env->SetByteArrayRegion(out, 0, static_cast<jsize>(color.size()),
+                          reinterpret_cast<const jbyte*>(color.data()));
+  return out;
+}
+
 // 取最新逐像素 confidence(uint8,W*H) 写 directBuffer。返回字节数 / 0 无 / -1 cap 不足。
 // outInfo(>=4)=[w,h,serial,host_ns]。无 conf 的相机(eYs3D)默认返 0。
 JNIEXPORT jint JNICALL

@@ -13,9 +13,6 @@ import (
 // MaxTiltDeg 原厂硬门：承印面相对相机倾角 >70° 判废（restoreImageFlow 码 34）。
 const MaxTiltDeg = 70.0
 
-// roi 中心 ROI（cx,cy,w,h 归一化）—— restore.py backproject ROI=(0.5,0.5,0.9,0.9)。
-var defaultROI = [4]float64{0.5, 0.5, 0.9, 0.9}
-
 // Vec3 三维向量。
 type Vec3 [3]float64
 
@@ -30,45 +27,92 @@ type Plane struct {
 	MedZ       float64
 }
 
-// backprojectROI —— restore.py::backproject_roi：中心 ROI 内有效深度像素 → depth 相机系 3D（mm）。
-//
-// depth 为小端 u16（u16_le_mm）扁平字节；fx/fy 各向异性（eYs3D 深度 fy<<fx）。
-func backprojectROI(depth []byte, dw, dh int, fx, fy, cx, cy float64, roi [4]float64) []Vec3 {
-	rcx, rcy, rw, rh := roi[0], roi[1], roi[2], roi[3]
-	u0 := int((rcx - rw/2) * float64(dw))
-	u1 := int((rcx + rw/2) * float64(dw))
-	v0 := int((rcy - rh/2) * float64(dh))
-	v1 := int((rcy + rh/2) * float64(dh))
-	if u0 < 0 {
-		u0 = 0
+// backprojectColorOBB 把深度像素先反投影到 depth 系，再经 R|t 投到 HLSD8 图像，
+// 只保留落在彩色 VIN OBB 内的点。不能把彩色 OBB 的归一化 bbox 直接当成深度 ROI：
+// 两颗独立相机有基线和旋转，近距斜拍时会裁到错误承印面。
+func backprojectColorOBB(
+	depth []byte,
+	dw, dh int,
+	calibration *VinCalibration,
+	corners [4][2]float64,
+	widthScale, heightScale float64,
+) ([]Vec3, error) {
+	if calibration == nil {
+		return nil, errors.New("VIN 原厂标定为空")
 	}
-	if u1 > dw {
-		u1 = dw
+	if _, _, _, _, err := calibration.depth.intrinsicsForProfile(dw, dh); err != nil {
+		return nil, err
 	}
-	if v0 < 0 {
-		v0 = 0
+	poly := expandedOBB(corners, widthScale, heightScale)
+	ccw := ensureCCW(poly[:])
+	minU, maxU := ccw[0][0], ccw[0][0]
+	minV, maxV := ccw[0][1], ccw[0][1]
+	for _, p := range ccw[1:] {
+		minU, maxU = math.Min(minU, p[0]), math.Max(maxU, p[0])
+		minV, maxV = math.Min(minV, p[1]), math.Max(maxV, p[1])
 	}
-	if v1 > dh {
-		v1 = dh
-	}
-	pts := make([]Vec3, 0, (u1-u0)*(v1-v0))
-	for v := v0; v < v1; v++ {
+	pts := make([]Vec3, 0, dw*dh/8)
+	for v := 0; v < dh; v++ {
 		row := v * dw
-		for u := u0; u < u1; u++ {
+		for u := 0; u < dw; u++ {
 			idx := (row + u) * 2
 			if idx+1 >= len(depth) {
 				continue
 			}
-			z := float64(binary.LittleEndian.Uint16(depth[idx : idx+2]))
-			if z <= 0 {
+			raw := binary.LittleEndian.Uint16(depth[idx : idx+2])
+			point, ok := calibration.depth.pointFromDisparity(raw, u, v, dw, dh)
+			if !ok {
 				continue
 			}
-			x := (float64(u) - cx) / fx * z
-			y := (float64(v) - cy) / fy * z
-			pts = append(pts, Vec3{x, y, z})
+			column, rowPixel, ok := calibration.color.projectWorldToColor(point)
+			if !ok {
+				continue
+			}
+			if column < minU || column > maxU || rowPixel < minV || rowPixel > maxV ||
+				!insideConvex(ccw, [2]float64{column, rowPixel}) {
+				continue
+			}
+			pts = append(pts, point)
 		}
 	}
-	return pts
+	return pts, nil
+}
+
+func expandedOBB(c [4][2]float64, widthScale, heightScale float64) [4][2]float64 {
+	top := [2]float64{c[1][0] - c[0][0], c[1][1] - c[0][1]}
+	bottom := [2]float64{c[2][0] - c[3][0], c[2][1] - c[3][1]}
+	x := [2]float64{top[0] + bottom[0], top[1] + bottom[1]}
+	xn := math.Hypot(x[0], x[1])
+	if xn <= 1e-9 {
+		return c
+	}
+	x[0], x[1] = x[0]/xn, x[1]/xn
+	y := [2]float64{-x[1], x[0]}
+	if (c[3][0]-c[0][0])*y[0]+(c[3][1]-c[0][1])*y[1] < 0 {
+		y[0], y[1] = -y[0], -y[1]
+	}
+	center := [2]float64{}
+	for _, p := range c {
+		center[0] += p[0] * 0.25
+		center[1] += p[1] * 0.25
+	}
+	halfW := (dist2(c[1], c[0]) + dist2(c[2], c[3])) * 0.25 * widthScale
+	halfH := (dist2(c[3], c[0]) + dist2(c[2], c[1])) * 0.25 * heightScale
+	return [4][2]float64{
+		{center[0] - halfW*x[0] - halfH*y[0], center[1] - halfW*x[1] - halfH*y[1]},
+		{center[0] + halfW*x[0] - halfH*y[0], center[1] + halfW*x[1] - halfH*y[1]},
+		{center[0] + halfW*x[0] + halfH*y[0], center[1] + halfW*x[1] + halfH*y[1]},
+		{center[0] - halfW*x[0] + halfH*y[0], center[1] - halfW*x[1] + halfH*y[1]},
+	}
+}
+
+func insideConvex(poly [][2]float64, p [2]float64) bool {
+	for i, a := range poly {
+		if cross(a, poly[(i+1)%len(poly)], p) < -1e-6 {
+			return false
+		}
+	}
+	return true
 }
 
 // ransacPlane —— restore.py::ransac_plane 的端口。
@@ -241,10 +285,10 @@ func planeBasis(p Plane) (right, up Vec3) {
 
 // ---- 小向量工具 ----
 
-func sub3(a, b Vec3) Vec3   { return Vec3{a[0] - b[0], a[1] - b[1], a[2] - b[2]} }
+func sub3(a, b Vec3) Vec3           { return Vec3{a[0] - b[0], a[1] - b[1], a[2] - b[2]} }
 func scale3(a Vec3, s float64) Vec3 { return Vec3{a[0] * s, a[1] * s, a[2] * s} }
-func dot3(a, b Vec3) float64 { return a[0]*b[0] + a[1]*b[1] + a[2]*b[2] }
-func norm3(a Vec3) float64   { return math.Sqrt(dot3(a, a)) }
+func dot3(a, b Vec3) float64        { return a[0]*b[0] + a[1]*b[1] + a[2]*b[2] }
+func norm3(a Vec3) float64          { return math.Sqrt(dot3(a, a)) }
 func cross3(a, b Vec3) Vec3 {
 	return Vec3{
 		a[1]*b[2] - a[2]*b[1],

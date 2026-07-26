@@ -30,13 +30,17 @@ fun Chip(
 
     Box(
         modifier
-            .clip(Gomob.shapes.r2)
-            .background(bg)
             .clickable(onClick = onClick)
-            .defaultMinSize(minHeight = 28.dp),
+            .defaultMinSize(minHeight = Gomob.spacing.touchMin),
         contentAlignment = Alignment.Center,
     ) {
-        Box(Modifier.padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s4)) {
+        Box(
+            Modifier
+                .clip(Gomob.shapes.r2)
+                .background(bg)
+                .defaultMinSize(minHeight = 28.dp)
+                .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s4),
+        ) {
             Text(text = text, style = Gomob.type.bodySm, color = fg)
         }
     }

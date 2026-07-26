@@ -145,6 +145,20 @@ func TestMeasure_SyntheticBox(t *testing.T) {
 	}
 }
 
+func TestMeasure_WidthSupportKeepsDenseBodyWidth(t *testing.T) {
+	box := makeBoxGo(1800, 530, 760, 23, 400, 600, 50, 5)
+	p := DefaultMeasureParams()
+	p.UseROI = false
+	p.WidthSupportFrac = 0.15
+	d := Measure(box, p)
+	if !d.Valid {
+		t.Fatal("合成盒测量无效")
+	}
+	if math.Abs(float64(d.WidthMM-530)) > 25 {
+		t.Errorf("密集车体宽度不应被支撑闸削窄: W=%.1f", d.WidthMM)
+	}
+}
+
 func TestMeasure_LargestClusterDropsDetached(t *testing.T) {
 	body := makeBoxGo(1800, 530, 760, 0, 0, 0, 0, 8)
 	blob := makeBoxGo(120, 120, 120, 0, 0, 4000, 0, 8) // 远在 +Y 不连通
@@ -187,6 +201,19 @@ func TestMeasure_GroundRelativeTilted(t *testing.T) {
 	}
 }
 
+func TestMeasure_GroundRelativeElevatedObjectUsesBodySpan(t *testing.T) {
+	L, W, H := float32(1800), float32(530), float32(760)
+	box := makeBoxGo(L, W, H, 17, 0, 0, 300, 8)
+	dm := Measure(box, GroundMeasureParams([3]float32{0, 0, 1}, 0, 30, 5000))
+	if !dm.Valid {
+		t.Fatal("离地物体测量无效")
+	}
+	t.Logf("离地物体 L=%.1f W=%.1f H=%.1f", dm.LengthMM, dm.WidthMM, dm.HeightMM)
+	if math.Abs(float64(dm.HeightMM-H)) > 25 {
+		t.Errorf("离地物体车高应取自身高度 %.0f，得 %.1f", H, dm.HeightMM)
+	}
+}
+
 // rotXY 先绕 X 转 axDeg、再绕 Y 转 ayDeg。正交旋转保长度，故离地高 h=n·p+d 恒等于原 z。
 func rotXY(x, y, z float32, axDeg, ayDeg float64) (float32, float32, float32) {
 	ax, ay := axDeg*math.Pi/180, ayDeg*math.Pi/180
@@ -198,15 +225,21 @@ func rotXY(x, y, z float32, axDeg, ayDeg float64) (float32, float32, float32) {
 
 func TestCheckCompliance(t *testing.T) {
 	lim := DefaultLimits()
-	if c := CheckCompliance(Dimensions{LengthMM: 11000, WidthMM: 2500, HeightMM: 3900, Valid: true}, lim); !c.Compliant {
+	if c := CheckCompliance(Dimensions{LengthMM: 11000, WidthMM: 2500, HeightMM: 3900, Valid: true}, lim); !c.Determined || !c.Compliant {
 		t.Errorf("合规车应判合规: %v", c.Violations)
 	}
 	c := CheckCompliance(Dimensions{LengthMM: 13000, WidthMM: 2600, HeightMM: 4100, Valid: true}, lim)
-	if c.Compliant || len(c.Violations) != 3 {
+	if !c.Determined || c.Compliant || len(c.Violations) != 3 {
 		t.Errorf("超限车应判 3 项违规，得 %v", c.Violations)
 	}
-	if CheckCompliance(Dimensions{Valid: false}, lim).Compliant {
+	if c := CheckCompliance(Dimensions{Valid: false}, lim); c.Determined || c.Compliant {
 		t.Error("无效测量不应判合规")
+	}
+	if c := ComplianceForVehicleType(Dimensions{LengthMM: 11000, WidthMM: 2500, HeightMM: 3900, Valid: true}, -1); c.Determined || c.Reason != "vehicle_type_missing" {
+		t.Fatalf("缺车型必须未判定，got=%+v", c)
+	}
+	if c := ComplianceForVehicleType(Dimensions{LengthMM: 11000, WidthMM: 2500, HeightMM: 3900, Valid: true}, 1); c.Determined || c.Reason != "rule_unavailable" {
+		t.Fatalf("缺法规规则必须未判定，got=%+v", c)
 	}
 }
 

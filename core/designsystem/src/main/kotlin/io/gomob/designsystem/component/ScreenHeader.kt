@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -16,7 +17,7 @@ import io.gomob.designsystem.motion.fixedDuringPageDrag
 import io.gomob.designsystem.theme.Gomob
 
 /**
- * 屏幕顶部条：左 大标题（title）+ 下方副标题（eyebrow），右 trailing 槽位。
+ * root 页顶部条：固定 52dp，左侧 18sp/600 单行标题，右侧 trailing 槽位。
  *
  * 显式组件而非隐式 padding — 每屏从这里挂能保证横向对齐和留白一致。
  *
@@ -30,31 +31,48 @@ fun ScreenHeader(
     modifier: Modifier = Modifier,
     trailing: @Composable (() -> Unit)? = null,
 ) {
-    val feedbackTrigger = LocalFeedbackTitleLongPress.current
+    val feedbackTrigger = LocalFeedbackTitleTrigger.current
     // 在 GlassHeaderScaffold 内由玻璃层画底；独立使用时保持 bg0 实底
     val inGlass = LocalGlassHeader.current
     Row(
         modifier
-            .fixedDuringPageDrag()
+            .then(if (inGlass) Modifier else Modifier.fixedDuringPageDrag())
             .fillMaxWidth()
+            .height(Gomob.spacing.headerHeight)
             .then(if (inGlass) Modifier else Modifier.background(Gomob.colors.bg0))
-            .padding(horizontal = Gomob.spacing.s16, vertical = Gomob.spacing.s12),
+            .padding(horizontal = Gomob.spacing.pageGutter),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        HeaderTitleStack(
-            title = title,
-            eyebrow = eyebrow,
-            modifier = Modifier
+        Column(
+            Modifier
                 .weight(1f)
                 .then(
                     if (feedbackTrigger != null) {
-                        Modifier.feedbackTitleLongPress(title, feedbackTrigger)
+                        Modifier.feedbackTitleFiveTap(title, feedbackTrigger)
                     } else {
                         Modifier
                     },
                 )
                 .padding(end = Gomob.spacing.s12),
-        )
+            verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2),
+        ) {
+            Text(
+                text = title,
+                style = Gomob.type.screenTitle,
+                color = Gomob.colors.fg0,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (eyebrow != null) {
+                Text(
+                    text = eyebrow,
+                    style = Gomob.type.micro,
+                    color = Gomob.colors.fg2,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
         if (trailing != null) trailing()
     }
 }
@@ -68,7 +86,7 @@ internal fun HeaderTitleStack(
     Column(modifier, verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2)) {
         Text(
             text = title,
-            style = Gomob.type.display,
+            style = Gomob.type.title,
             color = Gomob.colors.fg0,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -76,8 +94,8 @@ internal fun HeaderTitleStack(
         if (eyebrow != null) {
             Text(
                 text = eyebrow,
-                style = Gomob.type.eyebrow,
-                color = Gomob.colors.fg2,
+                style = Gomob.type.micro,
+                color = Gomob.colors.fg3,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )

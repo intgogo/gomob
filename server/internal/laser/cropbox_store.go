@@ -16,6 +16,8 @@ type CropBoxStore interface {
 	GetCropBox(ctx context.Context, bayKey, unit string) (box CropBox, ok bool, err error)
 	// SaveCropBox 写入/覆盖某单元框。
 	SaveCropBox(ctx context.Context, bayKey, unit string, box CropBox) error
+	// DeleteCropBox 删除某单元框；未设置保持幂等。
+	DeleteCropBox(ctx context.Context, bayKey, unit string) error
 }
 
 // DBCropBoxStore 用 repo.LaserCropBoxRepo（PG jsonb）实现 CropBoxStore，JSON 编解码在此收口。
@@ -46,4 +48,8 @@ func (s *DBCropBoxStore) SaveCropBox(ctx context.Context, bayKey, unit string, b
 		return err
 	}
 	return s.repo.Upsert(ctx, bayKey, unit, raw)
+}
+
+func (s *DBCropBoxStore) DeleteCropBox(ctx context.Context, bayKey, unit string) error {
+	return s.repo.Delete(ctx, bayKey, unit)
 }

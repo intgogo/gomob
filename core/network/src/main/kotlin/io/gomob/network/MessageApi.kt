@@ -6,6 +6,7 @@ import io.gomob.network.dto.ConversationDto
 import io.gomob.network.dto.CreateMessageRequest
 import io.gomob.network.dto.CallInviteResponse
 import io.gomob.network.dto.CreateCallInviteRequest
+import io.gomob.network.dto.DeleteConversationResponse
 import io.gomob.network.dto.HelpExpertCaseListResponse
 import io.gomob.network.dto.HelpExpertListResponse
 import io.gomob.network.dto.LeaveConversationResponse
@@ -18,6 +19,7 @@ import io.gomob.network.dto.OpenDirectConversationRequest
 import io.gomob.network.dto.TranscribeDraftVoiceRequest
 import io.gomob.network.dto.TranscribeDraftVoiceResponse
 import retrofit2.http.Body
+import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.Path
@@ -103,4 +105,9 @@ interface MessageApi {
     suspend fun leaveConversation(
         @Path("id") conversationId: String,
     ): Envelope<LeaveConversationResponse>
+
+    @DELETE("v1/conversations/{id}")
+    suspend fun deleteConversation(
+        @Path("id") conversationId: String,
+    ): Envelope<DeleteConversationResponse>
 }
