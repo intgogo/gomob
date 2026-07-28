@@ -1,12 +1,12 @@
 # eYs3D RS-D550 + HLSD8 双相机自研驱动 — 历史上下文
 
-> 最后更新: 2026-07-26 | 截至 commit: a979415 | 维护规则见 AGENTS.md「历史上下文维护」节
+> 最后更新: 2026-07-28 | 截至 commit: 0f60fc0 | 维护规则见 AGENTS.md「历史上下文维护」节
 
 ## 使命与当前状态
 
 本模块负责扫描机上的**第二套相机硬件**: Etron/eYs3D **RS-D550 深度模组**(0x3438:0x0206, 双 IR 目 + 中间 5MP RGB + IR 投射器, 深度由片上 ASIC 算) 与 **HLSD8 13MP RGB 相机**(0x0C45:0x6366, Image+/Sonix, 标准 UVC MJPEG, ~4160×832)。二者是**两颗物理独立的 USB 相机**(2026-06-10 才发现), 共同支撑 VIN 数码拓印的 RGBD 采集。目标最初是"零厂商 SDK 全自研 UVC 驱动"(host-first→Android), 经 Android bulk 取流攻坚后, **终态定为: 控制/协议层自研认知 + 取流引擎 native 直驱厂商 libUVCCamera C++ 类(零 Java 编排, M6.9.9)**。
 
-当前状态（截至 a979415）: **能用** — RS-D550 mode25 真立体深度(640×128, `DISPARITY_X8_U16` 视差×8 原始值) + L'(1280×256 MJPEG) + HLSD8 RGB 三路真机稳定 ~5fps, 深度有效率中位 51.8%(vendor DepthFilter 补洞后, 旧稀疏 7~23% 已改善); 生命周期竞态已修(2026-07-16, 3 轮启动/teardown 对称、连续 7 次 VIN 采集无崩溃); VIN 页固定绑定双相机, 快门回调差 53~55ms。**不能用/未完**: 仅 arm64-v8a(v7a 已定论不补); 自研零厂商取流栈在 Android 撞 -EPROTO 硬墙未破(挂起保留); 双相机曝光级同步(≤25ms 物理证明)未闭环(M4.6)。
+当前状态（截至本轮提交）: **能用** — RS-D550 mode25 真立体深度(640×128, `DISPARITY_X8_U16` 视差×8 原始值) + L'(1280×256 MJPEG) + HLSD8 RGB 三路真机稳定 ~5fps, 深度有效率中位 51.8%(vendor DepthFilter 补洞后, 旧稀疏 7~23% 已改善); 生命周期竞态已修(2026-07-16, 3 轮启动/teardown 对称、连续 7 次 VIN 采集无崩溃)，并在 2026-07-28 修复离屏 `AImageReader` 窗口引用计数崩溃；VIN 页固定绑定双相机, 快门回调差 53~55ms。**不能用/未完**: 仅 arm64-v8a(v7a 已定论不补); 自研零厂商取流栈在 Android 撞 -EPROTO 硬墙未破(挂起保留); 双相机曝光级同步(≤25ms 物理证明)未闭环(M4.6)。
 
 ## 决策时间线
 
@@ -54,6 +54,9 @@ libuvc_lusb100(重编 pupil+libusb100)双流被真机证伪(连彩色都排不�
 
 ### 2026-07-14→17 VIN 双相机运行时收口 (M4.6, 进行中)
 VIN 页固定绑定 RS-D550+HLSD8(禁误回落 Berxel/内置彩色); 预览空间对齐(disparity×8→3D→R/T→畸变→HLSD8 投影, 覆盖 95%+); 取景质量门/40cm 上限/5 帧自动快门; 回调差 53~55ms 但**回调时间≠曝光时间**, ≤25ms 曝光等效物理证明未完。业务细节见 docs/context/vin-pipeline.md。证据: TODO「进行中: M4.6」。
+
+### 2026-07-28 离屏窗口引用计数修复
+VIN 端到端拍摄与结果回传成功后，Teardown 仍可能在 `~AImageReader → RefBase::decStrong` 崩溃。实测根因是厂商 `cam_dtor` 对交给 `cam_set_preview_display` 的离屏窗口多减一次强引用；`MakeOffscreenWindow` 现在显式 `ANativeWindow_acquire` 作为补偿，Teardown 解绑窗口后销毁相机，**绝不再配对 `release`**，否则补偿会被抵消。LOG-AN10 复测出现 `Teardown 完成 cbFrames=N` 且无 `signal 11`。完整引用计数账与禁区见 `docs/agent-memory/finding_eys3d_offscreen_window_refcount_2026-07-28.md`。
 
 ## 禁区与已证伪路线
 
