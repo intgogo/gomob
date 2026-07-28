@@ -2,10 +2,18 @@ package io.gomob.feature.scan3d
 
 import kotlin.math.max
 
+// 稳定窗口 3 秒（2026-07-28 用户定）：0.8 秒太短，抖动没稳住就拍，还原误差大。
+//
+// 极差是**全窗口累积**的，所以窗口从 0.8s 拉到 3s 本身就等效收紧了抖动要求——手抖近似随机
+// 游走时极差随 √t 增长，3s 的极差约为 0.8s 的 1.9 倍。若沿用 5mm，达成难度会翻倍到需要依托物；
+// 按 √t 换算的「同等难度」约 10mm。取 7mm 落在两者之间：明显比现在稳，手持靠稳仍能触发。
+//
+// 达不到 3 秒时不做任何超时放宽——自动快门只在真稳定后触发，拍不到就用手动快门，
+// 绝不给同一个自动快门两套标准。
 internal const val VIN_AUTO_CAPTURE_MIN_READY_FRAMES = 5
-internal const val VIN_AUTO_CAPTURE_MIN_STABLE_US = 800_000L
+internal const val VIN_AUTO_CAPTURE_MIN_STABLE_US = 3_000_000L
 internal const val VIN_AUTO_CAPTURE_MAX_READY_GAP_US = 450_000L
-internal const val VIN_AUTO_CAPTURE_MAX_DISTANCE_SPAN_MM = 5.0
+internal const val VIN_AUTO_CAPTURE_MAX_DISTANCE_SPAN_MM = 7.0
 
 /** 自动拍摄只消费两路时间戳都前进的唯一 RGBD 帧对。 */
 internal data class VinAutoCaptureObservation(

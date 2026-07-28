@@ -2,7 +2,7 @@
 //
 // 启动期模型加载支持两套路径（按优先级）：
 //
-//  1. M-S10.4 主路径：GOMOB_CVENGINE_MODEL_NAMES="VMASK,VMET,VINOBB,VINCHAR" 时通过 model-registry → MinIO
+//  1. M-S10.4 主路径：GOMOB_CVENGINE_MODEL_NAMES="VMASK,VMET" 时通过 model-registry → MinIO
 //     拉 active 版本；订阅 NATS model.version.activated 热更
 //  2. dev 旁路：GOMOB_CVENGINE_MODELS="VMASK:mask=/path/x.onnx:vin,VMET=/path/y.onnx" 时
 //     直读本地路径（不经 model-registry，方便单机调试）
@@ -24,7 +24,7 @@
 //	GOMOB_CVENGINE_MODEL_CACHE   缓存目录（默认 .dev/cvengine_models）
 //	GOMOB_NATS_URL               NATS URL（默认 nats://127.0.0.1:4222）；空字符串=禁用 NATS 热更
 //	GOMOB_VIN_FACTORY_CALIBRATION_REQUIRED true 时缺原厂标定拒绝启动
-//	GOMOB_VIN_RESTORE_MODELS_REQUIRED      true 时缺 VINOBB/VINCHAR 拒绝启动
+//	GOMOB_VIN_RESTORE_MODELS_REQUIRED      true 时缺 VIN 还原视觉服务（外部算法 VMASK/VINS）拒绝启动
 //
 //	# dev 旁路
 //	GOMOB_CVENGINE_MODELS        "TAG=path,TAG:mask=path:cls" 直接本地加载
@@ -47,6 +47,7 @@ import (
 	"io.gomob/server/internal/cvengine"
 	"io.gomob/server/internal/cvengine/loader"
 	"io.gomob/server/internal/vinalgo"
+	"io.gomob/server/internal/vinvision"
 	"io.gomob/server/pkg/hmacauth"
 	"io.gomob/server/pkg/logger"
 )
@@ -64,6 +65,9 @@ func main() {
 	}
 	h := cvengine.NewHandlerWithOptions(cvengine.HandlerOptions{
 		VINRecognizeHandler: vinalgo.NewHTTPHandler(vinClient, log),
+		// 还原链的 VIN 区域(VMASK)与逐字符(VINS)观测与最终 OCR 走同一个外部算法服务，
+		// 保证几何与识别用的是同一份模型版本。
+		VINVisionProvider: vinvision.New(vinClient),
 	})
 
 	// 主路径：M-S10.4 model-registry

@@ -97,8 +97,6 @@ def main() -> None:
         parser.error("--count 必须为正数")
 
     meta = json.loads((args.capture / "meta.json").read_text(encoding="utf-8"))
-    reference = args.capture / "restored.png"
-    reference_bytes = reference.read_bytes() if reference.exists() else b""
     results = []
     for index in range(args.count):
         result, png = request_once(args.url, args.capture, meta, index)
@@ -115,8 +113,6 @@ def main() -> None:
         "url": args.url,
         "cpu_count": os.cpu_count(),
         "load_average": list(os.getloadavg()),
-        "reference_png_bytes": len(reference_bytes),
-        "reference_png_sha256": sha256_bytes(reference_bytes) if reference_bytes else "",
         "results": results,
         "successful_count": len(successful_ms),
         "http_ms_median": statistics.median(successful_ms) if successful_ms else None,

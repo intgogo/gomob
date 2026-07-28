@@ -69,4 +69,66 @@ class VinRestoreResponseTest {
         assertThat(response.rejectReason).isEqualTo("text_anchor_unreliable")
         assertThat(response.anchorCandidateCount).isEqualTo(20)
     }
+
+    @Test
+    fun `解析刻度尺图与字符度量`() {
+        val response = json.decodeFromString<VinRestoreResponse>(
+            """
+            {
+              "ok": true,
+              "width": 4425,
+              "height": 600,
+              "ruler_png_base64": "UE5H",
+              "character_metrics": {
+                "pixels_per_mm": 25.0,
+                "total_width_mm": 114.85,
+                "total_width_px": 2871.25,
+                "center_span_mm": 109.28,
+                "pitch_mm": 6.83,
+                "pitch_px": 170.75,
+                "gap_mm": 0.95,
+                "gap_px": 23.75,
+                "char_width_mm": 5.88,
+                "char_width_px": 147.0,
+                "char_height_mm": 9.92,
+                "char_height_px": 248.0,
+                "left_px": 776.0,
+                "right_px": 3647.25,
+                "baseline_y_px": 299.5,
+                "characters": [
+                  {
+                    "index": 0,
+                    "character": "L",
+                    "score": 0.93,
+                    "center_x_px": 845.5,
+                    "center_y_px": 299.4,
+                    "width_mm": 4.1,
+                    "height_mm": 9.9
+                  }
+                ]
+              }
+            }
+            """.trimIndent(),
+        )
+
+        assertThat(response.rulerPngBase64).isEqualTo("UE5H")
+        val metrics = requireNotNull(response.characterMetrics)
+        assertThat(metrics.pixelsPerMM).isEqualTo(25.0)
+        assertThat(metrics.totalWidthMm).isEqualTo(114.85)
+        assertThat(metrics.pitchMm).isEqualTo(6.83)
+        assertThat(metrics.gapMm).isEqualTo(0.95)
+        assertThat(metrics.charWidthMm).isEqualTo(5.88)
+        assertThat(metrics.charHeightMm).isEqualTo(9.92)
+        assertThat(metrics.characters).hasSize(1)
+        assertThat(metrics.characters[0].character).isEqualTo("L")
+        assertThat(metrics.characters[0].centerXPx).isEqualTo(845.5)
+    }
+
+    @Test
+    fun `无刻度尺字段时按缺省解析而不抛错`() {
+        val response = json.decodeFromString<VinRestoreResponse>("""{"ok": false}""")
+
+        assertThat(response.rulerPngBase64).isEmpty()
+        assertThat(response.characterMetrics).isNull()
+    }
 }

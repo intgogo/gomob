@@ -6,7 +6,6 @@ import (
 	"image"
 	"image/color"
 	"math"
-	"strconv"
 
 	"io.gomob/server/internal/cvengine/gocv"
 )
@@ -15,13 +14,8 @@ import (
 // 旧版「OBB 四角单应(钉角点) + 宽度归一到 1200」会把真实几何掩盖成"看着正"、且尺度随取景变；改为在平面上铺
 // **固定物理尺寸网格** → 输出严格 metric、视角无关(同 VIN 不同角度同尺寸)、可叠刻度尺。与原厂 VINCreator 还原一致。
 const (
-	PxMM      = 0.20 // 度量诊断图每像素物理尺寸(mm)
-	marginXMM = 10.0 // 左右物理边距(mm)
-	marginYMM = 5.0  // 上下物理边距(mm)
-	MaxOutW   = 2400 // 输出宽上限(钳，防异常 OBB)
-	MaxOutH   = 600  // 输出高上限(钳)
-
-	// 逐字符检测探针保持 1200×260：该尺寸已经由历史真机数据和 VINCHAR 模型闭环。
+	// 逐字符检测探针保持 1200×260：该尺寸已由历史真机数据闭环，换成外部算法 VINS 后
+	// 四角度一致性门复跑仍全部达标，故不动。改它等于改评估坐标契约，必须连 harness 一起重定。
 	CanonicalProbeW        = 1200
 	CanonicalProbeH        = 260
 	CanonicalProbeContentW = 1080
@@ -201,10 +195,10 @@ func renderTextCanonical(
 	probeAxes renderAxes,
 	probeMMPerPixel float64,
 	anchor textAnchor,
-) (gocv.Mat, int, int, error) {
+) (gocv.Mat, int, int, textSpatialGrid, error) {
 	grid, err := refineTextSpatialGrid(f, probeAxes, probeMMPerPixel, anchor)
 	if err != nil {
-		return gocv.Mat{}, 0, 0, err
+		return gocv.Mat{}, 0, 0, textSpatialGrid{}, err
 	}
 	work, _, _, err := renderSpatialGrid(
 		f, grid.center, grid.axisX, grid.axisY,
@@ -212,10 +206,11 @@ func renderTextCanonical(
 		color.RGBA{R: 128, G: 128, B: 128},
 	)
 	if err != nil {
-		return gocv.Mat{}, 0, 0, err
+		return gocv.Mat{}, 0, 0, textSpatialGrid{}, err
 	}
 	defer func() { _ = work.Release() }()
-	return cropVinCreatorOutput(work)
+	out, outW, outH, err := cropVinCreatorOutput(work)
+	return out, outW, outH, grid, err
 }
 
 // cropVinCreatorOutput 复刻原厂 FlipAndCropImage 的生产裁切：5000×678 → 4425×600。
@@ -402,21 +397,6 @@ func solve2x2(matrix [2][2]float64, rhs [2]float64) ([2]float64, bool) {
 	}, true
 }
 
-// renderMetric 生成固定 mm/px 的度量诊断图；不作为用户可见/OCR 主结果。
-// 它保留真实物理尺度，便于用历史原始采集复算 WidthMM/HeightMM 和刻度尺。
-//
-// 平面上以 OBB 中心为原点、OBB 长轴为 x 轴、固定物理尺寸(PxMM)铺刚性网格；逐输出像素 → 平面 3D 点 Q →
-// 彩色投影采样。不钉角点 → 如实反映真实几何、严格 metric（同 VIN 不同角度同尺寸 = 视角无关）。
-// 返回彩色 BGR(未叠刻度) + 实际输出宽高（无效像素=黑）。
-func renderMetric(f *frame) (gocv.Mat, int, int, error) {
-	axes := frameRenderAxes(f)
-	wMM := axes.contentWidthMM + 2*marginXMM
-	hMM := axes.contentHeightMM + 2*marginYMM
-	outW := clampInt(int(math.Round(wMM/PxMM)), 8, MaxOutW)
-	outH := clampInt(int(math.Round(hMM/PxMM)), 8, MaxOutH)
-	return renderGrid(f, axes, outW, outH, PxMM, color.RGBA{})
-}
-
 func renderGrid(
 	f *frame,
 	axes renderAxes,
@@ -490,77 +470,6 @@ func renderSpatialGrid(
 
 func isFinite(value float64) bool {
 	return !math.IsNaN(value) && !math.IsInf(value, 0)
-}
-
-// drawRuler —— 沿正射图**左边 + 底边**直接画 metric 刻度尺，精到**毫米级**（2026-06-24 用户定）。
-// 1mm 次刻度（短）/ 5mm 中刻度 / 10mm 主刻度（长 + 标数）。原点在左下角（底尺向右增、左尺向上增）。
-// 刻度用**描边线**（先黑粗后白细）画在底/左空白边距上（render 留 marginXMM/marginYMM 空板区）：任意底色
-// （高光板面/阴影）可读，**不铺暗带、不盖 VIN 字符**——修掉旧版暗带遮内容 + 数字撞刻度线的毛病。
-// 固定 PxMM → 刻度物理准（依赖原厂视差焦距与基线）。返回与输入同尺寸的新 Mat（不扩边；调用方 Release）。
-func drawRuler(ortho gocv.Mat) gocv.Mat {
-	h, w := ortho.Rows(), ortho.Cols()
-	canvas := ortho.Clone()
-	dark := color.RGBA{R: 12, G: 12, B: 12, A: 0}
-	light := color.RGBA{R: 250, G: 250, B: 250, A: 0}
-	tick := func(p0, p1 image.Point) { // 描边刻度线：黑(粗)打底 + 白(细)芯 → 任意底色可读
-		gocv.Line(&canvas, p0, p1, dark, 2)
-		gocv.Line(&canvas, p0, p1, light, 1)
-	}
-	label := func(s string, at image.Point) {
-		gocv.PutText(&canvas, s, at, gocv.FontHersheySimplex, 0.3, dark, 3)
-		gocv.PutText(&canvas, s, at, gocv.FontHersheySimplex, 0.3, light, 1)
-	}
-
-	by := h - 1
-	// 数字只标首尾两个（用户 2026-06-24）：刻度线全留，数字仅最左(0)与最右/最顶的主刻度。
-	lastMajorX := int(float64(w-1)*PxMM) / 10 * 10
-	lastMajorY := int(float64(by)*PxMM) / 10 * 10
-	// 底边水平尺：原点(0)在左下，向右增
-	for mm := 0; ; mm++ {
-		x := int(math.Round(float64(mm) / PxMM))
-		if x >= w {
-			break
-		}
-		switch {
-		case mm%10 == 0: // 主刻度（首尾才标数）
-			tick(image.Pt(x, by), image.Pt(x, by-9))
-			if mm == 0 || mm == lastMajorX {
-				s := strconv.Itoa(mm)
-				tx := x + 2
-				if tx > w-len(s)*7-1 {
-					tx = w - len(s)*7 - 1
-				}
-				label(s, image.Pt(tx, by-11))
-			}
-		case mm%5 == 0:
-			tick(image.Pt(x, by), image.Pt(x, by-5))
-		default:
-			tick(image.Pt(x, by), image.Pt(x, by-3))
-		}
-	}
-	// 左边竖直尺：原点(0)在左下，向上增（0 数字由底尺给，左尺仅标顶端那个=尾）
-	for mm := 0; ; mm++ {
-		y := by - int(math.Round(float64(mm)/PxMM))
-		if y < 0 {
-			break
-		}
-		switch {
-		case mm%10 == 0:
-			tick(image.Pt(0, y), image.Pt(9, y))
-			if mm == lastMajorY && mm > 0 {
-				ly := y + 4
-				if ly < 10 {
-					ly = 10
-				}
-				label(strconv.Itoa(mm), image.Pt(11, ly))
-			}
-		case mm%5 == 0:
-			tick(image.Pt(0, y), image.Pt(5, y))
-		default:
-			tick(image.Pt(0, y), image.Pt(3, y))
-		}
-	}
-	return canvas
 }
 
 func dist2(a, b [2]float64) float64 {

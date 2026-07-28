@@ -83,6 +83,27 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def vision_records_fingerprint(records_dir: Path) -> dict:
+    """把整批视觉观测录制压成一个指纹，作为报告的溯源锚点。
+
+    逐文件 sha256 再按文件名排序聚合，保证同一批观测无论录制顺序如何都得到同一指纹；
+    任何一条观测变了（换模型版本、换服务端、重录）指纹立刻变，报告不会张冠李戴。
+    """
+    if not records_dir.is_dir():
+        return {"path": str(records_dir), "present": False}
+    files = sorted(p for p in records_dir.glob("*.json") if p.is_file())
+    aggregate = hashlib.sha256()
+    for path in files:
+        aggregate.update(path.name.encode("utf-8"))
+        aggregate.update(sha256_file(path).encode("ascii"))
+    return {
+        "path": str(records_dir),
+        "present": True,
+        "record_count": len(files),
+        "sha256": aggregate.hexdigest(),
+    }
+
+
 def git_revision() -> dict:
     def run(*args):
         proc = subprocess.run(
@@ -688,11 +709,11 @@ def main() -> int:
             "tests/harness/vin_restore_consistency/manifest_factory_bf301208.json",
         )
     )
-    obb_model_path = Path(
-        sys.argv[3] if len(sys.argv) > 3 else os.getenv("VIN_OBB_MODEL", ".dev/vin_models/yolo-obb.onnx")
-    )
-    char_model_path = Path(
-        sys.argv[4] if len(sys.argv) > 4 else os.getenv("VIN_CHAR_MODEL", ".dev/vin_models/vins0.onnx")
+    # VIN 区域与逐字符观测已下沉到外部算法服务，本地无模型文件可 hash。
+    # 溯源锚点改为这批观测录制本身：报告据此能回答"这个结论建立在哪批观测上"。
+    records_dir = Path(
+        sys.argv[3] if len(sys.argv) > 3
+        else os.getenv("VIN_VISION_REPLAY_DIR", ".dev/vin_vision_records")
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     groups = [analyze_group(out, group) for group in manifest["groups"]]
@@ -719,10 +740,7 @@ def main() -> int:
                     ROOT / "server/internal/cvengine/restore/consistency_real_test.go",
                 )
             },
-            "models": {
-                "VINOBB": {"path": str(obb_model_path), "sha256": sha256_file(obb_model_path)},
-                "VINCHAR": {"path": str(char_model_path), "sha256": sha256_file(char_model_path)},
-            },
+            "vision_records": vision_records_fingerprint(records_dir),
             "manifest_sha256": sha256_file(manifest_path),
         },
         "thresholds": {

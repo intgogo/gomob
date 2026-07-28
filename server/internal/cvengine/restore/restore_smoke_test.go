@@ -1,13 +1,11 @@
 package restore
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
-
-	"io.gomob/server/internal/cvengine/core"
-	"io.gomob/server/internal/cvengine/gocv"
 )
 
 // 端侧 meta.json 的最小结构（只取深度内参 + 宽高）。
@@ -34,30 +32,19 @@ type capMeta struct {
 //
 // 缺模型 / 缺数据 / onnxruntime 跑不起来 → t.Skip（不让 CI 因运行期依赖红）。
 func TestRestoreSmoke(t *testing.T) {
-	modelPath := getenvOr("VIN_OBB_MODEL", "/root/lilw/gomob/.dev/vin_models/yolo-obb.onnx")
-	charModelPath := getenvOr("VIN_CHAR_MODEL", "/root/lilw/gomob/.dev/vin_models/vins0.onnx")
+	replayDir := getenvOr("VIN_VISION_REPLAY_DIR", "/root/lilw/gomob/.dev/vin_vision_records")
 	capDir := getenvOr("VIN_CAP_DIR", "/root/lilw/gomob/.dev/vin_factory_bf301208/vin_captures/cap_001_1784015012764")
 	outDir := getenvOr("VIN_RESTORE_OUT", "/root/lilw/gomob/.dev/vin_restore_go")
 
-	if _, err := os.Stat(modelPath); err != nil {
-		t.Skipf("模型不存在，跳过：%v", err)
-	}
-	if _, err := os.Stat(charModelPath); err != nil {
-		t.Skipf("逐字符模型不存在，跳过：%v", err)
-	}
 	if _, err := os.Stat(capDir); err != nil {
 		t.Skipf("cap 不存在，跳过：%v", err)
 	}
 
-	reg := core.New()
-	defer reg.ReleaseAll()
-	if err := reg.RegisterComONNX("VINOBB", modelPath, 1.0/255.0, gocv.Scalar{}); err != nil {
-		t.Skipf("模型加载失败（可能缺 onnxruntime 运行库），跳过：%v", err)
-	}
-	if err := reg.RegisterYoloONNX(
-		"VINCHAR", charModelPath, core.DefaultYoloOptions(VinCharacterClasses()...),
-	); err != nil {
-		t.Skipf("逐字符模型加载失败，跳过：%v", err)
+	// 视觉观测来自离线录制（cmd/vinvisionrecord）；没录过就跳过，绝不联网自动补，
+	// 否则 smoke 会在无人察觉时变成依赖现场服务的用例。
+	provider, err := NewReplayVisionProvider(replayDir)
+	if err != nil {
+		t.Skipf("视觉观测录制不存在，跳过：%v", err)
 	}
 
 	metaBytes, err := os.ReadFile(filepath.Join(capDir, "meta.json"))
@@ -92,8 +79,9 @@ func TestRestoreSmoke(t *testing.T) {
 		t.Fatalf("加载原厂标定：%v", err)
 	}
 
-	png, meta, err := Restore(reg, "VINOBB", "VINCHAR", calibration, rgb, depth,
+	restored, err := Restore(context.Background(), provider, calibration, rgb, depth,
 		m.Depth.W, m.Depth.H)
+	png, meta := restored.PNG, restored.Meta
 	if err == ErrTiltTooLarge {
 		t.Logf("tilt 门废弃：tilt=%.1f ndet=%d", meta.TiltDeg, meta.NumDet)
 		return
@@ -109,9 +97,23 @@ func TestRestoreSmoke(t *testing.T) {
 	if err := os.WriteFile(outPath, png, 0o644); err != nil {
 		t.Fatalf("写 PNG：%v", err)
 	}
+	rulerPath := filepath.Join(outDir, filepath.Base(capDir)+"_ruler.png")
+	if err := os.WriteFile(rulerPath, restored.RulerPNG, 0o644); err != nil {
+		t.Fatalf("写刻度尺 PNG：%v", err)
+	}
 	t.Logf("OK → %s  size=%d bytes  %dx%d tilt=%.1f w=%.0fmm h=%.0fmm theta=%.1f inlier=%.2f rms=%.1f medz=%.0f ndet=%d",
 		outPath, len(png), meta.OutW, meta.OutH, meta.TiltDeg, meta.WidthMM, meta.HeightMM,
 		meta.ThetaDeg, meta.InlierRate, meta.RMS, meta.MedZ, meta.NumDet)
+	if meta.Metrics != nil {
+		t.Logf("字符度量 → 总宽 %.2fmm 字宽 %.2fmm 字高 %.2fmm 节距 %.2fmm 空隙 %.2fmm（刻度尺图 %s）",
+			meta.Metrics.TotalWidthMM, meta.Metrics.CharWidthMM, meta.Metrics.CharHeightMM,
+			meta.Metrics.PitchMM, meta.Metrics.GapMM, rulerPath)
+	}
+	// 刻度尺是新增在成功路径上的固定开销，单列出来才能判断它值不值这些毫秒。
+	t.Logf("耗时 → total=%.1fms png=%.1fms ruler=%.1fms(%.1f%%) region=%.1fms char=%.1fms 刻度尺图 %d 字节",
+		meta.Timings.TotalMS, meta.Timings.PNGEncodeMS, meta.Timings.RulerMS,
+		100*meta.Timings.RulerMS/meta.Timings.TotalMS,
+		meta.Timings.RegionMS, meta.Timings.CharDetectMS, len(restored.RulerPNG))
 }
 
 func getenvOr(k, def string) string {

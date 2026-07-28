@@ -75,6 +75,11 @@ ANativeWindow* MakeOffscreenWindow(AImageReader** out_reader, int w, int h) {
     AImageReader_delete(reader);
     return nullptr;
   }
+  // getWindow 返回的窗口归 reader 所有、不转移所有权；但它随后要交给厂商 SDK
+  // (cam_set_preview_display)，而厂商析构时会对它多减一次强引用 —— 实测 LOG-AN10 上
+  // cam_dtor 之后再 AImageReader_delete 必崩在 ~AImageReader → RefBase::decStrong (SIGSEGV@0)。
+  // 这里显式补一份引用，专门抵消厂商析构时多减的那一次；Teardown 绝不能再 release。
+  ANativeWindow_acquire(win);
   *out_reader = reader;
   return win;
 }
@@ -408,12 +413,21 @@ void Eys3dVendorCppSession::Teardown() {
       delete fg_callback_ctx_;
       fg_callback_ctx_ = nullptr;
     }
+    // 厂商析构前先解绑预览窗（ABI 显式支持 setPreviewDisplay(nullptr)）：让它主动放弃对
+    // 离屏窗的引用，而不是留到 cam_dtor 里连我方那份一起减掉。
+    if (abi_.cam_set_preview_display) {
+      if (color_win_) abi_.cam_set_preview_display(cam_, nullptr, kCameraColor);
+      if (depth_win_) abi_.cam_set_preview_display(cam_, nullptr, kCameraDepth);
+    }
     abi_.cam_dtor(cam_);  // D1：析构成员（含 shared_ptr→厂商销毁 fg），不释放 this
     std::free(cam_);
     cam_ = nullptr;
     fg_ = nullptr;
     cam_connected_ = false;
   }
+  // 这里**不能**再 release：MakeOffscreenWindow 里那次 acquire 是用来补偿厂商 cam_dtor
+  // 多减的一次强引用的，补偿完计数才回到 reader 独占。再 release 一次等于把补偿抵消，
+  // reader 内部引用照样归零 —— 实测就是这样又崩了一轮（Teardown()+520）。
   if (color_reader_) {
     AImageReader_delete(reinterpret_cast<AImageReader*>(color_reader_));
     color_reader_ = nullptr;

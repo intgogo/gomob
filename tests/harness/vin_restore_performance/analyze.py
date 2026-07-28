@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""判定 VIN 还原是否保持逐字节等价，并满足交互性能门。"""
+"""判定 VIN 还原的交互性能与契约语义。
+
+逐字节等价**不在这里判**：模型下沉外部算法服务后，gosmart 更新权重就会让像素变化，
+那不是 gomob 的回归。等价性改由 vin_restore_consistency 的离线回放门负责
+（TestRestoreByteEquivalence，观测固定 → 几何计算确定性 → 输出必然字节相同）。
+本 harness 连真实服务，只回答“够不够快、契约有没有变”。
+"""
 
 from __future__ import annotations
 
@@ -13,10 +19,11 @@ from pathlib import Path
 
 NORMAL_HTTP_P50_MS = 4_000.0
 NORMAL_HTTP_P95_MS = 6_000.0
-NORMAL_ANCHOR_P50_MS = 3_000.0
+# 逐字符检测门：产品级交互要求，与实现无关，故沿用远程化前的数值。
+NORMAL_CHAR_DETECT_P50_MS = 3_000.0
 WARNING_HTTP_P50_MS = 6_000.0
 WARNING_HTTP_P95_MS = 8_000.0
-WARNING_ANCHOR_P50_MS = 5_000.0
+WARNING_CHAR_DETECT_P50_MS = 5_000.0
 REJECT_MAX_MS = 2_000.0
 LEGACY_SINGLE_THREAD_P50_MS = 10_730.0
 
@@ -45,9 +52,11 @@ def parse_timings(log_path: Path) -> dict[str, dict[str, float]]:
             for key in (
                 "total_ms",
                 "decode_ms",
-                "obb_ms",
+                "region_ms",
                 "frame_ms",
                 "probe_render_ms",
+                "probe_encode_ms",
+                "char_detect_ms",
                 "anchor_ms",
                 "final_render_ms",
                 "png_encode_ms",
@@ -74,15 +83,16 @@ def main(out_dir: str) -> int:
     timing_by_log_id = parse_timings(out / "cvengine.log")
     success_rows = success.get("results") or []
     reject_rows = reject.get("results") or []
-    reference_hash = success.get("reference_png_sha256") or ""
-    reference_bytes = int(success.get("reference_png_bytes") or 0)
+    # 同一次运行内部仍要求多次采样彼此字节一致：那检测的是服务端自身的非确定性
+    # （并发、随机种子、缓存），与模型版本无关，属于本 harness 该管的范围。
+    run_hashes = {row.get("png_sha256") for row in success_rows if row.get("ok")}
 
     errors: list[str] = []
     warnings: list[str] = []
     if not success_rows:
         errors.append("成功路径无样本")
-    if not reference_hash or reference_bytes <= 0:
-        errors.append("缺旧版本黄金还原图")
+    if len(run_hashes) > 1:
+        errors.append(f"同一输入多次调用输出不一致，服务端存在非确定性: {sorted(run_hashes)}")
 
     for row in success_rows:
         prefix = f"成功样本#{row.get('index')}"
@@ -91,10 +101,6 @@ def main(out_dir: str) -> int:
             continue
         if row.get("width") != 4425 or row.get("height") != 600:
             errors.append(f"{prefix} 输出尺寸不是 4425×600")
-        if row.get("png_sha256") != reference_hash:
-            errors.append(f"{prefix} PNG 与旧版本不逐字节等价")
-        if int(row.get("png_bytes") or 0) != reference_bytes:
-            errors.append(f"{prefix} PNG 字节数与旧版本不一致")
         log_id = row.get("log_id") or ""
         if log_id not in timing_by_log_id:
             errors.append(f"{prefix} 缺服务端阶段计时")
@@ -117,24 +123,33 @@ def main(out_dir: str) -> int:
         if row.get("log_id") in timing_by_log_id
         and "total_ms" in timing_by_log_id[row["log_id"]]
     ]
-    anchor_ms = [
-        timing_by_log_id[row["log_id"]]["anchor_ms"]
+    # 逐字符检测耗时：远程化后这一步是"编码 probe + 网络往返 + 服务端推理"，
+    # 是旧 anchor_ms 的耗时主体继承者；anchor_ms 现在只剩纯格架拟合，不足以当门。
+    char_detect_ms = [
+        timing_by_log_id[row["log_id"]]["char_detect_ms"]
         for row in success_rows
         if row.get("log_id") in timing_by_log_id
-        and "anchor_ms" in timing_by_log_id[row["log_id"]]
+        and "char_detect_ms" in timing_by_log_id[row["log_id"]]
     ]
-    if not http_ms or not total_ms or not anchor_ms:
+    region_ms = [
+        timing_by_log_id[row["log_id"]]["region_ms"]
+        for row in success_rows
+        if row.get("log_id") in timing_by_log_id
+        and "region_ms" in timing_by_log_id[row["log_id"]]
+    ]
+    if not http_ms or not total_ms or not char_detect_ms:
         errors.append("性能样本不完整")
 
     metrics: dict[str, float | int | str | list[float] | None] = {
         "status": "异常",
         "sample_count": len(success_rows),
-        "reference_png_sha256": reference_hash,
+        "run_png_sha256": sorted(run_hashes)[0] if len(run_hashes) == 1 else None,
         "http_p50_ms": statistics.median(http_ms) if http_ms else None,
         "http_p95_ms": percentile(http_ms, 0.95) if http_ms else None,
         "http_max_ms": max(http_ms) if http_ms else None,
         "restore_total_p50_ms": statistics.median(total_ms) if total_ms else None,
-        "anchor_p50_ms": statistics.median(anchor_ms) if anchor_ms else None,
+        "char_detect_p50_ms": statistics.median(char_detect_ms) if char_detect_ms else None,
+        "region_p50_ms": statistics.median(region_ms) if region_ms else None,
         "reject_http_ms": float(reject_rows[0]["http_ms"]) if len(reject_rows) == 1 else None,
         "legacy_single_thread_p50_ms": LEGACY_SINGLE_THREAD_P50_MS,
         "speedup_vs_legacy": (
@@ -148,26 +163,26 @@ def main(out_dir: str) -> int:
     if not errors:
         http_p50 = float(metrics["http_p50_ms"])
         http_p95 = float(metrics["http_p95_ms"])
-        anchor_p50 = float(metrics["anchor_p50_ms"])
+        char_detect_p50 = float(metrics["char_detect_p50_ms"])
         reject_ms = float(metrics["reject_http_ms"])
         if (
             http_p50 > WARNING_HTTP_P50_MS
             or http_p95 > WARNING_HTTP_P95_MS
-            or anchor_p50 > WARNING_ANCHOR_P50_MS
+            or char_detect_p50 > WARNING_CHAR_DETECT_P50_MS
         ):
             errors.append(
                 f"成功还原过慢: HTTP p50={http_p50:.1f}ms p95={http_p95:.1f}ms，"
-                f"VINCHAR p50={anchor_p50:.1f}ms"
+                f"字符检测 p50={char_detect_p50:.1f}ms"
             )
         else:
             if (
                 http_p50 > NORMAL_HTTP_P50_MS
                 or http_p95 > NORMAL_HTTP_P95_MS
-                or anchor_p50 > NORMAL_ANCHOR_P50_MS
+                or char_detect_p50 > NORMAL_CHAR_DETECT_P50_MS
             ):
                 warnings.append(
                     f"成功还原接近上限: HTTP p50={http_p50:.1f}ms p95={http_p95:.1f}ms，"
-                    f"VINCHAR p50={anchor_p50:.1f}ms"
+                    f"字符检测 p50={char_detect_p50:.1f}ms"
                 )
             if reject_ms > REJECT_MAX_MS:
                 warnings.append(f"VIN 未检出判废耗时偏高: {reject_ms:.1f}ms")
@@ -185,8 +200,9 @@ def main(out_dir: str) -> int:
     )
 
     print(
-        "结果等价："
-        f"{len(success_rows)} 次均为 4425×600，SHA-256={reference_hash or '缺失'}"
+        "运行内一致："
+        f"{len(success_rows)} 次均为 4425×600，"
+        f"SHA-256={sorted(run_hashes)[0] if len(run_hashes) == 1 else '不一致'}"
     )
     if http_ms:
         print(
@@ -195,7 +211,8 @@ def main(out_dir: str) -> int:
         )
         print(
             f"服务端：Restore p50={metrics['restore_total_p50_ms']:.1f}ms，"
-            f"VINCHAR p50={metrics['anchor_p50_ms']:.1f}ms，"
+            f"区域检测 p50={metrics['region_p50_ms']:.1f}ms，"
+            f"字符检测 p50={metrics['char_detect_p50_ms']:.1f}ms，"
             f"相对旧单线程约 {metrics['speedup_vs_legacy']:.2f}×"
         )
     print(f"判废路径：{metrics['reject_http_ms']}ms")

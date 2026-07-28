@@ -37,9 +37,9 @@ edges:
 
   # cv-engine 同步算法 → 厂商参考 / 模型
   - { from: cv-engine, to: vin-ref,       kind: grpc,  reason: "vin_compare 时按 vehicle_model_id 拉对照样本" }
-  - { from: cv-engine, to: model-registry, kind: grpc, reason: "启动 + 热更时拉 VINOBB/VINCHAR 等 active 模型及 yolo anchors/strides 元数据" }
+  - { from: cv-engine, to: model-registry, kind: grpc, reason: "启动 + 热更时拉 VMASK/VMET 等 active 模型及 yolo anchors/strides 元数据；VIN 还原的 VMASK/VINS 观测改走外部算法服务，不再本地加载" }
   - { from: cv-engine, to: asset,         kind: grpc,  reason: "下载模型二进制（启动时）" }
-  - { from: cv-engine, to: gosmart-vin,   kind: http,  reason: "/cv/ocr/v1/vin_recognize 服务端签名代理到外部 vin_detect" }
+  - { from: cv-engine, to: gosmart-vin,   kind: http,  reason: "/cv/ocr/v1/vin_recognize 签名代理 vin_detect；/cv/veh/v1/detect 提供 VIN 区域 VMASK 与逐字符 VINS 原子观测" }
 
   # signaling → 业务元信息（最小化）
   - { from: signaling, to: api,          kind: grpc,  reason: "查询用户元信息 / 写 call_logs" }

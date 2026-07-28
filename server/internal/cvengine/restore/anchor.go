@@ -2,12 +2,9 @@ package restore
 
 import (
 	"errors"
-	"image"
 	"math"
 	"sort"
 	"strings"
-
-	"io.gomob/server/internal/cvengine/gocv"
 )
 
 const (
@@ -25,29 +22,12 @@ const (
 // ErrTextAnchorUnreliable 表示逐字符观测不足以建立唯一的 17 字符格架。
 var ErrTextAnchorUnreliable = errors.New("VIN 文字格架不可靠")
 
-// VinCharacterClasses 返回 vins0.onnx 的 33 个合法 VIN 字符类。
-func VinCharacterClasses() []string {
-	return []string{
-		"0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
-		"A", "B", "C", "D", "E", "F", "G", "H",
-		"J", "K", "L", "M", "N", "P", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
-	}
-}
-
-type yoloRunner interface {
-	RunYolo(
-		tag string,
-		img gocv.Mat,
-		confThreshold, nmsThreshold, rudeScale float32,
-	) ([]image.Rectangle, []int, []float32, error)
-}
-
 type characterObservation struct {
 	X, Y   float64
 	Width  float64
 	Height float64
 	Score  float64
-	Class  int
+	Class  string
 }
 
 type textAnchor struct {
@@ -67,34 +47,28 @@ func (a textAnchor) AngleDeg() float64 {
 	return math.Atan2(a.DirectionY, a.DirectionX) * 180.0 / math.Pi
 }
 
-func detectTextAnchor(runner yoloRunner, tag string, probeBGR gocv.Mat) (textAnchor, error) {
-	rgb := gocv.NewMat()
-	defer func() { _ = rgb.Release() }()
-	gocv.CvtColor(probeBGR, &rgb, gocv.ColorBGRToRGB)
-	boxes, classes, scores, err := runner.RunYolo(
-		tag, rgb, charConfidenceMin, charNMSIoU, 0,
-	)
-	if err != nil {
-		return textAnchor{}, err
-	}
-
+// buildTextAnchor 把外部字符观测筛成候选后拟合 17 字符格架。
+//
+// 筛选门与本地 vins0 时期逐条保留（尺寸下限/上限、越界余量），只有两点因远程化而变：
+// 置信度下限改由本地施加（服务端按 ivv.code 的 BOX_THRESH=0.1 出框，比这里的门更松），
+// 以及新增非 VIN 字符剔除——钢印两端的 ☆ 会被 VINS 检成 "-" 且置信度极高。
+func buildTextAnchor(boxes []CharacterBox, probeWidth, probeHeight int) (textAnchor, error) {
 	observations := make([]characterObservation, 0, len(boxes))
-	for i, box := range boxes {
-		if i >= len(scores) || box.Dx() <= 5 || box.Dy() <= 15 || box.Dx() >= 120 || box.Dy() >= 180 {
+	for _, box := range boxes {
+		if !box.IsVinCharacter() || box.Score < charConfidenceMin {
 			continue
 		}
-		x := float64(box.Min.X+box.Max.X) * 0.5
-		y := float64(box.Min.Y+box.Max.Y) * 0.5
-		if x <= -20 || x >= float64(probeBGR.Cols()+20) || y <= 25 || y >= float64(probeBGR.Rows()-25) {
+		w, h := box.Width(), box.Height()
+		if w <= 5 || h <= 15 || w >= 120 || h >= 180 {
 			continue
 		}
-		classID := -1
-		if i < len(classes) {
-			classID = classes[i]
+		x, y := box.CenterX(), box.CenterY()
+		if x <= -20 || x >= float64(probeWidth+20) || y <= 25 || y >= float64(probeHeight-25) {
+			continue
 		}
 		observations = append(observations, characterObservation{
-			X: x, Y: y, Width: float64(box.Dx()), Height: float64(box.Dy()),
-			Score: float64(scores[i]), Class: classID,
+			X: x, Y: y, Width: w, Height: h,
+			Score: box.Score, Class: box.Character,
 		})
 	}
 	return fitTextAnchor(observations)
@@ -243,15 +217,14 @@ func robustGridFit(observations []characterObservation) textAnchor {
 		heights[i] = observation.Height
 	}
 	sort.Float64s(heights)
-	classes := VinCharacterClasses()
 	var text strings.Builder
 	text.Grow(len(observations))
 	for _, observation := range observations {
-		if observation.Class < 0 || observation.Class >= len(classes) {
+		if observation.Class == "" {
 			text.WriteByte('?')
 			continue
 		}
-		text.WriteString(classes[observation.Class])
+		text.WriteString(observation.Class)
 	}
 	return textAnchor{
 		CenterX: cx, CenterY: cy,

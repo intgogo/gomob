@@ -2,6 +2,7 @@ package io.gomob.data.scan
 
 import io.gomob.network.ApiException
 import io.gomob.network.CVEngineApi
+import io.gomob.network.dto.VinCharacterMetricsDto
 import java.util.Base64
 import java.util.zip.CRC32
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -71,6 +72,42 @@ data class VinTextAnchorMetrics(
     val scale: Double,
 )
 
+/**
+ * 规范图上车架号字符串的物理度量（端侧领域类型）。
+ *
+ * mm 值是承印平面上的真实尺寸，px 值是 4425×600 画布像素，两者恒差 [pixelsPerMm] 倍；
+ * 与还原图四周的毫米刻度尺同源，用户在图上量到的读数必须与这里一致。
+ */
+data class VinCharacterMetrics(
+    val pixelsPerMm: Double,
+    val totalWidthMm: Double,
+    val totalWidthPx: Double,
+    val centerSpanMm: Double,
+    val pitchMm: Double,
+    val pitchPx: Double,
+    val gapMm: Double,
+    val gapPx: Double,
+    val charWidthMm: Double,
+    val charWidthPx: Double,
+    val charHeightMm: Double,
+    val charHeightPx: Double,
+    val leftPx: Double,
+    val rightPx: Double,
+    val baselineYPx: Double,
+    val characters: List<VinCharacterMetric>,
+)
+
+/** 单个字符的度量；[character] 仅作诊断参考，权威文本以 OCR 为准。 */
+data class VinCharacterMetric(
+    val index: Int,
+    val character: String,
+    val score: Double,
+    val centerXPx: Double,
+    val centerYPx: Double,
+    val widthMm: Double,
+    val heightMm: Double,
+)
+
 /** 服务端权威还原的结构化判废原因。 */
 sealed interface VinRestoreRejectReason {
     data object TiltTooLarge : VinRestoreRejectReason
@@ -100,6 +137,9 @@ sealed interface VinRestoreRejectReason {
 data class VinRestoreOutcome(
     val ok: Boolean,
     val png: ByteArray?,
+    /** 叠四周毫米刻度尺的展示副本；识别一律用 [png] 那张干净图。 */
+    val rulerPng: ByteArray?,
+    val metrics: VinCharacterMetrics?,
     val width: Int,
     val height: Int,
     val tiltDeg: Double,
@@ -567,6 +607,12 @@ class VinRepository @Inject constructor(
         } else {
             null
         }
+        val rulerPng = if (resp.ok && resp.rulerPngBase64.isNotEmpty()) {
+            runCatching { Base64.getDecoder().decode(resp.rulerPngBase64) }
+                .getOrElse { throw IllegalArgumentException("VIN 刻度尺图 base64 非法", it) }
+        } else {
+            null
+        }
         if (resp.ok) {
             require(resp.resultPngBase64.isNotEmpty()) { "VIN 还原成功响应缺 PNG" }
             require(resp.anchorCount == VinRecognitionResult.VIN_LENGTH) {
@@ -580,6 +626,15 @@ class VinRepository @Inject constructor(
             require(pngDimensions(requireNotNull(png)) == (VIN_RESTORE_CANVAS_W to VIN_RESTORE_CANVAS_H)) {
                 "VIN 还原成功响应 PNG 实际尺寸不是 $VIN_RESTORE_CANVAS_W×$VIN_RESTORE_CANVAS_H"
             }
+            // 刻度尺图必须与干净图同画布：尺寸一旦不同，图上的毫米读数就与度量对不上。
+            require(resp.rulerPngBase64.isNotEmpty()) { "VIN 还原成功响应缺刻度尺图" }
+            require(
+                pngDimensions(requireNotNull(rulerPng)) ==
+                    (VIN_RESTORE_CANVAS_W to VIN_RESTORE_CANVAS_H),
+            ) {
+                "VIN 刻度尺图实际尺寸不是 $VIN_RESTORE_CANVAS_W×$VIN_RESTORE_CANVAS_H"
+            }
+            require(resp.characterMetrics != null) { "VIN 还原成功响应缺字符度量" }
         }
         val calibrationIdentityRequired = resp.ok || when (rejectReason) {
             VinRestoreRejectReason.RgbdOutOfSync,
@@ -615,6 +670,8 @@ class VinRepository @Inject constructor(
         return VinRestoreOutcome(
             ok = resp.ok,
             png = png,
+            rulerPng = rulerPng,
+            metrics = resp.characterMetrics?.toDomain(),
             width = resp.width,
             height = resp.height,
             tiltDeg = resp.tiltDeg,
@@ -643,6 +700,73 @@ class VinRepository @Inject constructor(
         const val VIN_PREVIEW_SAMPLE_FORMAT = "disparity_x8_u16"
     }
 }
+
+/**
+ * 把服务端字符度量映射为端侧领域类型，同时校验它自洽。
+ *
+ * 校验不是形式主义：这些数值会被当作实测尺寸读出来，一旦 mm 与 px 两套读数对不上，
+ * 用户拿图上刻度尺量到的结果就会与显示的数字矛盾——那比不显示更糟。
+ */
+private fun VinCharacterMetricsDto.toDomain(): VinCharacterMetrics {
+    require(pixelsPerMM > 0.0) { "VIN 字符度量缺少合法 pixels_per_mm" }
+    require(characters.size == VinRecognitionResult.VIN_LENGTH) {
+        "VIN 字符度量条目 ${characters.size} != ${VinRecognitionResult.VIN_LENGTH}"
+    }
+    require(pitchMm > 0.0 && charWidthMm > 0.0 && charHeightMm > 0.0) {
+        "VIN 字符度量含非正尺寸: pitch=$pitchMm width=$charWidthMm height=$charHeightMm"
+    }
+    require(totalWidthMm >= centerSpanMm) {
+        "VIN 字符串总宽 $totalWidthMm 小于中心跨距 $centerSpanMm"
+    }
+    fun requireConsistent(name: String, mm: Double, px: Double) {
+        require(abs(mm * pixelsPerMM - px) <= MetricsPxToleranceCanvasPx) {
+            "VIN 字符度量 $name 的 mm/px 读数不一致: ${mm}mm × $pixelsPerMM != ${px}px"
+        }
+    }
+    requireConsistent("total_width", totalWidthMm, totalWidthPx)
+    requireConsistent("pitch", pitchMm, pitchPx)
+    requireConsistent("char_width", charWidthMm, charWidthPx)
+    requireConsistent("char_height", charHeightMm, charHeightPx)
+    characters.forEachIndexed { position, character ->
+        require(character.index == position) {
+            "VIN 字符度量顺序错乱: 第 $position 项 index=${character.index}"
+        }
+        require(character.widthMm > 0.0 && character.heightMm > 0.0) {
+            "VIN 第 $position 个字符度量含非正尺寸"
+        }
+    }
+    return VinCharacterMetrics(
+        pixelsPerMm = pixelsPerMM,
+        totalWidthMm = totalWidthMm,
+        totalWidthPx = totalWidthPx,
+        centerSpanMm = centerSpanMm,
+        pitchMm = pitchMm,
+        pitchPx = pitchPx,
+        gapMm = gapMm,
+        gapPx = gapPx,
+        charWidthMm = charWidthMm,
+        charWidthPx = charWidthPx,
+        charHeightMm = charHeightMm,
+        charHeightPx = charHeightPx,
+        leftPx = leftPx,
+        rightPx = rightPx,
+        baselineYPx = baselineYPx,
+        characters = characters.map {
+            VinCharacterMetric(
+                index = it.index,
+                character = it.character,
+                score = it.score,
+                centerXPx = it.centerXPx,
+                centerYPx = it.centerYPx,
+                widthMm = it.widthMm,
+                heightMm = it.heightMm,
+            )
+        },
+    )
+}
+
+/** mm×25 与 px 的允许偏差：服务端两套值同源计算，容差只为吸收 JSON 浮点往返。 */
+private const val MetricsPxToleranceCanvasPx = 0.01
 
 private fun validateRotation(rotation: List<Double>) {
     fun dot(rowA: Int, rowB: Int): Double = (0..2).sumOf { column ->

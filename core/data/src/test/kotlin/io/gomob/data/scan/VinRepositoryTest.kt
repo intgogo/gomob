@@ -8,6 +8,8 @@ import io.gomob.network.dto.VinCropImageResponse
 import io.gomob.network.dto.VinPreviewCalibrationKeyResponse
 import io.gomob.network.dto.VinPreviewCalibrationResponse
 import io.gomob.network.dto.VinPreviewColorCalibrationResponse
+import io.gomob.network.dto.VinCharacterMetricDto
+import io.gomob.network.dto.VinCharacterMetricsDto
 import io.gomob.network.dto.VinPreviewDepthCalibrationResponse
 import io.gomob.network.dto.VinRecognizeResponse
 import io.gomob.network.dto.VinRestoreResponse
@@ -274,6 +276,87 @@ class VinRepositoryTest {
     }
 
     @Test
+    fun `还原成功映射刻度尺图与字符度量`() = runTest {
+        val api = FakeCVEngineApi().apply {
+            restoreEnabled = true
+            restoreResponse = successfulRestoreResponse(4425, 600, 4425, 600)
+        }
+
+        val result = restore(api)
+
+        // 刻度尺图与干净图同画布，且是两份独立字节：显示用带尺那张，识别仍用干净那张。
+        assertThat(pngDimensions(requireNotNull(result.rulerPng))).isEqualTo(4425 to 600)
+        val metrics = requireNotNull(result.metrics)
+        assertThat(metrics.pixelsPerMm).isEqualTo(25.0)
+        assertThat(metrics.totalWidthMm).isEqualTo(114.85)
+        assertThat(metrics.pitchMm).isEqualTo(6.83)
+        assertThat(metrics.charWidthMm).isEqualTo(5.88)
+        assertThat(metrics.charHeightMm).isEqualTo(9.92)
+        assertThat(metrics.gapMm).isWithin(1e-9).of(6.83 - 5.88)
+        assertThat(metrics.characters).hasSize(17)
+        assertThat(metrics.characters[8].centerXPx).isWithin(1e-9).of(2211.5)
+    }
+
+    @Test
+    fun `还原成功缺刻度尺图时拒绝`() = runTest {
+        val api = FakeCVEngineApi().apply {
+            restoreEnabled = true
+            restoreResponse = successfulRestoreResponse(4425, 600, 4425, 600)
+                .copy(rulerPngBase64 = "")
+        }
+
+        val error = runCatching { restore(api) }.exceptionOrNull()
+
+        assertThat(error).isInstanceOf(IllegalArgumentException::class.java)
+        assertThat(error).hasMessageThat().contains("刻度尺图")
+    }
+
+    @Test
+    fun `还原成功缺字符度量时拒绝`() = runTest {
+        val api = FakeCVEngineApi().apply {
+            restoreEnabled = true
+            restoreResponse = successfulRestoreResponse(4425, 600, 4425, 600)
+                .copy(characterMetrics = null)
+        }
+
+        val error = runCatching { restore(api) }.exceptionOrNull()
+
+        assertThat(error).isInstanceOf(IllegalArgumentException::class.java)
+        assertThat(error).hasMessageThat().contains("字符度量")
+    }
+
+    // mm 与 px 是同一把尺子的两种读数；一旦对不上，用户拿图上刻度尺量到的结果就会与显示数字矛盾。
+    @Test
+    fun `字符度量的毫米与像素读数不一致时拒绝`() = runTest {
+        val api = FakeCVEngineApi().apply {
+            restoreEnabled = true
+            restoreResponse = successfulRestoreResponse(4425, 600, 4425, 600).copy(
+                characterMetrics = characterMetricsResponse().copy(pitchPx = 999.0),
+            )
+        }
+
+        val error = runCatching { restore(api) }.exceptionOrNull()
+
+        assertThat(error).isInstanceOf(IllegalArgumentException::class.java)
+        assertThat(error).hasMessageThat().contains("mm/px 读数不一致")
+    }
+
+    @Test
+    fun `字符度量条目数不是17时拒绝`() = runTest {
+        val api = FakeCVEngineApi().apply {
+            restoreEnabled = true
+            restoreResponse = successfulRestoreResponse(4425, 600, 4425, 600).copy(
+                characterMetrics = characterMetricsResponse(characterCount = 16),
+            )
+        }
+
+        val error = runCatching { restore(api) }.exceptionOrNull()
+
+        assertThat(error).isInstanceOf(IllegalArgumentException::class.java)
+        assertThat(error).hasMessageThat().contains("字符度量条目")
+    }
+
+    @Test
     fun `还原成功拒绝缺少原厂标定审计身份的旧服务端响应`() = runTest {
         val api = FakeCVEngineApi().apply {
             restoreEnabled = true
@@ -384,6 +467,8 @@ class VinRepositoryTest {
     ) = VinRestoreResponse(
         ok = true,
         resultPngBase64 = Base64.getEncoder().encodeToString(pngImage(pngWidth, pngHeight)),
+        rulerPngBase64 = Base64.getEncoder().encodeToString(pngImage(pngWidth, pngHeight)),
+        characterMetrics = characterMetricsResponse(),
         width = responseWidth,
         height = responseHeight,
         anchorCount = 17,
@@ -393,6 +478,42 @@ class VinRepositoryTest {
         logId = "restore-success",
         calibrationSha256 = FACTORY_CALIBRATION_SHA256,
         calibrationVersion = 3,
+    )
+
+    /** 真机 cap_001 量级的度量，px 一律由 mm × 25 算出，保证与服务端同源口径一致。 */
+    private fun characterMetricsResponse(
+        pitchMm: Double = 6.83,
+        charWidthMm: Double = 5.88,
+        charHeightMm: Double = 9.92,
+        totalWidthMm: Double = 114.85,
+        characterCount: Int = 17,
+    ) = VinCharacterMetricsDto(
+        pixelsPerMM = 25.0,
+        totalWidthMm = totalWidthMm,
+        totalWidthPx = totalWidthMm * 25.0,
+        centerSpanMm = pitchMm * 16,
+        pitchMm = pitchMm,
+        pitchPx = pitchMm * 25.0,
+        gapMm = pitchMm - charWidthMm,
+        gapPx = (pitchMm - charWidthMm) * 25.0,
+        charWidthMm = charWidthMm,
+        charWidthPx = charWidthMm * 25.0,
+        charHeightMm = charHeightMm,
+        charHeightPx = charHeightMm * 25.0,
+        leftPx = 776.0,
+        rightPx = 776.0 + totalWidthMm * 25.0,
+        baselineYPx = 299.5,
+        characters = List(characterCount) { index ->
+            VinCharacterMetricDto(
+                index = index,
+                character = "A",
+                score = 0.9,
+                centerXPx = 2211.5 + (index - 8) * pitchMm * 25.0,
+                centerYPx = 299.5,
+                widthMm = charWidthMm,
+                heightMm = charHeightMm,
+            )
+        },
     )
 
     private fun truncatedPngHeader(width: Int, height: Int): ByteArray = byteArrayOf(

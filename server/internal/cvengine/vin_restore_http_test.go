@@ -39,37 +39,24 @@ type vinCapMeta struct {
 //
 // 缺模型 / 缺数据 / onnxruntime 运行库不可用 → t.Skip（不让无设备环境的 CI 因运行期依赖红）。
 func TestVinRestoreHTTPContract(t *testing.T) {
-	model := os.Getenv("VIN_OBB_MODEL")
-	if model == "" {
-		model = "/root/lilw/gomob/.dev/vin_models/yolo-obb.onnx"
+	replayDir := os.Getenv("VIN_VISION_REPLAY_DIR")
+	if replayDir == "" {
+		replayDir = "/root/lilw/gomob/.dev/vin_vision_records"
 	}
-	if _, err := os.Stat(model); err != nil {
-		t.Skipf("yolo-obb 模型缺失，跳过：%v", err)
+	// 视觉观测走离线录制（cmd/vinvisionrecord），HTTP 契约测试因此不依赖现场算法服务。
+	provider, err := restore.NewReplayVisionProvider(replayDir)
+	if err != nil {
+		t.Skipf("视觉观测录制缺失，跳过：%v", err)
 	}
-	os.Setenv("VIN_OBB_MODEL", model) // ensureVinObbModel 读它
-	charModel := os.Getenv("VIN_CHAR_MODEL")
-	if charModel == "" {
-		charModel = "/root/lilw/gomob/.dev/vin_models/vins0.onnx"
-	}
-	if _, err := os.Stat(charModel); err != nil {
-		t.Skipf("VIN 逐字符模型缺失，跳过：%v", err)
-	}
-	os.Setenv("VIN_CHAR_MODEL", charModel)
 
 	caps, _ := filepath.Glob("/root/lilw/gomob/.dev/vin_factory_bf301208/vin_captures/cap_*")
 	if len(caps) == 0 {
 		t.Skip("无当前 rig 原始采集，跳过")
 	}
 
-	h := NewHandler()
+	h := NewHandlerWithOptions(HandlerOptions{VINVisionProvider: provider})
 	h.log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	defer h.models.ReleaseAll()
-	if err := h.ensureVinObbModel(); err != nil {
-		t.Skipf("yolo-obb 模型/onnxruntime 运行库不可用，跳过：%v", err)
-	}
-	if err := h.ensureVinCharModel(); err != nil {
-		t.Skipf("VIN 逐字符模型/onnxruntime 运行库不可用，跳过：%v", err)
-	}
 
 	okCount, pngOK := 0, false
 	for _, capDir := range caps {
@@ -90,21 +77,23 @@ func TestVinRestoreHTTPContract(t *testing.T) {
 		var env struct {
 			Code int `json:"code"`
 			Data struct {
-				OK                   bool    `json:"ok"`
-				PNGB64               string  `json:"result_png_base64"`
-				Width                int     `json:"width"`
-				Height               int     `json:"height"`
-				Tilt                 float64 `json:"tilt_deg"`
-				NumDet               int     `json:"num_det"`
-				AnchorCount          int     `json:"anchor_count"`
-				AnchorCandidateCount int     `json:"anchor_candidate_count"`
-				AnchorPitch          float64 `json:"anchor_pitch_px"`
-				AnchorRotation       float64 `json:"anchor_rotation_deg"`
-				AnchorScale          float64 `json:"anchor_scale"`
-				CalibrationSHA256    string  `json:"calibration_sha256"`
-				CalibrationVersion   uint32  `json:"calibration_version"`
-				SyncUS               int64   `json:"sync_delta_us"`
-				Reason               string  `json:"reject_reason"`
+				OK                   bool                      `json:"ok"`
+				PNGB64               string                    `json:"result_png_base64"`
+				RulerPNGB64          string                    `json:"ruler_png_base64"`
+				Metrics              *restore.CharacterMetrics `json:"character_metrics"`
+				Width                int                       `json:"width"`
+				Height               int                       `json:"height"`
+				Tilt                 float64                   `json:"tilt_deg"`
+				NumDet               int                       `json:"num_det"`
+				AnchorCount          int                       `json:"anchor_count"`
+				AnchorCandidateCount int                       `json:"anchor_candidate_count"`
+				AnchorPitch          float64                   `json:"anchor_pitch_px"`
+				AnchorRotation       float64                   `json:"anchor_rotation_deg"`
+				AnchorScale          float64                   `json:"anchor_scale"`
+				CalibrationSHA256    string                    `json:"calibration_sha256"`
+				CalibrationVersion   uint32                    `json:"calibration_version"`
+				SyncUS               int64                     `json:"sync_delta_us"`
+				Reason               string                    `json:"reject_reason"`
 			} `json:"data"`
 		}
 		if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
@@ -138,6 +127,7 @@ func TestVinRestoreHTTPContract(t *testing.T) {
 		if env.Data.CalibrationSHA256 != restoreFactorySHA256ForHTTPTest || env.Data.CalibrationVersion != 3 {
 			t.Fatalf("%s 原厂标定审计元数据非法: %+v", name, env.Data)
 		}
+		assertVinRulerAndMetrics(t, name, png, env.Data.RulerPNGB64, env.Data.Metrics)
 		pngOK = true
 		t.Logf("%s ✓ ok PNG %dB %dx%d tilt=%.1f ndet=%d", name, len(png), env.Data.Width, env.Data.Height, env.Data.Tilt, env.Data.NumDet)
 	}
@@ -146,6 +136,80 @@ func TestVinRestoreHTTPContract(t *testing.T) {
 		t.Fatalf("无任一 cap 返回 ok=true 的合法 PNG（okCount=%d/%d）；查平面/OBB/还原", okCount, len(caps))
 	}
 	t.Logf("契约通过：%d/%d cap 返回合法还原 PNG", okCount, len(caps))
+}
+
+// assertVinRulerAndMetrics 校验刻度尺展示图与字符度量的契约。
+//
+// 两条硬约束：刻度尺图与干净图**同画布但不同字节**（同尺寸才能共用一套毫米读数，
+// 不同字节才说明刻度真画上了、且没污染送 OCR 的那张）；度量的 mm 与 px 是同一把
+// 尺子的两种读数，必须严格互推。
+func assertVinRulerAndMetrics(
+	t *testing.T,
+	name string,
+	cleanPNG []byte,
+	rulerB64 string,
+	metrics *restore.CharacterMetrics,
+) {
+	t.Helper()
+	rulerPNG, err := base64.StdEncoding.DecodeString(rulerB64)
+	if err != nil || len(rulerPNG) == 0 {
+		t.Fatalf("%s ruler_png_base64 缺失或解码失败：%v", name, err)
+	}
+	if !bytes.HasPrefix(rulerPNG, []byte("\x89PNG\r\n\x1a\n")) {
+		t.Fatalf("%s 刻度尺图不是 PNG", name)
+	}
+	if w, h := pngSize(rulerPNG); w != restore.CanonicalOutW || h != restore.CanonicalOutH {
+		t.Fatalf("%s 刻度尺图尺寸 %dx%d != %dx%d", name, w, h, restore.CanonicalOutW, restore.CanonicalOutH)
+	}
+	if bytes.Equal(rulerPNG, cleanPNG) {
+		t.Fatalf("%s 刻度尺图与干净图字节相同，刻度没画上", name)
+	}
+
+	if metrics == nil {
+		t.Fatalf("%s 缺 character_metrics", name)
+	}
+	if metrics.PixelsPerMM != restore.VinCreatorPixelsPerMM {
+		t.Fatalf("%s pixels_per_mm=%v != %v", name, metrics.PixelsPerMM, restore.VinCreatorPixelsPerMM)
+	}
+	if len(metrics.Characters) != 17 {
+		t.Fatalf("%s 字符度量条目 %d != 17", name, len(metrics.Characters))
+	}
+	if metrics.PitchMM <= 0 || metrics.CharWidthMM <= 0 || metrics.CharHeightMM <= 0 {
+		t.Fatalf("%s 度量含非正尺寸: %+v", name, metrics)
+	}
+	if metrics.TotalWidthMM < metrics.CenterSpanMM {
+		t.Fatalf("%s 总宽 %.3f 小于中心跨距 %.3f", name, metrics.TotalWidthMM, metrics.CenterSpanMM)
+	}
+	// 字符串必须整体落在画布内，否则四周刻度尺会被内容压住。
+	if metrics.LeftPx <= 0 || metrics.RightPx >= float64(restore.CanonicalOutW) {
+		t.Fatalf("%s 字符包围盒越界: [%.1f, %.1f]", name, metrics.LeftPx, metrics.RightPx)
+	}
+	for _, pair := range []struct {
+		label  string
+		mm, px float64
+	}{
+		{"total_width", metrics.TotalWidthMM, metrics.TotalWidthPx},
+		{"pitch", metrics.PitchMM, metrics.PitchPx},
+		{"char_width", metrics.CharWidthMM, metrics.CharWidthPx},
+		{"char_height", metrics.CharHeightMM, metrics.CharHeightPx},
+	} {
+		if diff := pair.mm*metrics.PixelsPerMM - pair.px; diff > 1e-6 || diff < -1e-6 {
+			t.Fatalf("%s %s 的 mm/px 读数不一致: %v mm vs %v px", name, pair.label, pair.mm, pair.px)
+		}
+	}
+	t.Logf("%s 度量 → 总宽 %.2fmm 字宽 %.2fmm 字高 %.2fmm 节距 %.2fmm 字隙 %.2fmm，刻度尺图 %dB",
+		name, metrics.TotalWidthMM, metrics.CharWidthMM, metrics.CharHeightMM,
+		metrics.PitchMM, metrics.GapMM, len(rulerPNG))
+}
+
+// pngSize 从 IHDR 读宽高。
+func pngSize(png []byte) (int, int) {
+	if len(png) < 24 {
+		return 0, 0
+	}
+	width := int(png[16])<<24 | int(png[17])<<16 | int(png[18])<<8 | int(png[19])
+	height := int(png[20])<<24 | int(png[21])<<16 | int(png[22])<<8 | int(png[23])
+	return width, height
 }
 
 func TestVinRestoreSyncGateUsesFiveFpsNearestNeighborBoundary(t *testing.T) {

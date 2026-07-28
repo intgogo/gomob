@@ -13,6 +13,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.gomob.data.scan.VinRepository
+import io.gomob.data.scan.VinCharacterMetrics
 import io.gomob.data.scan.VinCropImage
 import io.gomob.data.scan.VinRecognitionResult
 import io.gomob.data.scan.VinPreviewCalibrationKey
@@ -225,9 +226,13 @@ class VinCaptureViewModel @Inject constructor(
     private val _depthRoiMetrics = MutableStateFlow<VinDepthRoiMetrics?>(null)
     internal val depthRoiMetrics: StateFlow<VinDepthRoiMetrics?> = _depthRoiMetrics.asStateFlow()
 
-    // 服务端权威拓印还原图。
+    // 服务端权威拓印还原图（展示的是叠四周毫米刻度尺的副本）。
     private val _rubbing = MutableStateFlow<Bitmap?>(null)
     val rubbing: StateFlow<Bitmap?> = _rubbing.asStateFlow()
+
+    // 车架号字符串的物理度量，与还原图上的刻度尺同源。
+    private val _rubbingMetrics = MutableStateFlow<VinCharacterMetrics?>(null)
+    val rubbingMetrics: StateFlow<VinCharacterMetrics?> = _rubbingMetrics.asStateFlow()
 
     private val _restoreState = MutableStateFlow<VinRestoreState>(VinRestoreState.Preview)
     val restoreState: StateFlow<VinRestoreState> = _restoreState.asStateFlow()
@@ -693,6 +698,7 @@ class VinCaptureViewModel @Inject constructor(
         // 新拍照作废上一张的还原图与 OCR 结果（回取景态，等本次还原成功再供「确认」识别）。
         restoredRubbingPng = null
         _rubbing.value = null
+        _rubbingMetrics.value = null
         _restoreState.value = VinRestoreState.Processing
         _state.value = VinCaptureState.Preview
         val clickTimestampUs = framePairer.nowUs()
@@ -863,8 +869,11 @@ class VinCaptureViewModel @Inject constructor(
                     )
                     if (!isCurrentCapture(generation)) return@launch
                     val png = r.png
-                    val decodedRubbing = if (r.ok && png != null) {
-                        withContext(Dispatchers.Default) { decodeRubbingPreview(png) }
+                    // 展示用带四周毫米刻度尺的副本，识别仍发干净图：刻度是给人看的量测参照，
+                    // 不能进 OCR 输入。服务端保证两张图同画布，缩放显示逻辑因此完全一致。
+                    val displayPng = r.rulerPng ?: png
+                    val decodedRubbing = if (r.ok && displayPng != null) {
+                        withContext(Dispatchers.Default) { decodeRubbingPreview(displayPng) }
                             ?: throw IllegalStateException("服务端还原图解码失败")
                     } else {
                         null
@@ -899,6 +908,7 @@ class VinCaptureViewModel @Inject constructor(
                             capturedRoiMetrics = capturedRoiMetrics,
                         )
                         _rubbing.value = restored
+                        _rubbingMetrics.value = r.metrics
                         _captureMsg.value = "还原完成，正在自动识别…"
                         _restoreState.value = VinRestoreState.Ready
                         if (autoCaptureWorkflow.onRestoreSuccess()) {
@@ -1278,6 +1288,7 @@ class VinCaptureViewModel @Inject constructor(
         recognizeJob = null
         restoredRubbingPng = null
         _rubbing.value = null
+        _rubbingMetrics.value = null
         _restoreState.value = VinRestoreState.Preview
         _captureMsg.value = null
         _state.value = VinCaptureState.Preview

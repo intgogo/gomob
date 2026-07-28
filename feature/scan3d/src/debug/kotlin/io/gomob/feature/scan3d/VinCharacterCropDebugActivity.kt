@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import io.gomob.data.scan.VinCharacterMetrics
 import io.gomob.data.scan.VinRecognitionResult
 import io.gomob.designsystem.theme.Gomob
 import io.gomob.designsystem.theme.GomobTheme
@@ -65,6 +66,26 @@ class VinCharacterCropDebugActivity : ComponentActivity() {
     }
     private val result by resultDelegate
 
+    // 取真机 cap_001 的实测度量，让调试屏的数值排布与真实量级一致。
+    private val debugMetrics = VinCharacterMetrics(
+        pixelsPerMm = 25.0,
+        totalWidthMm = 114.85,
+        totalWidthPx = 114.85 * 25.0,
+        centerSpanMm = 109.28,
+        pitchMm = 6.83,
+        pitchPx = 6.83 * 25.0,
+        gapMm = 0.95,
+        gapPx = 0.95 * 25.0,
+        charWidthMm = 5.88,
+        charWidthPx = 5.88 * 25.0,
+        charHeightMm = 9.92,
+        charHeightPx = 9.92 * 25.0,
+        leftPx = 776.0,
+        rightPx = 3647.0,
+        baselineYPx = 299.5,
+        characters = emptyList(),
+    )
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -75,7 +96,7 @@ class VinCharacterCropDebugActivity : ComponentActivity() {
                         .background(Gomob.colors.bg0)
                         .padding(vertical = 48.dp),
                 ) {
-                    VinOutcomePanel(rubbing = rubbing, recognition = result)
+                    VinOutcomePanel(rubbing = rubbing, metrics = debugMetrics, recognition = result)
                 }
             }
         }

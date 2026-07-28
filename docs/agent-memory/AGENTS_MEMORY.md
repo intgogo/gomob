@@ -68,6 +68,7 @@
 - [P100R3 Android SDK 深度流假成功](finding_p100r3_android_depth_stream_2026-05-14.md) — depth native negotiation 失败但 Java startStreams 返 0；别误查 UI。
 - [**VINCreator(eYs3D)逆向=M1.6 UVC 蓝本+双流死旁证 2026-06-01**](finding_vincreator_eys3d_uvc_blueprint_2026-06-01.md) — eYs3D/Etron(非 Berxel)蓝本：老 libusb backend 仍跑双流→旁证 P100R3 双流死真因是 OTG 供电非老栈；fd 注入/权限印证 gomob 修后版对；深度走设备直出路线 A，不移植 eYs3D 软重建。
 - [**eYs3D RS-D550 Android 接入 + mode25 config 对齐 gold（续30）2026-06-09→06-10**](finding_eys3d_android_bringup_0bytes_2026-06-09.md) — **续33 真因**：「只开 IF2 深度」是错前提，缺 IF1 彩色持续排空保活(设备只在 libuvc 真流 IF1 才出 IF2 深度)；修法=libuvc 双流，待真机验证。
+- [**eYs3D 离屏窗 refcount：acquire 不配对 release 2026-07-28**](finding_eys3d_offscreen_window_refcount_2026-07-28.md) — 厂商 cam_dtor 多减一次窗口强引用；acquire 补偿后禁止再 release，否则照旧崩 ~AImageReader。
 - [**HLSD8=独立第二颗 RGB 相机；gomob 双相机接入+正射图几何 2026-06-10**](finding_hlsd8_rgb_second_camera_2026-06-10.md) — 实证扫描机=两颗独立 USB 相机：RS-D550 深度+HLSD8 13MP RGB；订正——4160×832 是 HLSD8(标准 UVC)非 eYs3D color。本轮补齐双相机+正射图几何，剩真机出流/双相机标定。
 - [eYs3D native C++ 直驱与生命周期闭环](finding_eys3d_zero_vendor_independence_2026-06-15.md) — 原厂 C++ 取流；启动屏障与安全 teardown 已真机闭环。
 - [**RS-D550 真实开流序列已解码+RHEL9 能出流 2026-06-01**](finding_rsd550_open_sequence_decoded_2026-06-01.md) — 推翻"RHEL9 不兼容"——eSPDI 与自研 libusb 均已 RGBD 双流首光(零运行时 SDK)。激活靠 XU 写+计数器握手(旧 0xE0/0xE3 作废)。深度"列恒定垃圾"真因=模式配错非设备坏;M6.4 推荐 IF1 软件 stereo。

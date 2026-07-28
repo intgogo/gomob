@@ -2,19 +2,17 @@ package restore
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"image"
-	"image/color"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 
-	"io.gomob/server/internal/cvengine/core"
 	"io.gomob/server/internal/cvengine/gocv"
 )
 
@@ -69,22 +67,6 @@ type consistencyAnchor struct {
 	AngleDeg       float64 `json:"angle_deg"`
 }
 
-type canonicalProbeLayout struct {
-	Scale                  float64
-	TranslateX, TranslateY float64
-}
-
-func makeCanonicalProbeLayout() canonicalProbeLayout {
-	// 固定 0.36 只由评估坐标契约决定：原厂 25px/mm 输出映到 9px/mm 探针域。
-	// 它不读取单张图像内容，也不按每张字符检测结果重新缩放。
-	const scale = 0.36
-	return canonicalProbeLayout{
-		Scale:      scale,
-		TranslateX: (float64(CanonicalProbeW) - float64(CanonicalOutW)*scale) * 0.5,
-		TranslateY: (float64(CanonicalProbeH) - float64(CanonicalOutH)*scale) * 0.5,
-	}
-}
-
 func consistencyAnchorFromText(anchor textAnchor) *consistencyAnchor {
 	return &consistencyAnchor{
 		Count:          anchor.Count,
@@ -101,44 +83,30 @@ func consistencyAnchorFromText(anchor textAnchor) *consistencyAnchor {
 }
 
 // detectCanonicalOutputAnchor 把 4425×600 原厂用户画布按一套固定、全样本相同的相似变换
-// 放回 VINCHAR 已验证的 1200×260 探针坐标，再把检测结果映回原厂画布。这里没有逐图配准。
+// 放回逐字符检测已验证的 1200×260 探针坐标，再把检测结果映回原厂画布。这里没有逐图配准。
 func detectCanonicalOutputAnchor(
-	runner yoloRunner,
-	tag string,
+	provider VisionProvider,
 	output gocv.Mat,
 ) (textAnchor, error) {
-	layout := makeCanonicalProbeLayout()
-	matrix, err := gocv.NewMatFromBytes(
-		2,
-		3,
-		gocv.MatTypeCV64F,
-		f64bytes([]float64{
-			layout.Scale, 0, layout.TranslateX,
-			0, layout.Scale, layout.TranslateY,
-		}),
-	)
+	canvas, layout, err := RenderCanonicalProbeView(output)
 	if err != nil {
-		return textAnchor{}, fmt.Errorf("创建固定探针相似变换: %w", err)
+		return textAnchor{}, err
 	}
-	defer func() { _ = matrix.Release() }()
-	canvas := gocv.NewMat()
 	defer func() { _ = canvas.Release() }()
-	gocv.WarpAffineWithParams(
-		output,
-		&canvas,
-		matrix,
-		image.Pt(CanonicalProbeW, CanonicalProbeH),
-		gocv.InterpolationLinear,
-		gocv.BorderConstant,
-		color.RGBA{R: 128, G: 128, B: 128},
-	)
 
-	anchor, detectErr := detectTextAnchor(runner, tag, canvas)
+	canvasPNG, err := gocv.IMEncode(gocv.PNGFileExt, canvas)
+	if err != nil {
+		return textAnchor{}, fmt.Errorf("编码探针视图: %w", err)
+	}
+	boxes, err := provider.DetectCharacters(context.Background(), canvasPNG)
+	if err != nil {
+		return textAnchor{}, err
+	}
+	anchor, detectErr := buildTextAnchor(boxes, canvas.Cols(), canvas.Rows())
 	// 即使可靠性门失败，只要检测器返回了候选几何，也必须先映回 4425×600 坐标再记录诊断。
 	// 否则最差样本会把 1200×260 探针坐标混进原厂画布统计，制造巨大的假偏差。
 	if anchor.Count > 0 || anchor.CandidateCount > 0 {
-		anchor.CenterX = (anchor.CenterX - layout.TranslateX) / layout.Scale
-		anchor.CenterY = (anchor.CenterY - layout.TranslateY) / layout.Scale
+		anchor.CenterX, anchor.CenterY = layout.ToOutputCoordinates(anchor.CenterX, anchor.CenterY)
 		anchor.PitchPx /= layout.Scale
 		anchor.RMSPx /= layout.Scale
 		anchor.MedianHeightPx /= layout.Scale
@@ -152,13 +120,12 @@ func TestRestoreConsistencyBatch(t *testing.T) {
 	if os.Getenv("VIN_CONSISTENCY") != "1" {
 		t.Skip("仅由 VIN 一致性 harness 启用")
 	}
-	modelPath := os.Getenv("VIN_OBB_MODEL")
-	charModelPath := os.Getenv("VIN_CHAR_MODEL")
+	replayDir := os.Getenv("VIN_VISION_REPLAY_DIR")
 	capGlob := os.Getenv("VIN_CAP_GLOB")
 	capList := os.Getenv("VIN_CAP_LIST")
 	outDir := os.Getenv("VIN_RESTORE_OUT")
-	if modelPath == "" || charModelPath == "" || (capGlob == "" && capList == "") || outDir == "" {
-		t.Fatal("VIN_OBB_MODEL、VIN_CHAR_MODEL、VIN_RESTORE_OUT 以及 VIN_CAP_LIST/VIN_CAP_GLOB 之一必须设置")
+	if replayDir == "" || (capGlob == "" && capList == "") || outDir == "" {
+		t.Fatal("VIN_VISION_REPLAY_DIR、VIN_RESTORE_OUT 以及 VIN_CAP_LIST/VIN_CAP_GLOB 之一必须设置")
 	}
 	captureSet := map[string]struct{}{}
 	if capList != "" {
@@ -210,15 +177,11 @@ func TestRestoreConsistencyBatch(t *testing.T) {
 		t.Fatalf("创建输出目录: %v", err)
 	}
 
-	reg := core.New()
-	defer reg.ReleaseAll()
-	if err := reg.RegisterComONNX("VINOBB", modelPath, 1.0/255.0, gocv.Scalar{}); err != nil {
-		t.Fatalf("加载 VIN OBB 模型: %v", err)
-	}
-	if err := reg.RegisterYoloONNX(
-		"VINCHAR", charModelPath, core.DefaultYoloOptions(VinCharacterClasses()...),
-	); err != nil {
-		t.Fatalf("加载 VIN 逐字符模型: %v", err)
+	// 视觉观测全部来自离线录制：模型已下沉到外部算法服务，验收门若联网就失去可复现性。
+	// 录制用 `go run ./cmd/vinvisionrecord`（见 harness run.sh 的 record 阶段）。
+	provider, err := NewReplayVisionProvider(replayDir)
+	if err != nil {
+		t.Fatalf("加载视觉观测录制（%s）: %v", replayDir, err)
 	}
 
 	results := make([]consistencyResult, 0, len(captures))
@@ -264,16 +227,16 @@ func TestRestoreConsistencyBatch(t *testing.T) {
 			results = append(results, result)
 			continue
 		}
-		png, meta, restoreErr := Restore(
-			reg,
-			"VINOBB",
-			"VINCHAR",
+		restored, restoreErr := Restore(
+			context.Background(),
+			provider,
 			calibration,
 			rgb,
 			depth,
 			captureMeta.Depth.W,
 			captureMeta.Depth.H,
 		)
+		png, meta := restored.PNG, restored.Meta
 		result.Meta = meta
 		if captureMeta.Sync.ColorTimestampUs > 0 && captureMeta.Sync.DepthTimestampUs > 0 {
 			deltaUs := captureMeta.Sync.ColorTimestampUs - captureMeta.Sync.DepthTimestampUs
@@ -304,7 +267,7 @@ func TestRestoreConsistencyBatch(t *testing.T) {
 		if decodeErr != nil || output.Empty() {
 			result.OutputAnchorError = "最终 PNG 解码失败"
 		} else {
-			outputAnchor, anchorErr := detectCanonicalOutputAnchor(reg, "VINCHAR", output)
+			outputAnchor, anchorErr := detectCanonicalOutputAnchor(provider, output)
 			_ = output.Release()
 			result.OutputAnchor = consistencyAnchorFromText(outputAnchor)
 			if anchorErr != nil {
@@ -323,6 +286,13 @@ func TestRestoreConsistencyBatch(t *testing.T) {
 		outName := name + ".png"
 		if writeErr := os.WriteFile(filepath.Join(outDir, outName), png, 0o644); writeErr != nil {
 			t.Fatalf("写 %s: %v", outName, writeErr)
+		}
+		// 带刻度尺副本只供人工复看物理尺寸，不参与任何门限判定。
+		rulerName := name + "_ruler.png"
+		if writeErr := os.WriteFile(
+			filepath.Join(outDir, rulerName), restored.RulerPNG, 0o644,
+		); writeErr != nil {
+			t.Fatalf("写 %s: %v", rulerName, writeErr)
 		}
 		result.OK = true
 		result.PNG = outName

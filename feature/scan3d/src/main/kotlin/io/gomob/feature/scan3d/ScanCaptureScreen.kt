@@ -61,9 +61,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
+import kotlin.math.ceil
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.core.content.ContextCompat
+import io.gomob.data.scan.VinCharacterMetrics
 import io.gomob.data.scan.VinRecognitionStatus
 import io.gomob.designsystem.component.BackHeader
 import io.gomob.designsystem.component.StatusTone
@@ -106,6 +108,7 @@ fun ScanCaptureRoute(
     val depthBmp by vm.depthPreview.collectAsStateWithLifecycle()
     val previewAlignment by vm.previewAlignment.collectAsStateWithLifecycle()
     val rubbing by vm.rubbing.collectAsStateWithLifecycle()
+    val rubbingMetrics by vm.rubbingMetrics.collectAsStateWithLifecycle()
     val capturing by vm.capturing.collectAsStateWithLifecycle()
     val captureMsg by vm.captureMsg.collectAsStateWithLifecycle()
     val captureReadiness by vm.captureReadiness.collectAsStateWithLifecycle()
@@ -139,6 +142,7 @@ fun ScanCaptureRoute(
                 captureQuality = effectiveCaptureQuality,
                 restoreState = restoreState,
                 vinState = vinState,
+                autoCaptureDecision = autoCaptureDecision,
                 onShutter = vm::capture,
                 onRetake = vm::retake,
                 onConfirm = vm::recognize,
@@ -207,6 +211,7 @@ fun ScanCaptureRoute(
                 item {
                     VinOutcomePanel(
                         rubbing = requireNotNull(rubbing),
+                        metrics = rubbingMetrics,
                         recognition = vinState as? VinCaptureState.Result,
                     )
                 }
@@ -340,11 +345,24 @@ private fun VinHeaderCameraButton(
     }
 }
 
+/**
+ * 倒计时剩余秒数：3 → 2 → 1，读完 0 即拍。
+ *
+ * 用 ceil 而不是四舍五入，才能让「显示 3」覆盖整个第一秒——否则一进入稳定就直接跳 2，
+ * 用户看到的倒计时会少一格。距离一旦超差，[VinAutoCaptureGate] 会重开窗口，这里自然回到 3。
+ */
+internal fun vinStabilizingCountdownSeconds(stableDurationUs: Long): Int {
+    val remainingUs = (VIN_AUTO_CAPTURE_MIN_STABLE_US - stableDurationUs).coerceAtLeast(0L)
+    val seconds = ceil(remainingUs / 1_000_000.0).toInt()
+    return seconds.coerceIn(1, ceil(VIN_AUTO_CAPTURE_MIN_STABLE_US / 1_000_000.0).toInt())
+}
+
 @Composable
 private fun VinReadyGuide(decision: VinAutoCaptureDecision) {
+    val countdown = (decision as? VinAutoCaptureDecision.Stabilizing)
+        ?.let { vinStabilizingCountdownSeconds(it.stableDurationUs) }
     val detail = when (decision) {
-        is VinAutoCaptureDecision.Stabilizing ->
-            "取景已达标，稳定确认 ${decision.readyFrames.coerceAtMost(VIN_AUTO_CAPTURE_MIN_READY_FRAMES)}/$VIN_AUTO_CAPTURE_MIN_READY_FRAMES 后自动拍摄识别"
+        is VinAutoCaptureDecision.Stabilizing -> "快门按钮读秒结束即拍，期间移动会重新计时"
         VinAutoCaptureDecision.Trigger,
         VinAutoCaptureDecision.Triggered -> "稳定已确认，正在自动拍摄并识别"
         VinAutoCaptureDecision.Waiting -> "取景已达标，稳定后将自动拍摄并识别"
@@ -357,12 +375,15 @@ private fun VinReadyGuide(decision: VinAutoCaptureDecision) {
             .background(Gomob.colors.bg1)
             .border(BorderStroke(Gomob.spacing.hairline, Gomob.colors.line2), Gomob.shapes.r2)
             .semantics(mergeDescendants = true) {
-                contentDescription = "车架号区域已达标，请稳住不动，将自动拍摄并识别，也可点击快门手动拍摄"
+                contentDescription = countdown
+                    ?.let { "请保持不动，$it 秒后自动拍摄并识别，也可点击快门手动拍摄" }
+                    ?: "车架号区域已达标，请保持不动，将自动拍摄并识别，也可点击快门手动拍摄"
             }
             .padding(horizontal = Gomob.spacing.s12, vertical = Gomob.spacing.s8),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Gomob.spacing.s6),
     ) {
+        // 读秒只在快门按钮里显示（用户 2026-07-28）：两处同时跳数字会互相抢注意力。
         Box(
             modifier = Modifier
                 .size(28.dp)
@@ -381,7 +402,7 @@ private fun VinReadyGuide(decision: VinAutoCaptureDecision) {
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2),
         ) {
-            Text("请稳住不动", style = Gomob.type.caption, color = Gomob.colors.fg1)
+            Text("请保持不动", style = Gomob.type.caption, color = Gomob.colors.fg1)
             Text(
                 detail,
                 style = Gomob.type.micro,
@@ -420,7 +441,8 @@ internal fun VinCaptureQualityTestSurface(quality: VinCaptureQuality) {
         )
         metrics?.let { VinDepthMetricsStrip(metrics = it, captured = false) }
         if (ready) {
-            VinReadyGuide(VinAutoCaptureDecision.Stabilizing(readyFrames = 3, stableDurationUs = 400_000L))
+            // 取倒计时中段，debug 屏才能看出读秒确实在走，而不是只有起始的 3。
+            VinReadyGuide(VinAutoCaptureDecision.Stabilizing(readyFrames = 8, stableDurationUs = 1_600_000L))
         } else {
             VinActionNotice(VinNoticeUi(vinCaptureGuidance(quality), StatusTone.Warn))
         }
@@ -430,6 +452,8 @@ internal fun VinCaptureQualityTestSurface(quality: VinCaptureQuality) {
             waitingForDevice = false,
             waitingForDistance = quality is VinCaptureQuality.TooFar,
             waitingForQuality = !ready && quality !is VinCaptureQuality.TooFar,
+            // 达标态下顺带展示按钮内读秒，debug 屏才能确定性验证倒计时样式。
+            countdownSeconds = if (ready) 2 else null,
             onClick = {},
             modifier = Modifier.align(Alignment.CenterHorizontally),
         )
@@ -642,6 +666,7 @@ private fun VinActionNotice(notice: VinNoticeUi, onAction: (() -> Unit)? = null)
 @Composable
 internal fun VinOutcomePanel(
     rubbing: Bitmap,
+    metrics: VinCharacterMetrics?,
     recognition: VinCaptureState.Result?,
 ) {
     Column(
@@ -671,7 +696,7 @@ internal fun VinOutcomePanel(
             }
         }
         Text(
-            "规范化还原 · ${VINCREATOR_RESTORE_W}×$VINCREATOR_RESTORE_H",
+            "规范化还原 · ${VINCREATOR_RESTORE_W}×$VINCREATOR_RESTORE_H · 四周毫米刻度尺",
             modifier = Modifier.fillMaxWidth(),
             style = Gomob.type.micro,
             color = Gomob.colors.fg3,
@@ -679,8 +704,9 @@ internal fun VinOutcomePanel(
         VinEvidenceImage(
             bitmap = rubbing,
             aspectRatio = VINCREATOR_RESTORE_ASPECT,
-            contentDescription = "VIN规范化还原图",
+            contentDescription = "VIN规范化还原图（四周叠毫米刻度尺）",
         )
+        metrics?.let { VinCharacterMetricsRow(it) }
         recognition?.let { state ->
             Row(
                 modifier = Modifier
@@ -741,6 +767,55 @@ private fun VinRecognitionSummary(state: VinCaptureState.Result) {
             color = Gomob.colors.fg2,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/**
+ * 车架号字符串的实测物理尺寸，与还原图四周的毫米刻度尺同源——用户在图上量到的读数
+ * 应与这里一致。字宽/字高是 17 个字符墨迹框的中位数，间距同时给中心节距与字间空隙。
+ */
+@Composable
+private fun VinCharacterMetricsRow(metrics: VinCharacterMetrics) {
+    // 单位统一提到说明行：5 列平分 360dp 屏宽后每列仅约 64dp，而 "114.85 mm" 在 13sp Mono 下
+    // 约 70dp，带单位会被 maxLines=1 裁掉。只留数字后最宽 "114.85" 约 47dp，宽松。
+    val items = listOf(
+        "总宽" to "%.2f".format(metrics.totalWidthMm),
+        "字宽" to "%.2f".format(metrics.charWidthMm),
+        "字高" to "%.2f".format(metrics.charHeightMm),
+        "节距" to "%.2f".format(metrics.pitchMm),
+        "字隙" to "%.2f".format(metrics.gapMm),
+    )
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics {
+                contentDescription = items.joinToString("，") { "${it.first} ${it.second} 毫米" }
+            },
+        verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s2),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            items.forEach { (label, value) ->
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(label, style = Gomob.type.micro, color = Gomob.colors.fg3, maxLines = 1)
+                    Text(
+                        value,
+                        style = Gomob.type.numInline,
+                        color = Gomob.colors.fg0,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+        Text(
+            "单位 mm · 节距 = 相邻字符中心距，字隙 = 节距 − 字宽 · 与图上刻度尺同一把尺子",
+            modifier = Modifier.fillMaxWidth(),
+            style = Gomob.type.micro,
+            color = Gomob.colors.fg3,
+            maxLines = 2,
         )
     }
 }
@@ -872,6 +947,7 @@ private fun VinCaptureBar(
     captureQuality: VinCaptureQuality,
     restoreState: VinRestoreState,
     vinState: VinCaptureState,
+    autoCaptureDecision: VinAutoCaptureDecision,
     onShutter: () -> Unit,
     onRetake: () -> Unit,
     onConfirm: () -> Unit,
@@ -894,6 +970,8 @@ private fun VinCaptureBar(
                     waitingForDistance = captureReadiness.ready && captureQuality is VinCaptureQuality.TooFar,
                     waitingForQuality = captureReadiness.ready &&
                         !qualityReady && captureQuality !is VinCaptureQuality.TooFar,
+                    countdownSeconds = (autoCaptureDecision as? VinAutoCaptureDecision.Stabilizing)
+                        ?.let { vinStabilizingCountdownSeconds(it.stableDurationUs) },
                     onClick = onShutter,
                     modifier = Modifier.align(Alignment.Center),
                 )
@@ -1019,6 +1097,7 @@ private fun VinShutterAction(
     waitingForDevice: Boolean,
     waitingForDistance: Boolean,
     waitingForQuality: Boolean,
+    countdownSeconds: Int?,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -1027,13 +1106,19 @@ private fun VinShutterAction(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s4),
     ) {
-        VinShutterButton(capturing = capturing, enabled = enabled, onClick = onClick)
+        VinShutterButton(
+            capturing = capturing,
+            enabled = enabled,
+            countdownSeconds = countdownSeconds,
+            onClick = onClick,
+        )
         Text(
             when {
                 capturing -> "采集中"
                 waitingForDevice -> "等待设备"
                 waitingForDistance -> "调整距离"
                 waitingForQuality -> "调整取景"
+                countdownSeconds != null -> "请保持不动"
                 else -> "稳住不动"
             },
             style = Gomob.type.micro,
@@ -1043,14 +1128,24 @@ private fun VinShutterAction(
 }
 
 @Composable
-private fun VinShutterButton(capturing: Boolean, enabled: Boolean, onClick: () -> Unit) {
-    // 外环 72dp accentLine 细环 + 内 58dp 实心 accent 圆（白描边）；拍照中/禁用降透明示意忙
+private fun VinShutterButton(
+    capturing: Boolean,
+    enabled: Boolean,
+    countdownSeconds: Int?,
+    onClick: () -> Unit,
+) {
+    // 外环 72dp accentLine 细环 + 内 58dp 实心 accent 圆（白描边）；拍照中/禁用降透明示意忙。
+    // 自动快门读秒时把倒计时压进内圆：数字落在用户视线本来就盯着的地方，比提示条里的小字直接。
     Box(
         modifier = Modifier
             .size(Gomob.spacing.btnCircle72)
             .clip(CircleShape)
             .border(BorderStroke(2.dp, Gomob.colors.accentLine), CircleShape)
-            .semantics { contentDescription = "VIN拍照按钮，${if (enabled) "已激活" else "未激活"}" }
+            .semantics {
+                contentDescription = countdownSeconds
+                    ?.let { "VIN拍照按钮，$it 秒后自动拍摄，也可点击立即拍摄" }
+                    ?: "VIN拍照按钮，${if (enabled) "已激活" else "未激活"}"
+            }
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -1060,6 +1155,18 @@ private fun VinShutterButton(capturing: Boolean, enabled: Boolean, onClick: () -
                 .clip(CircleShape)
                 .background(Gomob.colors.accent.copy(alpha = if (enabled && !capturing) 1f else 0.35f))
                 .border(BorderStroke(3.dp, Color.White.copy(alpha = 0.9f)), CircleShape),
-        )
+            contentAlignment = Alignment.Center,
+        ) {
+            if (countdownSeconds != null && !capturing) {
+                Text(
+                    countdownSeconds.toString(),
+                    fontSize = 34.sp,
+                    lineHeight = 34.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    maxLines = 1,
+                )
+            }
+        }
     }
 }

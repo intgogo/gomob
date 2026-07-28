@@ -93,6 +93,9 @@ data class VinPreviewColorCalibrationResponse(
 data class VinRestoreResponse(
     val ok: Boolean = false,
     @SerialName("result_png_base64") val resultPngBase64: String = "",
+    /** 同一张规范图叠四周毫米刻度尺的展示副本；识别一律用 [resultPngBase64] 那张干净图。 */
+    @SerialName("ruler_png_base64") val rulerPngBase64: String = "",
+    @SerialName("character_metrics") val characterMetrics: VinCharacterMetricsDto? = null,
     val width: Int = 0,
     val height: Int = 0,
     @SerialName("tilt_deg") val tiltDeg: Double = 0.0,
@@ -118,4 +121,46 @@ data class VinRestoreResponse(
     @SerialName("device_id") val deviceId: String = "",
     @SerialName("color_device_id") val colorDeviceId: String = "",
     @SerialName("log_id") val logId: String = "",
+)
+
+/**
+ * 规范图上车架号字符串的物理度量。
+ *
+ * mm 是承印平面上的真实尺寸，px 是 4425×600 画布像素，两者恒差 [pixelsPerMM] 倍（25），
+ * 与图上四周刻度尺同一把尺子——用户拿刻度尺量到的读数必须与这里的数值一致。
+ */
+@Serializable
+data class VinCharacterMetricsDto(
+    @SerialName("pixels_per_mm") val pixelsPerMM: Double = 0.0,
+    /** 首字符左缘到末字符右缘。 */
+    @SerialName("total_width_mm") val totalWidthMm: Double = 0.0,
+    @SerialName("total_width_px") val totalWidthPx: Double = 0.0,
+    /** 首末字符中心跨距 = 16 × 节距。 */
+    @SerialName("center_span_mm") val centerSpanMm: Double = 0.0,
+    /** 相邻字符中心节距。 */
+    @SerialName("pitch_mm") val pitchMm: Double = 0.0,
+    @SerialName("pitch_px") val pitchPx: Double = 0.0,
+    /** 字符之间的空隙 = 节距 − 字宽中位数。 */
+    @SerialName("gap_mm") val gapMm: Double = 0.0,
+    @SerialName("gap_px") val gapPx: Double = 0.0,
+    @SerialName("char_width_mm") val charWidthMm: Double = 0.0,
+    @SerialName("char_width_px") val charWidthPx: Double = 0.0,
+    @SerialName("char_height_mm") val charHeightMm: Double = 0.0,
+    @SerialName("char_height_px") val charHeightPx: Double = 0.0,
+    @SerialName("left_px") val leftPx: Double = 0.0,
+    @SerialName("right_px") val rightPx: Double = 0.0,
+    @SerialName("baseline_y_px") val baselineYPx: Double = 0.0,
+    val characters: List<VinCharacterMetricDto> = emptyList(),
+)
+
+/** 单个字符的度量；[character] 来自检测器，仅作诊断参考，权威文本以 OCR 为准。 */
+@Serializable
+data class VinCharacterMetricDto(
+    val index: Int = 0,
+    val character: String = "",
+    val score: Double = 0.0,
+    @SerialName("center_x_px") val centerXPx: Double = 0.0,
+    @SerialName("center_y_px") val centerYPx: Double = 0.0,
+    @SerialName("width_mm") val widthMm: Double = 0.0,
+    @SerialName("height_mm") val heightMm: Double = 0.0,
 )

@@ -39,7 +39,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"io.gomob/server/internal/cvengine/core"
@@ -66,12 +65,9 @@ type Handler struct {
 	vinCalibrationRequired bool
 	vinModelsRequired      bool
 
-	// VIN 还原用 yolo-obb 模型：懒加载一次复用（onnxruntime session 建一次即可）。
-	obbOnce sync.Once
-	obbErr  error
-	// VIN 还原用逐字符 YOLO：为 17 字符格架提供中心、基线和节距。
-	charOnce sync.Once
-	charErr  error
+	// VIN 还原的区域与逐字符观测都来自外部算法服务（gosmart VMASK/VINS），
+	// 本进程不再持有任何 VIN 检测权重。
+	vinVision restore.VisionProvider
 
 	// 推理并发闸：限制同时在跑的 RunMask / RunCom 推理数，防过载 OOM。
 	// 容量取自 GOMOB_CVENGINE_INFER_CONCURRENCY（默认 4）；获取不到额度时等待 inferTimeout。
@@ -83,6 +79,9 @@ type Handler struct {
 type HandlerOptions struct {
 	VINRecognizeHandler    http.Handler
 	VINCalibrationResolver restore.VinCalibrationResolver
+	// VINVisionProvider 提供还原链的 VIN 区域与逐字符观测；未注入时 vin_restore 直接报未就绪，
+	// 不做任何本地模型回落——那会让生产悄悄用上与识别链不同的模型版本。
+	VINVisionProvider restore.VisionProvider
 }
 
 func NewHandler() *Handler {
@@ -111,6 +110,7 @@ func NewHandlerWithOptions(options HandlerOptions) *Handler {
 		shapeRef:        shaperefclient.NewClient(os.Getenv("GOMOB_SHAPEREF_TARGET")),
 		models:          core.New(),
 		vinRecognize:    options.VINRecognizeHandler,
+		vinVision:       options.VINVisionProvider,
 		vinCalibrations: calibrationResolver,
 		vinCalibrationRequired: strings.EqualFold(
 			strings.TrimSpace(os.Getenv("GOMOB_VIN_FACTORY_CALIBRATION_REQUIRED")),
@@ -1124,93 +1124,38 @@ func (h *Handler) VinPipeline(w http.ResponseWriter, r *http.Request) {
 // vin_restore —— VIN 数码拓印还原（深度去透视 + OBB 正射 → 原厂式彩色正射 PNG）
 // ============================================================================
 
-// dev 旁路默认 yolo-obb 路径（env VIN_OBB_MODEL 覆盖）。无 model-registry/MinIO 的纯本地开发/harness 用。
-const defaultVinObbModelPath = "/root/lilw/gomob/.dev/vin_models/yolo-obb.onnx"
-const defaultVinCharModelPath = "/root/lilw/gomob/.dev/vin_models/vins0.onnx"
-
-// vinObbTag —— yolo-obb 模型在 model-registry / cv-engine 里的 tag（与 model name 同一字符串）。
-// 生产部署：把它加进 GOMOB_CVENGINE_MODEL_NAMES，启动期 loader 从 registry→MinIO 拉（metadata.kind="com"）。
-const vinObbTag = "VINOBB"
-const vinCharTag = "VINCHAR"
-
-// ensureVinObbModel 确保 yolo-obb（KindCom）已注册，懒执行一次。
-//
-// 优先复用启动期 loader 从 model-registry / GOMOB_CVENGINE_MODELS dev 旁路注册的 VINOBB（与 VMASK 同机制）；
-// 仅当未注册（纯本地开发，无 registry/MinIO）时才从 VIN_OBB_MODEL / 默认 .dev 路径懒加载兜底。
-func (h *Handler) ensureVinObbModel() error {
-	h.obbOnce.Do(func() {
-		if err := h.models.CheckKind(vinObbTag, core.KindCom); err == nil {
-			return // 已由 loader 注册，直接复用
-		} else if !errors.Is(err, core.ErrNotFound) {
-			h.obbErr = fmt.Errorf("%s 模型类型错误: %w", vinObbTag, err)
-			return
-		}
-		path := os.Getenv("VIN_OBB_MODEL")
-		if path == "" {
-			path = defaultVinObbModelPath
-		}
-		// std=1/255 mean=0 → ÷255 归一，与端侧 yolo-obb 预处理一致。
-		h.obbErr = h.models.RegisterComONNX(vinObbTag, path, 1.0/255.0, gocv.Scalar{})
-		if h.obbErr != nil {
-			h.log.Error("yolo-obb 模型加载失败（dev 旁路）", "err", h.obbErr, "path", path)
-		}
-	})
-	return h.obbErr
-}
-
-// ensureVinCharModel 确保逐字符 YOLO 用正确的多输出检测解码加载，不能误注册成 mask。
-func (h *Handler) ensureVinCharModel() error {
-	h.charOnce.Do(func() {
-		if err := h.models.CheckKind(vinCharTag, core.KindYolo); err == nil {
-			return
-		} else if !errors.Is(err, core.ErrNotFound) {
-			h.charErr = fmt.Errorf("%s 模型类型错误: %w", vinCharTag, err)
-			return
-		}
-		path := os.Getenv("VIN_CHAR_MODEL")
-		if path == "" {
-			path = defaultVinCharModelPath
-		}
-		h.charErr = h.models.RegisterYoloONNX(
-			vinCharTag,
-			path,
-			core.DefaultYoloOptions(restore.VinCharacterClasses()...),
-		)
-		if h.charErr != nil {
-			h.log.Error("VIN 逐字符模型加载失败（dev 旁路）", "err", h.charErr, "path", path)
-		}
-	})
-	return h.charErr
-}
-
 type vinRestoreResp struct {
-	OK                   bool    `json:"ok"`
-	ResultPNGB64         string  `json:"result_png_base64,omitempty"`
-	Width                int     `json:"width"`
-	Height               int     `json:"height"`
-	TiltDeg              float64 `json:"tilt_deg"`
-	WidthMM              float64 `json:"width_mm"`
-	HeightMM             float64 `json:"height_mm"`
-	ThetaDeg             float64 `json:"theta_deg"`
-	InlierRate           float64 `json:"inlier_rate"`
-	RMS                  float64 `json:"rms"`
-	MedZ                 float64 `json:"med_z"`
-	NumDet               int     `json:"num_det"`
-	AnchorCount          int     `json:"anchor_count"`
-	AnchorCandidateCount int     `json:"anchor_candidate_count"`
-	AnchorPitch          float64 `json:"anchor_pitch_px"`
-	AnchorRMS            float64 `json:"anchor_rms_px"`
-	AnchorScore          float64 `json:"anchor_mean_score"`
-	AnchorHeight         float64 `json:"anchor_height_px"`
-	AnchorRotation       float64 `json:"anchor_rotation_deg"`
-	AnchorScale          float64 `json:"anchor_scale"`
-	CalibrationSHA256    string  `json:"calibration_sha256,omitempty"`
-	CalibrationVersion   uint32  `json:"calibration_version,omitempty"`
-	SyncDeltaUs          int64   `json:"sync_delta_us"`
-	RejectReason         string  `json:"reject_reason,omitempty"` // ok=false：tilt_too_large / vin_not_detected / rgbd_out_of_sync / text_anchor_unreliable / calibration_unavailable
-	DeviceID             string  `json:"device_id,omitempty"`
-	ColorDeviceID        string  `json:"color_device_id,omitempty"`
-	LogID                string  `json:"log_id"`
+	OK           bool   `json:"ok"`
+	ResultPNGB64 string `json:"result_png_base64,omitempty"`
+	// 同一张规范图叠四周毫米刻度尺的展示副本，尺寸与 result_png 相同。
+	// OCR 与验收一律用 result_png，这张只用于展示/存档。
+	RulerPNGB64          string                    `json:"ruler_png_base64,omitempty"`
+	CharacterMetrics     *restore.CharacterMetrics `json:"character_metrics,omitempty"`
+	Width                int                       `json:"width"`
+	Height               int                       `json:"height"`
+	TiltDeg              float64                   `json:"tilt_deg"`
+	WidthMM              float64                   `json:"width_mm"`
+	HeightMM             float64                   `json:"height_mm"`
+	ThetaDeg             float64                   `json:"theta_deg"`
+	InlierRate           float64                   `json:"inlier_rate"`
+	RMS                  float64                   `json:"rms"`
+	MedZ                 float64                   `json:"med_z"`
+	NumDet               int                       `json:"num_det"`
+	AnchorCount          int                       `json:"anchor_count"`
+	AnchorCandidateCount int                       `json:"anchor_candidate_count"`
+	AnchorPitch          float64                   `json:"anchor_pitch_px"`
+	AnchorRMS            float64                   `json:"anchor_rms_px"`
+	AnchorScore          float64                   `json:"anchor_mean_score"`
+	AnchorHeight         float64                   `json:"anchor_height_px"`
+	AnchorRotation       float64                   `json:"anchor_rotation_deg"`
+	AnchorScale          float64                   `json:"anchor_scale"`
+	CalibrationSHA256    string                    `json:"calibration_sha256,omitempty"`
+	CalibrationVersion   uint32                    `json:"calibration_version,omitempty"`
+	SyncDeltaUs          int64                     `json:"sync_delta_us"`
+	RejectReason         string                    `json:"reject_reason,omitempty"` // ok=false：tilt_too_large / vin_not_detected / rgbd_out_of_sync / text_anchor_unreliable / calibration_unavailable
+	DeviceID             string                    `json:"device_id,omitempty"`
+	ColorDeviceID        string                    `json:"color_device_id,omitempty"`
+	LogID                string                    `json:"log_id"`
 }
 
 // VinRestore —— 收彩色 rgb1300 + depth.yuv + 深度内参，出彩色正射 PNG。
@@ -1226,7 +1171,10 @@ type vinRestoreResp struct {
 //	log_id                 可选日志 ID
 //	color_timestamp_us / depth_timestamp_us  native 收帧 host 单调时钟（必填）
 //
-// 出参 JSON：result_png_base64 / width / height / tilt_deg / ok / log_id ...
+// 出参 JSON：result_png_base64（干净规范图，OCR 用）/ ruler_png_base64（叠四周毫米刻度尺的展示副本）
+//
+//	character_metrics（车架号总宽 / 字符宽高 / 中心节距 / 字间空隙，mm 与画布 px 双单位）
+//	width / height / tilt_deg / ok / log_id ...
 //
 // 失败：
 //
@@ -1332,15 +1280,9 @@ func (h *Handler) VinRestore(w http.ResponseWriter, r *http.Request) {
 	}
 	calibrationSHA256, calibrationVersion := calibration.AuditIdentity()
 
-	// 懒加载模型
-	if err := h.ensureVinObbModel(); err != nil {
+	if h.vinVision == nil {
 		httpx.WriteError(w, httpx.NewError(40701, http.StatusNotFound,
-			"yolo-obb 模型未就绪: "+err.Error()))
-		return
-	}
-	if err := h.ensureVinCharModel(); err != nil {
-		httpx.WriteError(w, httpx.NewError(40701, http.StatusNotFound,
-			"VIN 逐字符模型未就绪: "+err.Error()))
+			"VIN 还原视觉服务未配置（外部算法 VMASK/VINS）"))
 		return
 	}
 	releaseInfer, err := h.acquireInferPermit(r.Context())
@@ -1351,7 +1293,8 @@ func (h *Handler) VinRestore(w http.ResponseWriter, r *http.Request) {
 	}
 	defer releaseInfer()
 
-	png, meta, rerr := restore.Restore(h.models, vinObbTag, vinCharTag, calibration, rgb, depth, dw, dh)
+	result, rerr := restore.Restore(r.Context(), h.vinVision, calibration, rgb, depth, dw, dh)
+	meta := result.Meta
 	if rerr != nil {
 		// tilt 过斜 → 判废（HTTP 200 + ok=false + 原因），端侧提示重拍，不算系统错。
 		if rerr == restore.ErrTiltTooLarge {
@@ -1417,17 +1360,23 @@ func (h *Handler) VinRestore(w http.ResponseWriter, r *http.Request) {
 		"log_id", logID,
 		"total_ms", meta.Timings.TotalMS,
 		"decode_ms", meta.Timings.DecodeMS,
-		"obb_ms", meta.Timings.OBBMS,
+		"region_ms", meta.Timings.RegionMS,
 		"frame_ms", meta.Timings.FrameMS,
 		"probe_render_ms", meta.Timings.ProbeRenderMS,
+		"probe_encode_ms", meta.Timings.ProbeEncodeMS,
+		"char_detect_ms", meta.Timings.CharDetectMS,
 		"anchor_ms", meta.Timings.AnchorMS,
 		"final_render_ms", meta.Timings.FinalRenderMS,
 		"png_encode_ms", meta.Timings.PNGEncodeMS,
-		"png_bytes", len(png),
+		"ruler_ms", meta.Timings.RulerMS,
+		"png_bytes", len(result.PNG),
+		"ruler_png_bytes", len(result.RulerPNG),
 	)
 	httpx.OK(w, vinRestoreResp{
 		OK:                   true,
-		ResultPNGB64:         base64.StdEncoding.EncodeToString(png),
+		ResultPNGB64:         base64.StdEncoding.EncodeToString(result.PNG),
+		RulerPNGB64:          base64.StdEncoding.EncodeToString(result.RulerPNG),
+		CharacterMetrics:     meta.Metrics,
 		Width:                meta.OutW,
 		Height:               meta.OutH,
 		TiltDeg:              meta.TiltDeg,
@@ -1825,12 +1774,11 @@ func (h *Handler) Readyz(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+// validateVinRestoreModels 检查还原链的视觉依赖。模型已全部下沉到外部算法服务，
+// 本地能验证的只有「provider 是否注入」；模型权重的存在性与版本由 gosmart 侧负责。
 func (h *Handler) validateVinRestoreModels() error {
-	if err := h.models.CheckKind(vinObbTag, core.KindCom); err != nil {
-		return fmt.Errorf("%s: %w", vinObbTag, err)
-	}
-	if err := h.models.CheckKind(vinCharTag, core.KindYolo); err != nil {
-		return fmt.Errorf("%s: %w", vinCharTag, err)
+	if h.vinVision == nil {
+		return errors.New("VIN 还原视觉服务未配置（外部算法 VMASK/VINS）")
 	}
 	return nil
 }

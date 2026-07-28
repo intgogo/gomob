@@ -54,6 +54,8 @@ class VinRestoreMessageTest {
     private fun outcome(reason: VinRestoreRejectReason) = VinRestoreOutcome(
         ok = false,
         png = null,
+        rulerPng = null,
+        metrics = null,
         width = 0,
         height = 0,
         tiltDeg = 12.0,

@@ -2,6 +2,7 @@ package cvengine
 
 import (
 	"bytes"
+	"context"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -55,6 +56,8 @@ func TestReadyzAcceptsMountedFactoryVINCalibration(t *testing.T) {
 	}
 }
 
+// 模型下沉到外部算法服务后，本地唯一能验的依赖是视觉 provider 是否注入；
+// 没注入却声明 required 时必须 503，不能让还原链在缺依赖时静默半可用。
 func TestReadyzRejectsMissingRequiredVINRestoreModels(t *testing.T) {
 	t.Setenv("GOMOB_VIN_RESTORE_MODELS_REQUIRED", "true")
 	h := NewHandlerWithOptions(HandlerOptions{
@@ -67,9 +70,35 @@ func TestReadyzRejectsMissingRequiredVINRestoreModels(t *testing.T) {
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("readyz=%d，期望 503，body=%s", recorder.Code, recorder.Body.String())
 	}
-	if !strings.Contains(recorder.Body.String(), "VIN 还原模型未就绪: VINOBB") {
-		t.Fatalf("readyz 未暴露 VINOBB 缺失原因: %s", recorder.Body.String())
+	if !strings.Contains(recorder.Body.String(), "VIN 还原视觉服务未配置") {
+		t.Fatalf("readyz 未暴露视觉服务缺失原因: %s", recorder.Body.String())
 	}
+}
+
+// provider 已注入时 readyz 必须放行，否则生产会被自己的门卡死。
+func TestReadyzAcceptsInjectedVisionProvider(t *testing.T) {
+	t.Setenv("GOMOB_VIN_RESTORE_MODELS_REQUIRED", "true")
+	h := NewHandlerWithOptions(HandlerOptions{
+		VINCalibrationResolver: restore.NewFactoryVinCalibrationResolver(t.TempDir()),
+		VINVisionProvider:      stubVisionProvider{},
+	})
+
+	recorder := httptest.NewRecorder()
+	h.Readyz(recorder, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("readyz=%d，期望 200，body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+type stubVisionProvider struct{}
+
+func (stubVisionProvider) LocateVinRegions(context.Context, []byte) ([]restore.Detection, error) {
+	return nil, nil
+}
+
+func (stubVisionProvider) DetectCharacters(context.Context, []byte) ([]restore.CharacterBox, error) {
+	return nil, nil
 }
 
 func TestValidateRequiredDependenciesRejectsMissingPublishedCalibration(t *testing.T) {

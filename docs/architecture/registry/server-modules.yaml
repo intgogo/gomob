@@ -135,7 +135,7 @@ services:
       subscribe: ["model.version.activated"]
     auth: dual_track   # JWT + HMAC 验签
     gpu: optional
-    description: "CV 算法引擎（VIN 平面正射 + 17 字符刚性格架规范化 / 外部 OCR 代理 / 本地字形比对）；VINOBB/VINCHAR 由 model-registry 加载"
+    description: "CV 算法引擎（VIN 平面正射 + 17 字符刚性格架规范化 / 外部 OCR 代理 / 本地字形比对）；VIN 区域与逐字符观测走外部算法服务 /cv/veh/v1/detect；vin_restore 同时返回干净规范图（OCR 与验收用）、叠四周毫米刻度尺的展示副本与字符串物理度量"
 
   - name: laserworker
     cmd: server/cmd/laserworker
@@ -263,7 +263,7 @@ external_dependencies:
     kind: cv_provider
     endpoint: "http://192.168.9.166:35000"
     consumed_by: [cv-engine]
-    description: "车架号 OCR；旧式 nanos + RSA-SHA1 验签，仅允许 cv-engine 服务端代理调用"
+    description: "车架号 OCR，以及 VIN 区域 VMASK/逐字符 VINS 检测；旧式 nanos + RSA-SHA1 验签，仅允许 cv-engine 服务端代理调用"
   - name: deepseek
     kind: llm_provider
     consumed_by: [llm-gateway]

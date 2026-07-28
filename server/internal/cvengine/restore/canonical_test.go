@@ -109,7 +109,7 @@ func TestVinCreatorCanonicalOutputContract(t *testing.T) {
 }
 
 func TestVinCreatorOutputMapsBackToCanonicalProbeWithoutPerImageRegistration(t *testing.T) {
-	layout := makeCanonicalProbeLayout()
+	layout := MakeCanonicalProbeLayout()
 	assertNear(t, layout.Scale, 0.36, 1e-12, "固定评估缩放")
 	assertNear(t, layout.TranslateX, -196.5, 1e-12, "固定评估平移 X")
 	assertNear(t, layout.TranslateY, 22.0, 1e-12, "固定评估平移 Y")
@@ -160,7 +160,7 @@ func syntheticGrid(cx, cy, pitch, theta float64) []characterObservation {
 		k := float64(i - vinCharacterCount/2)
 		observations[i] = characterObservation{
 			X: cx + k*dx, Y: cy + k*dy,
-			Width: 42, Height: 68, Score: 0.93, Class: i % len(VinCharacterClasses()),
+			Width: 42, Height: 68, Score: 0.93, Class: vinCharacterClassAt(i),
 		}
 	}
 	return observations
@@ -171,4 +171,11 @@ func assertNear(t *testing.T, actual, expected, tolerance float64, name string) 
 	if math.Abs(actual-expected) > tolerance {
 		t.Fatalf("%s=%.9f，期望 %.9f±%.9f", name, actual, expected, tolerance)
 	}
+}
+
+// vinCharacterClassAt 给合成观测取一个合法 VIN 字符；格架几何与具体字符无关，
+// 这里只需保证不是空串（空串会被诊断串当成未识别写成 '?'）。
+func vinCharacterClassAt(i int) string {
+	const charset = "0123456789ABCDEFGHJKLMNPRSTUVWXYZ"
+	return string(charset[i%len(charset)])
 }
