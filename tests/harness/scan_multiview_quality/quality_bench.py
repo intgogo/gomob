@@ -6,7 +6,7 @@
   3. UV atlas 利用率(%)      iso-charts 展开后三角 UV 面积和 / 单位方(纹理打包效率)
 
 判定交给 analyze.py(硬门 = chamfer+coverage,UV 软报告)。
-真实卡车数据:GOMOB_TRUCK_DATASET 指向 RgbdShot bundle(.zip)则跑真实重建并报告(无 GT,
+真实卡车数据:GOMOB_TRUCK_DATASET 指向 schema v2 raw RGBD bundle(.zip)则跑真实重建并报告(无 GT,
 只出 mesh 统计 + UV 利用率);未提供则诚实标 skipped(非失败,不伪造)。确定性(固定 seed)。
 """
 from __future__ import annotations
@@ -106,7 +106,7 @@ def eval_synthetic() -> dict:
 
 
 def eval_truck() -> dict:
-    """真实卡车数据(GOMOB_TRUCK_DATASET 指向 RgbdShot bundle .zip)。无 GT → 只出 mesh 统计 + UV。"""
+    """真实卡车数据(GOMOB_TRUCK_DATASET 指向 schema v2 raw RGBD bundle .zip)。无 GT → 只出 mesh 统计 + UV。"""
     path = os.environ.get("GOMOB_TRUCK_DATASET", "").strip()
     if not path:
         return {"status": "skipped", "reason": "GOMOB_TRUCK_DATASET 未设置(真实卡车 RGBD 采集见 TODO ②,尚未就绪)"}

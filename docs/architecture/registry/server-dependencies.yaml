@@ -41,7 +41,8 @@ edges:
   - { from: cv-engine, to: asset,         kind: grpc,  reason: "下载模型二进制（启动时）" }
   - { from: cv-engine, to: gosmart-vin,   kind: http,  reason: "/cv/ocr/v1/vin_recognize 签名代理 vin_detect；/cv/veh/v1/detect 提供 VIN 区域 VMASK 与逐字符 VINS 原子观测" }
 
-  # signaling → 业务元信息（最小化）
+  # fusionworker → fusion-service / signaling → api
+  - { from: fusionworker, to: fusion-service, kind: http, reason: "POST /fuse：服务端按 bundle calibration.bin 配准后融合" }
   - { from: signaling, to: api,          kind: grpc,  reason: "查询用户元信息 / 写 call_logs" }
 
   # admin → 全部业务服务（管理面）

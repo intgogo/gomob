@@ -2,7 +2,7 @@
 # scan_multiview_quality — M3.16 多视角重建端到端质量评估 harness(Open3D)。
 #   合成 Stanford Bunny 8 角度 RGBD → fusion_core 重建 → 量 chamfer / 覆盖度 / UV 利用率。
 #   硬门 = chamfer ≤ 5mm + coverage(@5mm≥88% / @10mm≥94%);UV 利用率软报告(见 README)。
-#   真实卡车数据:export GOMOB_TRUCK_DATASET=<RgbdShot bundle .zip> 则一并跑(无 GT,仅统计)。
+#   真实卡车数据:export GOMOB_TRUCK_DATASET=<schema v2 raw RGBD bundle .zip> 则一并跑(无 GT,仅统计)。
 # 需带 open3d 的 Python(默认 .dev/fusion-venv;CI/容器用 server/fusion_service/requirements.txt)。
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"

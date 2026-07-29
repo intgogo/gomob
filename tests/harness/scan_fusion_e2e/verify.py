@@ -1,16 +1,18 @@
-"""verify — 对 e2e 全链路产出的 GLB 做几何复核:回读 GLB,对齐 GT,chamfer vs 观测面 ≤ 5mm。"""
-import io, os, sys
+"""verify — 回读 GLB，并对 calibration.bin 往返后的观测面做 chamfer 复核。"""
+import os
+import pathlib
+import sys
 import numpy as np
 import open3d as o3d
 import trimesh
 
-ROOT = "/root/lilw/gomob"
-sys.path.insert(0, os.path.join(ROOT, "server", "fusion_service"))
-sys.path.insert(0, os.path.join(ROOT, "tests", "harness", "scan_fusion"))
-import synth_dataset as synth
+ROOT = pathlib.Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / "tests" / "harness" / "scan_fusion"))
+import synth_dataset as synth  # noqa: E402
+from vin_synth_dataset import build_dataset  # noqa: E402
 
 o3d.utility.random.seed(0)
-glb_path = os.environ.get("E2E_RESULT_FILE", os.path.join(ROOT, ".dev/scan_fusion_e2e/result.glb"))
+glb_path = os.environ.get("E2E_RESULT_FILE", str(ROOT / ".dev" / "scan_fusion_e2e" / "result.glb"))
 if not os.path.exists(glb_path) or os.path.getsize(glb_path) == 0:
     print(f"[verify] ✗ 无 GLB 产出:{glb_path}")
     sys.exit(1)
@@ -26,7 +28,7 @@ if len(V) < 1000 or len(F) < 1000:
     sys.exit(1)
 
 # 重建同一合成数据集(确定性)→ 观测面参考 + GT 对齐外参
-frames, gt, exts = synth.build_dataset(n_views=10, noisy=False)
+frames, _, _, exts = build_dataset(n_views=10)
 ref = synth.observed_surface(frames, exts)
 
 mesh = o3d.geometry.TriangleMesh(

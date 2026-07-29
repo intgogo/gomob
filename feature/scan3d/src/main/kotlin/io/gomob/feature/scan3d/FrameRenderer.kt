@@ -60,6 +60,25 @@ internal object FrameRenderer {
         return Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
     }
 
+    /** 打包使用：解码原始彩色帧，禁止预览降采样和 RGB↔Depth resize。 */
+    fun colorToOriginalBitmap(frame: ColorFrame): Bitmap? {
+        frame.encodedJpeg?.let { jpeg ->
+            return runCatching {
+                BitmapFactory.decodeByteArray(
+                    jpeg,
+                    0,
+                    jpeg.size,
+                    BitmapFactory.Options().apply {
+                        inSampleSize = 1
+                        inPreferredConfig = Bitmap.Config.ARGB_8888
+                        inScaled = false
+                    },
+                )
+            }.getOrNull()
+        }
+        return colorToBitmap(frame)
+    }
+
     /**
      * 把 16bit 深度/视差帧转成伪彩 ARGB_8888 Bitmap（turbo colormap）。
      *

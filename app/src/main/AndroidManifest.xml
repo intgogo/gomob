@@ -11,6 +11,8 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 工厂预置 VIN_<Depth设备ID>.bin 位于共享目录 /storage/emulated/0/VIN/param/。 -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
     <!-- Android 13+ 通知权限（处理扫描进度通知） -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />

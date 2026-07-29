@@ -107,7 +107,7 @@ func NewServiceClient(cfg Config) (*ServiceClient, error) {
 	}, nil
 }
 
-// ReadBundle 从 MinIO 拉 RgbdShot bundle zip。
+// ReadBundle 从 MinIO 拉 schema v2 原始 RGBD bundle zip。
 func (c *ServiceClient) ReadBundle(ctx context.Context, objectKey string) ([]byte, error) {
 	obj, err := c.mc.GetObject(ctx, c.cfg.Bucket, objectKey, minio.GetObjectOptions{})
 	if err != nil {

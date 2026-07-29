@@ -1,6 +1,6 @@
 # 多视角 RGBD 重建与深度质量 — 历史上下文
 
-> 最后更新: 2026-07-26 | 截至 commit: a979415 | 维护规则见 AGENTS.md「历史上下文维护」节
+> 最后更新: 2026-07-28 | 截至 commit: 工作区 | 维护规则见 AGENTS.md「历史上下文维护」节
 
 ## 使命与当前状态
 
@@ -90,9 +90,15 @@
 - **M3.16 真实卡车数据集**: `GOMOB_TRUCK_DATASET` 指向 bundle 即跑, 未就绪诚实 skip。
 - **M3.17 后续**: 真实图像分割基准、SAM mask 软权重边界 (04b §5.5 ⬜)、端侧 MobileSAM/SAM2 轻量化。
 - **M3.18-M3.20 阶段 2/3 基建**: GPU worker 部署、端侧 SAM2 Mobile (≥5fps)、端侧实时 ICP/TSDF mesh 预览 (云端版完成后自动替换)。
-- **M7.7 遗留**: RGB↔depth 真配准 (现 approx resize, 纹理受基线视差偏移, 终态走 M2 registration / `registeredToColor=true`)。
-- **「3D 相机」UI 入口恢复**: 07-10 起 `VehicleContourScanRoute` mode 固定 Laser, Berxel 8 角度采集屏 UI 不可达; 恢复推进时把 trailing 换回 `DeviceSwitcher` 即可 (骨架与链路代码保留)。
+- **M7.7 质量门**: RGB↔Depth 真配准代码已落地（VIN BIN 自包含 bundle + 服务端投影），剩余真实棋盘格 ≤2px、BF301208 多视角 GLB 与真机门控；不再回退 approx resize。
+- **「3D 相机」UI 入口**: VIN bundle 主线已恢复 `VehicleContourScanRoute` 的双相机采集入口；Laser 工位仍保留为独立模式。
 - **M2 全线休眠**: 触发条件 (出厂参数实测不达标) 尚未实测; 前置是 M1.6.7 出厂参数 blob 156B offset 定位; 飞点角度上界的 FOV 反推 fx/fy 待真内参重验。
 - **深度后处理收尾**: Android 真机 PollDepthMm live 路径视觉确认 (portable 同源已硬件验证, M1.6.15); 噪声数字待静态采集复核 (旧采集疑含手持运动, 26%/85mm 可能偏悲观)。
 - **配准鲁棒性单列项**: 真实周期纹理物体的对应过滤 (mutual/ratio-test)、宽基线闭环边角度限制、RANSAC 确定化 — finding 里点名、未进 TODO.md。
 - **gorob 推流旁线**: UI 开关接线 + 真机 + gorob 边缘联调 (`14-rgbd-stream-gorob.md`「还需接的线」)。
+
+### 2026-07-28 VIN 原始 RGBD bundle 收口
+
+旧的端侧 RGB resize 方案已删除。`VehicleContourScanViewModel` 固定绑定 `vinDepth()`（RS-D550）和 `vinRgb()`（HLSD8），从共享目录按 Depth serial 读取并校验 VINCreator v3 BIN；一次会话锁定两路设备 ID、`640x128_mode25` / `4160x832` profile 与 calibration SHA，断开或 profile 变化即废弃。`Scan3dBundleUploader` 把源文件字节固定写入 zip 根 entry `calibration.bin`，原始彩色图、disparity×8 u16、confidence、时间戳随帧写入 manifest schema v2。
+
+服务端 `rgbd_bundle.unpack` 只接受新契约并 fail-closed 校验 zip entry、manifest、BIN SHA/serial/version/profile、尺寸与同步门；`vin_calibration.py` 复刻 Go restore oracle 的深度公式、坐标轴、Euler→R、R/T、FOV 与私有畸变，双线性采样到深度网格后再交给 Open3D。该决策消除了服务端预置每台 BIN 的依赖；验收剩余真实棋盘格 ≤2px 和真实 BF301208 多视角 bundle 生成非空 GLB。

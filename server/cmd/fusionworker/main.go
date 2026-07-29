@@ -1,6 +1,6 @@
 // gomob-fusionworker — 多视角 RGBD 云端融合后台任务。
 //
-// 从 DB 队列 scan_fusion_jobs 领任务 → 从 MinIO 拉 RgbdShot bundle → POST fusion_service /fuse
+// 从 DB 队列 scan_fusion_jobs 领任务 → 从 MinIO 拉 schema v2 原始 RGBD bundle → POST fusion_service /fuse
 // → GLB 存回 MinIO → 写 DB + 发 NATS scan.fusion_done。形态对标 asrworker。
 //
 // 环境变量：

@@ -28,9 +28,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -66,22 +64,12 @@ const val SCAN_VEHICLE_ROUTE = "scan3d/vehicle"
 fun VehicleContourScanRoute(
     onBack: () -> Unit,
 ) {
-    // 右上角下拉现在选 3D 工位（LaserStations 静态表，单工位期过渡）；选中值为预留状态位，
-    // 多工位部署后再接 endpoint 切换。3D 相机（Berxel）入口暂时隐藏：mode 固定 Laser，
-    // 恢复入口时把 trailing 换回 DeviceSwitcher 即可（BerxelScanScreen 及其链路原样保留）。
-    val mode = ScanDeviceMode.Laser
-    var stationId by rememberSaveable { mutableStateOf(LaserStations.first().id) }
-    val switcher = @Composable { StationSwitcher(stationId = stationId, onSelect = { stationId = it }) }
-    when (mode) {
-        ScanDeviceMode.Berxel -> BerxelScanScreen(onBack = onBack, switcher = switcher)
-        ScanDeviceMode.Laser -> LaserScanScreen(onBack = onBack, switcher = switcher)
-    }
+    BerxelScanScreen(onBack = onBack)
 }
 
 @Composable
 private fun BerxelScanScreen(
     onBack: () -> Unit,
-    switcher: @Composable () -> Unit,
     vm: VehicleContourScanViewModel = hiltViewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
@@ -92,6 +80,8 @@ private fun BerxelScanScreen(
     val cloud by vm.pointCloudPreview.collectAsStateWithLifecycle()
     val capturing by vm.capturing.collectAsStateWithLifecycle()
     val deviceState by vm.deviceState.collectAsStateWithLifecycle()
+    val calibrationReady by vm.calibrationReady.collectAsStateWithLifecycle()
+    val context = LocalContext.current
 
     // 玻璃 header 骨架；内容是高度自适应布局 + 吸底拍摄栏，整体避让不穿越（规则 3）。
     GlassHeaderScaffold(
@@ -100,8 +90,6 @@ private fun BerxelScanScreen(
                 title = "车辆外廓扫描",
                 eyebrow = "三维扫描",
                 onBack = onBack,
-                // 右上角固定为设备下拉选（3D 工位/3D 相机一致）；相机模式不再叠加 0/8 拍照计数。
-                trailing = { switcher() },
             )
         },
     ) { padding ->
@@ -110,7 +98,16 @@ private fun BerxelScanScreen(
                 is VehicleScanState.Completed -> CompletedPanel(state = s, onRestart = vm::restart)
                 VehicleScanState.Uploading, VehicleScanState.Fusing ->
                     ProcessingPanel(uploading = s == VehicleScanState.Uploading)
-                is VehicleScanState.Error -> ErrorPanel(msg = s.msg, onRestart = vm::restart)
+                is VehicleScanState.Error -> ErrorPanel(
+                    msg = s.msg,
+                    requiresStoragePermission = s.requiresStoragePermission,
+                    onOpenStorageSettings = {
+                        context.startActivity(
+                            io.gomob.data.scan.DefaultCalibrationFileProvider.allFilesAccessIntent(context),
+                        )
+                    },
+                    onRestart = vm::restart,
+                )
                 VehicleScanState.Capturing -> CaptureBody(
                     shotCounts = shotCounts,
                     active = active,
@@ -119,6 +116,7 @@ private fun BerxelScanScreen(
                     cloud = cloud,
                     capturing = capturing,
                     deviceState = deviceState,
+                    calibrationReady = calibrationReady,
                     onSelect = vm::selectAngle,
                     onCapture = vm::capture,
                     onUndo = vm::undo,
@@ -138,6 +136,7 @@ private fun CaptureBody(
     cloud: FloatArray,
     capturing: Boolean,
     deviceState: CameraSourceState,
+    calibrationReady: Boolean,
     onSelect: (Int) -> Unit,
     onCapture: () -> Unit,
     onUndo: () -> Unit,
@@ -170,7 +169,7 @@ private fun CaptureBody(
             shots = shotCounts,
             capturedAngles = capturedAngles,
             capturing = capturing,
-            deviceReady = deviceState is CameraSourceState.Streaming,
+            deviceReady = deviceState is CameraSourceState.Streaming && calibrationReady,
             onCapture = onCapture,
             onUndo = onUndo,
             onFinish = onFinish,
@@ -206,7 +205,7 @@ private fun vehicleContentSize(
     )
 }
 
-/** 实时点云面板：用当前方位采集的真深度反投影点云（[cloud] 为空时提示对准）。 */
+/** 原始 mode25 disparity 不在 App 侧伪装成毫米点云；精确预览由服务端配准结果提供。 */
 @Composable
 private fun LiveCloudPanel(
     cloud: FloatArray,
@@ -226,7 +225,7 @@ private fun LiveCloudPanel(
         } else {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
-                    "对准车辆按快门采集\n每个方位的真实点云会在此显示",
+                    "对准目标采集原始 RGBD\n精确点云由 calibration.bin 在服务端还原",
                     style = Gomob.type.numInline.copy(fontSize = 11.sp),
                     color = Gomob.colors.fg3,
                     textAlign = TextAlign.Center,
@@ -237,7 +236,7 @@ private fun LiveCloudPanel(
             modifier = Modifier.align(Alignment.TopStart).padding(start = 12.dp, top = 10.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            Text("当前方位点云", style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.1.em), color = Gomob.colors.accent)
+            Text("原始 RGBD 会话", style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.1.em), color = Gomob.colors.accent)
             Text(
                 "已采 $totalShots 帧 · ${cloud.size / 3} 点",
                 style = Gomob.type.numInline.copy(fontSize = 9.sp, letterSpacing = 0.08.em),
@@ -510,13 +509,18 @@ private fun VehicleCaptureBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            RoundSideButton(icon = GomobIcons.Refresh, label = "撤销", disabled = shots[active] == 0, onClick = onUndo)
+            RoundSideButton(
+                icon = GomobIcons.Refresh,
+                label = "撤销",
+                disabled = capturing || shots[active] == 0,
+                onClick = onUndo,
+            )
             ShutterButton(enabled = deviceReady && !capturing, onClick = onCapture)
             RoundSideButton(
                 icon = GomobIcons.Check,
                 label = "完成融合",
                 primary = true,
-                disabled = shots.sum() < 2,
+                disabled = capturing || shots.sum() < 2,
                 onClick = onFinish,
             )
         }
@@ -647,6 +651,8 @@ private fun CompletedPanel(
 @Composable
 private fun ErrorPanel(
     msg: String,
+    requiresStoragePermission: Boolean = false,
+    onOpenStorageSettings: () -> Unit = {},
     onRestart: () -> Unit,
 ) {
     Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
@@ -655,6 +661,9 @@ private fun ErrorPanel(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text(msg, style = Gomob.type.numInline.copy(fontSize = 13.sp), color = Gomob.colors.danger, textAlign = TextAlign.Center)
+            if (requiresStoragePermission) {
+                RoundSideButton(icon = GomobIcons.Settings, label = "打开存储授权", onClick = onOpenStorageSettings)
+            }
             RoundSideButton(icon = GomobIcons.Refresh, label = "重新扫描", primary = true, onClick = onRestart)
         }
     }

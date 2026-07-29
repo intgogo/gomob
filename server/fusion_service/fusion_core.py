@@ -39,8 +39,9 @@ class Intrinsic:
 class RgbdFrame:
     """一视角 RGBD。color uint8 HxWx3;depth_mm uint16/float HxW(mm);conf 可选 uint8 HxW(0..255)。
 
-    mask 可选 bool HxW(True=目标):SAM 等在**已对齐 RGB**上算出的目标分割。RGB 与 depth 端侧已
-    对齐到同一内参/分辨率(见 rgbd_bundle 契约),故 mask 逐像素直接对应 depth,无需跨传感器外参。
+    mask 可选 bool HxW(True=目标):SAM 等在**服务端已配准 RGB**上算出的目标分割。生产 bundle 保留
+    原始 HLSD8 RGB 与 RS-D550 disparity，先由 rgbd_bundle 按 calibration.bin 配准成此内部帧；
+    因而 mask 才能逐像素对应 depth。
     与 conf 平行,作 depth 预掩码通道(见 _masked_depth):mask 外像素不入点云/配准/积分,
     从而只融合目标、剔除地面/杂物背景(M3.17 ①)。
     """

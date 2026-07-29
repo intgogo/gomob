@@ -19,7 +19,7 @@ const (
 	ScanFusionStatusFailed     = "failed"
 )
 
-// ScanFusionJob 一个多视角融合任务:输入 RgbdShot bundle(input_object_key),派生 GLB(result_object_key)。
+// ScanFusionJob 一个多视角融合任务：输入 schema v2 原始 RGBD bundle(input_object_key)，派生 GLB(result_object_key)。
 type ScanFusionJob struct {
 	ID              int64
 	SessionKey      string

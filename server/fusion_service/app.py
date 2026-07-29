@@ -1,10 +1,11 @@
 """fusion_service — 多视角 RGBD 云端融合 HTTP 服务(Open3D)。
 
 形态对标 asr_service(Python FastAPI 重计算服务):Go 侧 gomob-fusionworker 经 DB 队列领任务、
-从 MinIO 拉 RgbdShot bundle zip,POST 到本服务 /fuse 跑 Open3D 融合,拿回 GLB。算法在 fusion_core。
+从 MinIO 拉 schema v2 原始 RGBD bundle，POST 到本服务 /fuse；服务先按 bundle 内 calibration.bin
+完成 RS-D550 disparity→HLSD8 精确配准，再跑 Open3D 融合并返回 GLB。算法在 fusion_core。
 
 /fuse 契约:
-  入:multipart,file 字段 `bundle`=RgbdShot zip(见 rgbd_bundle.py);
+  入:multipart,file 字段 `bundle`=schema v2 zip(见 rgbd_bundle.py);
      可选 form:conf_threshold(int,默认 80)、enable_confidence(bool,默认 true)、voxel_size_mm(float,默认 6)、
      mask_erode_px(int,默认 0;bundle 带目标 mask 时的边界腐蚀,真机飞点用)、texture(bool)、tex_size(int)。
   出:body=GLB 字节(model/gltf-binary);stats 走响应头 X-Vertices/X-Triangles/X-Frame-Count/X-Fusion-Ms。

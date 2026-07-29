@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# scan_bundle_roundtrip — 端侧 Kotlin bundle 打包格式 ↔ 服务端 rgbd_bundle.unpack 跨语言契约校验。
-#   roundtrip.py(venv)独立复刻 Kotlin packBundle 字节布局 → unpack + fuse → 写 result.json;
+# scan_bundle_roundtrip — schema v2 原始 VIN bundle ↔ 服务端 rgbd_bundle.unpack 契约校验。
+#   roundtrip.py 生成真实 VINCreator BIN + 原始 disparity/RGB → unpack + fuse → 写 result.json;
 #   analyze.py(stdlib,dev.sh 自动调)读 result.json 判定。
 # 需带 open3d/PIL/numpy 的 Python(默认 .dev/fusion-venv;CI/容器用 fusion_service/requirements.txt)。
 set -euo pipefail

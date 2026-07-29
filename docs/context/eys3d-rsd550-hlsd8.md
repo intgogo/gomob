@@ -1,6 +1,6 @@
 # eYs3D RS-D550 + HLSD8 双相机自研驱动 — 历史上下文
 
-> 最后更新: 2026-07-28 | 截至 commit: 0f60fc0 | 维护规则见 AGENTS.md「历史上下文维护」节
+> 最后更新: 2026-07-28 | 截至 commit: 工作区 | 维护规则见 AGENTS.md「历史上下文维护」节
 
 ## 使命与当前状态
 
@@ -97,3 +97,9 @@ VIN 端到端拍摄与结果回传成功后，Teardown 仍可能在 `~AImageRead
 - **自研零厂商栈(P1b)**: -EPROTO 未破, 作在研路线挂起; 重启前置 = 抓一份真 working mode25 全量 usbmon 逐字 diff。
 - **M6.9.7 形式遗留**: TODO 中未划掉但已被 M6.9.8/9.9 实质取代(wedge 认知保留有效), 收口时应清理条目。
 - **eYs3D 攻坚遗留死码清理**: `eys3d_fd_session`/`pupil_session`/`mode25_libuvc_session`/`clean_arming_blob` 等非生产路径仍在树上, 归属 M11 类还债。
+
+### 2026-07-28 App bundle 标定自包含
+
+车辆多视角上传固定使用 RS-D550 + HLSD8 双源：App 需要 `MANAGE_EXTERNAL_STORAGE`，按 `/storage/emulated/0/VIN/param/VIN_<DepthID>.bin` 查找 2420-byte VINCreator v3 文件，校验首 8 字节 serial、payload version=3 与 SHA。会话锁定设备 ID/profile/SHA，文件在打包前后复核；zip 内统一命名为根 entry `calibration.bin`。
+
+服务端不再接受共享内参、`depth_unit_mm` 或已 resize RGB。`vin_calibration.py` 按 Go oracle 解析 BIN 的 Depth 内参、baseline、Euler/R/T、FOV、私有畸变；`rgbd_bundle.unpack` 解 raw disparity 并双线性投影原始 HLSD8 RGB。缺少、截断、篡改、profile/serial/SHA/同步错误直接拒绝，真实棋盘格与 BF301208 bundle 质量门仍待。

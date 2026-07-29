@@ -169,6 +169,8 @@ box 提示天然定尺度 → 单 mask,正好避开点提示的粒度歧义(点�
 sam_service**——分割是喂给几何层的感知步,上游(人工框→sam_service)算好 mask 冻进 bundle、可让用户先确认,
 fusion 只消费,服务解耦无运行时耦合。新增 `mask_erode_px` 旋钮(默认 0):针对真机深度边界飞点 / 混合像素,
 合成 raycast 无此类像素故默认关,待真实 P100R3 RGBD(M3.14②)标定再开。
+
+> **2026-07-28 订正**：上段 `mask_i.u8` 只保留为历史合成/单设备算法证据，已从 VIN schema v2 的生产解包器删除。VIN 分割若启用，顺序必须是“原始 bundle → BIN 配准 → aligned color/depth → SAM/mask → fusion”；当前生产编排尚未接这一步，不得把旧 mask entry 当兼容入口。
 端到端验证 `tests/harness/scan_mask_fusion`(目标+地面+干扰 → 真 SAM 逐视角分割 → mask 引导融合):
 SAM IoU ~0.994、mask 引导 chamfer ~1.7mm / 背景污染 ~0.01% / cov@5mm ~94%,baseline(无 mask)污染 ~90%、
 对照砍 ~9000×,且贴齐 GT-mask 上界 → **证明 2D 高 IoU 经 mask 预掩能转成干净 3D 物体点云**。
@@ -188,6 +190,25 @@ SAM IoU ~0.994、mask 引导 chamfer ~1.7mm / 背景污染 ~0.01% / cov@5mm ~94%
 
 ### 5.3 RGB 与 Depth 像素对齐
 
+#### VIN 原始双相机 bundle 终态（2026-07-28）
+
+车辆多视角 VIN rig 不再采用本节早期的“端侧 resize / SDK 已对齐”假设。App 固定绑定 RS-D550 深度源与独立 HLSD8 彩色源，保留 HLSD8 原始 `4160x832` MJPEG 解码图、RS-D550 原始 `640x128` `DISPARITY_X8_U16`、confidence 及两路时间戳；App 读取共享目录 `/storage/emulated/0/VIN/param/VIN_<depth_device_id>.bin`，在会话中锁定设备 ID、profile 与 BIN SHA。
+
+bundle schema v2 根目录固定为 `manifest.json`、`calibration.bin`、`rgb_i.png`、`depth_i.u16`、可选 `conf_i.u8`。服务端拒绝旧 `intrinsics`、`depth_unit_mm`、已对齐声明和任何其他标定文件名，先校验 BIN 长度/序列号/version=3/SHA/profile/时间同步，再复刻 VINCreator：
+
+```text
+raw disparity -> z=focal*baseline/(raw*0.125)
+              -> Depth 三维点（BIN Depth 内参）
+              -> BIN Euler/R/T
+              -> HLSD8 FOV + 私有畸变投影
+              -> 原始 RGB 双线性采样
+              -> depth 网格 aligned RGBD -> Open3D multiway fusion
+```
+
+因此 `calibration.bin` 是 bundle 自包含的几何真相源，不要求服务端预置设备标定；缺失、截断、篡改或 profile/serial 不一致时 fail-closed，不生成 GLB。
+
+> 以下 P100R3 单设备注册/掩码说明属于历史路径；VIN RS-D550+HLSD8 生产路径不启用它们。
+
 P100R3 spec 表 1 明确："**深度彩色像素对齐**"是固件能力。意味着：
 
 ```
@@ -196,13 +217,10 @@ SAM 在 RGB(1920×1080) 上输出 mask(1920×1080)
 mask × depth → 物体 depth → 反投影 → 物体点云
 ```
 
-**不需要双摄外参标定**（这是相比"手机主摄 + 外接深度相机"方案的重大简化）。
-但要在 P100R3 SDK 启用 `setRegistrationEnable(true)` 让 SDK 出对齐版本的 RGB+Depth。
+**这段结论不适用于 VIN 双相机**：RS-D550 与 HLSD8 的 RGB↔Depth 外参来自 bundle 内 VINCreator BIN，由服务端投影；P100R3 SDK 的 `setRegistrationEnable(true)` 只保留给历史单设备路线。
 
-> **M3.17 mask 机制对本节的硬依赖**:§5.2 第二增量把 SAM mask 当作逐像素对应 depth 的预掩码,
-> **前提正是本节"RGB 与 depth 已在端侧(M3.12)对齐到同一内参/分辨率"**。若端侧对齐未落地或失败
-> (未启 `setRegistrationEnable`、分辨率不一致),mask 投 depth 会整体错位 → 抠出的不是目标。
-> 故真机联调时,RGB↔depth 对齐是 M3.17 mask 链路的前置验收项,不是可选项。
+> **M3.17 mask 机制对本节的硬依赖**：历史单设备 bundle 可把 mask 随已对齐帧传输；VIN schema v2 不接受 `mask_i.u8`，如启用分割，必须在服务端完成 BIN 配准后再生成/应用 mask。
+> 因此 VIN 真机联调的前置验收是 `calibration.bin` 投影达到棋盘格边缘 ≤2px；没有通过该门，SAM mask 也不得进入融合。
 
 ### 5.4 用户引导（采集时）
 

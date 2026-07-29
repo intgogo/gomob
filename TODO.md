@@ -153,6 +153,8 @@
 
 ## M3 多视角 RGBD 重建
 
+> **2026-07-28 契约更新**：M7.8 的 schema v2 是当前生产 bundle 唯一入口：服务端先消费根 `calibration.bin` 完成原始 RGB/disparity 配准，再交给 `fusion_core`。下方早期 M3.14/M3.17 记录中的 `RgbdShot`、端侧 resize、`mask_i.u8` 仅是历史算法增量；它们不构成新 bundle 的兼容路径。
+
 > 当前权威路线：多视角 RGBD 配准 + 端云融合。
 > docs: `docs/architecture/04b-multiview-rgbd-reconstruction.md`
 >
@@ -203,17 +205,18 @@
 > 决策（2026-06-02）：① 外廓重写成真 8 角度采集（主线 04b 多视角云端融合）；② VIN 先通业务链路（端采单帧 RGBD→服务端 `vin_pipeline` 真 verdict），native 拓印图第二刀；③ 验收=软件全通 + 2510DRK44C 可跑设备 + GLB 回看闭环，全机型真机出帧矩阵作独立门控。
 > docs: `docs/architecture/04b-multiview-rgbd-reconstruction.md` §3 / `docs/architecture/08-vin-rectify-design.md` / `docs/architecture/server/02-api-contract.md` §5/§14
 >
-> **进度（2026-06-02）软件链路全通 + 编译/单测/harness 全绿**：M7.1-M7.6 已落码；两 mock 屏（VehicleContourScanScreen / ScanCaptureScreen）已重写为 VM 驱动接真底座，删尽硬编码 demo。双 ABI APK BUILD SUCCESSFUL + `./dev.sh test` + server `go test ./internal/asset` 全过；新建 harness `scan_bundle_roundtrip` 验端侧 Kotlin bundle 字节布局 ↔ 服务端 `rgbd_bundle.unpack`+`fuse` 跨语言契约（✅正常）；5 维度对抗 review（19 confirmed）已修：bundle 帧不完整 fail-fast、GLB ModelViewer 资源释放、`/v1/scans` owner nil 鉴权、EnvelopeErrorInterceptor 二进制不缓冲、capture/retake 协程竞态、GLB 下载截断清理。**详见 [[finding_scan_vin_wiring_2026-06-02]]**。**剩 M7.7 真机门控（受 M6.8b/M1.6 device-gating）+ RGB↔depth 真配准（approx resize 待 M2）+ VIN catalog 车型选择客户端**。
+> **进度（2026-07-28）软件链路已切到原始 VIN bundle**：M7.1-M7.6 的上传、事件和回看骨架保留；M7.8 删除旧 resize/共享内参契约，改为 RS-D550 + HLSD8 双源原始采集，App 锁定本地 BIN SHA，服务端自包含解析并精确配准。`scan_bundle_roundtrip` 现在验证 schema v2、`calibration.bin`、raw disparity 解码和 BIN 内参；完整 feature 编译仍受本机缺 Berxel 厂商 AAR 阻断。**剩余只是真机权限、棋盘格 ≤2px 与 BF301208 多视角 GLB 门，不得回退 approx resize**。
 
 | ID | 任务 | 验收 | 文档 |
 |----|------|------|------|
-| M7.1 | bundle 上传核心层：`AssetUploadCompleteRequest` 加 `scan_session_id`/`frame_count`（向后兼容可空）；`core:data` 新增 `Scan3dBundleUploader` 把 N 张已对齐 RGBD（resize color→depth 分辨率 + depth 内参，approx 对齐文档化指向 M2 registration）打成 `fusion_service/rgbd_bundle.py` 契约 zip（manifest.json + rgb_i.png + depth_i.u16 + conf_i.u8），kind=`scan3d_bundle` 分块上传。 | host/单元：bundle zip 能被 `fusion_service.unpack` 解出 ≥2 帧；`./dev.sh test` 序列化字段；编译过。 | `core/network/.../dto/AssetDto.kt`、`core/data/.../scan/Scan3dBundleUploader.kt`、`server/fusion_service/rgbd_bundle.py` |
+| M7.1 | bundle 上传核心层：`AssetUploadCompleteRequest` 加 `scan_session_id`/`frame_count`；`Scan3dBundleUploader` 按 schema v2 写 manifest、根 `calibration.bin`、原始 HLSD8 PNG、RS-D550 disparity×8 u16/conf 分片上传。 | host/单元：服务端严格解包并还原 ≥2 帧；zip SHA 与 manifest calibration SHA 分离且可审计。 | `core/network/.../dto/AssetDto.kt`、`core/data/.../scan/Scan3dBundleUploader.kt`、`server/fusion_service/rgbd_bundle.py` |
 | M7.2 | fusion_done 实时事件：`core:realtime` 加 `RealtimeEvent.ScanFusionDone(sessionKey,resultObjectKey,vertices,triangles,frameCount)` + parser `scan.fusion_done` 分支。 | 单测：解 `scan.fusion_done` 帧出事件；坏 JSON 不崩。 | `core/realtime/.../RealtimeEnvelopeParser.kt` |
-| M7.3 | `VehicleContourScanViewModel`：8 角度引导采集驱动 `CameraSource`，每角抓配对 color+depth → `RgbdShot`（点云预览 = 当帧深度反投影，真数据）；完成 → 打 bundle → `Scan3dBundleUploader` 上传 → 等 `ScanFusionDone(sessionKey 匹配)` → presign 下载 GLB → Completed。 | 真机/可跑设备：8 角度采真帧、bundle 上传入队、收 fusion_done、下到 GLB；logcat 全链路无 mock。 | `feature/scan3d/.../VehicleContourScanViewModel.kt` |
+| M7.3 | `VehicleContourScanViewModel`：固定绑定 `vinDepth()` RS-D550 与 `vinRgb()` HLSD8；进入双流 profile 后按 Depth ID 加载并锁定本地 BIN，抓原始 RGB/disparity/conf/timestamp → bundle → `Scan3dBundleUploader` → `ScanFusionDone` → GLB。设备/ID/profile 变化废弃会话。 | 真机：权限、标定加载、8 角度原始帧、bundle 入队、fusion_done、GLB 回看全链路无 mock。 | `feature/scan3d/.../VehicleContourScanViewModel.kt` |
 | M7.4 | 重写 `VehicleContourScanScreen` 为 VM 驱动：保留 8 角度环选交互，删硬编码 `shots`/假 canvas，接真预览（live color/depth + 当角点云）；新增 `GlbModelView`（filament gltfio）回看融合 GLB。`gltfio-android` 进 `feature:scan3d`。 | uiautomator/instrumentation：点卡片进真屏、环选可点、拍照触发采集、完成出 GLB 视图；无硬编码 demo。 | `feature/scan3d/.../VehicleContourScanScreen.kt`、`GlbModelView.kt`、`feature/scan3d/build.gradle.kts` |
 | M7.5 | VIN 业务链路：`core:network` 加 `CVEngineApi`（multipart `cv/ocr/v1/vin_pipeline`）+ `VinPipelineResp` DTO + 双轨鉴权 interceptor（JWT + `X-Gomob-AppId/Sign/Ts/Nonce` HMAC，§14.1）；devserver 挂 `/cv/ocr/` 反代/直挂 cvengine。 | `cv_vin_pipeline` harness 仍过；devserver 起 cvengine 后端侧多 part 请求拿真 verdict；签名校验通过。 | `core/network/.../CVEngineApi.kt`、`server/cmd/devserver/main.go`、`docs/architecture/server/02-api-contract.md` §14.1 |
 | M7.6 | `VinCaptureViewModel` + 重写 `ScanCaptureScreen`：删硬编码 `VinValue`，接 `CameraSource` 单帧 RGB 拍照 → `CVEngineApi.vinPipeline(vehicleModelId,image)` → 真 verdict/reasons/字符相似度渲染；`vehicle_model_id` 本期可设/默认值（文档化，待接 catalog 客户端）。 | instrumentation + 真 server 回真 verdict；logcat 见上传；无硬编码 VIN。 | `feature/scan3d/.../VinCaptureViewModel.kt`、`ScanCaptureScreen.kt` |
-| M7.7 | 收尾：真机门控（2510DRK44C 直插出帧 + bundle e2e + VIN verdict）；新建/补 `scan_bundle_roundtrip` harness（端打包 → `fusion_service.unpack` → `/fuse` 出 GLB）；更新 finding/registry。 | harness 可判定；真机两功能跑出真实结果（独立门控，受 M6.8b/M1.6 device-gating）。 | `tests/harness/scan_bundle_roundtrip/`、`docs/agent-memory/`、`docs/architecture/registry/` |
+| M7.7 | 收尾：双相机出帧、bundle e2e、VIN verdict 真机门控；更新 finding/registry。 | 软件 harness 可判定；真机权限、棋盘格和 BF301208 GLB 结果独立记录。 | `tests/harness/scan_bundle_roundtrip/`、`docs/agent-memory/`、`docs/architecture/registry/` |
+| M7.8 | **VIN 原始 RGBD bundle 与本地 BIN 精确配准（2026-07-28）**：App 固定读取 `/storage/emulated/0/VIN/param/VIN_<Depth设备ID>.bin`，校验 2420 bytes / serial / v3 / SHA，锁定 RS-D550 `640x128 mode25` + HLSD8 `4160x832` 会话；bundle 根目录固定写 `calibration.bin`、原始 RGB PNG、disparity×8 u16、confidence 与两路时间戳。服务端只接受 schema v2，校验 entry/SHA/profile/同步后按 VINCreator R/T、FOV、私有畸变和 `focal×baseline/(raw×0.125)` 投影到 Depth 网格，禁止旧 resize / 共享内参 / depth_unit 假设。 | `server/fusion_service/test_vin_calibration.py` 与 `test_rgbd_bundle.py`；`tests/harness/scan_bundle_roundtrip`；Android `:core:data` 单元/编译；真机还需 30/50/100cm 棋盘格 ≤2px 与 BF301208 bundle GLB 门。 | `core/data/.../CalibrationFileProvider.kt`、`Scan3dBundleUploader.kt`、`feature/scan3d/.../VehicleContourScanViewModel.kt`、`server/fusion_service/{vin_calibration,rgbd_bundle}.py`、`docs/architecture/04b-multiview-rgbd-reconstruction.md` §5.3 |
 
 ## M8 取流/后处理对齐官方 25fps（修 Android 端 ~10fps + 大量延迟）
 
@@ -230,6 +233,7 @@
 | M8.4 | color 解码移到独立单线程 dispatcher + 自适应背压(上一帧解完才 poll)，再放开 `COLOR_PREVIEW_DECODE_INTERVAL_MS=100`(=10fps 死限)。**先线程化再放限速**，否则全速解码打爆 GC 饿死 depth。终态 TODO：MJPEG 解码下沉 native 异步线程。对标 processJpegThreadFunc。 | 真机：color `measuredFps` 从 10 升到解码上限(≥25)，且 depth 不被饿(depth_seq 不降)。 | `core/native-bridge/.../berxel/BerxelService.kt:814,2992` |
 | M8.5 | transfer 池 `kBulkXferCount` 48→20-24 对齐官方水位线(@287618)，**在 M8.2/.3 稳定后做**；保留注释里 48→8 不治死锁的真机证据。 | 真机连续 ≥60s 无新增 `*_err`/babble/掉线(host 测不出 usbfs，必真机)。 | `native/jni/berxel_dual_session_jni.cpp:1104` |
 | M8.6 | 终态(按需)：event 线程零分配(per-chunk vector→预分配环形 buffer view)+ 线程优先级/CPU 亲和。当前机型已 PASS，不为未复现瓶颈提前优化。 | 换机出现 reap 落后再做。 | `native/jni/berxel_dual_session_jni.cpp:484` |
+
 
 ## M8 激光扫描设备集成（车辆外廓双单元 LIDAR-PTZ）— ⚠️ 端侧方案已被 M8' 服务端版取代（M8.1 保留休眠）
 

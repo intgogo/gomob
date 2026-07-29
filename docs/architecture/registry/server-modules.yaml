@@ -275,3 +275,23 @@ external_dependencies:
     kind: lidar_ptz_pair
     consumed_by: [laserworker]
     description: "固定安装的 A/B 激光单元；生产背景与 site revision 绑定"
+  - name: fusion-service
+    cmd: server/fusion_service/app.py
+    impl: server/fusion_service
+    category: scanning
+    expose:
+      - { protocol: http, port: 18092, scope: internal, purpose: "/fuse 原始 VIN RGBD 配准与 Open3D 融合" }
+    storage: []
+    description: "严格消费 schema v2 bundle；从根 calibration.bin 解析 VINCreator 外参，把 raw disparity/RGB 配准为 Depth 网格后输出 GLB"
+
+  - name: fusionworker
+    cmd: server/cmd/fusionworker
+    impl: server/internal/fusion
+    category: scanning
+    binary: gomob-fusionworker
+    storage:
+      - { kind: postgres, used_for: "scan_fusion_jobs 队列" }
+      - { kind: minio, used_for: "原始 schema v2 bundle 与融合 GLB" }
+    nats:
+      publish: ["scan.fusion_done"]
+    description: "领取 RGBD bundle 任务，调用 fusion-service，保存 GLB 并发布完成事件"

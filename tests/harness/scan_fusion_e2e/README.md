@@ -3,7 +3,7 @@
 ## 目的
 
 验证 M3.14 **完整 Go worker 垂直切片**的端到端正确性(非仅算法核):
-端侧 bundle → MinIO → DB 队列 → fusionworker → fusion_service `/fuse` → GLB → MinIO → NATS `scan.fusion_done`。
+端侧原始 bundle → MinIO → DB 队列 → fusionworker → fusion_service `/fuse`（BIN 配准后融合）→ GLB → MinIO → NATS `scan.fusion_done`。
 
 算法核本身(配准+PGO+TSDF+conf 加权)由 `tests/harness/scan_fusion` 验(干净 chamfer ~1.3mm、conf 降 96%);
 本 harness 验**管线接线**:DB 队列领取、MinIO 读写、HTTP 调服务、GLB 落库、事件发布,并对端到端产出的 GLB 做几何复核。
@@ -12,7 +12,7 @@
 
 | 环节 | 实现 |
 |------|------|
-| RgbdShot bundle 契约 | `server/fusion_service/rgbd_bundle.py`(zip:manifest.json + rgb_i.png + depth_i.u16 + conf_i.u8) |
+| schema v2 原始 VIN bundle 契约 | `server/fusion_service/rgbd_bundle.py`（根 `manifest.json` + `calibration.bin` + 原始 RGB PNG/disparity u16/conf） |
 | 融合 HTTP 服务 `/fuse` | `server/fusion_service/app.py`(收 bundle → `fusion_core.fuse` → trimesh 导 GLB) |
 | DB 队列 `scan_fusion_jobs` | `server/migrations/0016_scan_fusion.up.sql` + `server/pkg/repo/scan_fusion.go`(Enqueue/ClaimNext/Complete/Fail) |
 | Go worker | `server/internal/fusion/{client,worker}.go` + `server/cmd/fusionworker/main.go`(轮询领取→MinIO 拉→/fuse→GLB 存 MinIO→发 `scan.fusion_done`) |

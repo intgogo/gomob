@@ -254,3 +254,24 @@ capabilities:
     blockers:
       - "通用固定上限已禁止产生合规结论；客户端仍未绑定车辆/车型"
       - "缺按车类/轴数/用途/特殊结构选规则、生效日、版本和条款证据链"
+
+  - id: vin_rgbd_bundle_calibration_registration
+    name: VIN 原始 RGBD bundle 自包含标定与精确配准
+    status: implemented_pending_device
+    owners: [":feature:scan3d", ":core:data", fusion-service, fusionworker]
+    provides:
+      - "App 按 Depth 设备 ID 读取并校验 2420-byte VINCreator v3 BIN，锁定会话 SHA/profile"
+      - "bundle 根目录固定 calibration.bin；manifest SHA 与整 zip SHA 分离校验"
+      - "服务端按 BIN Depth 内参、Euler/R/T、FOV、私有畸变和 disparity×8 公式生成 aligned RGBD"
+    evidence:
+      - core/data/src/main/kotlin/io/gomob/data/scan/CalibrationFileProvider.kt
+      - core/data/src/main/kotlin/io/gomob/data/scan/Scan3dBundleUploader.kt
+      - feature/scan3d/src/main/kotlin/io/gomob/feature/scan3d/VehicleContourScanViewModel.kt
+      - server/fusion_service/vin_calibration.py
+      - server/fusion_service/rgbd_bundle.py
+      - server/fusion_service/test_vin_calibration.py
+      - server/fusion_service/test_rgbd_bundle.py
+      - tests/harness/scan_bundle_roundtrip
+    blockers:
+      - "尚缺真实 BF301208 bundle 生成非空 GLB"
+      - "尚缺 30cm/50cm/1m 棋盘格 RGB↔Depth 边缘误差 ≤2px 的真机报告"

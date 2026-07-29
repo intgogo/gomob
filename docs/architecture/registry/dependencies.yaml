@@ -12,7 +12,7 @@ allowed_cross_layer: "lower_to_upper_only"
 edges:
   # app → 全部 feature
   - from: ":app"
-    to: [":feature:home", ":feature:scan", ":feature:gallery", ":feature:calibration", ":feature:settings"]
+    to: [":feature:auth", ":feature:home", ":feature:message", ":feature:collaboration", ":feature:scan3d", ":feature:profile"]
   # app → 部分 core 直依赖（少用，UI 框架壳层）
   - from: ":app"
     to: [":core:common", ":core:model", ":core:domain", ":core:data",
@@ -21,17 +21,16 @@ edges:
   # feature → core
   - from: ":feature:home"
     to: [":core:ui", ":core:designsystem", ":core:domain", ":core:model", ":core:common"]
-  - from: ":feature:scan"
-    to: [":core:ui", ":core:designsystem", ":core:domain", ":core:model", ":core:common",
-         ":core:native-bridge", ":core:data"]
-  - from: ":feature:gallery"
-    to: [":core:ui", ":core:designsystem", ":core:domain", ":core:model", ":core:common",
-         ":core:data"]
-  - from: ":feature:calibration"
-    to: [":core:ui", ":core:designsystem", ":core:domain", ":core:model", ":core:common",
-         ":core:native-bridge"]
-  - from: ":feature:settings"
-    to: [":core:ui", ":core:designsystem", ":core:domain", ":core:model", ":core:common"]
+  - from: ":feature:auth"
+    to: [":core:ui", ":core:designsystem", ":core:domain", ":core:model", ":core:common", ":core:data", ":core:network"]
+  - from: ":feature:collaboration"
+    to: [":core:data"]
+  - from: ":feature:message"
+    to: [":core:ui", ":core:designsystem", ":core:domain", ":core:model", ":core:common", ":core:data", ":core:network"]
+  - from: ":feature:profile"
+    to: [":core:data"]
+  - from: ":feature:scan3d"
+    to: [":core:ui", ":core:designsystem", ":core:domain", ":core:model", ":core:common", ":core:native-bridge", ":core:data"]
 
   # core 之间
   - from: ":core:domain"

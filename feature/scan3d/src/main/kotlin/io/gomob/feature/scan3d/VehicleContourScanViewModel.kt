@@ -5,22 +5,29 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
-import io.gomob.data.scan.BundleIntrinsics
-import io.gomob.data.scan.RgbdShot
+import io.gomob.data.scan.CalibrationFileException
+import io.gomob.data.scan.CalibrationFileProvider
+import io.gomob.data.scan.DefaultCalibrationFileProvider
+import io.gomob.data.scan.LocalCalibrationFile
+import io.gomob.data.scan.RawRgbdShot
+import io.gomob.data.scan.RgbdSourceProfile
 import io.gomob.data.scan.Scan3dBundleUploader
 import io.gomob.data.scan.ScanFusionRepository
 import io.gomob.model.ColorFrame
 import io.gomob.model.DepthFrame
+import io.gomob.model.DepthSampleFormat
 import io.gomob.nativebridge.camera.CameraSource
 import io.gomob.nativebridge.camera.CameraSourceProvider
 import io.gomob.nativebridge.camera.CameraSourceState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -30,7 +37,6 @@ import java.io.File
 import java.nio.ByteOrder
 import javax.inject.Inject
 
-/** 车辆 8 个方位（环绕一圈），与终态产品交互一致。 */
 data class VehicleAngleDef(val label: String, val name: String, val deg: Float)
 
 val VehicleAngleDefs: List<VehicleAngleDef> = listOf(
@@ -44,325 +50,337 @@ val VehicleAngleDefs: List<VehicleAngleDef> = listOf(
     VehicleAngleDef("左前", "左前 45°", 315f),
 )
 
-/** 车辆外廓扫描总状态机（采集 → 上传 → 云端融合 → 回看）。 */
 sealed interface VehicleScanState {
-    /** 默认态：环绕采集中（用户在各方位拍 RGBD）。 */
     data object Capturing : VehicleScanState
-    /** 打包 + 分块上传 bundle 中。 */
     data object Uploading : VehicleScanState
-    /** 已上传，等云端 `scan.fusion_done` 推送。 */
     data object Fusing : VehicleScanState
-    /** 融合完成，GLB 已下到本地可回看。 */
     data class Completed(
         val glbFile: File,
         val vertices: Int,
         val triangles: Int,
         val frameCount: Int,
     ) : VehicleScanState
-    data class Error(val msg: String) : VehicleScanState
+    data class Error(val msg: String, val requiresStoragePermission: Boolean = false) : VehicleScanState
 }
 
-/**
- * 车辆外廓扫描 VM —— 真 8 角度多视角 RGBD 采集，串 04b 端云融合主线。
- *
- * 链路：CameraSource 真帧 → 每方位抓配对 color+depth 存 [RgbdShot]（color 缩放到 depth 分辨率，
- * 共用 depth 内参，approx 对齐待 M2 registration 标定）→ 完成打 bundle 上传 kind=scan3d_bundle
- * → 服务端融合 worker → `scan.fusion_done` → 下载结果 GLB → Filament 回看。
- *
- * 与端侧 TSDF（[Scan3dRecordingViewModel]）的关系：本流程走云端高精度多视角融合（主线），
- * 当方位点云预览用本帧深度反投影提供即时"真"反馈，不在端侧做 TSDF 累积。
- */
+/** VIN 多视角采集：RS-D550 原始 disparity + HLSD8 原始 JPEG + 自包含 calibration.bin。 */
 @HiltViewModel
 class VehicleContourScanViewModel @Inject constructor(
     provider: CameraSourceProvider,
     private val bundleUploader: Scan3dBundleUploader,
     private val fusionRepo: ScanFusionRepository,
+    private val calibrationFileProvider: CalibrationFileProvider,
 ) : ViewModel() {
 
-    private val source: CameraSource = provider.active()
-
+    private val depthSource: CameraSource = provider.vinDepth()
+    private val colorSource: CameraSource = provider.vinRgb()
     private val _state = MutableStateFlow<VehicleScanState>(VehicleScanState.Capturing)
     val state: StateFlow<VehicleScanState> = _state.asStateFlow()
-
-    /** 每方位已拍张数（长度 8，与 [VehicleAngleDefs] 对齐）。 */
     private val _shotCounts = MutableStateFlow(List(VehicleAngleDefs.size) { 0 })
     val shotCounts: StateFlow<List<Int>> = _shotCounts.asStateFlow()
-
     private val _activeAngle = MutableStateFlow(0)
     val activeAngle: StateFlow<Int> = _activeAngle.asStateFlow()
-
     private val _colorPreview = MutableStateFlow<Bitmap?>(null)
     val colorPreview: StateFlow<Bitmap?> = _colorPreview.asStateFlow()
-
     private val _depthPreview = MutableStateFlow<Bitmap?>(null)
     val depthPreview: StateFlow<Bitmap?> = _depthPreview.asStateFlow()
-
-    /** 最近一次采集方位的点云（扁平 [x,y,z...] mm，相机系），喂 PointCloud3dView。 */
     private val _pointCloudPreview = MutableStateFlow(FloatArray(0))
     val pointCloudPreview: StateFlow<FloatArray> = _pointCloudPreview.asStateFlow()
-
     private val _capturing = MutableStateFlow(false)
     val capturing: StateFlow<Boolean> = _capturing.asStateFlow()
-
-    /** 最近一次采集尝试时 color/depth 的时间戳差(us),供 UI/调试观测同步质量;-1 = 尚无。 */
     private val _lastSyncDeltaUs = MutableStateFlow(-1L)
     val lastSyncDeltaUs: StateFlow<Long> = _lastSyncDeltaUs.asStateFlow()
+    private val _calibrationReady = MutableStateFlow(false)
+    val calibrationReady: StateFlow<Boolean> = _calibrationReady.asStateFlow()
 
-    val deviceState: StateFlow<CameraSourceState> = source.sourceState
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), CameraSourceState.Idle)
+    val deviceState: StateFlow<CameraSourceState> = combine(
+        depthSource.sourceState,
+        colorSource.sourceState,
+    ) { depth, color ->
+        when {
+            depth is CameraSourceState.Error -> depth
+            color is CameraSourceState.Error -> color
+            depth is CameraSourceState.NoDevice -> depth
+            color is CameraSourceState.NoDevice -> color
+            depth is CameraSourceState.Streaming && color is CameraSourceState.Streaming -> depth
+            depth is CameraSourceState.Streaming -> CameraSourceState.Opening
+            else -> depth
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), CameraSourceState.Idle)
 
-    // 最近帧快照（采集时配对取用）
     @Volatile private var latestColor: ColorFrame? = null
     @Volatile private var latestDepth: DepthFrame? = null
-
-    /** 本会话累积的已对齐 RGBD shots（含每张所属方位，用于 UI 统计 / 打包）。 */
     private val shots = mutableListOf<CapturedShot>()
-    private var bundleIntrinsics: BundleIntrinsics? = null
-
+    private var calibration: LocalCalibrationFile? = null
+    private var sourceProfile: RgbdSourceProfile? = null
+    private var sessionBinding: SessionBinding? = null
+    private var acquired = false
     private var fusionJob: Job? = null
     private var captureJob: Job? = null
+    private var bindingJob: Job? = null
 
     init {
-        source.acquire()
-        fusionRepo.ensureRealtimeConnected()
-
+        if (!calibrationFileProvider.hasExternalStorageAccess()) {
+            _state.value = VehicleScanState.Error(storagePermissionMessage(), true)
+        } else {
+            acquireSources()
+            fusionRepo.ensureRealtimeConnected()
+        }
         viewModelScope.launch {
             var n = 0
-            source.colorFrames.collect { frame ->
+            colorSource.colorFrames.collect { frame ->
                 latestColor = frame
-                if (n++ % PREVIEW_DECIMATION == 0) {
-                    _colorPreview.value = withContext(Dispatchers.Default) {
-                        FrameRenderer.colorToBitmap(frame)
-                    }
-                }
+                if (sessionBinding != null && !matchesLockedColor(frame)) invalidateSession("HLSD8 彩色 profile 或设备 ID 已变化")
+                if (n++ % PREVIEW_DECIMATION == 0) _colorPreview.value = withContext(Dispatchers.Default) { FrameRenderer.colorToBitmap(frame) }
+                scheduleSessionBinding()
             }
         }
         viewModelScope.launch {
             var n = 0
-            source.depthFrames.collect { frame ->
+            depthSource.depthFrames.collect { frame ->
                 latestDepth = frame
-                if (n++ % PREVIEW_DECIMATION == 0) {
-                    _depthPreview.value = withContext(Dispatchers.Default) {
-                        FrameRenderer.depth16ToBitmap(frame)
-                    }
+                if (sessionBinding != null && !matchesLockedDepth(frame)) invalidateSession("RS-D550 深度 profile 或设备 ID 已变化")
+                if (n++ % PREVIEW_DECIMATION == 0) _depthPreview.value = withContext(Dispatchers.Default) { FrameRenderer.depth16ToBitmap(frame) }
+                scheduleSessionBinding()
+            }
+        }
+        viewModelScope.launch {
+            combine(depthSource.sourceState, colorSource.sourceState) { d, c -> d to c }.collect { (depth, color) ->
+                if (sessionBinding != null && (depth is CameraSourceState.NoDevice || color is CameraSourceState.NoDevice || depth is CameraSourceState.Error || color is CameraSourceState.Error)) {
+                    invalidateSession("相机断开或流异常，当前扫描会话已废弃，请重新加载标定后开始")
                 }
             }
         }
     }
 
-    fun selectAngle(index: Int) {
-        if (index in VehicleAngleDefs.indices) _activeAngle.value = index
+    private fun acquireSources() {
+        if (acquired) return
+        depthSource.acquire(); colorSource.acquire(); acquired = true
     }
 
-    /** 在当前方位拍一张：抓最近 color+depth → 对齐成 RgbdShot 累积 + 出点云预览。 */
+    /** 两路进入稳定 profile 后立即加载标定，快门只允许使用已锁定会话。 */
+    private fun scheduleSessionBinding() {
+        if (_state.value != VehicleScanState.Capturing || sessionBinding != null || bindingJob?.isActive == true) return
+        if (latestColor == null || latestDepth == null || !calibrationFileProvider.hasExternalStorageAccess()) return
+        bindingJob = viewModelScope.launch {
+            try {
+                val color = latestColor ?: return@launch
+                val depth = latestDepth ?: return@launch
+                withContext(Dispatchers.Default) { ensureSessionBinding(color, depth) }
+                _calibrationReady.value = true
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                Log.w(TAG, "VIN 标定绑定失败", e)
+                clearShots()
+                _calibrationReady.value = false
+                _state.value = VehicleScanState.Error(
+                    e.message ?: "VIN 标定文件不可用",
+                    requiresStoragePermission = !calibrationFileProvider.hasExternalStorageAccess(),
+                )
+            }
+        }
+    }
+
+    fun selectAngle(index: Int) { if (index in VehicleAngleDefs.indices) _activeAngle.value = index }
+
     fun capture() {
-        if (_state.value != VehicleScanState.Capturing) return
-        if (_capturing.value) return
+        if (_state.value != VehicleScanState.Capturing || _capturing.value) return
+        if (!calibrationFileProvider.hasExternalStorageAccess()) {
+            _state.value = VehicleScanState.Error(storagePermissionMessage(), true); return
+        }
+        if (!_calibrationReady.value || sessionBinding == null) {
+            _state.value = VehicleScanState.Error("两路相机尚未完成 VIN 标定绑定，请等待首帧或重新扫描")
+            return
+        }
         val color = latestColor
         val depth = latestDepth
-        if (color == null || depth == null) {
-            Log.w(TAG, "采集跳过：尚无 color/depth 帧")
-            return
-        }
-        // 时间戳门控:color/depth 必须落在同一同步窗口内才配对,否则是时间错配帧——
-        // 配准/融合会把不同瞬间的纹理贴到几何上(运动 → 鬼影/偏移)。超阈值软丢弃(不进 Error 态,
-        // 留在采集态供用户稳住设备重试)并上报 delta,绝不静默用错配帧毒化 bundle。
+        if (color == null || depth == null) { Log.w(TAG, "采集跳过：尚无 RGB/Depth 帧"); return }
         val deltaUs = kotlin.math.abs(color.timestampUs - depth.timestampUs)
-        if (deltaUs > PAIR_SYNC_TOLERANCE_US) {
-            Log.w(TAG, "采集丢弃：color/depth 时间错配 Δ=${deltaUs}us > ${PAIR_SYNC_TOLERANCE_US}us")
-            _lastSyncDeltaUs.value = deltaUs
-            return
-        }
         _lastSyncDeltaUs.value = deltaUs
+        if (deltaUs > PAIR_SYNC_TOLERANCE_US) return
+        val angle = _activeAngle.value
         _capturing.value = true
         captureJob = viewModelScope.launch {
             try {
-                val angle = _activeAngle.value
                 val shot = withContext(Dispatchers.Default) { buildShot(color, depth, angle) }
                 shots.add(shot)
-                if (bundleIntrinsics == null) bundleIntrinsics = shot.intrinsics
                 _shotCounts.value = _shotCounts.value.toMutableList().also { it[angle] = it[angle] + 1 }
-                _pointCloudPreview.value = withContext(Dispatchers.Default) {
-                    backProject(shot.rgbd.depth16, shot.intrinsics)
-                }
-                Log.i(TAG, "方位 $angle 采集成功，累计 ${shots.size} 张")
+                // 原始 mode25 disparity 没有 App 侧共享毫米内参；点云预览不伪造配准结果。
+                _pointCloudPreview.value = FloatArray(0)
             } catch (e: Throwable) {
-                Log.w(TAG, "采集失败: ${e.message}")
-                _state.value = VehicleScanState.Error("采集失败: ${e.message}")
-            } finally {
-                _capturing.value = false
-            }
+                if (e is CancellationException) throw e
+                Log.w(TAG, "采集失败", e)
+                if (e is CalibrationFileException) {
+                    invalidateSession(
+                        e.message ?: "标定文件不可用",
+                        requiresStoragePermission = !calibrationFileProvider.hasExternalStorageAccess(),
+                    )
+                } else {
+                    _state.value = VehicleScanState.Error("采集失败：${e.message}")
+                }
+            } finally { _capturing.value = false }
         }
     }
 
-    /** 撤销当前方位最近一张。 */
     fun undo() {
+        if (_capturing.value || _state.value != VehicleScanState.Capturing) return
         val angle = _activeAngle.value
-        val idx = shots.indexOfLast { it.angle == angle }
-        if (idx < 0) return
-        shots.removeAt(idx).rgbd.rgb.recycle()
-        _shotCounts.value = _shotCounts.value.toMutableList()
-            .also { it[angle] = (it[angle] - 1).coerceAtLeast(0) }
+        val index = shots.indexOfLast { it.angle == angle }
+        if (index < 0) return
+        shots.removeAt(index).rgbd.rgb.recycle()
+        _shotCounts.value = _shotCounts.value.toMutableList().also { it[angle] = (it[angle] - 1).coerceAtLeast(0) }
     }
 
-    /** 完成采集：打 bundle 上传 → 等融合 → 下 GLB。 */
     fun finishAndUpload() {
-        if (_state.value != VehicleScanState.Capturing) return
+        if (_state.value != VehicleScanState.Capturing || _capturing.value) return
         val captured = shots.toList()
-        val intr = bundleIntrinsics
-        if (captured.size < MIN_SHOTS || intr == null) {
-            _state.value = VehicleScanState.Error("至少需采集 $MIN_SHOTS 张有效 RGBD 才能融合（当前 ${captured.size}）")
+        val lockedCalibration = calibration
+        val lockedProfile = sourceProfile
+        if (captured.size < MIN_SHOTS || lockedCalibration == null || lockedProfile == null || sessionBinding == null) {
+            _state.value = VehicleScanState.Error("至少需采集 $MIN_SHOTS 张且完成 VIN 标定绑定的原始 RGBD")
             return
         }
         val sessionId = "scan-${System.currentTimeMillis()}"
         _state.value = VehicleScanState.Uploading
         fusionJob = viewModelScope.launch {
             try {
-                // 先挂起监听本次 session 的融合完成事件，再上传——避免 fusion_done 在订阅前到达丢失
-                // （事件流 replay=0）。实际云端融合远慢于上传，竞态窗口极小，但 async-before 更正确。
-                val awaitFusion = async {
-                    withTimeoutOrNull(FUSION_TIMEOUT_MS) {
-                        fusionRepo.fusionEvents.first { it.sessionKey == sessionId }
-                    }
-                }
-                bundleUploader.upload(captured.map { it.rgbd }, intr, sessionId)
-                Log.i(TAG, "bundle 上传完成 session=$sessionId frames=${captured.size}")
+                calibrationFileProvider.verifyUnchanged(lockedCalibration)
+                val awaitFusion = async { withTimeoutOrNull(FUSION_TIMEOUT_MS) { fusionRepo.fusionEvents.first { it.sessionKey == sessionId } } }
+                bundleUploader.upload(captured.map { it.rgbd }, lockedCalibration, lockedProfile, sessionId)
                 _state.value = VehicleScanState.Fusing
-
-                val result = awaitFusion.await()
-                if (result == null) {
-                    _state.value = VehicleScanState.Error("融合超时未返回（${FUSION_TIMEOUT_MS / 1000}s）")
-                    return@launch
-                }
+                val result = awaitFusion.await() ?: run { _state.value = VehicleScanState.Error("融合超时未返回（${FUSION_TIMEOUT_MS / 1000}s）"); return@launch }
                 val glb = fusionRepo.downloadResultGlb(sessionId)
-                _state.value = VehicleScanState.Completed(
-                    glbFile = glb,
-                    vertices = result.vertices,
-                    triangles = result.triangles,
-                    frameCount = result.frameCount,
-                )
-                Log.i(TAG, "融合回看就绪 v=${result.vertices} f=${result.triangles} glb=${glb.length()}B")
+                _state.value = VehicleScanState.Completed(glb, result.vertices, result.triangles, result.frameCount)
             } catch (e: Throwable) {
-                Log.w(TAG, "上传/融合失败: ${e.message}")
-                _state.value = VehicleScanState.Error("上传/融合失败: ${e.message}")
+                if (e is CancellationException) throw e
+                if (e is CalibrationFileException) {
+                    clearShots()
+                    calibration = null
+                    sourceProfile = null
+                    sessionBinding = null
+                    _calibrationReady.value = false
+                }
+                _state.value = VehicleScanState.Error(
+                    "上传/融合失败：${e.message}",
+                    requiresStoragePermission = e is CalibrationFileException &&
+                        !calibrationFileProvider.hasExternalStorageAccess(),
+                )
             }
         }
     }
 
-    /** 重新开始一次扫描（清空 shots，回采集态）。 */
     fun restart() {
-        fusionJob?.cancel()
-        fusionJob = null
-        captureJob?.cancel()
-        captureJob = null
+        fusionJob?.cancel(); fusionJob = null
+        captureJob?.cancel(); captureJob = null
+        bindingJob?.cancel(); bindingJob = null
         _capturing.value = false
-        shots.forEach { it.rgbd.rgb.recycle() }
-        shots.clear()
-        bundleIntrinsics = null
+        clearShots()
+        calibration = null; sourceProfile = null; sessionBinding = null; _calibrationReady.value = false
         _shotCounts.value = List(VehicleAngleDefs.size) { 0 }
         _pointCloudPreview.value = FloatArray(0)
-        _state.value = VehicleScanState.Capturing
+        if (!calibrationFileProvider.hasExternalStorageAccess()) {
+            _state.value = VehicleScanState.Error(storagePermissionMessage(), true)
+        } else {
+            acquireSources(); fusionRepo.ensureRealtimeConnected(); _state.value = VehicleScanState.Capturing
+        }
     }
 
     override fun onCleared() {
-        super.onCleared()
-        source.release()
-        shots.forEach { runCatching { it.rgbd.rgb.recycle() } }
-        shots.clear()
+        bindingJob?.cancel()
+        clearShots()
+        if (acquired) { depthSource.release(); colorSource.release() }
     }
 
-    /** 把一对 color+depth 对齐成 bundle 契约的 [RgbdShot]（color 缩放到 depth 分辨率）。 */
     private fun buildShot(color: ColorFrame, depth: DepthFrame, angle: Int): CapturedShot {
-        val w = depth.width
-        val h = depth.height
-        // color → Bitmap → 缩放到 depth 分辨率。
-        // TODO(M2): 现仅 resize 不做真配准，texture 受 color/depth 基线视差影响有偏移；
-        //   终态接 SDK registration / 外参标定后逐像素对齐（registeredToColor=true）。
-        val colorBmp = FrameRenderer.colorToBitmap(color)
-            ?: throw IllegalStateException("color 帧解码失败")
-        val scaled = if (colorBmp.width == w && colorBmp.height == h) {
-            colorBmp
-        } else {
-            Bitmap.createScaledBitmap(colorBmp, w, h, true).also {
-                if (it !== colorBmp) colorBmp.recycle()
-            }
+        val profile = ensureSessionBinding(color, depth)
+        val localCalibration = requireNotNull(calibration)
+        calibrationFileProvider.verifyUnchanged(localCalibration)
+        val rgb = FrameRenderer.colorToOriginalBitmap(color)
+            ?: throw IllegalStateException("HLSD8 原始 MJPEG 解码失败")
+        require(rgb.width == profile.colorWidth && rgb.height == profile.colorHeight) {
+            "HLSD8 原始帧尺寸 ${rgb.width}x${rgb.height} 与 profile ${profile.colorProfile} 不一致"
         }
-        // depth 裸字节（16bit LE mm），原样拷出。bulk get 与 order 无关（逐字节 memcpy），
-        // 显式 LITTLE_ENDIAN 仅对齐 FrameRenderer 习惯并表明契约意图。**严格校验帧完整**：
-        // 字节不足直接抛（capture 捕获→Error），绝不静默零填充毒化融合。
-        val depthBytes = ByteArray(w * h * 2)
+        val depthBytes = ByteArray(depth.width * depth.height * 2)
         depth.data.duplicate().order(ByteOrder.LITTLE_ENDIAN).apply {
-            rewind()
-            require(remaining() >= depthBytes.size) { "depth 帧不完整: ${remaining()} < ${depthBytes.size}" }
-            get(depthBytes, 0, depthBytes.size)
+            rewind(); require(remaining() >= depthBytes.size) { "depth 帧不完整" }; get(depthBytes)
         }
-        // confidence（可选）。同样严格校验,不足即抛。
-        val confBytes = depth.confidence?.let { buf ->
-            ByteArray(w * h).also { b ->
-                buf.duplicate().apply {
-                    rewind()
-                    require(remaining() >= b.size) { "conf 帧不完整: ${remaining()} < ${b.size}" }
-                    get(b, 0, b.size)
-                }
+        val confBytes = depth.confidence?.let { buffer ->
+            ByteArray(depth.width * depth.height).also { bytes ->
+                buffer.duplicate().apply { rewind(); require(remaining() >= bytes.size) { "confidence 帧不完整" }; get(bytes) }
             }
         }
-        val intr = BundleIntrinsics(
-            width = w, height = h,
-            fx = depth.intrinsics.fx, fy = depth.intrinsics.fy,
-            cx = depth.intrinsics.cx, cy = depth.intrinsics.cy,
-        )
         return CapturedShot(
-            angle = angle,
-            rgbd = RgbdShot(rgb = scaled, depth16 = depthBytes, confidence = confBytes, width = w, height = h),
-            intrinsics = intr,
+            angle,
+            RawRgbdShot(rgb, depthBytes, confBytes, color.timestampUs, depth.timestampUs),
         )
     }
 
-    /** 深度图反投影成点云（mm，相机系），抽稀后供实时预览。 */
-    private fun backProject(depth16: ByteArray, intr: BundleIntrinsics): FloatArray {
-        val w = intr.width
-        val h = intr.height
-        if (intr.fx <= 0.0 || intr.fy <= 0.0) return FloatArray(0)
-        val out = ArrayList<Float>(w * h / (PREVIEW_STEP * PREVIEW_STEP) * 3)
-        var v = 0
-        while (v < h) {
-            var u = 0
-            while (u < w) {
-                val i = (v * w + u) * 2
-                val z = (depth16[i].toInt() and 0xFF) or ((depth16[i + 1].toInt() and 0xFF) shl 8)
-                if (z in MIN_DEPTH_MM..MAX_DEPTH_MM) {
-                    val zf = z.toFloat()
-                    out.add(((u - intr.cx) * zf / intr.fx).toFloat())
-                    out.add(((v - intr.cy) * zf / intr.fy).toFloat())
-                    out.add(zf)
-                }
-                u += PREVIEW_STEP
-            }
-            v += PREVIEW_STEP
+    private fun ensureSessionBinding(color: ColorFrame, depth: DepthFrame): RgbdSourceProfile {
+        require(color.pixelType == "HLSD8_MJPEG") { "VIN 采集必须使用 HLSD8 原始 MJPEG" }
+        require(color.encodedWidth == VIN_COLOR_WIDTH && color.encodedHeight == VIN_COLOR_HEIGHT) {
+            "HLSD8 当前 profile 为 ${color.encodedWidth}x${color.encodedHeight}，期望 ${VIN_COLOR_WIDTH}x${VIN_COLOR_HEIGHT}"
         }
-        return out.toFloatArray()
+        require(depth.sampleFormat == DepthSampleFormat.DISPARITY_X8_U16) { "RS-D550 必须输出 mode25 disparity×8" }
+        require(depth.width == VIN_DEPTH_WIDTH && depth.height == VIN_DEPTH_HEIGHT) {
+            "RS-D550 当前 profile 为 ${depth.width}x${depth.height}，期望 ${VIN_DEPTH_WIDTH}x${VIN_DEPTH_HEIGHT} mode25"
+        }
+        val depthId = DefaultCalibrationFileProvider.normalizeDepthDeviceId(depthSource.deviceSerial ?: "")
+        val colorId = colorSource.deviceSerial?.let { DefaultCalibrationFileProvider.normalizeDeviceId(it) }
+            ?: throw IllegalStateException("未读取到 HLSD8 彩色设备 ID")
+        val profile = RgbdSourceProfile(depth.width, depth.height, "vin_creator_disparity_u16", color.encodedWidth, color.encodedHeight, depthId, colorId)
+        val existing = sessionBinding
+        if (existing != null && existing.profile != profile) throw IllegalStateException("设备或 profile 在扫描会话中发生变化，当前会话已废弃")
+        if (existing == null) {
+            val loaded = calibrationFileProvider.load(depthId)
+            val currentDepthId = DefaultCalibrationFileProvider.normalizeDepthDeviceId(depthSource.deviceSerial ?: "")
+            val currentColorId = DefaultCalibrationFileProvider.normalizeDeviceId(colorSource.deviceSerial ?: "")
+            require(currentDepthId == depthId && currentColorId == colorId) {
+                "加载标定期间设备 ID 发生变化，请重新插拔相机"
+            }
+            calibration = loaded
+            sourceProfile = profile
+            sessionBinding = SessionBinding(profile, loaded.sha256)
+        }
+        return profile
     }
 
-    private data class CapturedShot(
-        val angle: Int,
-        val rgbd: RgbdShot,
-        val intrinsics: BundleIntrinsics,
-    )
+    private fun matchesLockedColor(frame: ColorFrame): Boolean = sessionBinding?.profile?.let {
+        frame.encodedWidth == it.colorWidth && frame.encodedHeight == it.colorHeight &&
+            runCatching { DefaultCalibrationFileProvider.normalizeDeviceId(colorSource.deviceSerial ?: "") }
+                .getOrNull() == it.colorDeviceId
+    } == true
+
+    private fun matchesLockedDepth(frame: DepthFrame): Boolean = sessionBinding?.profile?.let {
+        frame.width == it.depthWidth && frame.height == it.depthHeight &&
+            frame.sampleFormat == DepthSampleFormat.DISPARITY_X8_U16 &&
+            runCatching { DefaultCalibrationFileProvider.normalizeDepthDeviceId(depthSource.deviceSerial ?: "") }
+                .getOrNull() == it.depthDeviceId
+    } == true
+
+    private fun invalidateSession(message: String, requiresStoragePermission: Boolean = false) {
+        if (_state.value == VehicleScanState.Uploading || _state.value == VehicleScanState.Fusing) return
+        clearShots(); calibration = null; sourceProfile = null; sessionBinding = null
+        _calibrationReady.value = false
+        _shotCounts.value = List(VehicleAngleDefs.size) { 0 }
+        _state.value = VehicleScanState.Error(message, requiresStoragePermission)
+    }
+
+    private fun clearShots() { shots.forEach { runCatching { it.rgbd.rgb.recycle() } }; shots.clear() }
+
+    private data class CapturedShot(val angle: Int, val rgbd: RawRgbdShot)
+    private data class SessionBinding(val profile: RgbdSourceProfile, val calibrationSha256: String)
+
+    private fun storagePermissionMessage() = "未授予所有文件访问权限，无法读取 /storage/emulated/0/VIN/param/VIN_<Depth设备ID>.bin"
 
     companion object {
         private const val TAG = "VehicleContourScanVM"
         private const val PREVIEW_DECIMATION = 4
-        private const val PREVIEW_STEP = 3
-        private const val MIN_DEPTH_MM = 200
-        private const val MAX_DEPTH_MM = 8000
         private const val MIN_SHOTS = 2
         private const val FUSION_TIMEOUT_MS = 180_000L
-
-        /**
-         * color/depth 配对同步容差(us)。Berxel MIX 模式 color@30fps + depth@45fps,
-         * 单帧间隔约 22~33ms;取 ~半个 depth 周期(15ms)作为同一瞬间的判定窗口,
-         * 超出即视为时间错配帧丢弃。
-         */
         private const val PAIR_SYNC_TOLERANCE_US = 15_000L
+        private const val VIN_COLOR_WIDTH = 4160
+        private const val VIN_COLOR_HEIGHT = 832
+        private const val VIN_DEPTH_WIDTH = 640
+        private const val VIN_DEPTH_HEIGHT = 128
     }
 }

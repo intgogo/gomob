@@ -50,7 +50,7 @@
 ## 真实卡车数据
 
 ```bash
-export GOMOB_TRUCK_DATASET=/path/to/truck_rgbd.zip   # RgbdShot bundle(server/fusion_service/rgbd_bundle.py 格式)
+export GOMOB_TRUCK_DATASET=/path/to/truck_rgbd.zip   # schema v2 bundle（含 calibration.bin）
 ./dev.sh harness scan_multiview_quality
 ```
 

@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""scan_bundle_roundtrip 判定器(stdlib only)。读 result.json 输出可判定结论。
-
-  ❌异常 — unpack 抛错 / 帧数错 / 分辨率错 / 植入深度未按 uint16-LE 还原 / conf 丢失。
-  ⚠️警告 — 契约对上但 fuse 出空 mesh(合成数据配准退化,非契约问题)。
-  ✅正常 — unpack 完全还原 + fuse 出非空 mesh。
-"""
+"""判定 schema_version=2 bundle 是否被服务端真实消费。"""
 import json
 import os
 import sys
@@ -16,47 +11,30 @@ def main() -> int:
         ".dev", "scan_bundle_roundtrip")
     path = os.path.join(out_dir, "result.json")
     if not os.path.exists(path):
-        print(f"❌异常 — 缺采样 {path}(run.sh 未产出)")
-        return 1
-    with open(path) as f:
-        r = json.load(f)
-
-    if "unpack_error" in r:
-        print(f"❌异常 — unpack 抛错: {r['unpack_error']}")
-        return 1
-
+        print(f"异常 — 缺少采样结果：{path}"); return 1
+    with open(path, encoding="utf-8") as fh: result = json.load(fh)
+    if "unpack_error" in result:
+        print(f"异常 — 新 bundle 解包失败：{result['unpack_error']}"); return 1
     errors = []
-    if r.get("frames") != r["expected_frames"]:
-        errors.append(f"帧数 {r.get('frames')} != {r['expected_frames']}")
-    if r.get("got_width") != r["width"] or r.get("got_height") != r["height"]:
-        errors.append(f"分辨率 {r.get('got_width')}x{r.get('got_height')} != {r['width']}x{r['height']}")
-    if abs(float(r.get("got_fx", 0)) - 50.0) > 1e-6 or abs(float(r.get("got_cx", 0)) - 32.0) > 1e-6:
-        errors.append("内参未还原")
-    if abs(float(r.get("plant_mm_got", -1)) - r["plant_mm"]) > 1e-3:
-        errors.append(f"深度 uint16-LE 还原错: 期望 {r['plant_mm']} 实得 {r.get('plant_mm_got')}")
-    if not r.get("conf_present"):
-        errors.append("conf 通道丢失")
-    elif r.get("conf_got") != 255:
-        errors.append(f"conf 值错: {r.get('conf_got')}")
-
+    if not result.get("has_calibration_bin") or not result.get("calibration_sha_match"):
+        errors.append("calibration.bin 缺失或 SHA 不匹配")
+    if result.get("frames") != result["expected_frames"]:
+        errors.append("帧数不一致")
+    if (result.get("got_width"), result.get("got_height")) != (result["width"], result["height"]):
+        errors.append("深度 profile 尺寸未还原")
+    if abs(float(result.get("got_fx", 0)) - 614.60498046875) > 1e-6 or abs(float(result.get("got_cx", 0)) - 324) > 1e-6:
+        errors.append("BIN 深度内参未还原")
+    if abs(float(result.get("got_mm", -1)) - result["expected_mm"]) > 1e-3:
+        errors.append("raw disparity 没有按 VINCreator 公式解码")
+    if result.get("conf_got") != 255:
+        errors.append("confidence 未保留")
     if errors:
-        print("❌异常 — bundle 跨语言契约不一致:")
-        for e in errors:
-            print(f"   · {e}")
-        return 1
-
-    rc = r["plant_rc"]
-    print(f"✅ unpack 契约一致:{r['frames']} 帧 / {r['width']}x{r['height']} / "
-          f"depth[{rc[0]},{rc[1]}]={r['plant_mm_got']:.0f}mm / conf=255 / 内参还原")
-
-    if "fuse_error" in r:
-        print(f"⚠️警告 — fuse 抛错(契约已过,合成数据融合退化): {r['fuse_error']}")
-        return 0
-    verts = int(r.get("mesh_vertices", 0))
-    if verts <= 0:
-        print("⚠️警告 — fuse 出空 mesh(合成平面配准退化,非契约问题);契约校验已通过")
-        return 0
-    print(f"✅正常 — 端侧 bundle 字节布局被服务端融合主线消费成功:mesh {verts} 顶点")
+        print("异常 — " + "；".join(errors)); return 1
+    if result.get("fuse_error"):
+        print(f"警告 — bundle 契约通过，但融合依赖不可用：{result['fuse_error']}"); return 0
+    if result.get("mesh_vertices", 0) <= 0:
+        print("异常 — 新 bundle 融合结果为空"); return 1
+    print(f"正常 — calibration.bin + 原始 disparity 已完成跨语言配准并生成 {result['mesh_vertices']} 个顶点")
     return 0
 
 

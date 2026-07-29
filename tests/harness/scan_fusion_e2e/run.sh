@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scan_fusion_e2e — M3.14 云端融合全链路端到端 harness。
-#   合成多视角 RGBD → RgbdShot bundle → MinIO → 入队 scan_fusion_jobs → fusionworker.ProcessOne
+#   合成多视角原始 RGBD → schema v2 bundle → MinIO → 入队 scan_fusion_jobs → fusionworker.ProcessOne
 #   → POST fusion_service /fuse → GLB 存 MinIO → 断言 DB done + scan.fusion_done 事件 + GLB 几何 chamfer ≤ 5mm。
 # 需:pg/nats/minio 容器(./dev.sh server up)、带 open3d/trimesh/fastapi 的 venv、go、migrate。
 set -euo pipefail

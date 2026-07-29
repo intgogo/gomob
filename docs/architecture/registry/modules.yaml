@@ -47,6 +47,7 @@ modules:
   - path: ":core:data"
     layer: application
     type: android-library
+    description: "资产分片上传与 schema v2 原始 RGBD bundle；本地 VIN calibration.bin 提供器"
   - path: ":core:database"
     layer: application
     type: android-library
@@ -74,23 +75,31 @@ modules:
     layer: application
     type: android-library
     description: "媒体房间接口契约；M5.4 接 LiveKit 实现"
+  - path: ":core:logging"
+    layer: application
+    type: android-library
+    description: "日志与诊断采样"
 
+  - path: ":feature:auth"
+    layer: presentation
+    type: android-library-feature
+  - path: ":feature:collaboration"
+    layer: presentation
+    type: android-library-feature
   - path: ":feature:home"
     layer: presentation
     type: android-library-feature
-    description: "App 落地页 / 主入口（4 张卡片：扫描/历史/标定/设置）"
-  - path: ":feature:scan"
+    description: "App 落地页与功能入口"
+  - path: ":feature:message"
     layer: presentation
     type: android-library-feature
-  - path: ":feature:gallery"
+  - path: ":feature:profile"
     layer: presentation
     type: android-library-feature
-  - path: ":feature:calibration"
+  - path: ":feature:scan3d"
     layer: presentation
     type: android-library-feature
-  - path: ":feature:settings"
-    layer: presentation
-    type: android-library-feature
+    description: "RS-D550 + HLSD8 原始 RGBD 采集、VIN BIN bundle 上传与 GLB 回看"
 
 native_modules:
   - path: "native/depth"

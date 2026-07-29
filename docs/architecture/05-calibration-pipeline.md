@@ -1,4 +1,6 @@
-# 05 — iHawk Color/Depth 标定管线
+# 05 – iHawk Color/Depth 标定管线
+
+> **2026-07-28 终态补充**：VINCreator RS-D550 + HLSD8 是独立双相机 rig，生产 bundle 不再共享内参或上传前 resize。App 只保存原始帧并把 `/storage/emulated/0/VIN/param/VIN_<DepthID>.bin` 以根 entry `calibration.bin` 自包含上传；服务端权威解析 BIN 的 Depth 内参、Euler/R/T、FOV 和私有畸变后完成 RGB↔Depth 配准。详见 `docs/architecture/04b-multiview-rgbd-reconstruction.md` §5.3 与 `server/fusion_service/vin_calibration.py`。
 
 > 业务定义：iHawk 自身的 Color 镜头和 Depth 镜头是两个独立物理传感器，
 > 重建管线和 VIN 拓印都需要把 Depth 点云 / 深度图重投影到 Color 像素坐标
