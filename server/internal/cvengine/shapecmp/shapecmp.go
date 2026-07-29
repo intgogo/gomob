@@ -199,7 +199,7 @@ func clamp01(v float64) float64 {
 	return v
 }
 
-// Verdict 阈值决策（通用模型比对使用 pass / warning / fail 三态）。
+// Verdict 阈值决策（与 vin_pipeline 共用 pass / warning / fail 三态）。
 //
 // 默认阈值（与 cv-engine handler 默认 0.85/0.60 一致）：
 //

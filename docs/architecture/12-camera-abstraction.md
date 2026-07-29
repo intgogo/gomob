@@ -1,9 +1,5 @@
 # 12 · 多相机驱动抽象层(Berxel P100R3 + eYs3D 并存,全自研)
 
-> 2026-07-29 拆分订正：本文件中的 eYs3D/HLSD8 共存设计仅作历史记录。当前 gomob 的
-> `core:native-bridge` 只保留 Berxel；RS-D550 + HLSD8 的唯一实现位于
-> `vendor/vin-rubbing/android/vin-capture`，通过 `VinRgbdRigSession` 提供宿主复用入口。
-
 > 状态:设计稿,2026-06-01。
 > 主线约束:host-first、portable 优先、**Berxel 全程不退化**、数据契约下沉 `core:model`、JNI 边界唯一 `core:native-bridge`、**不引入任何原厂 SDK**(Berxel jar / eYs3D libESPDI/libDepthMSR 一律不链)。
 > 关联:`docs/architecture/01-depth-camera-integration.md`、`docs/architecture/10-android-uvc-stack-rewrite.md`、`docs/architecture/13-eys3d-driver.md`(待建)、`docs/agent-memory/finding_vincreator_eys3d_uvc_blueprint_2026-06-01.md`、`tests/vincreator-apk/REVERSE-ENGINEERING.md`。

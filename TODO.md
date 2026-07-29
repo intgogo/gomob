@@ -8,21 +8,9 @@
 
 1. **M1 iHawk 帧链路**：先把 Color/Depth 字节流、内参、预览跑实。
 2. **M3 多视角 RGBD 重建**：阶段 1 先做端侧采集 + 云端融合闭环。
-3. **M4 VIN 数码拓印**：已迁移到 `vendor/vin-rubbing`；gomob 只负责 AAR 路由与多视角复用，禁止恢复旧 cvengine VIN 接口。
+3. **M4 VIN 数码拓印**：复用同一 RGBD 采集链路，接 cv-engine `vin_pipeline`。
 4. **M5 实时消息与第一视角协作**：消息控制面自研，视频 / 直播媒体面接自托管 LiveKit。
-5. **M7 端侧两大功能拉通**：车辆外廓扫描走 Berxel + fusion；VIN 走独立 AAR/service，按真实设备验收。
-
-## VIN 独立仓库迁移（2026-07-29）
-
-`vendor/vin-rubbing` 已作为 submodule 引入，锁定 AAR 坐标 `io.vinrubbing:vin-capture` 与
-`vin-rubbing-service`。AAR 负责 RS-D550/HLSD8 权限、profile、3+3 burst、原始 JPEG/u16 和
-`VIN_<depth_serial>.bin → calibration.bin`；服务负责 `vin_bundle_v1` 校验、BIN 几何、VMASK/VINS/OCR
-和结果 ZIP。gomob 保留 Berxel、多视角 schema v2 与 `calibration.bin` 多帧融合，不再包含 VIN 页面、
-eYs3D/HLSD8 驱动或 `/cv/ocr/v1/vin_*` 生产路由。
-
-验收入口：`vendor/vin-rubbing/tests/harness/vin_bundle_contract`、独立仓 `server/go test ./...`
-与 Android AAR unit/instrumentation；真实 BF301208 连续采集、4425×600 和 17 crop 仍是现场 gate。
-文档：`vendor/vin-rubbing/docs/context/INDEX.md`、`docs/context/vin-pipeline.md`。
+5. **M7 端侧两大功能拉通**：把"车辆外廓扫描"和"VIN 数码拓印"从 mock 演示屏接到已就绪的真实底座（CameraSource 真帧 + 服务端融合 / OCR），端侧中段补齐。
 
 ## M5 实时消息与第一视角协作
 
@@ -187,8 +175,7 @@ eYs3D/HLSD8 驱动或 `/cv/ocr/v1/vin_*` 生产路由。
 ## M4 VIN 数码拓印
 
 > 同步 RGBD → 原厂标定平面正射 + 17 字符刚性格架 → 4425×600 权威规范图 → 外部 VIN OCR。
-> 当前实现与新任务均在 `vendor/vin-rubbing`；下方旧 M4 条目只保留历史验收记录，新增代码不得回到 gomob cvengine。
-> docs: `vendor/vin-rubbing/docs/context/INDEX.md` / `docs/architecture/08-vin-rectify-design.md`（历史）
+> docs: `docs/architecture/08-vin-rectify-design.md`
 
 | ID | 任务 | 验收 | 文档 |
 |----|------|------|------|

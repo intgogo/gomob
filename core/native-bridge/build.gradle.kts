@@ -35,6 +35,11 @@ android {
     sourceSets["main"].jniLibs.srcDir(file("../../third_party/berxel-android/jniLibs"))
     // libusb-1.0 prebuilt：gomob_native.so 链接它，APK 里也要带它的 .so 才能运行时 dlopen。
     sourceSets["main"].jniLibs.srcDir(file("../../third_party/libusb-android/lib"))
+    // eYs3D/VIN 双相机原厂隔离栈：RS-D550=libuvc+libusb100；HLSD8=libuvc1+libusb1001。
+    sourceSets["main"].jniLibs.srcDir(file("../../third_party/eys3d-vendor/lib"))
+    // pupil-labs libuvc（含 MJPEG 解析 + uvc_wrap fd 注入）：eYs3D 真彩色 MJPEG 走它，
+    // soname 已 patchelf 为 libuvc_pupil.so（避与 vendor libuvc.so 冲突），NEEDED 已对齐 libusb-1.0.so。
+    sourceSets["main"].jniLibs.srcDir(file("../../third_party/libuvc-android/jniLibs"))
 }
 
 dependencies {

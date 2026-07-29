@@ -19,6 +19,7 @@
 #     -e GOMOB_MODELREGISTRY_TARGET=http://modelregistry:18057 \
 #     -e GOMOB_MINIO_ENDPOINT=minio:9000 \
 #     -e GOMOB_NATS_URL=nats://nats:4222 \
+#     -v /secure/gomob/vin_calibration:/var/lib/gomob/vin_calibration:ro \
 #     gomob-cvengine:cpu
 
 # =============================================================================
@@ -103,9 +104,13 @@ ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/onnxruntime/lib
 
 COPY --from=builder /out/gomob-cvengine /usr/local/bin/gomob-cvengine
 
-# 模型缓存可写；VIN 标定与还原已迁移到独立 vin-rubbing-service。
-RUN mkdir -p /var/lib/gomob/cvengine_models
+# 模型缓存可写；VIN 原厂标定只允许由部署侧只读挂载，不能烘焙进镜像或 APK。
+RUN mkdir -p /var/lib/gomob/cvengine_models /var/lib/gomob/vin_calibration
 ENV GOMOB_CVENGINE_MODEL_CACHE=/var/lib/gomob/cvengine_models
+ENV GOMOB_VIN_FACTORY_CALIBRATION_DIR=/var/lib/gomob/vin_calibration
+ENV GOMOB_VIN_FACTORY_CALIBRATION_REQUIRED=true
+ENV GOMOB_VIN_RESTORE_MODELS_REQUIRED=true
+VOLUME ["/var/lib/gomob/vin_calibration"]
 
 EXPOSE 18810
 EXPOSE 50062

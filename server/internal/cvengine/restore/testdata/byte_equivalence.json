@@ -1,0 +1,22 @@
+{
+  "note": "同一批观测 + 当前几何代码的确定性输出；由 VIN_EQUIVALENCE_UPDATE_BASELINE=1 生成，模型换版须重录观测并重建本文件",
+  "vision_records_sha256": "130699ea82896d5b1253384babe8d69247fd627e796a2cb8bb24c6810a615f72",
+  "captures": {
+    "cap_001_1784015012764": {
+      "png_sha256": "6b47161f925debfc401f461e2dac2304cb45e267648396a99da319b50c3ed5bd",
+      "png_bytes": 3730385
+    },
+    "cap_002_1784015017155": {
+      "png_sha256": "86d2d336efec1b700d1cca4753760779a53db33464eef9ab1f68606b441dbb2a",
+      "png_bytes": 3485771
+    },
+    "cap_003_1784015027775": {
+      "png_sha256": "3ebff99ef578adc35189d9f55372ce3d9c61af519a2af55db10e8b25e6c176d2",
+      "png_bytes": 2579755
+    },
+    "cap_004_1784015030154": {
+      "png_sha256": "74720d728d9879399334f43a1e1d299c4402d79a465bd8c70bd099bbda205d54",
+      "png_bytes": 2409449
+    }
+  }
+}

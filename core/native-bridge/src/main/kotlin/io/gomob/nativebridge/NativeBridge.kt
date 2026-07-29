@@ -353,39 +353,57 @@ object NativeBridge {
         timeoutMs: Int,
     ): ByteArray?
 
-    // ── Berxel 相机会话入口 ──
-    // VIN 的 RS-D550/HLSD8 由 vin-capture AAR 持有，不进入 gomob native registry。
+    // ── 厂商无关相机统一入口（M6.8b，双相机自动识别）──
+    // 按 vid:pid 经 native CameraRegistry 分发到 driver，两相机出同一 depthMm 契约。
+    // eYs3D RS-D550(0x3438:0x0206) + Berxel P100R3(0x0603:0x001f,双节点 master+companion) 都经此入口
+    // （Berxel M6.8b ④ 已并入 BerxelDriver，color+depth 真机 PASS，旧 berxelDual* legacy 已删）。
 
     /**
-     * 打开 Berxel 相机（registry 选 driver → open_fd → start）。
-     * fds = master + companion 两个 usbfs fd。
+     * 按 vid:pid 打开相机（registry 选 driver → open_fd → start）。
+     * fds = usbfs fd 数组（eYs3D 单节点 1 个；Berxel 双节点 2 个 master+companion）。
      * configJson = driver 特定配置字节（档位/控制覆盖），可空数组。返回会话句柄；失败 0L。
      */
     external fun cameraOpenByFds(vid: Int, pid: Int, fds: IntArray, configJson: ByteArray): Long
+
+    /**
+     * ★★★ Java ApcCamera 路径绑定（2026-06-15 主路）：dlopen libUVCCamera.so（RTLD_LOCAL）+ 手调其 JNI_OnLoad，
+     * 让 vendor 把 `com.esp.android.usb.camera.core.{UVCCamera,ApcCamera}` 的全部 native 方法 RegisterNatives 到
+     * gomob 复制进来的同名 Java 类上，并 setVM（回调线程用）。**必须在 `new ApcCamera()` 之前调一次**
+     * （nativeCreate 是字段初始化，须先绑定）。幂等，返回 JNI 版本号（>0 成功）/ 0 失败。
+     * ★ 不走 System.loadLibrary（避免 libusb100 符号遮蔽 gomob libusb-1.0，见 finding 续35）。
+     */
+    external fun bindEys3dVendorJni(): Int
+
+    /** 对 usbfs fd 做一次 USB 端口 reset（清 eYs3D 流引擎残留）。reset 致重枚举 → 本 fd 失效，
+     *  调用方须 close 旧 connection 后重新 openDevice 取新 fd 再开流。成功返 true。 */
+    external fun cameraResetByFd(fd: Int): Boolean
 
     /** 停止 + 释放会话（句柄 = ICameraSession*，cameraStop 是唯一释放点）。 */
     external fun cameraStop(handle: Long)
 
     /**
      * 取最新 metric depthMm 帧写进 directBuffer（容量需 >= w*h*2）。
-     * 返回写入字节数；无新帧 0；buffer 不足 -1。outInfo(>=4)=[width,height,serial,hostNs]。
+     * 返回写入字节数；无新帧 0；buffer 不足 -1。outInfo(>=4)=[width,height,serial,hostNs]。两相机同契约。
      */
     external fun cameraPollDepthMm(handle: Long, directBuffer: java.nio.ByteBuffer, outInfo: LongArray): Int
 
-    /** 取最新 Berxel MJPEG 帧字节（consume-once，无新帧 null）。 */
+    /** 取最新 color 帧字节（consume-once，无新帧 null）。eYs3D=YUYV/Berxel=MJPEG，按 capabilities 解码。 */
     external fun cameraPollColor(handle: Long): ByteArray?
+
+    /** 取最新 color 帧并返回 outInfo=[width,height,serial,hostNs]，供跨 USB 相机最近邻同步。 */
+    external fun cameraPollColorWithInfo(handle: Long, outInfo: LongArray): ByteArray?
 
     /** 会话统计 [colorFrames, depthFrames, dropped, errors, state]。 */
     external fun cameraStats(handle: Long): LongArray
 
     /** 取最新逐像素 confidence(uint8, W*H) 写 directBuffer。返回字节数 / 0 无 / -1 不足。
-     *  outInfo(>=4)=[w,h,serial,hostNs]。 */
+     *  outInfo(>=4)=[w,h,serial,hostNs]。无 conf 的相机(eYs3D)恒返 0。 */
     external fun cameraPollDepthConf(handle: Long, directBuffer: java.nio.ByteBuffer, outInfo: LongArray): Int
 
     /** 取最新 IR/phase 灰度(uint8, W*H) 写 directBuffer。返回字节数 / 0 无 / -1 不足。 */
     external fun cameraPollIrGrey(handle: Long, directBuffer: java.nio.ByteBuffer, outInfo: LongArray): Int
 
-    /** Berxel 扩展诊断统计，共 16 项。 */
+    /** 厂商扩展诊断统计(driver 自定义 int64 序列;Berxel=16 项,eYs3D=空数组)。 */
     external fun cameraExtendedStats(handle: Long): LongArray
 
     /** 调试:dump 最新 depth transport 原始字节到 path。返回写入字节数。 */

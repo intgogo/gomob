@@ -84,7 +84,8 @@ class Scan3dRecordingViewModel @Inject constructor(
     @ApplicationContext private val ctx: Context,
 ) : ViewModel() {
 
-    /** 进场时取得 Berxel 取流源并持有整段会话。 */
+    /** 进场时按当前插着的相机选活动取流源（eYs3D→Eys3dCameraService / 否则 Berxel，不退化）。
+     *  整段会话持有同一个 source；中途换相机是 device-gated 边缘场景，暂不处理。 */
     private val source: CameraSource = provider.active()
 
     private val _state = MutableStateFlow<ScanRecordingState>(ScanRecordingState.Idle)

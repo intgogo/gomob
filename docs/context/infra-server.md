@@ -6,7 +6,7 @@
 
 本模块是 gomob 所有业务线的地基, 四块拼图: ① **开发环境与 dev.sh 工作流** (CentOS 9 + /opt/android-sdk + VNC 远程 + podman 容器); ② **Go 服务端** (`server/` mono-repo, 14+ 服务, devserver 为 dev 全栈唯一网关) 与治理体系 (registry / CodeGraph / 记忆守门 / BUGS.md); ③ **harness 自分析方法论** (`tests/harness/` 67 套 + `tests/native_host/` 30 个 host C++ 测试, 三态退码判定); ④ **M5 实时消息与第一视角协作** (自研 WS 控制面 + 自托管 LiveKit 媒体面)。
 
-当前状态: 服务端主线完整可用, 激光/融合业务全跑在其上；VIN 单帧拓印已从 gomob 生产链抽离到 `vendor/vin-rubbing`，由 `vin-rubbing-service` 独立承担 bundle 校验、标定、正射还原和 OCR。gomob 的 `fusion_service` 仍只消费多视角 schema v2 与 `calibration.bin`。harness 体系覆盖广但 M12 质量遗留收窄为 NDEBUG 断言 / flaky（PG 测试硬隔离已在 a979415 落盘）；M5 消息控制面与 LiveKit 接入已落, 但 M5.5-5.9 (通话/直播/录制/ASR) 的验收 harness 未建成闭环；开发环境 **2026-07-09 曾被整机重置**, 重装后本机无 KVM → x86_64 加速模拟器不可用, UI 验证首选真机 WiFi adb, 兜底纯软仿真 `gomob_x86` AVD (见 07-09 节); 本机 podman 的 gomob-* 容器栈也在重置后未重建 (2026-07-26 实测为空), 接手 dev 全栈先 `./dev.sh up` (含容器栈 + devserver)。本机现有 Go 1.24，可跑纯 Go 测试；激光生产 cgo 构建/部署仍走 192.168.9.160。
+当前状态: 服务端主线完整可用, 激光/VIN/融合业务全跑在其上; harness 体系覆盖广但 M12 质量遗留收窄为 NDEBUG 断言 / flaky（PG 测试硬隔离已在 a979415 落盘）; M5 消息控制面与 LiveKit 接入已落, 但 M5.5-5.9 (通话/直播/录制/ASR) 的验收 harness 未建成闭环; 开发环境 **2026-07-09 曾被整机重置**, 重装后本机无 KVM → x86_64 加速模拟器不可用, UI 验证首选真机 WiFi adb, 兜底纯软仿真 `gomob_x86` AVD (见 07-09 节); 本机 podman 的 gomob-* 容器栈也在重置后未重建 (2026-07-26 实测为空), 接手 dev 全栈先 `./dev.sh up` (含容器栈 + devserver)。本机现有 Go 1.24，可跑纯 Go 测试；激光生产 cgo 构建/部署仍走 192.168.9.160。
 
 ## 决策时间线
 
@@ -78,8 +78,8 @@ M8' 激光下沉服务端当天 (fde8b7a) devserver 并入激光路由, 成为 a
 - `dev.sh` — 唯一工作流入口: build/install/run/up (dev 全栈一键)/test/ci/native-test/harness/log/shot/record/release/reverse/adb-wifi/doctor/emu-start|stop/avd-create/server doctor|up|down|ps|logs|build|test|run|migrate|proto。
 - `scripts/ensure-android-sdk.sh` — SDK 一键补装 (环境重置后救场用过); `scripts/adb-wifi.sh` — 真机 WiFi 配对; `scripts/shot-compress.py` — 截图压缩后再 Read。
 - `scripts/host-tests-all.sh` — native host 测试自动门 (M12 建, 接 `dev.sh native-test`/`ci`); `scripts/codegraph.sh` / `check_doc_index.sh` / `sync-claude-memory.sh` — 治理三件套 (102db33 引入)。
-- `server/` — Go mono-repo；VIN 处理不再由 gomob worker/cvengine 承担。`server/cmd/` 保留 devserver、gateway、业务 CRUD、fusion/laser/asr 与通用 cvengine 等二进制；独立 VIN 服务位于 `vendor/vin-rubbing/server/`，`server/migrations/` 仍只服务 gomob 业务数据。
-- `vendor/vin-rubbing/server/` — 独立 VIN 服务的 bundle/标定/还原/视觉/OCR 模块；API Key、RSA 私钥和外部算法配置只在该仓库部署侧管理，gomob 不再挂载 VIN 私钥。
+- `server/` — Go mono-repo; `server/cmd/` 23 个二进制: devserver (dev all-in-one 网关) + gateway/api/auth/asset/signaling/worker/device/modelregistry/admin/catalog/vinref/shaperef/cvengine/llmgateway/fusionworker/asrworker/laserworker/laserstationweb/laserreplay + 3 个 harness 辅助 (realtimeharness/wsharness/deviceinteractionharness); `server/internal/` 同名实现包; `server/migrations/` SQL。
+- `server/internal/vinalgo/{client.go,signer.go}` — 外部 VIN RSA-SHA1 签名器只接受 `GOMOB_VIN_ALGO_PRIVATE_KEY_FILE` 的部署只读挂载，缺失或无效即启动失败。
 - `docs/architecture/server/00-server-overview.md` (14 服务边界与拆分论证) / `01-go-project-layout.md` / `02-api-contract.md` / `03-cvengine-migration.md`。
 - `docs/architecture/registry/` — modules/dependencies/capabilities + server-modules/server-dependencies 五份 yaml, 机器可校验治理真理源 (S4 要求架构变更同步)。
 - `docs/architecture/09-realtime-message-live.md` + `-implementation.md` — M5 权威设计与分节验收。

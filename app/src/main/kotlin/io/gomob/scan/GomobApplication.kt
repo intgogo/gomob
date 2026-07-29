@@ -8,10 +8,6 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.CameraXConfig
 import dagger.hilt.android.HiltAndroidApp
 import io.gomob.logging.LogSyncManager
-import io.gomob.network.ServerEndpointStore
-import io.vinrubbing.capture.VinCapture
-import io.vinrubbing.capture.VinCaptureConfig
-import okhttp3.HttpUrl.Companion.toHttpUrl
 import timber.log.Timber
 import javax.inject.Inject
 
@@ -19,7 +15,6 @@ import javax.inject.Inject
 class GomobApplication : Application(), CameraXConfig.Provider {
 
     @Inject lateinit var logSync: LogSyncManager
-    @Inject lateinit var endpointStore: ServerEndpointStore
 
     override fun onCreate() {
         super.onCreate()
@@ -29,15 +24,6 @@ class GomobApplication : Application(), CameraXConfig.Provider {
         Log.i("GomobApplication", "应用启动 debug=${BuildConfig.DEBUG}")
         // 启动开关监听 + drainer；用户在 Profile 里切到 ON 后真正抓 logcat
         logSync.start()
-        val endpoint = endpointStore.current()
-        VinCapture.initialize(
-            context = this,
-            config = VinCaptureConfig(
-                serviceBaseUrl = endpoint.baseUrl().toHttpUrl(),
-                apiKeyProvider = { VinApiKeyProvisioning.read(this) },
-                requireHttps = endpoint.tls,
-            ),
-        )
     }
 
     override fun getCameraXConfig(): CameraXConfig {

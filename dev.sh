@@ -216,6 +216,7 @@ ensure_server_containers() {
         -v gomob-redis-data:/data \
         docker.io/library/redis:7-alpine
     # JetStream 启用 (-js) + 文件存储落 named volume (-sd /data)，
+    # worker 用 durable consumer 持久消费 inspection.scan_completed，崩溃/重启不丢事件。
     ensure_one_container gomob-nats "$GOMOB_PORT_NATS" 4222 \
         -p "${GOMOB_PORT_NATS}:4222" -p "${GOMOB_PORT_NATS_MON}:8222" \
         -v gomob-nats-data:/data \

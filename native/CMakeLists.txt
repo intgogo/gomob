@@ -46,6 +46,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/depth
     ${CMAKE_CURRENT_SOURCE_DIR}/fusion
     ${CMAKE_CURRENT_SOURCE_DIR}/reconstruction
+    ${CMAKE_CURRENT_SOURCE_DIR}/vin
     ${CMAKE_CURRENT_SOURCE_DIR}/calibration
 )
 
@@ -76,6 +77,24 @@ add_library(usb-1.0 SHARED IMPORTED)
 set_target_properties(usb-1.0 PROPERTIES IMPORTED_LOCATION
     ${GOMOB_LIBUSB_DIR}/lib/${ANDROID_ABI}/libusb-1.0.so)
 
+# pupil-labs libuvc prebuilt（third_party/libuvc-android/）：含 frame-mjpeg 解析 + uvc_wrap(fd) 注入。
+# eYs3D 真彩色 MJPEG 走它（vendor saki4510t libuvc 不认本机 MJPEG，rc=-51）。
+# jniLibs/ 下 .so 已 patchelf：soname=libuvc_pupil.so（避与 vendor libuvc.so 冲突）、NEEDED=libusb-1.0.so。
+set(GOMOB_LIBUVC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libuvc-android)
+if(NOT EXISTS ${GOMOB_LIBUVC_DIR}/include/libuvc/libuvc.h)
+    message(FATAL_ERROR "libuvc-android not found at ${GOMOB_LIBUVC_DIR}; 见 third_party/libuvc-android/README.md")
+endif()
+include_directories(SYSTEM ${GOMOB_LIBUVC_DIR}/include)
+add_library(uvc_pupil SHARED IMPORTED)
+set_target_properties(uvc_pupil PROPERTIES IMPORTED_LOCATION
+    ${GOMOB_LIBUVC_DIR}/jniLibs/${ANDROID_ABI}/libuvc_pupil.so)
+
+# ★ libuvc_lusb100：pupil libuvc 源(解析 MJPEG)重编、NEEDED=libusb100.so(能出流的后端,见 finding 续24)。
+#   = "既解析 MJPEG 又用 libusb100 后端" 的 libuvc,mode25 真深度走它(eys3d_pupil_session.cpp 调 uvc_get_device_with_fd)。
+add_library(uvc_lusb100 SHARED IMPORTED)
+set_target_properties(uvc_lusb100 PROPERTIES IMPORTED_LOCATION
+    ${GOMOB_LIBUVC_DIR}/jniLibs/${ANDROID_ABI}/libuvc_lusb100.so)
+
 # berxel/ 子模块（Sonix XU 协议复现，M1.6.5+）
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/berxel/include)
 file(GLOB BERXEL_SOURCES CONFIGURE_DEPENDS "berxel/src/*.cpp")
@@ -86,9 +105,22 @@ file(GLOB BERXEL_SOURCES CONFIGURE_DEPENDS "berxel/src/*.cpp")
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/berxel/portable)
 file(GLOB BERXEL_PORTABLE_SOURCES CONFIGURE_DEPENDS "berxel/portable/*.cpp")
 
-# camera/ 厂商无关相机抽象仅服务 Berxel；VIN 双相机驱动归 vin-capture AAR 所有。
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/camera)
+# camera/ 厂商无关相机抽象 + eys3d/ 自研驱动（双相机统一契约，M6.x）
+# camera(抽象/注册表/host UsbContext header)+ eys3d/portable(纯逻辑) + eys3d/android(fd 会话)
+# + eys3d/host/eys3d_stream_loop.cpp(传输无关取流，host 与 Android 共用)。
+# ★ eys3d/host 下 replay_stream/probe/v4l2/xu_diag/host_session 是 host-only(libusb 枚举/demo)，
+#   绝不进 .so，故只【精确列】eys3d_stream_loop.cpp，不 glob 整个 eys3d/host。
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/camera ${CMAKE_CURRENT_SOURCE_DIR}/eys3d/portable)
 file(GLOB CAMERA_SOURCES CONFIGURE_DEPENDS "camera/*.cpp" "camera/berxel_adapter/*.cpp")
+file(GLOB EYS3D_PORTABLE_SOURCES CONFIGURE_DEPENDS "eys3d/portable/*.cpp")
+file(GLOB EYS3D_ANDROID_SOURCES CONFIGURE_DEPENDS "eys3d/android/*.cpp")
+
+# hlsd8/ HLSD8 RGB 相机（Image+/Sonix 0x0C45:0x6366，独立第二颗 USB 相机，标准 UVC MJPEG）。
+# 运行时 dlopen VINCreator 的 libuvc1→libusb1001，与 RS-D550 的 libuvc→libusb100 物理隔离。
+file(GLOB HLSD8_SOURCES CONFIGURE_DEPENDS "hlsd8/*.cpp")
+set(EYS3D_STREAM_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/eys3d/host/eys3d_stream_loop.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/eys3d/host/eys3d_usb_api.cpp)
 
 # depth/ 子模块（占位）
 file(GLOB DEPTH_SOURCES CONFIGURE_DEPENDS "depth/*.cpp")
@@ -123,12 +155,20 @@ add_library(gomob_native SHARED
     ${BERXEL_SOURCES}
     ${BERXEL_PORTABLE_SOURCES}
     ${CAMERA_SOURCES}
+    ${EYS3D_PORTABLE_SOURCES}
+    ${EYS3D_ANDROID_SOURCES}
+    ${EYS3D_STREAM_SOURCES}
+    ${HLSD8_SOURCES}
 )
 
 target_link_libraries(gomob_native
     log
     android
+    mediandk  # eYs3D ApcCamera 离屏 AImageReader 窗口（startPreview 需非空 ANativeWindow）
     GLESv3
     EGL
     usb-1.0
+    # ★ libuvc_lusb100.so 不直接链(避免其 NEEDED libusb100.so 被 gomob_native 的 libusb-1.0.so 全局遮蔽→崩溃);
+    #   改由 eys3d_pupil_session.cpp 用 dlopen(RTLD_LOCAL),其 libusb_* 走自己 NEEDED 的 libusb100.so(同 Eys3dUsb 实例)。
+    dl  # eYs3D 会话 dlopen 厂商 libusb100.so（saki4510t fork）后端（旧 YUYV 路径，保留备用）
 )

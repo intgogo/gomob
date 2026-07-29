@@ -13,7 +13,6 @@ android {
 dependencies {
     implementation(project(":core:data"))
     implementation(project(":core:native-bridge"))
-    implementation("io.vinrubbing:vin-capture:1.0.0")
     implementation(libs.androidx.camera.camera2)
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)

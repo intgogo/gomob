@@ -4,7 +4,7 @@ ROOT := $(shell pwd)
 DEV_DIR := $(ROOT)/.dev
 BIN_DIR := $(DEV_DIR)/bin
 
-SERVICES := gateway api auth asset signaling \
+SERVICES := gateway api auth asset signaling worker \
             device modelregistry admin \
             catalog vinref shaperef \
             cvengine llmgateway \

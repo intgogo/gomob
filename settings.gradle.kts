@@ -31,13 +31,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "gomob"
 
-// VIN 能力由独立仓库提供；开发构建直接替换固定 Maven 坐标，发布由 submodule commit 锁定。
-includeBuild("vendor/vin-rubbing/android") {
-    dependencySubstitution {
-        substitute(module("io.vinrubbing:vin-capture")).using(project(":vin-capture"))
-    }
-}
-
 include(":app")
 
 include(":core:common")

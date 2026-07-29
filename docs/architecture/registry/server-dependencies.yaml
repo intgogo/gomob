@@ -18,6 +18,7 @@ edges:
   - { from: gateway, to: asset,          kind: http,  reason: "/v1/assets/* 分片上传反代" }
   - { from: gateway, to: signaling,      kind: wss,   reason: "/v1/ws WebSocket 升级反代" }
   - { from: gateway, to: device,         kind: http,  reason: "/v1/devices/* 反代" }
+  - { from: gateway, to: cv-engine,      kind: http,  reason: "/cv/ocr/v1/* 直达反代（实时 OCR）" }
   - { from: gateway, to: llm-gateway,    kind: http,  reason: "/v1/llm/* 直达反代（流式 SSE）" }
   - { from: gateway, to: laserworker,    kind: http,  reason: "/v1/scans/laser* 反代；鉴权用户/角色透传" }
 
@@ -28,9 +29,17 @@ edges:
   - { from: api, to: asset,              kind: grpc,  reason: "查验创建后授权资产上传 / 拉签名 URL" }
   - { from: api, to: auth,               kind: grpc,  reason: "查询用户档案 / 校验角色变更" }
 
-  # cv-engine 同步算法 → 模型（VIN 拓印不再经过 cv-engine）
-  - { from: cv-engine, to: model-registry, kind: grpc, reason: "启动与热更时拉取通用 CV 模型 active 版本及元数据" }
+  # worker 异步消费者 → 调用算法 / 拿模型
+  - { from: worker, to: cv-engine,       kind: grpc,  reason: "智能预审异步任务调 vin_detect / vin_compare" }
+  - { from: worker, to: model-registry,  kind: grpc,  reason: "拉 active 模型版本元数据" }
+  - { from: worker, to: asset,           kind: grpc,  reason: "下载模型二进制 / 上传缩略图与 PDF" }
+  - { from: worker, to: api,             kind: grpc,  reason: "推理结果回写 inspection.preliminary_result" }
+
+  # cv-engine 同步算法 → 厂商参考 / 模型
+  - { from: cv-engine, to: vin-ref,       kind: grpc,  reason: "vin_compare 时按 vehicle_model_id 拉对照样本" }
+  - { from: cv-engine, to: model-registry, kind: grpc, reason: "启动 + 热更时拉 VMASK/VMET 等 active 模型及 yolo anchors/strides 元数据；VIN 还原的 VMASK/VINS 观测改走外部算法服务，不再本地加载" }
   - { from: cv-engine, to: asset,         kind: grpc,  reason: "下载模型二进制（启动时）" }
+  - { from: cv-engine, to: gosmart-vin,   kind: http,  reason: "/cv/ocr/v1/vin_recognize 签名代理 vin_detect；/cv/veh/v1/detect 提供 VIN 区域 VMASK 与逐字符 VINS 原子观测" }
 
   # fusionworker → fusion-service / signaling → api
   - { from: fusionworker, to: fusion-service, kind: http, reason: "POST /fuse：服务端按 bundle calibration.bin 配准后融合" }
@@ -48,10 +57,22 @@ edges:
 
 # NATS 异步事件流（topic 级别的发布 / 订阅）
 nats_topics:
+  - topic: inspection.created
+    publisher: api
+    subscribers: [worker]
+    description: "新建查验后触发预审任务"
+  - topic: asset.uploaded
+    publisher: asset
+    subscribers: [worker]
+    description: "扫描资产上传完成 → 触发缩略图 / 后处理"
+  - topic: inspection.preliminary_done
+    publisher: worker
+    subscribers: [signaling]
+    description: "预审完成 → 推 wss 给查验员"
   - topic: model.version.activated
     publisher: model-registry
-    subscribers: [cv-engine, signaling]
-    description: "模型版本切换 → 触发 cv-engine 热更；signaling 用于 UI 通知"
+    subscribers: [worker, cv-engine, signaling]
+    description: "模型版本切换 → 触发热更（worker / cv-engine 切版；signaling 用于 UI 通知）"
   - topic: catalog.invalidated
     publisher: vehicle-catalog
     subscribers: [api]
@@ -93,16 +114,20 @@ forbidden:
 
   - from: cv-engine
     to: shape-ref
-    reason: "cv-engine 不持有 shape-ref；3D 外廓比对是另一计算管线，现在不允许跨"
+    reason: "cv-engine 只跑 VIN 字形比对；3D 外廓比对是另一计算管线（M2 后再设计），现在不允许跨"
 
   - from: llm-gateway
-    to_pattern: "^(api|cv-engine|signaling|asset|device|catalog|vin-ref|shape-ref|admin|model-registry)$"
+    to_pattern: "^(api|cv-engine|worker|signaling|asset|device|catalog|vin-ref|shape-ref|admin|model-registry)$"
     reason: "llm-gateway 仅做外部 LLM 代理，不调任何内部业务服务"
 
   - from_pattern: ".*"
     to: deepseek
     reason: "外部 LLM 仅由 llm-gateway 触达；其它服务想用 LLM 必须走 llm-gateway"
     except: [llm-gateway]
+
+  - from_pattern: "^(?!cv-engine$).*"
+    to: gosmart-vin
+    reason: "外部 VIN 签名私钥只由 cv-engine 运行时密钥挂载加载；Android 与其它服务不得直连算法机"
 
   - from_pattern: "^(?!admin$).*"
     to: vehicle-catalog

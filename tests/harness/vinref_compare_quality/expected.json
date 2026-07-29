@@ -1,0 +1,14 @@
+{
+  "_doc": "vin-ref 厂家库精度基线（M-S8.x precision/recall）。",
+  "_doc_workflow": "上传 5 个厂家字符样本（A/B/C/0/8）→ publish active → 用合成 scan 字符调 /cv/ocr/v1/vin_character_compare_with_ref → 比对 best.character 命中 + similarity 区间。改算法 / 字符生成函数后 promote。",
+  "_doc_baselines_obtained": "首次基线 2026-05-05 实测：vins0/vmet1 算法链 + cv_baseline 同套合成字符。",
+  "cases": [
+    {"name": "self_A",            "scan_char": "A",       "request_char": "A", "expect_best": "A", "min_sim": 0.99},
+    {"name": "self_B",            "scan_char": "B",       "request_char": "B", "expect_best": "B", "min_sim": 0.99},
+    {"name": "self_C",            "scan_char": "C",       "request_char": "C", "expect_best": "C", "min_sim": 0.99},
+    {"name": "self_0",            "scan_char": "0",       "request_char": "0", "expect_best": "0", "min_sim": 0.99},
+    {"name": "self_8",            "scan_char": "8",       "request_char": "8", "expect_best": "8", "min_sim": 0.99},
+    {"name": "shift_A_sim_low",   "scan_char": "A_shift", "request_char": "A", "expect_best": "A", "min_sim": 0.25, "max_sim": 0.40},
+    {"name": "no_active_Z",       "scan_char": "A",       "request_char": "Z", "expect_http": 404, "expect_code": 40701}
+  ]
+}

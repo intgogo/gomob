@@ -1,10 +1,5 @@
 # VIN 数码拓印设计摘要
 
-> 架构迁移（2026-07-29）：本摘要记录的几何与验收语义已迁入独立仓库
-> `vendor/vin-rubbing`（服务端 `vin-rubbing-service`、Android `io.vinrubbing:vin-capture`）。
-> gomob 仅保留多视角 schema v2 的原始 RGBD 编排；VIN 单帧 `vin_bundle_v1`、页面、USB/native
-> 栈和权威还原不在本仓库生产代码中。本文旧端点和旧路径只作为决策历史，不得重新挂载。
-
 ## 当前权威链路
 
 VIN 日常使用链路中，手机端只负责同步采集、原始落盘、上传、查看和 OCR 触发；标定解析、正射还原、字符规范化与 OCR 代理均在服务端完成。

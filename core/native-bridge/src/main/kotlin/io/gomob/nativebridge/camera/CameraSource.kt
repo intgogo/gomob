@@ -8,7 +8,8 @@ import kotlinx.coroutines.flow.StateFlow
 /**
  * 厂商无关取流源的统一状态（M6.8b ⑤）。路由 / UI 共用，不暴露任何厂商细节。
  *
- * 故意做成与 BerxelDeviceState 同构但中性的小型状态机，供 gomob 的 Berxel 外廓页使用。
+ * 故意做成与 BerxelDeviceState 同构但中性的小型状态机：Berxel 侧将来可由 BerxelService
+ * 派生一份 [CameraSourceState]（additive，不改其行为）；eYs3D 侧由 [Eys3dCameraService] 直接产出。
  */
 sealed interface CameraSourceState {
     /** 未启动（未 acquire 或已 stop）。 */
@@ -37,13 +38,17 @@ sealed interface CameraSourceState {
 /**
  * 厂商无关相机取流源（M6.8b ⑤）。
  *
- * VIN 的 RS-D550 + HLSD8 采集不实现此接口，直接使用 vin-capture AAR 的 RGBD 会话。
- * Berxel 输出 [ColorFrame] / [DepthFrame]，depth=16bit unsigned mm，0=无效。
+ * feature:scan3d 路由按 [CameraModel] 选具体实现：
+ * - Berxel → 既有 [io.gomob.nativebridge.berxel.BerxelService]（NATIVE_REWRITE 双流，零改、不退化）
+ * - eYs3D  → [Eys3dCameraService]（libusb 单节点 + CameraStack）
+ *
+ * 两源出**同一** core:model 帧契约（[ColorFrame] / [DepthFrame]，depth=16bit unsigned mm，0=无效），
+ * 下游预览 / 重建 / VIN 拓印不需要知道相机是哪家。
  *
  * 生命周期用引用计数：扫描页进场 [acquire]、退场 [release]；归 0 且宽限期满无人重新 acquire 才真停。
  */
 interface CameraSource {
-    /** UI 显示用型号标签。 */
+    /** UI 显示用型号标签（如 "eYs3D RS-D550"）。 */
     val deviceLabel: String
 
     /** 当前物理相机序列号；标定与还原必须用它选参，不能用手机型号代替。 */

@@ -129,7 +129,7 @@ fun DepthCameraRoute(
             ),
             verticalArrangement = Arrangement.spacedBy(Gomob.spacing.s12),
         ) {
-            // HLSD8 由 VIN AAR 页面管理；gomob 深度页不再持有第二套 RGB 驱动。
+            // HLSD8 真彩 RGB（独立第二颗 USB 相机，正射图高分辨率源）—— 仅插着时显示。
             if (ui.hasRgb) {
                 item {
                     LargePreview(
@@ -141,7 +141,8 @@ fun DepthCameraRoute(
             }
             item {
                 LargePreview(
-                    label = "COLOR" + ui.colorStat.fpsSuffix(),
+                    // eYs3D 这路是 L'(左矫正/IR 参考)，非真彩；Berxel 才是真彩。标签随相机区分。
+                    label = (if (ui.isBerxel) "COLOR" else "L' (左矫正)") + ui.colorStat.fpsSuffix(),
                     bitmap = colorBmp,
                     placeholder = ui.sourceState.colorPlaceholder(),
                 )
@@ -392,7 +393,8 @@ private fun LargePreview(
     action3Label: String? = null,
     onAction3: (() -> Unit)? = null,
 ) {
-    // 画面框宽高比跟随真实 Berxel 帧；无帧时用 16:10 占位。
+    // 画面框宽高比跟随真实帧：Berxel 640×400≈1.6；eYs3D mode25 1280×256 / 640×128≈5:1。
+    // 无帧时用 16:10 占位，避免写死 16:10 把 eYs3D 宽幅画面压成一条窄缝。
     val aspect = bitmap?.let { if (it.height > 0) it.width.toFloat() / it.height else null }
         ?.coerceIn(0.6f, 6f) ?: (16f / 10f)
     Box(

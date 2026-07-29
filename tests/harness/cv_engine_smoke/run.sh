@@ -9,7 +9,7 @@
 #   - /cv/v1/echo_dim 把 48x32 PNG 喂进去，IMDecode 真解码返 cols=48 rows=32 channels=3
 #   - /cv/v1/echo_dim 喂坏数据返 10001（OpenCV 真拒绝）
 #
-# 这一阶段 **没有** VIN 业务端点，目的是把 cgo 链路、
+# 这一阶段 **没有** 业务端点（vin_detect 等留 Phase 2），目的是把 cgo 链路、
 # 二进制可启、真实 OpenCV 调用通路验完。
 
 set -uo pipefail
