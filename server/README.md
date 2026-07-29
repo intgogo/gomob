@@ -12,10 +12,9 @@ gomob 移动应用的后端服务（Go）。
 | `gomob-auth` | HTTP `:18082` | 注册 / 登录 / 改密 / token |
 | `gomob-asset` | HTTP `:18083` | 图片 / 3D 扫描 / PDF / 模型上传下载 |
 | `gomob-signaling` | HTTP / WS `:18084` | 消息中心 + WebRTC 视频信令 + 扫描实时事件 |
-| `gomob-worker` | health HTTP `:18085` | 智能预审 AI / 缩略图 / PDF 生成（异步） |
 | `gomob-device` | HTTP `:18086` | 设备注册 / 心跳 / 标定参数 / 租约 |
 | `gomob-laserworker` | HTTP `:18087` | 双单元激光采集 / 点云融合 / MinIO 落盘 / NATS 实时推点 |
-| `gomob-cvengine` | HTTP `:18810` | VIN / 车型 / 字形等 CV 推理与图像还原 |
+| `gomob-cvengine` | HTTP `:18810` | 车型、字形与通用 CV 推理；不再承载 VIN 拓印还原 |
 | `gomob-llmgateway` | HTTP `:18811` | LLM provider 适配 / 模板编排 / 配额 / 流式输出 |
 | `gomob-shaperef` | HTTP `:18056` | 3D 外廓参考库 |
 | `gomob-modelregistry` | HTTP `:18057` | 模型版本 / 灰度 / 激活 / 热更新事件 |
@@ -45,9 +44,8 @@ migrations，再启动 `gomob-devserver`。真机 / 模拟器测试消息中心�
 `./dev.sh reverse`，会把设备侧 `127.0.0.1:8808` 和 `127.0.0.1:7880`
 分别反向代理到宿主机 devserver 与 LiveKit。
 
-启用外部 VIN OCR 时，cv-engine 必须通过只读部署密钥挂载提供
-`GOMOB_VIN_ALGO_PRIVATE_KEY_FILE`。私钥不得写入源码、镜像或 APK；变量缺失时
-cv-engine 会拒绝启动。
+VIN 拓印的 bundle、标定解析、正射还原与 OCR 已迁移到独立 `vin-rubbing-service`。
+gomob 服务不再加载 VIN 算法私钥或原厂标定文件。
 
 详细架构见 `../docs/architecture/server/`：
 - `00-server-overview.md` — 总览（部署形态 / 服务划分 / 协议）

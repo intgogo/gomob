@@ -104,24 +104,10 @@ services:
     storage:
       - { kind: redis, used_for: "online presence / pending_calls / unread" }
     nats:
-      subscribe: ["inspection.preliminary_done", "model.version.activated", "scan.fusion_done", "laser.points", "laser.status", "laser.frame"]
+      subscribe: ["model.version.activated", "scan.fusion_done", "laser.points", "laser.status", "laser.frame"]
     description: "wss 双向通道 / WebRTC SDP+ICE 转发 / 待接来电（仅 wss 在线推送）"
 
   # —— AI / 异步 / 算法 ——
-  - name: worker
-    cmd: server/cmd/worker
-    impl: server/internal/worker
-    category: ai
-    binary: gomob-worker
-    expose:
-      - { protocol: grpc, port: 50055, scope: internal }
-    storage:
-      - { kind: postgres, used_for: "tasks / inspections (write_back results)" }
-    nats:
-      subscribe: ["inspection.created", "asset.uploaded", "model.version.activated"]
-      publish:   ["inspection.preliminary_done"]
-    description: "异步任务消费者：智能预审 4 子模型 / 缩略图 / PDF 生成"
-
   - name: cv-engine
     cmd: server/cmd/cvengine
     impl: server/internal/cvengine
@@ -129,13 +115,13 @@ services:
     binary: gomob-cvengine
     expose:
       - { protocol: grpc, port: 50062, scope: internal }
-      - { protocol: http, port: 8810,  scope: internal, purpose: "/cv/ocr/v1/* 沿用 gosmart 路径，由 gateway 反代到公网" }
+      - { protocol: http, port: 8810,  scope: internal, purpose: "通用 CV 推理与模型健康检查；VIN 拓印不在本服务暴露" }
     storage: []
     nats:
       subscribe: ["model.version.activated"]
     auth: dual_track   # JWT + HMAC 验签
     gpu: optional
-    description: "CV 算法引擎（VIN 平面正射 + 17 字符刚性格架规范化 / 外部 OCR 代理 / 本地字形比对）；VIN 区域与逐字符观测走外部算法服务 /cv/veh/v1/detect；vin_restore 同时返回干净规范图（OCR 与验收用）、叠四周毫米刻度尺的展示副本与字符串物理度量"
+    description: "通用 CV/OpenCV 引擎与车型/shape 能力；VIN 拓印页面、bundle、几何还原与 OCR 已迁移到独立 vin-rubbing-service"
 
   - name: laserworker
     cmd: server/cmd/laserworker
@@ -217,7 +203,7 @@ services:
       - { protocol: grpc, port: 50060, scope: internal }
     storage:
       - { kind: postgres, used_for: "vin_glyph_samples / annotations" }
-    description: "车驾号字形参考库：cv-engine vin_compare 时按 vehicle_model_id 拉对照样本；图像走 asset bucket vin-refs/"
+    description: "车驾号字形参考库：供管理面维护 VIN 参考样本；拓印生产处理由独立 vin-rubbing-service 负责"
 
   - name: shape-ref
     cmd: server/cmd/shaperef
@@ -259,11 +245,6 @@ storage_instances:
     description: "服务间异步事件总线"
 
 external_dependencies:
-  - name: gosmart-vin
-    kind: cv_provider
-    endpoint: "http://192.168.9.166:35000"
-    consumed_by: [cv-engine]
-    description: "车架号 OCR，以及 VIN 区域 VMASK/逐字符 VINS 检测；旧式 nanos + RSA-SHA1 验签，仅允许 cv-engine 服务端代理调用"
   - name: deepseek
     kind: llm_provider
     consumed_by: [llm-gateway]

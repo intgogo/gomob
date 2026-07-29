@@ -32,6 +32,11 @@ layers:
     rank: 7
 
 modules:
+  - path: "vendor/vin-rubbing"
+    layer: capture
+    type: git-submodule
+    description: "独立 VIN AAR（io.vinrubbing:vin-capture）与 vin-rubbing-service；gomob 只锁定 submodule commit"
+
   - path: ":app"
     layer: presentation
     type: application
@@ -99,7 +104,7 @@ modules:
   - path: ":feature:scan3d"
     layer: presentation
     type: android-library-feature
-    description: "RS-D550 + HLSD8 原始 RGBD 采集、VIN BIN bundle 上传与 GLB 回看"
+    description: "Berxel 多视角编排与 vin-capture AAR 复用；VIN 单帧页面/服务不在本模块"
 
 native_modules:
   - path: "native/depth"

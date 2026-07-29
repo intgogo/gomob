@@ -1,6 +1,19 @@
 # VIN 数码拓印流水线 — 历史上下文
 
-> 最后更新: 2026-07-28 | 截至 commit: 0f60fc0 | 维护规则见 AGENTS.md「历史上下文维护」节
+> 最后更新: 2026-07-29 | 截至工作区拆分 checkpoint | 维护规则见 AGENTS.md「历史上下文维护」节
+
+## 2026-07-29 架构拆分落地
+
+VIN 拓印已从 gomob 生产链抽离到 `vendor/vin-rubbing` 独立仓库（submodule）。Android 通过
+`io.vinrubbing:vin-capture` AAR 统一持有 RS-D550 + HLSD8 的 USB/native 会话、权限、BIN 校验、
+`vin_bundle_v1` 单帧上传页面；服务端还原、VMASK/VINS/OCR 和结果 ZIP 由独立
+`vin-rubbing-service` 负责。gomob 只保留 VIN 路由和多视角 schema v2 编排，Berxel 仍由
+`core:native-bridge` 管理，不能重新引入第二套 eYs3D/HLSD8 驱动。
+
+独立服务不预置 BIN：App 从 `/storage/emulated/0/VIN/param/VIN_<depth_serial>.bin` 读取，进入
+ZIP 根目录后固定命名 `calibration.bin`。VIN 单帧 `vin_bundle_v1` 与 gomob 多视角 schema v2
+不是同一契约；任何缺失标定、SHA/序列号/profile 不一致都 fail-closed，不允许 resize、共享内参
+或近似配准回退。旧 `/cv/ocr/v1/vin_*` 仅保留历史文档，不再挂载生产路由。
 
 ## 使命与当前状态
 

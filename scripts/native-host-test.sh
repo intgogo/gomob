@@ -47,52 +47,8 @@ build_and_run conf_weight_test \
     native/reconstruction/icp.cpp \
     native/depth/depth_projection.cpp
 
-build_and_run eys3d_depth_test \
-    tests/native_host/eys3d_depth_test.cpp \
-    native/eys3d/portable/eys3d_depth.cpp
-
-build_and_run eys3d_protocol_test \
-    tests/native_host/eys3d_protocol_test.cpp \
-    native/eys3d/portable/eys3d_protocol.cpp \
-    native/berxel/portable/gomob_berxel_portable.cpp
-
 build_and_run camera_abstraction_test \
     tests/native_host/camera_abstraction_test.cpp \
     native/berxel/portable/gomob_berxel_portable.cpp
 
-build_and_run eys3d_driver_test \
-    tests/native_host/eys3d_driver_test.cpp \
-    native/eys3d/portable/eys3d_driver.cpp \
-    native/eys3d/portable/eys3d_depth.cpp \
-    native/berxel/portable/gomob_berxel_portable.cpp
-
-build_and_run eys3d_depth_router_test \
-    tests/native_host/eys3d_depth_router_test.cpp \
-    native/eys3d/portable/eys3d_depth_router.cpp \
-    native/eys3d/portable/eys3d_driver.cpp \
-    native/eys3d/portable/eys3d_depth.cpp \
-    native/berxel/portable/gomob_berxel_portable.cpp
-
-build_and_run eys3d_session_core_test \
-    tests/native_host/eys3d_session_core_test.cpp \
-    native/eys3d/portable/eys3d_session_core.cpp \
-    native/eys3d/portable/eys3d_depth_router.cpp \
-    native/eys3d/portable/eys3d_driver.cpp \
-    native/eys3d/portable/eys3d_depth.cpp \
-    native/eys3d/portable/eys3d_protocol.cpp \
-    native/berxel/portable/gomob_berxel_portable.cpp
-
-build_and_run eys3d_vendor_worker_lifecycle_test \
-    tests/native_host/eys3d_vendor_worker_lifecycle_test.cpp
-
-build_and_run eys3d_stereo_depth_test \
-    tests/native_host/eys3d_stereo_depth_test.cpp \
-    native/eys3d/portable/eys3d_stereo_depth.cpp \
-    native/eys3d/portable/eys3d_driver.cpp \
-    native/eys3d/portable/eys3d_depth.cpp \
-    native/berxel/portable/gomob_berxel_portable.cpp
-
 # 双相机正射图几何（depth × HLSD8 RGB → 平面正射纹理）。合成 RGBD 验证 scale/投影/外参处理。
-build_and_run ortho_rectify_test \
-    tests/native_host/ortho_rectify_test.cpp \
-    native/vin/ortho_rectify.cpp

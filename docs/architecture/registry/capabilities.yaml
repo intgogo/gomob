@@ -10,6 +10,21 @@ version: 1
 coverage_scope: "当前先覆盖激光车辆外廓关键能力；其它专题在发生能力变化时补入"
 
 capabilities:
+  - id: vin_rubbing_extracted
+    name: VIN 拓印独立采集与还原
+    status: implemented_pending_device
+    owners: ["vendor/vin-rubbing", ":feature:scan3d"]
+    provides:
+      - "io.vinrubbing:vin-capture AAR 持有 RS-D550 + HLSD8 唯一采集栈、权限和 calibration.bin 校验"
+      - "vin_bundle_v1 与 POST /v1/vin/process 结果 ZIP 契约"
+      - "服务端原厂 BIN RGB↔Depth 几何、VMASK/VINS/OCR 编排"
+    evidence:
+      - vendor/vin-rubbing/contract/vin_bundle_v1.schema.json
+      - vendor/vin-rubbing/android/vin-capture
+      - vendor/vin-rubbing/server
+    blockers:
+      - "需在真实 BF301208 设备上完成连续采集、输出 4425x600 和字符 crop 验收"
+
   - id: laser_station_authority
     name: 激光工位服务端真理源
     status: implemented_pending_device

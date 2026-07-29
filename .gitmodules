@@ -1,0 +1,3 @@
+[submodule "vendor/vin-rubbing"]
+	path = vendor/vin-rubbing
+	url = ../vin-rubbing

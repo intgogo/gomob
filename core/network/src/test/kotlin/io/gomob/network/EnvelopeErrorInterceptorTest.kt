@@ -125,7 +125,7 @@ class EnvelopeErrorInterceptorTest {
     fun largeSuccessfulEnvelopeIsNotConsumedOrRebuiltByTheInterceptor() {
         val tokenProvider = RecordingTokenProvider()
         val interceptor = EnvelopeErrorInterceptor(tokenProvider)
-        val request = Request.Builder().url("http://127.0.0.1/cv/ocr/v1/vin_restore").build()
+        val request = Request.Builder().url("http://127.0.0.1/v1/assets/result").build()
         val largeValue = "A".repeat(200_000)
         val raw = """{"code":0,"data":{"result_png_base64":"$largeValue"}}"""
         val response = Response.Builder()

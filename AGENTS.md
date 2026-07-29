@@ -69,7 +69,7 @@
 
 - 命中 harness 覆盖的模块, 提交前必须跑对应 harness 确认无退化。
 - 新建模块命中上述五条判定标准时, 先设计 harness, 再写业务代码。
-- 与扫描质量相关的现有入口优先查 `tests/harness/` 下 `scan_quality` / `cv_vin_pipeline` / `cv_vin_compare` / `device_sync` / `depth_temporal_quality` 等; host native 测试在 `tests/native_host/`。详见 `docs/agent-memory/feedback_harness_mandatory.md`。
+- 与扫描质量相关的现有入口优先查 `tests/harness/` 下 `scan_quality` / `device_sync` / `depth_temporal_quality` 等；VIN 独立链路的 bundle/服务 harness 位于 `vendor/vin-rubbing/tests/harness/`；host native 测试在 `tests/native_host/`。详见 `docs/agent-memory/feedback_harness_mandatory.md`。
 
 ## UI / 业务双重验证规范
 

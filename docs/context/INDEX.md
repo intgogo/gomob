@@ -6,6 +6,7 @@
 - [eys3d-rsd550-hlsd8](eys3d-rsd550-hlsd8.md) — eYs3D RS-D550 真深度 + HLSD8 RGB 双相机全自研驱动。
 - [multiview-recon](multiview-recon.md) — 多视角 RGBD 端云重建主线 (2026-05-07 pivot) + 深度后处理与标定。
 - [vin-pipeline](vin-pipeline.md) — VIN 数码拓印: 拍摄 / 矫正 / 签名二值化 / OCR 接入。
+- VIN 独立仓库上下文见 `vendor/vin-rubbing/docs/context/INDEX.md`（AAR、vin_bundle_v1、还原服务）。
 - [laser-station](laser-station.md) — 激光工位扫描 / 标定 / 车辆外廓测量 / JCHY, 服务端下沉主线。
 - [app-ui-designsystem](app-ui-designsystem.md) — Compose UI / 设计系统 / M14 毛玻璃焕新与设计稿对齐。
 - [infra-server](infra-server.md) — 开发环境 / dev.sh / harness 体系 / 服务端与治理 / 实时协作。

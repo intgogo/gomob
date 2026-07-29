@@ -93,6 +93,7 @@ dependencies {
     implementation(project(":feature:collaboration"))
     implementation(project(":feature:scan3d"))
     implementation(project(":feature:profile"))
+    implementation("io.vinrubbing:vin-capture:1.0.0")
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)

@@ -5,7 +5,6 @@ import android.graphics.BitmapFactory
 import io.gomob.model.ColorFrame
 import io.gomob.model.DepthFrame
 import io.gomob.model.DepthSampleFormat
-import io.gomob.nativebridge.camera.hlsd8PreviewSampleSize
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.max
@@ -19,14 +18,6 @@ import kotlin.math.min
  */
 internal object FrameRenderer {
 
-    /** 把已投到彩色视场的 ARGB 像素复制成预览 Bitmap。 */
-    fun projectedDepthToBitmap(projected: VinProjectedDepth): Bitmap = Bitmap.createBitmap(
-        projected.pixels,
-        projected.width,
-        projected.height,
-        Bitmap.Config.ARGB_8888,
-    )
-
     /**
      * 把 ColorFrame 转成预览 Bitmap。HLSD8 原始 MJPEG 直接按内存预算降采样解码；其它相机读 RGB24。
      *
@@ -35,7 +26,7 @@ internal object FrameRenderer {
     fun colorToBitmap(frame: ColorFrame): Bitmap? {
         frame.encodedJpeg?.let { jpeg ->
             val options = BitmapFactory.Options().apply {
-                inSampleSize = hlsd8PreviewSampleSize(frame.encodedWidth, ENCODED_PREVIEW_MAX_W)
+                inSampleSize = previewSampleSize(frame.encodedWidth, ENCODED_PREVIEW_MAX_W)
                 inPreferredConfig = Bitmap.Config.ARGB_8888
                 inScaled = false
             }
@@ -244,6 +235,13 @@ internal object FrameRenderer {
     private const val PREVIEW_SAMPLE_TARGET = 32_000
     private const val PREVIEW_MIN_VALID_SAMPLES = 32
     private const val PREVIEW_CONFIDENCE_MIN = 64
+
+    private fun previewSampleSize(width: Int, maxWidth: Int): Int {
+        if (width <= maxWidth) return 1
+        var sample = 1
+        while (width / (sample * 2) >= maxWidth) sample *= 2
+        return sample
+    }
 }
 
 /** 把 [ByteBuffer] 当连续字节看时的 short 读取扩展（小端）。 */

@@ -32,6 +32,10 @@ edges:
   - from: ":feature:scan3d"
     to: [":core:ui", ":core:designsystem", ":core:domain", ":core:model", ":core:common", ":core:native-bridge", ":core:data"]
 
+  # VIN 页面与 RS-D550/HLSD8 会话由独立 AAR 提供；宿主只依赖公开路由/会话接口。
+  - from: ":feature:scan3d"
+    to: ["vendor/vin-rubbing"]
+
   # core 之间
   - from: ":core:domain"
     to: [":core:common", ":core:model", ":core:data"]

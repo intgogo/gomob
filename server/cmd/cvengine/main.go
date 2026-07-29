@@ -11,11 +11,6 @@
 //
 //	GOMOB_CVENGINE_HTTP_ADDR     HTTP 监听地址（默认 :18810）
 //	GOMOB_CVENGINE_REQUIRE_AUTH  true 时强制 X-Gomob-User-Id 头（默认 false，dev 直连方便）
-//	GOMOB_VINREF_TARGET          vin-ref baseURL（默认 http://127.0.0.1:18058）
-//	GOMOB_VIN_ALGO_BASE_URL      外部 VIN OCR 地址（默认 http://192.168.9.166:35000）
-//	GOMOB_VIN_ALGO_PRIVATE_KEY_FILE 必填 RSA 私钥 PEM；只允许部署密钥挂载
-//	GOMOB_VIN_ALGO_CONNECT_TIMEOUT 连接超时（默认 3s）
-//	GOMOB_VIN_ALGO_TIMEOUT       调用总超时（默认 50s）
 //
 //	# 主路径（M-S10.4 model-registry）
 //	GOMOB_CVENGINE_MODEL_NAMES   逗号分隔的 model name 列表（同时是 cv-engine 注册 tag）
@@ -23,8 +18,6 @@
 //	GOMOB_MINIO_ENDPOINT/...     MinIO 配置（同 asset / shape-ref）
 //	GOMOB_CVENGINE_MODEL_CACHE   缓存目录（默认 .dev/cvengine_models）
 //	GOMOB_NATS_URL               NATS URL（默认 nats://127.0.0.1:4222）；空字符串=禁用 NATS 热更
-//	GOMOB_VIN_FACTORY_CALIBRATION_REQUIRED true 时缺原厂标定拒绝启动
-//	GOMOB_VIN_RESTORE_MODELS_REQUIRED      true 时缺 VIN 还原视觉服务（外部算法 VMASK/VINS）拒绝启动
 //
 //	# dev 旁路
 //	GOMOB_CVENGINE_MODELS        "TAG=path,TAG:mask=path:cls" 直接本地加载
@@ -46,8 +39,6 @@ import (
 
 	"io.gomob/server/internal/cvengine"
 	"io.gomob/server/internal/cvengine/loader"
-	"io.gomob/server/internal/vinalgo"
-	"io.gomob/server/internal/vinvision"
 	"io.gomob/server/pkg/hmacauth"
 	"io.gomob/server/pkg/logger"
 )
@@ -58,17 +49,7 @@ func main() {
 	rootCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	vinClient, err := vinalgo.NewClientFromEnv()
-	if err != nil {
-		log.Error("外部 VIN OCR 客户端初始化失败", "err", err)
-		os.Exit(1)
-	}
-	h := cvengine.NewHandlerWithOptions(cvengine.HandlerOptions{
-		VINRecognizeHandler: vinalgo.NewHTTPHandler(vinClient, log),
-		// 还原链的 VIN 区域(VMASK)与逐字符(VINS)观测与最终 OCR 走同一个外部算法服务，
-		// 保证几何与识别用的是同一份模型版本。
-		VINVisionProvider: vinvision.New(vinClient),
-	})
+	h := cvengine.NewHandler()
 
 	// 主路径：M-S10.4 model-registry
 	var ld *loader.Loader

@@ -44,7 +44,7 @@ data class DepthCameraUiState(
     val isBerxel: Boolean = true,
     val colorStat: PreviewStat? = null,
     val depthStat: PreviewStat? = null,
-    // ─── HLSD8 辅助 RGB 相机（独立第二颗，仅插着时 hasRgb=true） ───
+    // VIN 的 HLSD8 预览由 vin-capture AAR 管理；本页只展示 Berxel。
     val hasRgb: Boolean = false,
     val rgbLabel: String = "",
     val rgbStat: PreviewStat? = null,
@@ -60,11 +60,9 @@ data class DepthCameraUiState(
 /**
  * 深度相机详情子页 VM —— 进本页才启动相机，离开就停。
  *
- * 设计（M6.8b 双相机）：注入厂商无关的 [CameraSourceProvider]，init 取一次 [CameraSourceProvider.active]
- * 持有整段会话（eYs3D 在场走 [io.gomob.nativebridge.camera.Eys3dCameraService]，否则回落 [BerxelService]，
- * Berxel 路径逐位不变）。预览统一从 [CameraSource.colorFrames]/[CameraSource.depthFrames] 收（同 core:model 帧契约），
- * [FrameRenderer] 双相机复用。Berxel 专属能力（采集后端 / 流模式 / IR / 成像控制 / 帧统计 / 标定）只在 Berxel
- * 在场时经向下转型暴露；eYs3D 下不可达、UI 也不显示这些控件（不放假按钮）。
+ * 设计：注入 [CameraSourceProvider]，init 取一次 Berxel [CameraSource] 持有整段会话。
+ * 预览从 [CameraSource.colorFrames]/[CameraSource.depthFrames] 收；Berxel 专属能力（采集后端 / 流模式 / IR /
+ * 成像控制 / 帧统计 / 标定）经向下转型暴露。
  *
  * 生命周期由 [CameraSource] 引用计数单一管控：本 VM 与 [Scan3dRecordingViewModel] 都走 acquire/release，
  * `onCleared` 才 release()，所以三级页之间跳转不会断流。
@@ -77,18 +75,12 @@ class DepthCameraViewModel @Inject constructor(
     /** 整段会话持有的活动取流源（按进页时插着的相机判型）。 */
     private val source: CameraSource = provider.active()
 
-    /** HLSD8 辅助 RGB 相机（独立第二颗 USB 相机）；未插着则 null。与 [source] 并行 acquire。 */
-    private val rgbSource: CameraSource? = provider.auxRgb()
-    private val hasRgb: Boolean = rgbSource != null
-
-    /** Berxel 专属面：非空才说明当前是 Berxel，专属流 / 控制 / 子页才可用。 */
-    private val berxel: BerxelService? = source as? BerxelService
-    private val isBerxel: Boolean = berxel != null
+    private val berxel: BerxelService = source as BerxelService
+    private val isBerxel = true
 
     // 中性帧统计：从两源同构的 core:model 帧派生（fps 用到达间隔 EMA 平滑）。
     private val _colorStat = MutableStateFlow<PreviewStat?>(null)
     private val _depthStat = MutableStateFlow<PreviewStat?>(null)
-    private val _rgbStat = MutableStateFlow<PreviewStat?>(null)
 
     /** Berxel 专属状态打包；eYs3D 时为默认常量流（不订阅任何 Berxel 流）。 */
     private val berxelBundle: Flow<BerxelBundle> = berxel?.let { b ->
@@ -107,8 +99,8 @@ class DepthCameraViewModel @Inject constructor(
     } ?: flowOf(BerxelBundle())
 
     val uiState: StateFlow<DepthCameraUiState> = combine(
-        source.sourceState, _colorStat, _depthStat, berxelBundle, _rgbStat,
-    ) { srcState, colorStat, depthStat, bundle, rgbStat ->
+        source.sourceState, _colorStat, _depthStat, berxelBundle,
+    ) { srcState, colorStat, depthStat, bundle ->
         val effectiveColorStat = if (isBerxel && bundle.color?.visualStale == true) {
             PreviewStat(
                 frameIndex = bundle.color.frameIndex,
@@ -126,9 +118,9 @@ class DepthCameraViewModel @Inject constructor(
             isBerxel = isBerxel,
             colorStat = effectiveColorStat,
             depthStat = depthStat,
-            hasRgb = hasRgb,
-            rgbLabel = rgbSource?.deviceLabel ?: "",
-            rgbStat = rgbStat,
+            hasRgb = false,
+            rgbLabel = "",
+            rgbStat = null,
             device = bundle.device,
             color = bundle.color,
             depth = bundle.depth,
@@ -144,32 +136,13 @@ class DepthCameraViewModel @Inject constructor(
     private val _depthPreview = MutableStateFlow<Bitmap?>(null)
     val depthPreview: StateFlow<Bitmap?> = _depthPreview.asStateFlow()
 
-    /** HLSD8 RGB 预览位图（独立第二颗相机；hasRgb 时才有内容）。 */
+    /** 兼容旧 UI 状态字段；VIN AAR 页面自行管理 HLSD8 预览。 */
     private val _rgbPreview = MutableStateFlow<Bitmap?>(null)
     val rgbPreview: StateFlow<Bitmap?> = _rgbPreview.asStateFlow()
 
     @Volatile private var sourcesAcquired = false
 
     init {
-        // RGB（HLSD8）：独立 RGB24 ColorFrame → 预览位图（与深度相机的 L'-color 区分开）。
-        rgbSource?.let { rgb ->
-            viewModelScope.launch {
-                var lastRenderMs = 0L
-                var lastArriveMs = 0L
-                var emaMs = 0.0
-                rgb.colorFrames.collect { frame ->
-                    val now = SystemClock.elapsedRealtime()
-                    emaMs = updateEma(emaMs, lastArriveMs, now)
-                    lastArriveMs = now
-                    _rgbStat.value = PreviewStat(frame.frameIndex, frame.width, frame.height, emaMs.toFps())
-                    if (lastRenderMs != 0L && now - lastRenderMs < COLOR_PREVIEW_MIN_INTERVAL_MS) return@collect
-                    lastRenderMs = now
-                    val bmp = withContext(Dispatchers.Default) { FrameRenderer.colorToBitmap(frame) }
-                    if (bmp != null) _rgbPreview.value = bmp
-                }
-            }
-        }
-
         // COLOR：两源同发 RGB24 ColorFrame，FrameRenderer 直接渲染；渲染节流上限 ~10fps（解码体量大）。
         viewModelScope.launch {
             var lastRenderMs = 0L
@@ -232,9 +205,6 @@ class DepthCameraViewModel @Inject constructor(
     private fun acquireSourcesIfNeeded() {
         if (sourcesAcquired) return
         sourcesAcquired = true
-        // ★ 用户实测(2026-06-15)：必须**先开独立 HLSD8 RGB 相机**（补光灯/IR 投射器很可能在该模块上，开它才点灯），
-        //   再开 eYs3D 深度 —— 否则主动立体无散斑 → 深度退化成条纹。故 rgbSource 先 acquire。
-        rgbSource?.acquire()
         source.acquire()
     }
 
@@ -242,7 +212,6 @@ class DepthCameraViewModel @Inject constructor(
         if (!sourcesAcquired) return
         sourcesAcquired = false
         source.release()
-        rgbSource?.release()
     }
 
     // ─── 控制命令（仅 Berxel 有意义，null-safe 转发；eYs3D 下 UI 不暴露这些入口） ───

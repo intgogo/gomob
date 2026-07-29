@@ -33,6 +33,7 @@ import io.gomob.feature.profile.AppearanceViewModel
 import io.gomob.nativebridge.berxel.BerxelService
 import io.gomob.nativebridge.berxel.BerxelStreamProfiles
 import io.gomob.nativebridge.camera.CameraSourceProvider
+import io.vinrubbing.capture.VinCapture
 import javax.inject.Inject
 import kotlinx.coroutines.delay
 
@@ -216,10 +217,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun consumeUsbAttachIntent(intent: Intent?) {
-        if (intent?.action != UsbManager.ACTION_USB_DEVICE_ATTACHED) return
+        if (intent?.action != UsbManager.ACTION_USB_DEVICE_ATTACHED &&
+            intent?.action != UsbManager.ACTION_USB_DEVICE_DETACHED
+        ) return
         @Suppress("DEPRECATION")
         val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE) ?: return
-        cameraSourceProvider.attachAuthorizedDevice(device)
+        if (intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
+            VinCapture.onUsbDeviceAttached(device)
+            cameraSourceProvider.attachAuthorizedDevice(device)
+        } else {
+            VinCapture.onUsbDeviceDetached(device)
+        }
     }
 
     private fun isLaunchBackdropHoldRequested(intent: Intent?): Boolean =

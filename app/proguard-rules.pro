@@ -29,11 +29,6 @@
     native <methods>;
 }
 
-# eYs3D vendor shim 类（com.esp.android.usb.camera.core.*）：libUVCCamera.so 的 JNI_OnLoad 经
-# FindClass + RegisterNatives 把 native 方法绑到这些类（native 直驱路径 setVM 需要此绑定动作）。
-# Kotlin 侧已无任何引用（Eys3dApcCamera.kt 退役），故必须显式 keep，否则 release R8 收缩掉 → FindClass 失败。
--keep class com.esp.android.usb.camera.core.** { *; }
-
 # Berxel SDK（待 AAR 引入后按官方 README 补 -keep 规则）
 # -keep class com.berxel.** { *; }
 

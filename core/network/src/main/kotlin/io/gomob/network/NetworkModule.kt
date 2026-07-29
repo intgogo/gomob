@@ -107,9 +107,5 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    fun provideCVEngineApi(retrofit: Retrofit): CVEngineApi = retrofit.create(CVEngineApi::class.java)
-
-    @Provides
-    @Singleton
     fun provideFeedbackApi(retrofit: Retrofit): FeedbackApi = retrofit.create(FeedbackApi::class.java)
 }
